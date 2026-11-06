@@ -13,7 +13,9 @@
  * Original notice: @author LazyBear, modified by KıvanÇ @fr3762 on twitter
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SqueezeMomentumIndicatorVersion2Inputs {
   /** BB Length */
@@ -72,54 +74,99 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<SqueezeMomentumIndicatorVersion2Inputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface SqzRun extends BarRunState<Record<string, never>> {
+  basis: ReturnType<typeof taStep.sma>;
+  sd: ReturnType<typeof taStep.stdev>;
+  ma: ReturnType<typeof taStep.sma>;
+  tr: ReturnType<typeof taStep.tr>;
+  rangema: ReturnType<typeof taStep.sma>;
+  hh: ReturnType<typeof taStep.highest>;
+  ll: ReturnType<typeof taStep.lowest>;
+  linreg: ReturnType<typeof taStep.linreg>;
+  signal: ReturnType<typeof taStep.sma>;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+}
+
+function study(inputs: Partial<SqueezeMomentumIndicatorVersion2Inputs>): BarStudy<SqzRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const { length, lengthKC, multKC, signalPeriod, useTrueRange } = cfg;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const closeArr = bars.map((b) => b.close);
-  const close = S(closeArr);
-
-  // BB: basis = sma(close, length), dev = multKC * stdev(close, length)
-  const basis = A(ta.sma(close, length));
-  const sd = A(ta.stdev(close, length));
-  const upperBB = basis.map((v, i) => v + multKC * sd[i]);
-  const lowerBB = basis.map((v, i) => v - multKC * sd[i]);
-
-  // KC: range = useTrueRange ? tr : high - low (tr is na on the first bar)
-  const ma = A(ta.sma(close, lengthKC));
-  const range = useTrueRange ? A(ta.tr(bars)) : bars.map((b) => b.high - b.low);
-  const rangema = A(ta.sma(S(range), lengthKC));
-  const upperKC = ma.map((v, i) => v + rangema[i] * multKC);
-  const lowerKC = ma.map((v, i) => v - rangema[i] * multKC);
-
-  // val = linreg(close - avg(avg(highest(high, lengthKC), lowest(low, lengthKC)), sma(close, lengthKC)), lengthKC, 0)
-  const hh = A(ta.highest(S(bars.map((b) => b.high)), lengthKC));
-  const ll = A(ta.lowest(S(bars.map((b) => b.low)), lengthKC));
-  const src = closeArr.map((c, i) => c - ((hh[i] + ll[i]) / 2 + ma[i]) / 2);
-  const val = A(ta.linreg(S(src), lengthKC, 0));
-  const signal = A(ta.sma(S(val), signalPeriod));
-
   const num = (v: number) => (Number.isFinite(v) ? v : NaN);
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: num(val[i]) })),
+    init() {
+      const basis = taStep.sma();
+      const sd = taStep.stdev();
+      // the same ta.sma(close, length) when the KC length is the BB length (one machine, the same doubles)
+      const shared = lengthKC === length;
+      const ma = shared ? basis : taStep.sma();
+      const tr = taStep.tr(false);
+      const rangema = taStep.sma();
+      const hh = taStep.highest();
+      const ll = taStep.lowest();
+      const linreg = taStep.linreg(lengthKC, 0);
+      const signal = taStep.sma();
+      const s: SqzRun = {
+        basis, sd, ma, tr, rangema, hh, ll, linreg, signal, plot0: [], plot1: [], plot2: [],
+        steps: [basis, sd, ...(shared ? [] : [ma]), tr, rangema, hh, ll, linreg, signal], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1, s.plot2];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = b.close;
+      // BB: basis = sma(close, length), dev = multKC * stdev(close, length)
+      const basis = s.basis.step(close, length);
+      const sd = s.sd.step(close, length);
+      const upperBB = basis + multKC * sd;
+      const lowerBB = basis - multKC * sd;
+
+      // KC: range = useTrueRange ? tr : high - low (tr is na on the first bar)
+      const ma = s.ma === s.basis ? basis : s.ma.step(close, lengthKC);
+      const range = useTrueRange ? s.tr.step(b.high, b.low, b.close) : b.high - b.low;
+      const rangema = s.rangema.step(range, lengthKC);
+      const upperKC = ma + rangema * multKC;
+      const lowerKC = ma - rangema * multKC;
+
+      // val = linreg(close - avg(avg(highest(high, lengthKC), lowest(low, lengthKC)), sma(close, lengthKC)), lengthKC, 0)
+      const hh = s.hh.step(b.high, lengthKC);
+      const ll = s.ll.step(b.low, lengthKC);
+      const src = close - ((hh + ll) / 2 + ma) / 2;
+      const val = s.linreg.step(src);
+      const signal = s.signal.step(val, signalPeriod);
+
+      s.plot0[i] = { time: b.time, value: num(val) };
       // scolor = noSqz ? blue : sqzOn ? black : gray
-      plot1: bars.map((b, i) => {
-        const sqzOn = gt(lowerBB[i], lowerKC[i]) && lt(upperBB[i], upperKC[i]);
-        const sqzOff = lt(lowerBB[i], lowerKC[i]) && gt(upperBB[i], upperKC[i]);
-        const noSqz = !sqzOn && !sqzOff;
-        return { time: b.time, value: 0, color: noSqz ? BLUE : sqzOn ? BLACK : GRAY };
-      }),
-      plot2: bars.map((b, i) => ({ time: b.time, value: num(signal[i]) })),
+      const sqzOn = gt(lowerBB, lowerKC) && lt(upperBB, upperKC);
+      const sqzOff = lt(lowerBB, lowerKC) && gt(upperBB, upperKC);
+      const noSqz = !sqzOn && !sqzOff;
+      s.plot1[i] = { time: b.time, value: 0, color: noSqz ? BLUE : sqzOn ? BLACK : GRAY };
+      s.plot2[i] = { time: b.time, value: num(signal) };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SqueezeMomentumIndicatorVersion2Inputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SqueezeMomentumIndicatorVersion2Inputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
 export const SqueezeMomentumIndicatorVersion2 = {
   calculate,
+  createRun,
+
   metadata,
   defaultInputs,
   inputConfig,

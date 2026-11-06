@@ -25,11 +25,12 @@
  * Original notice: © LuxAlgo
  */
 
-import { ta, color, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { LabelData, LineDrawingData, LinefillData, MarkerData } from '../types';
 import { barInterval, barTime } from '../bar-time';
 import { backgroundColorOf, type ChartContext } from '../chart-context';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface FibonacciRangesInputs {
   /** Bars before a pivot */
@@ -124,15 +125,53 @@ const setXy2 = (l: Ln, x: number, y: number) => { l.x2 = x; l.y2 = y; };
 /** math.avg(a, b) */
 const avg = (a: number, b: number) => (a + b) / 2;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<FibonacciRangesInputs> = {},
-  chart?: ChartContext,
-): Omit<IndicatorResult, 'markers' | 'lines' | 'labels' | 'linefills'> & {
+type Result = Omit<IndicatorResult, 'markers' | 'lines' | 'labels' | 'linefills'> & {
   markers: MarkerData[]; lines: LineDrawingData[]; labels: LabelData[]; linefills: LinefillData[];
-} & { alerts: AlertConditionState[] } {
+} & { alerts: AlertConditionState[] };
+
+interface FibVars {
+  /** var f = fib.new(...): the nine levels, the diagonal and the two labels of the channel */
+  levels: Ln[];
+  diagon: Ln;
+  lab1: Lb;
+  lab2: Lb;
+  active: boolean;
+  count: number;
+  /** var fibLast fLast = fibLast.new(...): four filled pairs of lines and the middle line, the diagonal, the label */
+  lastLines: Ln[];
+  lastDiagon: Ln;
+  lastLab: Lb;
+  /** The two latest swings of the array of pivots (newest first: only these two are read) */
+  pivs: Piv[];
+  /** f.active[1] */
+  prevActive: boolean;
+  /** plot_0_000[1] */
+  prev0: number;
+}
+
+interface FibRun extends BarRunState<FibVars> {
+  ph: PivotStep;
+  pl: PivotStep;
+  plots: Array<Array<{ time: number; value: number }>>;
+  /** Top and bottom values of the ten gradient fills */
+  tops: number[][];
+  bottoms: number[][];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+}
+
+/** array.unshift(pivs, p), keeping the two newest */
+const unshiftPiv = (pivs: Piv[], p: Piv) => {
+  pivs.unshift(p);
+  if (pivs.length > 2) pivs.length = 2;
+};
+
+const copyLn = (l: Ln): Ln => ({ ...l });
+const copyLb = (l: Lb): Lb => ({ ...l });
+
+function study(inputs: Partial<FibonacciRangesInputs>): BarStudy<FibRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const L = Math.trunc(cfg.L);
   const R = Math.trunc(cfg.R);
   const c = Math.trunc(cfg.breakCount);
@@ -143,237 +182,279 @@ export function calculate(
   const opt = cfg.breakLevel;
   const a1 = opt === '-0.382 - 1.382' ? -0.382 : opt === '0.000 - 1.000' ? 0 : opt === '0.236 - 0.764' ? 0.236 : 0.382;
   const a2 = opt === '-0.382 - 1.382' ? 1.382 : opt === '0.000 - 1.000' ? 1 : opt === '0.236 - 0.764' ? 0.764 : 0.618;
-
-  const phArr = ta.pivothigh(new Series(bars, (b) => b.high), L, R).toArray();
-  const plArr = ta.pivotlow(new Series(bars, (b) => b.low), L, R).toArray();
-
-  // var f = fib.new(...): the nine levels, the diagonal and the two labels of the channel
-  const f = {
-    n0_382: newLine(F0), _0_000: newLine(F0), _0_236: newLine(F_), _0_382: newLine(F_), _0_500: newLine(Fm),
-    _0_618: newLine(Fp), _0_764: newLine(Fp), _1_000: newLine(F1), _1_382: newLine(F1),
-    diagon: newLine(SILVER, true),
-    lab1: { x: NaN, y: NaN, style: 'label_center', size: 'tiny' } as Lb,
-    lab2: { x: NaN, y: NaN, style: 'label_center', size: 'tiny' } as Lb,
-    active: false,
-    count: 0,
-  };
-  const levels: Ln[] = [f.n0_382, f._0_000, f._0_236, f._0_382, f._0_500, f._0_618, f._0_764, f._1_000, f._1_382];
-  // var fibLast fLast = fibLast.new(...): four filled pairs of lines, the middle line, the diagonal and the label
-  const l0_1 = newLine(F0), l0_2 = newLine(F0);
-  const lM01 = newLine(F_), lM02 = newLine(F_);
-  const lM11 = newLine(Fp), lM12 = newLine(Fp);
-  const l1_1 = newLine(F1), l1_2 = newLine(F1);
-  const ln_0_5 = newLine(BLUE);
-  const lastDiagon = newLine(SILVER, true);
-  const lastLab: Lb = { x: NaN, y: NaN, style: 'label_down', size: 'normal' };
-  const lastLines: Ln[] = [l0_1, l0_2, lM01, lM02, lM11, lM12, l1_1, l1_2, ln_0_5];
-
-  const pivs: Piv[] = [];
-  const plotVals: number[][] = Array.from({ length: 9 }, () => new Array<number>(n).fill(NaN));
-  const raw: number[][] = Array.from({ length: 9 }, () => new Array<number>(n).fill(NaN));
-  const hidden: boolean[] = new Array<boolean>(n).fill(false);
-  const markers: MarkerData[] = [];
-  let prevActive = false; // f.active[1]
-  const upFlags = new Array<boolean>(n).fill(false);
-  const downFlags = new Array<boolean>(n).fill(false);
-  let prev0 = NaN; // plot_0_000[1]
-  const last = n - 1;
-
-  for (let i = 0; i < n; i++) {
-    const { high, low, close } = bars[i];
-    const ph = phArr[i] ?? NaN;
-    const pl = plArr[i] ?? NaN;
-    const isPh = !Number.isNaN(ph) && ph !== 0;
-    const isPl = !Number.isNaN(pl) && pl !== 0;
-    let brokeU = false;
-    let brokeD = false;
-
-    if (isPh) {
-      const hR = bars[i - R].high;
-      if (pivs.length > 0) {
-        const get = pivs[0];
-        if (get.d > 0 && gt(ph, get.p)) {
-          get.b = i - R;
-          get.p = hR;
-        }
-        if (get.d < 0 && gt(ph, get.p)) pivs.unshift({ b: i - R, p: hR, d: 1 });
-      } else {
-        pivs.unshift({ b: i - R, p: hR, d: 1 });
-      }
-      if (pivs.length > 1 && !f.active && Fc) {
-        const get1 = pivs[1];
-        const diff = hR - get1.p;
-        const ys = [hR + diff * 0.382, hR, hR - diff * 0.236, hR - diff * 0.382, hR - diff * 0.5, hR - diff * 0.618,
-          hR - diff * 0.764, get1.p, get1.p - diff * 0.382];
-        levels.forEach((l, k) => { setXy1(l, i - R, ys[k]); setXy2(l, i + 8, ys[k]); });
-        f.lab1.x = i + 8; f.lab1.y = hR - diff * a1;
-        f.lab2.x = i + 8; f.lab2.y = hR - diff * a2;
-        setXy1(f.diagon, get1.b, get1.p);
-        setXy2(f.diagon, i - R, hR);
-        f.active = true;
-      }
-    }
-
-    if (isPl) {
-      const lR = bars[i - R].low;
-      if (pivs.length > 0) {
-        const get = pivs[0];
-        if (get.d < 0 && lt(pl, get.p)) {
-          get.b = i - R;
-          get.p = lR;
-        }
-        if (get.d > 0 && lt(pl, get.p)) pivs.unshift({ b: i - R, p: lR, d: -1 });
-      } else {
-        pivs.unshift({ b: i - R, p: lR, d: -1 });
-      }
-      if (pivs.length > 1 && !f.active && Fc) {
-        const get1 = pivs[1];
-        const diff = get1.p - lR;
-        const ys = [lR - diff * 0.382, lR, lR + diff * 0.236, lR + diff * 0.382, lR + diff * 0.5, lR + diff * 0.618,
-          lR + diff * 0.764, get1.p, get1.p + diff * 0.382];
-        levels.forEach((l, k) => { setXy1(l, i - R, ys[k]); setXy2(l, i + 8, ys[k]); });
-        f.lab1.x = i + 8; f.lab1.y = lR + diff * a1;
-        f.lab2.x = i + 8; f.lab2.y = lR + diff * a2;
-        setXy1(f.diagon, get1.b, get1.p);
-        setXy2(f.diagon, i - R, lR);
-        f.active = true;
-      }
-    }
-
-    if (pivs.length >= 2) {
-      const p0 = pivs[0];
-      const p1 = pivs[1];
-      const dif = Math.max(p0.p, p1.p) - Math.min(p0.p, p1.p);
-      const d = lt(p0.p, p1.p) ? -dif : dif;
-      const x2 = Math.max(last, p0.b) + 8;
-      if ((isPh || isPl) && sF) {
-        const set = (l: Ln, y: number) => { setXy1(l, p0.b, y); setXy2(l, x2, y); };
-        set(l0_1, p0.p + d * 0.382);
-        set(l0_2, p0.p);
-        set(lM01, p0.p - d * 0.236);
-        set(lM02, p0.p - d * 0.382);
-        set(lM11, p0.p - d * 0.618);
-        set(lM12, p0.p - d * 0.764);
-        set(l1_1, p0.p - d);
-        set(l1_2, p1.p - d * 0.382);
-        set(ln_0_5, p0.p - d * 0.5);
-        setXy1(lastDiagon, p0.b, p0.p);
-        setXy2(lastDiagon, p1.b, p1.p);
-        lastLab.x = p0.b;
-        lastLab.y = p0.p;
-        lastLab.style = gt(p1.p, p0.p) ? 'label_up' : 'label_down';
-      } else {
-        for (const l of lastLines) l.x2 = i + 8;
-      }
-    }
-
-    if (f.active) {
-      const lv1 = opt === '0.000 - 1.000' ? f._0_000 : opt === '0.236 - 0.764' ? f._0_236 : opt === '0.382 - 0.618' ? f._0_382 : f.n0_382;
-      const lv2 = opt === '0.000 - 1.000' ? f._1_000 : opt === '0.236 - 0.764' ? f._0_764 : opt === '0.382 - 0.618' ? f._0_618 : f._1_382;
-      const max = Math.max(lv1.y2, lv2.y2);
-      const min = Math.min(lv1.y2, lv2.y2);
-      if (lt(close, max) && gt(close, min)) f.count = 0;
-      else if (gt(close, max) || lt(close, min)) f.count += 1;
-      if (f.count > c) {
-        for (const l of [...levels, f.diagon]) { setXy1(l, NaN, NaN); setXy2(l, NaN, NaN); }
-        f.lab1.x = NaN; f.lab1.y = NaN;
-        f.lab2.x = NaN; f.lab2.y = NaN;
-        f.active = false;
-        if (gt(close, max)) brokeU = true;
-        else brokeD = true;
-      } else {
-        for (const l of levels) l.x2 = i + 8;
-        f.lab1.x = i + 8;
-        f.lab2.x = i + 8;
-      }
-    }
-
-    // Plots: the level values, na on the bar where the 0.000 level changes
-    const ch = levels[1].y2 - prev0;
-    hidden[i] = !Number.isNaN(ch) && Math.abs(ch) > EPS;
-    for (let k = 0; k < 9; k++) {
-      raw[k][i] = levels[k].y2;
-      plotVals[k][i] = hidden[i] ? NaN : levels[k].y2;
-    }
-    prev0 = levels[1].y2;
-
-    // alertcondition(brokeU and f.active[1]) / alertcondition(brokeD and f.active[1])
-    upFlags[i] = brokeU && prevActive;
-    downFlags[i] = brokeD && prevActive;
-    if (cfg.showBreaks && prevActive) {
-      if (brokeU && !Number.isNaN(high) && high !== 0) {
-        markers.push({ time: bars[i].time as number, position: 'aboveBar', shape: 'labelDown', color: '#089981', size: 'tiny' });
-      }
-      if (brokeD && !Number.isNaN(low) && low !== 0) {
-        markers.push({ time: bars[i].time as number, position: 'belowBar', shape: 'labelUp', color: '#f23645', size: 'tiny' });
-      }
-    }
-    prevActive = f.active;
-  }
-
-  // Gradient fills: fill(p1, p2, top_value, bottom_value, top_color, bottom_color)
-  const clear = String(color.new(backgroundColorOf(chart), 100));
-  const [vN, v0, v236, v382, v500, v618, v764, v1, v1382] = raw;
-  const at = (fn: (i: number) => number): number[] => bars.map((_, i) => (hidden[i] || !fl ? NaN : fn(i)));
-  const all = (fn: (i: number) => number): number[] => bars.map((_, i) => fn(i));
-  const cols = (css: string) => new Array<string>(n).fill(css);
-  const grad = (plot1: string, plot2: string, topValue: number[], bottomValue: number[], top: string, bottom: string) => ({
-    plot1, plot2, gradient: { topValue, bottomValue, topColor: cols(top), bottomColor: cols(bottom) },
-  });
-  const fills = [
-    grad('plot0', 'plot1', at((i) => v0[i]), all((i) => avg(vN[i], v0[i])), F0, clear),
-    grad('plot0', 'plot1', at((i) => vN[i]), all((i) => avg(vN[i], v0[i])), F0, clear),
-    grad('plot2', 'plot3', at((i) => v236[i]), all((i) => avg(v382[i], avg(v382[i], v236[i]))), F_, clear),
-    grad('plot2', 'plot3', at((i) => avg(v236[i], avg(v382[i], v236[i]))), all((i) => v382[i]), clear, F_),
-    grad('plot3', 'plot4', at((i) => v382[i]), all((i) => v500[i]), clear, Fm),
-    grad('plot4', 'plot5', at((i) => v500[i]), all((i) => v618[i]), Fm, clear),
-    grad('plot5', 'plot6', at((i) => v764[i]), all((i) => avg(v618[i], avg(v618[i], v764[i]))), Fp, clear),
-    grad('plot5', 'plot6', at((i) => avg(v764[i], avg(v618[i], v764[i]))), all((i) => v618[i]), clear, Fp),
-    grad('plot7', 'plot8', at((i) => v1[i]), all((i) => avg(v1382[i], v1[i])), F1, clear),
-    grad('plot7', 'plot8', at((i) => v1382[i]), all((i) => avg(v1382[i], v1[i])), F1, clear),
-  ];
-
-  // Drawings alive after the last bar; an object with an na coordinate is not drawn
-  const interval = barInterval(bars);
-  const T = (index: number) => barTime(bars, index, interval);
-  const drawn = (l: Ln) => ![l.x1, l.y1, l.x2, l.y2].some((v) => Number.isNaN(v));
-  const toLine = (l: Ln): LineDrawingData => ({
-    time1: T(l.x1), price1: l.y1, time2: T(l.x2), price2: l.y2, color: l.color, ...(l.dashed ? { style: 'dashed' as const } : {}),
-  });
-  const toLabel = (l: Lb): LabelData => ({
-    time: T(l.x), price: l.y, text: '', color: GRAY, textColor: LABEL_TEXT, style: l.style, size: l.size,
-  });
-  const lines: LineDrawingData[] = [];
-  const labels: LabelData[] = [];
-  const linefills: LinefillData[] = [];
-  if (n > 0) {
-    for (const l of levels) if (drawn(l)) lines.push(toLine(l));
-    if (drawn(f.diagon)) lines.push(toLine(f.diagon));
-    for (const l of [f.lab1, f.lab2]) if (!Number.isNaN(l.x) && !Number.isNaN(l.y)) labels.push(toLabel(l));
-    const pairs: Array<[Ln, Ln, string]> = [[l0_1, l0_2, F0], [lM01, lM02, F_], [lM11, lM12, Fp], [l1_1, l1_2, F1]];
-    for (const [a, b, css] of pairs) {
-      if (drawn(a)) lines.push(toLine(a));
-      if (drawn(b)) lines.push(toLine(b));
-      if (drawn(a) && drawn(b)) linefills.push({ line1: toLine(a), line2: toLine(b), color: String(color.new(css, 75)) });
-    }
-    if (drawn(ln_0_5)) lines.push(toLine(ln_0_5));
-    if (drawn(lastDiagon)) lines.push(toLine(lastDiagon));
-    if (!Number.isNaN(lastLab.x) && !Number.isNaN(lastLab.y)) labels.push(toLabel(lastLab));
-  }
-
-  const plots: Record<string, Array<{ time: number; value: number }>> = {};
-  for (let k = 0; k < 9; k++) plots[`plot${k}`] = bars.map((b, i) => ({ time: b.time as number, value: plotVals[k][i] }));
-
+  const lv1k = opt === '0.000 - 1.000' ? 1 : opt === '0.236 - 0.764' ? 2 : opt === '0.382 - 0.618' ? 3 : 0;
+  const lv2k = opt === '0.000 - 1.000' ? 7 : opt === '0.236 - 0.764' ? 6 : opt === '0.382 - 0.618' ? 5 : 8;
+  let clear = '';
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    markers,
-    lines,
-    labels,
-    linefills,
-    alerts: alertStates(alertConditions, bars, [upFlags, downFlags]),
+    init(_bars, chart) {
+      clear = String(color.new(backgroundColorOf(chart), 100));
+      const s: FibRun = {
+        ph: new PivotStep(L, R, true), pl: new PivotStep(L, R, false),
+        plots: Array.from({ length: 9 }, () => []),
+        tops: Array.from({ length: 10 }, () => []), bottoms: Array.from({ length: 10 }, () => []),
+        flags: [[], []], times: [[], []], markers: [],
+        steps: [],
+        vars: {
+          levels: [newLine(F0), newLine(F0), newLine(F_), newLine(F_), newLine(Fm), newLine(Fp), newLine(Fp), newLine(F1), newLine(F1)],
+          diagon: newLine(SILVER, true),
+          lab1: { x: NaN, y: NaN, style: 'label_center', size: 'tiny' },
+          lab2: { x: NaN, y: NaN, style: 'label_center', size: 'tiny' },
+          active: false,
+          count: 0,
+          // l0_1, l0_2, lM01, lM02, lM11, lM12, l1_1, l1_2, ln_0_5
+          lastLines: [newLine(F0), newLine(F0), newLine(F_), newLine(F_), newLine(Fp), newLine(Fp), newLine(F1), newLine(F1), newLine(BLUE)],
+          lastDiagon: newLine(SILVER, true),
+          lastLab: { x: NaN, y: NaN, style: 'label_down', size: 'normal' },
+          pivs: [],
+          prevActive: false,
+          prev0: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.ph, s.pl];
+      s.lists = [s.markers, ...s.times];
+      s.series = [...s.plots, ...s.tops, ...s.bottoms, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const { high, low, close } = bars[i];
+      const ph = s.ph.step(i, high);
+      const pl = s.pl.step(i, low);
+      const isPh = !Number.isNaN(ph) && ph !== 0;
+      const isPl = !Number.isNaN(pl) && pl !== 0;
+      let brokeU = false;
+      let brokeD = false;
+      const levels = v.levels;
+      const pivs = v.pivs;
+
+      if (isPh) {
+        const hR = bars[i - R].high;
+        if (pivs.length > 0) {
+          const get = pivs[0];
+          if (get.d > 0 && gt(ph, get.p)) {
+            get.b = i - R;
+            get.p = hR;
+          }
+          if (get.d < 0 && gt(ph, get.p)) unshiftPiv(pivs, { b: i - R, p: hR, d: 1 });
+        } else {
+          unshiftPiv(pivs, { b: i - R, p: hR, d: 1 });
+        }
+        if (pivs.length > 1 && !v.active && Fc) {
+          const get1 = pivs[1];
+          const diff = hR - get1.p;
+          const ys = [hR + diff * 0.382, hR, hR - diff * 0.236, hR - diff * 0.382, hR - diff * 0.5, hR - diff * 0.618,
+            hR - diff * 0.764, get1.p, get1.p - diff * 0.382];
+          levels.forEach((l, k) => { setXy1(l, i - R, ys[k]); setXy2(l, i + 8, ys[k]); });
+          v.lab1.x = i + 8; v.lab1.y = hR - diff * a1;
+          v.lab2.x = i + 8; v.lab2.y = hR - diff * a2;
+          setXy1(v.diagon, get1.b, get1.p);
+          setXy2(v.diagon, i - R, hR);
+          v.active = true;
+        }
+      }
+
+      if (isPl) {
+        const lR = bars[i - R].low;
+        if (pivs.length > 0) {
+          const get = pivs[0];
+          if (get.d < 0 && lt(pl, get.p)) {
+            get.b = i - R;
+            get.p = lR;
+          }
+          if (get.d > 0 && lt(pl, get.p)) unshiftPiv(pivs, { b: i - R, p: lR, d: -1 });
+        } else {
+          unshiftPiv(pivs, { b: i - R, p: lR, d: -1 });
+        }
+        if (pivs.length > 1 && !v.active && Fc) {
+          const get1 = pivs[1];
+          const diff = get1.p - lR;
+          const ys = [lR - diff * 0.382, lR, lR + diff * 0.236, lR + diff * 0.382, lR + diff * 0.5, lR + diff * 0.618,
+            lR + diff * 0.764, get1.p, get1.p + diff * 0.382];
+          levels.forEach((l, k) => { setXy1(l, i - R, ys[k]); setXy2(l, i + 8, ys[k]); });
+          v.lab1.x = i + 8; v.lab1.y = lR + diff * a1;
+          v.lab2.x = i + 8; v.lab2.y = lR + diff * a2;
+          setXy1(v.diagon, get1.b, get1.p);
+          setXy2(v.diagon, i - R, lR);
+          v.active = true;
+        }
+      }
+
+      if (pivs.length >= 2) {
+        const p0 = pivs[0];
+        const p1 = pivs[1];
+        const dif = Math.max(p0.p, p1.p) - Math.min(p0.p, p1.p);
+        const d = lt(p0.p, p1.p) ? -dif : dif;
+        if ((isPh || isPl) && sF) {
+          // x2 = math.max(last_bar_index, p0.b) + 8; on the last bar it is this bar + 8, and every later bar moves
+          // x2 to its own index + 8, so the lines alive after the last bar end at last_bar_index + 8 either way
+          const x2 = Math.max(i, p0.b) + 8;
+          const [l0_1, l0_2, lM01, lM02, lM11, lM12, l1_1, l1_2, ln_0_5] = v.lastLines;
+          const set = (l: Ln, y: number) => { setXy1(l, p0.b, y); setXy2(l, x2, y); };
+          set(l0_1, p0.p + d * 0.382);
+          set(l0_2, p0.p);
+          set(lM01, p0.p - d * 0.236);
+          set(lM02, p0.p - d * 0.382);
+          set(lM11, p0.p - d * 0.618);
+          set(lM12, p0.p - d * 0.764);
+          set(l1_1, p0.p - d);
+          set(l1_2, p1.p - d * 0.382);
+          set(ln_0_5, p0.p - d * 0.5);
+          setXy1(v.lastDiagon, p0.b, p0.p);
+          setXy2(v.lastDiagon, p1.b, p1.p);
+          v.lastLab.x = p0.b;
+          v.lastLab.y = p0.p;
+          v.lastLab.style = gt(p1.p, p0.p) ? 'label_up' : 'label_down';
+        } else {
+          for (const l of v.lastLines) l.x2 = i + 8;
+        }
+      }
+
+      if (v.active) {
+        const lv1 = levels[lv1k];
+        const lv2 = levels[lv2k];
+        const max = Math.max(lv1.y2, lv2.y2);
+        const min = Math.min(lv1.y2, lv2.y2);
+        if (lt(close, max) && gt(close, min)) v.count = 0;
+        else if (gt(close, max) || lt(close, min)) v.count += 1;
+        if (v.count > c) {
+          for (const l of [...levels, v.diagon]) { setXy1(l, NaN, NaN); setXy2(l, NaN, NaN); }
+          v.lab1.x = NaN; v.lab1.y = NaN;
+          v.lab2.x = NaN; v.lab2.y = NaN;
+          v.active = false;
+          if (gt(close, max)) brokeU = true;
+          else brokeD = true;
+        } else {
+          for (const l of levels) l.x2 = i + 8;
+          v.lab1.x = i + 8;
+          v.lab2.x = i + 8;
+        }
+      }
+
+      // Plots: the level values, na on the bar where the 0.000 level changes
+      const ch = levels[1].y2 - v.prev0;
+      const hidden = !Number.isNaN(ch) && Math.abs(ch) > EPS;
+      const time = bars[i].time as number;
+      for (let k = 0; k < 9; k++) s.plots[k][i] = { time, value: hidden ? NaN : levels[k].y2 };
+      v.prev0 = levels[1].y2;
+
+      // Gradient fills: fill(p1, p2, top_value, bottom_value, top_color, bottom_color)
+      const vN = levels[0].y2, v0 = levels[1].y2, v236 = levels[2].y2, v382 = levels[3].y2, v500 = levels[4].y2;
+      const v618 = levels[5].y2, v764 = levels[6].y2, v1 = levels[7].y2, v1382 = levels[8].y2;
+      const on = !(hidden || !fl);
+      const { tops, bottoms } = s;
+      tops[0][i] = on ? v0 : NaN; bottoms[0][i] = avg(vN, v0);
+      tops[1][i] = on ? vN : NaN; bottoms[1][i] = avg(vN, v0);
+      tops[2][i] = on ? v236 : NaN; bottoms[2][i] = avg(v382, avg(v382, v236));
+      tops[3][i] = on ? avg(v236, avg(v382, v236)) : NaN; bottoms[3][i] = v382;
+      tops[4][i] = on ? v382 : NaN; bottoms[4][i] = v500;
+      tops[5][i] = on ? v500 : NaN; bottoms[5][i] = v618;
+      tops[6][i] = on ? v764 : NaN; bottoms[6][i] = avg(v618, avg(v618, v764));
+      tops[7][i] = on ? avg(v764, avg(v618, v764)) : NaN; bottoms[7][i] = v618;
+      tops[8][i] = on ? v1 : NaN; bottoms[8][i] = avg(v1382, v1);
+      tops[9][i] = on ? v1382 : NaN; bottoms[9][i] = avg(v1382, v1);
+
+      // alertcondition(brokeU and f.active[1]) / alertcondition(brokeD and f.active[1])
+      const up = brokeU && v.prevActive;
+      const down = brokeD && v.prevActive;
+      s.flags[0][i] = up;
+      s.flags[1][i] = down;
+      if (up) s.times[0].push(time);
+      if (down) s.times[1].push(time);
+      if (cfg.showBreaks && v.prevActive) {
+        if (brokeU && !Number.isNaN(high) && high !== 0) {
+          s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: '#089981', size: 'tiny' });
+        }
+        if (brokeD && !Number.isNaN(low) && low !== 0) {
+          s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: '#f23645', size: 'tiny' });
+        }
+      }
+      v.prevActive = v.active;
+    },
+    copyVars: (v) => ({
+      ...v,
+      levels: v.levels.map(copyLn),
+      diagon: copyLn(v.diagon),
+      lab1: copyLb(v.lab1),
+      lab2: copyLb(v.lab2),
+      lastLines: v.lastLines.map(copyLn),
+      lastDiagon: copyLn(v.lastDiagon),
+      lastLab: copyLb(v.lastLab),
+      pivs: v.pivs.map((p) => ({ ...p })),
+    }),
+    result(s, bars) {
+      const n = bars.length;
+      const v = s.vars;
+      const cols = (css: string) => new Array<string>(n).fill(css);
+      const specs: Array<[string, string, string, string]> = [
+        ['plot0', 'plot1', F0, clear], ['plot0', 'plot1', F0, clear], ['plot2', 'plot3', F_, clear], ['plot2', 'plot3', clear, F_],
+        ['plot3', 'plot4', clear, Fm], ['plot4', 'plot5', Fm, clear], ['plot5', 'plot6', Fp, clear], ['plot5', 'plot6', clear, Fp],
+        ['plot7', 'plot8', F1, clear], ['plot7', 'plot8', F1, clear],
+      ];
+      const fills = specs.map(([plot1, plot2, top, bottom], k) => ({
+        plot1, plot2,
+        gradient: { topValue: s.tops[k].slice(), bottomValue: s.bottoms[k].slice(), topColor: cols(top), bottomColor: cols(bottom) },
+      }));
+
+      // Drawings alive after the last bar; an object with an na coordinate is not drawn
+      const interval = barInterval(bars);
+      const T = (index: number) => barTime(bars, index, interval);
+      const drawn = (l: Ln) => ![l.x1, l.y1, l.x2, l.y2].some((x) => Number.isNaN(x));
+      const toLine = (l: Ln): LineDrawingData => ({
+        time1: T(l.x1), price1: l.y1, time2: T(l.x2), price2: l.y2, color: l.color, ...(l.dashed ? { style: 'dashed' as const } : {}),
+      });
+      const toLabel = (l: Lb): LabelData => ({
+        time: T(l.x), price: l.y, text: '', color: GRAY, textColor: LABEL_TEXT, style: l.style, size: l.size,
+      });
+      const lines: LineDrawingData[] = [];
+      const labels: LabelData[] = [];
+      const linefills: LinefillData[] = [];
+      if (n > 0) {
+        for (const l of v.levels) if (drawn(l)) lines.push(toLine(l));
+        if (drawn(v.diagon)) lines.push(toLine(v.diagon));
+        for (const l of [v.lab1, v.lab2]) if (!Number.isNaN(l.x) && !Number.isNaN(l.y)) labels.push(toLabel(l));
+        const [l0_1, l0_2, lM01, lM02, lM11, lM12, l1_1, l1_2, ln_0_5] = v.lastLines;
+        const pairs: Array<[Ln, Ln, string]> = [[l0_1, l0_2, F0], [lM01, lM02, F_], [lM11, lM12, Fp], [l1_1, l1_2, F1]];
+        for (const [a, b, css] of pairs) {
+          if (drawn(a)) lines.push(toLine(a));
+          if (drawn(b)) lines.push(toLine(b));
+          if (drawn(a) && drawn(b)) linefills.push({ line1: toLine(a), line2: toLine(b), color: String(color.new(css, 75)) });
+        }
+        if (drawn(ln_0_5)) lines.push(toLine(ln_0_5));
+        if (drawn(v.lastDiagon)) lines.push(toLine(v.lastDiagon));
+        if (!Number.isNaN(v.lastLab.x) && !Number.isNaN(v.lastLab.y)) labels.push(toLabel(v.lastLab));
+      }
+
+      const plots: Record<string, Array<{ time: number; value: number }>> = {};
+      for (let k = 0; k < 9; k++) plots[`plot${k}`] = s.plots[k].slice();
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+        markers: s.markers.slice(),
+        lines,
+        labels,
+        linefills,
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FibonacciRangesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<FibonacciRangesInputs> = {},
+  chart?: ChartContext,
+): Omit<IndicatorResult, 'markers' | 'lines' | 'labels' | 'linefills'> & {
+  markers: MarkerData[]; lines: LineDrawingData[]; labels: LabelData[]; linefills: LinefillData[];
+} & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 /** The original's alertconditions */
@@ -384,6 +465,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const FibonacciRanges = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

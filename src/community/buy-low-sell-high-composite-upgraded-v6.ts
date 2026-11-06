@@ -13,7 +13,9 @@
  * Original notice: © kristian6ncqq
  */
 
-import { ta, Series, getSourceSeries, fixnan, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BuyLowSellHighCompositeUpgradedV6Inputs {
   useRSI: boolean;
@@ -103,118 +105,183 @@ function normalize(value: number, minValue: number, maxValue: number): number {
   return -1 + ((value - minValue) / delta) * 2;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<BuyLowSellHighCompositeUpgradedV6Inputs> = {},
-): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+type Ma = { step(v: number): number; commit(): void };
+
+interface BlshVars {
+  /** fixnan(plus) / fixnan(minus): the last non-na values */
+  lastPlus: number;
+  lastMinus: number;
+}
+
+interface BlshRun extends BarRunState<BlshVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  rsi: ReturnType<typeof taStep.rsi>;
+  e5: Ma;
+  e35: Ma;
+  cmoUp: ReturnType<typeof taStep.sum>;
+  cmoDown: ReturnType<typeof taStep.sum>;
+  fast: Ma;
+  slow: Ma;
+  signal: ReturnType<typeof taStep.sma>;
+  mfi: ReturnType<typeof taStep.mfi>;
+  tr: ReturnType<typeof taStep.tr>;
+  trRma: Ma;
+  plusRma: Ma;
+  minusRma: Ma;
+  adxRma: Ma;
+  ema1: Ma;
+  ema2: Ma;
+  ema3: Ma;
+  slopeEma: Ma;
+  smoothed: number[];
+  inner: Point[];
+  outer: Point[];
+}
+
+function study(inputs: Partial<BuyLowSellHighCompositeUpgradedV6Inputs>): BarStudy<BlshRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = getSourceSeries(bars, 'close');
-  const zeros = new Array(n).fill(0);
-
-  // atrValue = ta.atr(9); priceRange = 2 * atrValue
-  const atr = A(ta.atr(bars, 9));
-  const priceRange = atr.map((v) => 2 * v);
-
-  // RSI
-  let rsiN = zeros;
-  if (cfg.useRSI) {
-    const rsi = A(ta.rsi(close, cfg.rsiLength));
-    rsiN = rsi.map((v) => normalize(v, 25, 75));
-  }
-  // Elliott Wave: ta.ema(close, 5) - ta.ema(close, 35)
-  let ewN = zeros;
-  if (cfg.useEW) {
-    const e5 = A(ta.ema(close, 5));
-    const e35 = A(ta.ema(close, 35));
-    ewN = e5.map((v, i) => normalize(v - e35[i], -priceRange[i], priceRange[i]));
-  }
-  // CMO
-  let cmoN = zeros;
-  if (cfg.useCMO) {
-    const cmo = A(ta.cmo(close, cfg.cmoLength));
-    cmoN = cmo.map((v) => normalize(v, -50, 50));
-  }
-  // MACD histogram: macd - ta.sma(macd, macdSignalLen)
-  let macdN = zeros;
-  if (cfg.useMACD) {
-    const fast = A(ta.ema(close, cfg.macdFast));
-    const slow = A(ta.ema(close, cfg.macdSlow));
-    const macd = fast.map((v, i) => v - slow[i]);
-    const signal = A(ta.sma(S(macd), cfg.macdSignalLen));
-    macdN = macd.map((v, i) => normalize(v - signal[i], -priceRange[i], priceRange[i]));
-  }
-  // MFI of hlc3
-  let mfiN = zeros;
-  if (cfg.useMFI) {
-    const vol = S(bars.map((b) => b.volume ?? NaN));
-    const mfi = A(ta.mfi(getSourceSeries(bars, 'hlc3'), cfg.mfiLength, vol));
-    mfiN = mfi.map((v) => normalize(v, 25, 75));
-  }
-  // ADX signed by the direction: pdi > mdi ? adx : -adx
-  let adxN = zeros;
-  if (cfg.useADX) {
-    // dirmov(diLen)
-    const up = bars.map((b, i) => (i > 0 ? b.high - bars[i - 1].high : NaN)); // ta.change(high)
-    const down = bars.map((b, i) => (i > 0 ? -(b.low - bars[i - 1].low) : NaN)); // -ta.change(low)
-    const plusDM = up.map((u, i) => (isNaN(u) ? NaN : gt(u, down[i]) && gt(u, 0) ? u : 0));
-    const minusDM = down.map((d, i) => (isNaN(d) ? NaN : gt(d, up[i]) && gt(d, 0) ? d : 0));
-    const truerange = A(ta.rma(ta.tr(bars, false), cfg.diLen));
-    const plusRma = A(ta.rma(S(plusDM), cfg.diLen));
-    const minusRma = A(ta.rma(S(minusDM), cfg.diLen));
-    // plain divisions: x / 0 is +-infinity (kept by fixnan), 0 / 0 is na (replaced by fixnan)
-    const plus = fixnan(plusRma.map((v, i) => (100 * v) / truerange[i]));
-    const minus = fixnan(minusRma.map((v, i) => (100 * v) / truerange[i]));
-    // adx = 100 * ta.rma(math.abs(plus - minus) / (sum == 0 ? 1 : sum), adxLen)
-    const ratio = plus.map((p, i) => {
-      const sum = p + minus[i];
-      return Math.abs(p - minus[i]) / (eq(sum, 0) ? 1 : sum);
-    });
-    const adx = A(ta.rma(S(ratio), cfg.adxLen)).map((v) => 100 * v);
-    adxN = adx.map((v, i) => normalize(gt(plus[i], minus[i]) ? v : -v, -50, 50));
-  }
-
-  // Composite (Pine addition order)
-  const compositeNormalized = bars.map((_b, i) =>
-    normalize(ewN[i] + rsiN[i] + macdN[i] + mfiN[i] + cmoN[i] + adxN[i], -4, 4));
-  let smoothed: number[];
-  if (cfg.useTEMA) {
-    const step1 = A(ta.ema(S(compositeNormalized), cfg.smoothingLength));
-    const step2 = A(ta.ema(S(step1), cfg.smoothingLength));
-    const step3 = A(ta.ema(S(step2), cfg.smoothingLength));
-    smoothed = step1.map((v, i) => v * 3 - step2[i] * 3 + step3[i]);
-  } else {
-    smoothed = A(ta.ema(S(compositeNormalized), cfg.smoothingLength));
-  }
-
-  // slope = smoothed - smoothed[1]; slopeSmoothed = ta.ema(slope, slopeSmoothingLen)
-  const slope = smoothed.map((v, i) => (i > 0 ? v - smoothed[i - 1] : NaN));
-  const slopeSmoothed = A(ta.ema(S(slope), cfg.slopeSmoothingLen));
-
-  const inner: { time: number; value: number; color: string }[] = [];
-  const outer: { time: number; value: number; color: string }[] = [];
   const innerRed = String(color.new(color.red, 60));
   const innerLime = String(color.new(color.lime, 60));
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const v = Number.isFinite(smoothed[i]) ? smoothed[i] : NaN;
-    // compositeColor = smoothed <= 0 ? color.red : color.lime
-    inner.push({ time: t, value: v, color: le(smoothed[i], 0) ? innerRed : innerLime });
-    const isUptrend = gt(slopeSmoothed[i], cfg.slopeThreshold);
-    const isDowntrend = gt(-cfg.slopeThreshold, slopeSmoothed[i]);
-    outer.push({ time: t, value: v, color: isUptrend ? color.lime : isDowntrend ? color.red : color.gray });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: inner, plot1: outer },
+    init() {
+      const atr = taStep.atr(9);
+      const rsi = taStep.rsi(cfg.rsiLength);
+      const e5 = taStep.ema(5);
+      const e35 = taStep.ema(35);
+      const cmoUp = taStep.sum();
+      const cmoDown = taStep.sum();
+      const fast = taStep.ema(cfg.macdFast);
+      const slow = taStep.ema(cfg.macdSlow);
+      const signal = taStep.sma();
+      const mfi = taStep.mfi(cfg.mfiLength);
+      const tr = taStep.tr(false);
+      const trRma = taStep.rma(cfg.diLen);
+      const plusRma = taStep.rma(cfg.diLen);
+      const minusRma = taStep.rma(cfg.diLen);
+      const adxRma = taStep.rma(cfg.adxLen);
+      const ema1 = taStep.ema(cfg.smoothingLength);
+      const ema2 = taStep.ema(cfg.smoothingLength);
+      const ema3 = taStep.ema(cfg.smoothingLength);
+      const slopeEma = taStep.ema(cfg.slopeSmoothingLen);
+      const s: BlshRun = {
+        atr, rsi, e5, e35, cmoUp, cmoDown, fast, slow, signal, mfi, tr, trRma, plusRma, minusRma, adxRma, ema1, ema2,
+        ema3, slopeEma, smoothed: [], inner: [], outer: [],
+        steps: [
+          atr, ...(cfg.useRSI ? [rsi] : []), ...(cfg.useEW ? [e5, e35] : []), ...(cfg.useCMO ? [cmoUp, cmoDown] : []),
+          ...(cfg.useMACD ? [fast, slow, signal] : []), ...(cfg.useMFI ? [mfi] : []),
+          ...(cfg.useADX ? [tr, trRma, plusRma, minusRma, adxRma] : []), ema1, ...(cfg.useTEMA ? [ema2, ema3] : []),
+          slopeEma,
+        ],
+        vars: { lastPlus: NaN, lastMinus: NaN }, lists: [], series: [],
+      };
+      s.series = [s.smoothed, s.inner, s.outer];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = b.close;
+      const prev = i > 0 ? bars[i - 1] : null;
+      // atrValue = ta.atr(9); priceRange = 2 * atrValue
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const priceRange = 2 * atr;
+
+      // RSI
+      let rsiN = 0;
+      if (cfg.useRSI) rsiN = normalize(s.rsi.step(close), 25, 75);
+      // Elliott Wave: ta.ema(close, 5) - ta.ema(close, 35)
+      let ewN = 0;
+      if (cfg.useEW) ewN = normalize(s.e5.step(close) - s.e35.step(close), -priceRange, priceRange);
+      // CMO: mom = ta.change(close), sm1 = math.sum(mom >= 0 ? mom : 0), sm2 = math.sum(mom >= 0 ? 0 : -mom)
+      let cmoN = 0;
+      if (cfg.useCMO) {
+        const mom = prev ? close - prev.close : NaN;
+        const sm1 = s.cmoUp.step(mom >= 0 ? mom : 0, cfg.cmoLength);
+        const sm2 = s.cmoDown.step(mom >= 0 ? 0 : -mom, cfg.cmoLength);
+        cmoN = normalize((100 * (sm1 - sm2)) / (sm1 + sm2), -50, 50);
+      }
+      // MACD histogram: macd - ta.sma(macd, macdSignalLen)
+      let macdN = 0;
+      if (cfg.useMACD) {
+        const macd = s.fast.step(close) - s.slow.step(close);
+        const signal = s.signal.step(macd, cfg.macdSignalLen);
+        macdN = normalize(macd - signal, -priceRange, priceRange);
+      }
+      // MFI of hlc3
+      let mfiN = 0;
+      if (cfg.useMFI) mfiN = normalize(s.mfi.step((b.high + b.low + b.close) / 3, b.volume ?? NaN), 25, 75);
+      // ADX signed by the direction: pdi > mdi ? adx : -adx
+      let adxN = 0;
+      if (cfg.useADX) {
+        const v = s.vars;
+        // dirmov(diLen)
+        const up = prev ? b.high - prev.high : NaN; // ta.change(high)
+        const down = prev ? -(b.low - prev.low) : NaN; // -ta.change(low)
+        const plusDM = isNaN(up) ? NaN : gt(up, down) && gt(up, 0) ? up : 0;
+        const minusDM = isNaN(down) ? NaN : gt(down, up) && gt(down, 0) ? down : 0;
+        const truerange = s.trRma.step(s.tr.step(b.high, b.low, b.close));
+        const plusRma = s.plusRma.step(plusDM);
+        const minusRma = s.minusRma.step(minusDM);
+        // plain divisions: x / 0 is +-infinity (kept by fixnan), 0 / 0 is na (replaced by fixnan)
+        let plus = (100 * plusRma) / truerange;
+        let minus = (100 * minusRma) / truerange;
+        if (Number.isNaN(plus)) plus = v.lastPlus;
+        else v.lastPlus = plus;
+        if (Number.isNaN(minus)) minus = v.lastMinus;
+        else v.lastMinus = minus;
+        // adx = 100 * ta.rma(math.abs(plus - minus) / (sum == 0 ? 1 : sum), adxLen)
+        const sum = plus + minus;
+        const ratio = Math.abs(plus - minus) / (eq(sum, 0) ? 1 : sum);
+        const adx = 100 * s.adxRma.step(ratio);
+        adxN = normalize(gt(plus, minus) ? adx : -adx, -50, 50);
+      }
+
+      // Composite (Pine addition order)
+      const compositeNormalized = normalize(ewN + rsiN + macdN + mfiN + cmoN + adxN, -4, 4);
+      let smoothed: number;
+      if (cfg.useTEMA) {
+        const step1 = s.ema1.step(compositeNormalized);
+        const step2 = s.ema2.step(step1);
+        const step3 = s.ema3.step(step2);
+        smoothed = step1 * 3 - step2 * 3 + step3;
+      } else {
+        smoothed = s.ema1.step(compositeNormalized);
+      }
+      s.smoothed[i] = smoothed;
+
+      // slope = smoothed - smoothed[1]; slopeSmoothed = ta.ema(slope, slopeSmoothingLen)
+      const slope = i > 0 ? smoothed - s.smoothed[i - 1] : NaN;
+      const slopeSmoothed = s.slopeEma.step(slope);
+
+      const t = b.time;
+      const val = Number.isFinite(smoothed) ? smoothed : NaN;
+      // compositeColor = smoothed <= 0 ? color.red : color.lime
+      s.inner[i] = { time: t, value: val, color: le(smoothed, 0) ? innerRed : innerLime };
+      const isUptrend = gt(slopeSmoothed, cfg.slopeThreshold);
+      const isDowntrend = gt(-cfg.slopeThreshold, slopeSmoothed);
+      s.outer[i] = { time: t, value: val, color: isUptrend ? color.lime : isDowntrend ? color.red : color.gray };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.inner.slice(), plot1: s.outer.slice() },
+      };
+    },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BuyLowSellHighCompositeUpgradedV6Inputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BuyLowSellHighCompositeUpgradedV6Inputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
 export const BuyLowSellHighCompositeUpgradedV6 = {
   calculate,
+  createRun,
+
   metadata,
   defaultInputs,
   inputConfig,

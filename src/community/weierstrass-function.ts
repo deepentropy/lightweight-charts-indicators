@@ -10,6 +10,8 @@
  */
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface WeierstrassFunctionInputs {
   /** Multiply the oscillator by -1 */
@@ -57,36 +59,60 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<WeierstrassFunctionInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface WeierstrassRun extends BarRunState<Record<string, never>> {
+  osc: number[];
+  plot0: Point[];
+}
+
+function study(inputs: Partial<WeierstrassFunctionInputs>): BarStudy<WeierstrassRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const { amplitude: a, frequency: b, scaleFactor, terms } = cfg;
   const sign = cfg.invert ? -1 : 1;
-
-  const osc = bars.map((_bar, indx) => {
-    let fractalOsc = 0.0;
-    // for n = 0 to n_terms - 1: fractal_osc += math.pow(a, n) * math.cos(math.pow(b, n) * indx * math.pi * scale_factor)
-    // (n_terms >= 1, so the loop never counts down)
-    for (let n = 0; n <= terms - 1; n++) {
-      fractalOsc += Math.pow(a, n) * Math.cos(Math.pow(b, n) * indx * Math.PI * scaleFactor);
-    }
-    return fractalOsc * sign;
-  });
-
-  // color = ta.change(fractal_osc) > 0 ? #00c3ff : #fbc02d
-  const plot0 = bars.map((bar, i) => ({
-    time: bar.time,
-    value: osc[i],
-    color: i > 0 && gt(osc[i] - osc[i - 1], 0) ? UP_COLOR : DOWN_COLOR,
-  }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
+    init() {
+      const s: WeierstrassRun = { osc: [], plot0: [], steps: [], vars: {}, lists: [], series: [] };
+      s.series = [s.osc, s.plot0];
+      return s;
+    },
+    bar(s, indx, bars) {
+      let fractalOsc = 0.0;
+      // for n = 0 to n_terms - 1: fractal_osc += math.pow(a, n) * math.cos(math.pow(b, n) * indx * math.pi * scale_factor)
+      // (n_terms >= 1, so the loop never counts down)
+      for (let n = 0; n <= terms - 1; n++) {
+        fractalOsc += Math.pow(a, n) * Math.cos(Math.pow(b, n) * indx * Math.PI * scaleFactor);
+      }
+      const osc = fractalOsc * sign;
+      s.osc[indx] = osc;
+      // color = ta.change(fractal_osc) > 0 ? #00c3ff : #fbc02d
+      s.plot0[indx] = {
+        time: bars[indx].time,
+        value: osc,
+        color: indx > 0 && gt(osc - s.osc[indx - 1], 0) ? UP_COLOR : DOWN_COLOR,
+      };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WeierstrassFunctionInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<WeierstrassFunctionInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const WeierstrassFunction = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

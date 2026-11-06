@@ -11,7 +11,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { math, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrendHeatmapInputs {}
 
@@ -42,51 +44,88 @@ const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(bars: Bar[], _inputs: Partial<TrendHeatmapInputs> = {}): IndicatorResult {
-  const n = bars.length;
-  const A = (s: Series | number[]) => (s instanceof Series ? s.toArray() : s).map((v) => v ?? NaN);
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const close = bars.map((b) => b.close);
-  const ohlc4 = bars.map((b) => (b.open + b.high + b.low + b.close) / 4);
+type Point = { time: number; value: number; color: string };
 
-  // calculations = close == high and close == low or high == low ? 0 : (2 * close - low - high) / (high - low) * volume
-  const calc = bars.map((b, i) => ((eq(b.close, b.high) && eq(b.close, b.low)) || eq(b.high, b.low)
-    ? 0 : ((2 * b.close - b.low - b.high) / (b.high - b.low)) * volume[i]));
-  // trendstrength = math.sum(calculations, 1) / math.sum(volume, 1) (trendstrength2 is the same)
-  const sumCalc = A(math.sum(calc, 1));
-  const sumVol = A(math.sum(volume, 1));
-  const strength = sumCalc.map((v, i) => v / sumVol[i]);
+interface HeatmapVars {
+  /** math.sum(calculations, 1) / math.sum(volume, 1): the value itself, the previous result on a bar with an na value */
+  sumCalc: number;
+  sumVol: number;
+}
 
-  // ta.change(x) <= 0 ? 0 : x (na on bar 0 compares false: the bar counts on both sides)
-  const sides = (x: number[], len: number) => {
-    const up = x.map((v, i) => volume[i] * (le(i > 0 ? v - x[i - 1] : NaN, 0) ? 0 : v));
-    const down = x.map((v, i) => volume[i] * (ge(i > 0 ? v - x[i - 1] : NaN, 0) ? 0 : v));
-    const top = A(math.sum(up, len));
-    const low = A(math.sum(down, len));
-    // paramaters(): the two `if` blocks have no effect; 100.0 - 100.0 / (1.0 + top / low)
-    return top.map((t, i) => 100.0 - 100.0 / (1.0 + t / low[i]));
-  };
-  const trendline = sides(ohlc4, 8);
-  const trendline2 = sides(close, 20);
+interface HeatmapRun extends BarRunState<HeatmapVars> {
+  top1: WindowSum;
+  low1: WindowSum;
+  top2: WindowSum;
+  low2: WindowSum;
+  plot0: Point[];
+}
 
-  const plot0 = new Array(n);
-  for (let i = 0; i < n; i++) {
-    // combinedTrend = trendline + trendstrength / trendline2 + trendstrength2 (plain division: x / 0 is infinite)
-    const combined = trendline[i] + strength[i] / trendline2[i] + strength[i];
-    // color.new(color.from_gradient(combinedTrend, 30, 80, color.green, color.red), 0)
-    const c = String(color.new(color.from_gradient(combined, 30, 80, color.green, color.red), 0));
-    plot0[i] = { time: bars[i].time, value: Number.isFinite(combined) ? combined : NaN, color: c };
-  }
+/** ta.change(x) <= 0 ? 0 : x (na on bar 0 compares false: the bar counts on both sides), the window sums of
+ *  volume * that on the up and down sides, and 100.0 - 100.0 / (1.0 + top / low) (paramaters(): the two `if` blocks
+ *  have no effect) */
+function sides(v: number, ch: number, volume: number, top: WindowSum, low: WindowSum): number {
+  const t = top.step(volume * (le(ch, 0) ? 0 : v));
+  const l = low.step(volume * (ge(ch, 0) ? 0 : v));
+  return 100.0 - 100.0 / (1.0 + t / l);
+}
 
+function study(): BarStudy<HeatmapRun, IndicatorResult> {
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    hlines: hlineConfig.map((h) => ({ value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle } })),
+    init() {
+      const s: HeatmapRun = {
+        top1: new WindowSum(8), low1: new WindowSum(8),
+        top2: new WindowSum(20), low2: new WindowSum(20), plot0: [],
+        steps: [], vars: { sumCalc: NaN, sumVol: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.top1, s.low1, s.top2, s.low2];
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = b.volume ?? NaN;
+      // calculations = close == high and close == low or high == low ? 0 : (2 * close - low - high) / (high - low) * volume
+      const calc = (eq(b.close, b.high) && eq(b.close, b.low)) || eq(b.high, b.low)
+        ? 0 : ((2 * b.close - b.low - b.high) / (b.high - b.low)) * volume;
+      // trendstrength = math.sum(calculations, 1) / math.sum(volume, 1) (trendstrength2 is the same)
+      const v = s.vars;
+      if (Number.isFinite(calc)) v.sumCalc = calc;
+      if (Number.isFinite(volume)) v.sumVol = volume;
+      const strength = v.sumCalc / v.sumVol;
+
+      const p = i > 0 ? bars[i - 1] : b;
+      const ohlc4 = (b.open + b.high + b.low + b.close) / 4;
+      const trendline = sides(ohlc4, i > 0 ? ohlc4 - (p.open + p.high + p.low + p.close) / 4 : NaN, volume, s.top1, s.low1);
+      const trendline2 = sides(b.close, i > 0 ? b.close - p.close : NaN, volume, s.top2, s.low2);
+
+      // combinedTrend = trendline + trendstrength / trendline2 + trendstrength2 (plain division: x / 0 is infinite)
+      const combined = trendline + strength / trendline2 + strength;
+      // color.new(color.from_gradient(combinedTrend, 30, 80, color.green, color.red), 0)
+      const c = String(color.new(color.from_gradient(combined, 30, 80, color.green, color.red), 0));
+      s.plot0[i] = { time: b.time, value: Number.isFinite(combined) ? combined : NaN, color: c };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        hlines: hlineConfig.map((h) => ({ value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle } })),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<TrendHeatmapInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(bars: Bar[], _inputs: Partial<TrendHeatmapInputs> = {}): IndicatorResult {
+  return fullResult(createRun(_inputs).update(bars));
 }
 
 export const TrendHeatmap = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -11,6 +11,8 @@
  */
 
 import { color, time as ptime, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface AsianLondonSessionHighLowInputs {}
@@ -34,64 +36,92 @@ export const metadata = {
 
 const TZ = 'Europe/Sofia';
 
-export function calculate(bars: Bar[], _inputs: Partial<AsianLondonSessionHighLowInputs> = {}): IndicatorResult {
-  const n = bars.length;
-  const asianHigh: number[] = new Array(n);
-  const asianLow: number[] = new Array(n);
-  const londonHigh: number[] = new Array(n);
-  const londonLow: number[] = new Array(n);
-  let aH = NaN;
-  let aL = NaN;
-  let lH = NaN;
-  let lL = NaN;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    // Pine `time`: bar open time in milliseconds
-    const t = b.time * 1000;
-    const y = ptime.year(t, TZ);
-    const m = ptime.month(t, TZ);
-    const d = ptime.dayofmonth(t, TZ);
-    const asianStart = ptime.timestamp(TZ, y, m, d, 0, 0);
-    const asianEnd = ptime.timestamp(TZ, y, m, d, 8, 0);
-    const londonStart = ptime.timestamp(TZ, y, m, d, 9, 0);
-    const londonEnd = ptime.timestamp(TZ, y, m, d, 16, 30);
-    const inAsian = t >= asianStart && t < asianEnd;
-    const inLondon = t >= londonStart && t < londonEnd;
-    if (inAsian) {
-      aH = isNaN(aH) ? b.high : Math.max(aH, b.high);
-      aL = isNaN(aL) ? b.low : Math.min(aL, b.low);
-    }
-    if (inLondon) {
-      lH = isNaN(lH) ? b.high : Math.max(lH, b.high);
-      lL = isNaN(lL) ? b.low : Math.min(lL, b.low);
-    }
-    // Reset after 16:30
-    if (t >= ptime.timestamp(TZ, y, m, d, 16, 30)) {
-      aH = NaN;
-      aL = NaN;
-      lH = NaN;
-      lL = NaN;
-    }
-    asianHigh[i] = aH;
-    asianLow[i] = aL;
-    londonHigh[i] = lH;
-    londonLow[i] = lL;
-  }
+type Point = { time: number; value: number };
 
-  const line = (values: number[]) => bars.map((b, i) => ({ time: b.time, value: values[i] }));
+interface SessionVars {
+  aH: number;
+  aL: number;
+  lH: number;
+  lL: number;
+}
+
+interface SessionRun extends BarRunState<SessionVars> {
+  asianHigh: Point[];
+  asianLow: Point[];
+  londonHigh: Point[];
+  londonLow: Point[];
+}
+
+function study(): BarStudy<SessionRun, IndicatorResult> {
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(asianHigh),
-      plot1: line(asianLow),
-      plot2: line(londonHigh),
-      plot3: line(londonLow),
+    init() {
+      const s: SessionRun = {
+        asianHigh: [], asianLow: [], londonHigh: [], londonLow: [],
+        steps: [], vars: { aH: NaN, aL: NaN, lH: NaN, lL: NaN }, lists: [], series: [],
+      };
+      s.series = [s.asianHigh, s.asianLow, s.londonHigh, s.londonLow];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      // Pine `time`: bar open time in milliseconds
+      const t = b.time * 1000;
+      const y = ptime.year(t, TZ);
+      const m = ptime.month(t, TZ);
+      const d = ptime.dayofmonth(t, TZ);
+      const asianStart = ptime.timestamp(TZ, y, m, d, 0, 0);
+      const asianEnd = ptime.timestamp(TZ, y, m, d, 8, 0);
+      const londonStart = ptime.timestamp(TZ, y, m, d, 9, 0);
+      const londonEnd = ptime.timestamp(TZ, y, m, d, 16, 30);
+      const inAsian = t >= asianStart && t < asianEnd;
+      const inLondon = t >= londonStart && t < londonEnd;
+      if (inAsian) {
+        v.aH = isNaN(v.aH) ? b.high : Math.max(v.aH, b.high);
+        v.aL = isNaN(v.aL) ? b.low : Math.min(v.aL, b.low);
+      }
+      if (inLondon) {
+        v.lH = isNaN(v.lH) ? b.high : Math.max(v.lH, b.high);
+        v.lL = isNaN(v.lL) ? b.low : Math.min(v.lL, b.low);
+      }
+      // Reset after 16:30
+      if (t >= ptime.timestamp(TZ, y, m, d, 16, 30)) {
+        v.aH = NaN;
+        v.aL = NaN;
+        v.lH = NaN;
+        v.lL = NaN;
+      }
+      s.asianHigh[i] = { time: b.time, value: v.aH };
+      s.asianLow[i] = { time: b.time, value: v.aL };
+      s.londonHigh[i] = { time: b.time, value: v.lH };
+      s.londonLow[i] = { time: b.time, value: v.lL };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.asianHigh.slice(),
+          plot1: s.asianLow.slice(),
+          plot2: s.londonHigh.slice(),
+          plot3: s.londonLow.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<AsianLondonSessionHighLowInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(bars: Bar[], _inputs: Partial<AsianLondonSessionHighLowInputs> = {}): IndicatorResult {
+  return fullResult(createRun(_inputs).update(bars));
+}
+
 export const AsianLondonSessionHighLow = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

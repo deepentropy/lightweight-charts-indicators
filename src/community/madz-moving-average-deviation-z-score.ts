@@ -12,8 +12,10 @@
  * Original notice: © MiesOnCharts
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type MadzMaType = 'SMA' | 'EMA' | 'WMA' | 'VWMA' | 'HMA' | 'RMA';
 
@@ -93,70 +95,104 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MadzMovingAverageDeviationZScoreInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+type Ma = { step(v: number, volume: number): number; commit(): void };
+
+interface MadzRun extends BarRunState<Record<string, never>> {
+  ma: Ma;
+  mean: WindowSma;
+  sd: WindowStdev;
+  madz: ReturnType<typeof taStep.vwma>;
+  valSd: WindowStdev;
+  plots: Point[][];
+  bgColors: BgColorData[];
+}
+
+const OB_BG = String(color.new(OB_COLOR, 50));
+const OS_BG = String(color.new(OS_COLOR, 50));
+const NO_BG = String(color.new(color.black, 100));
+
+function study(inputs: Partial<MadzMovingAverageDeviationZScoreInputs>): BarStudy<MadzRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = getSourceSeries(bars, cfg.src);
-  const volume = S(bars.map((b) => b.volume ?? NaN));
-
-  let maS: Series;
-  switch (cfg.maType) {
-    case 'EMA': maS = ta.ema(src, cfg.length); break;
-    case 'WMA': maS = ta.wma(src, cfg.length); break;
-    case 'VWMA': maS = ta.vwma(src, cfg.length, volume); break;
-    case 'HMA': maS = ta.hma(src, cfg.length); break;
-    case 'RMA': maS = ta.rma(src, cfg.length); break;
-    default: maS = ta.sma(src, cfg.length);
-  }
-  const ma = A(maS);
-
-  // percDev = (close - ma) / ma (a plain division)
-  const percDev = bars.map((b, i) => (b.close - ma[i]) / ma[i]);
-  // zscore(percDev, lookback): stdDev == 0 ? 0.000001 : stdDev
-  const mean = A(ta.sma(S(percDev), cfg.lookback));
-  const sd = A(ta.stdev(S(percDev), cfg.lookback));
-  const rawZ = percDev.map((v, i) => (v - mean[i]) / (eq(sd[i], 0) ? 0.000001 : sd[i]));
-  const madz = A(ta.vwma(S(rawZ), cfg.smoothLength, volume));
-
-  const valSd = A(ta.stdev(S(madz), cfg.dynLength));
-  const valOb = valSd.map((v) => v * 3);
-  const valOs = valSd.map((v) => -v * 3);
-
-  const lineColor = (i: number) => (lt(madz[i], cfg.osLevel) ? OS_COLOR : gt(madz[i], cfg.obLevel) ? OB_COLOR : color.gray);
-  const obBg = String(color.new(OB_COLOR, 50));
-  const osBg = String(color.new(OS_COLOR, 50));
-  const noBg = String(color.new(color.black, 100));
-
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const bgColors: BgColorData[] = [];
-  if (cfg.showExtreme) {
-    for (let i = 0; i < n; i++) {
-      const c = gt(madz[i], valOb[i]) ? obBg : lt(madz[i], valOs[i]) ? osBg : noBg;
-      bgColors.push({ time: bars[i].time, color: c });
+  const value = barSource(cfg.src);
+  const maStep = (): Ma => {
+    const len = cfg.length;
+    switch (cfg.maType) {
+      case 'EMA': { const m = taStep.ema(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+      case 'VWMA': return taStep.vwma(len);
+      case 'HMA': { const m = taStep.hma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'RMA': { const m = taStep.rma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      default: { const m = new WindowSma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
     }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: fin(madz[i]), color: lineColor(i) })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: cfg.showDynBands ? fin(valOb[i]) : NaN, color: OB_COLOR })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: cfg.showDynBands ? fin(valOs[i]) : NaN, color: OS_COLOR })),
-      plot3: bars.map((b) => ({ time: b.time, value: 0, color: color.white })),
-      plot4: bars.map((b) => ({ time: b.time, value: cfg.obLevel, color: OB_COLOR })),
-      plot5: bars.map((b) => ({ time: b.time, value: cfg.osLevel, color: OS_COLOR })),
-    },
-    bgColors,
   };
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: MadzRun = {
+        ma: maStep(), mean: new WindowSma(cfg.lookback), sd: new WindowStdev(cfg.lookback), madz: taStep.vwma(cfg.smoothLength), valSd: new WindowStdev(cfg.dynLength),
+        plots: Array.from({ length: 6 }, () => []), bgColors: [], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.ma, s.mean, s.sd, s.madz, s.valSd];
+      s.series = [...s.plots, s.bgColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const volume = b.volume ?? NaN;
+      const ma = s.ma.step(value(b), volume);
+      // percDev = (close - ma) / ma (a plain division)
+      const percDev = (b.close - ma) / ma;
+      // zscore(percDev, lookback): stdDev == 0 ? 0.000001 : stdDev
+      const mean = s.mean.step(percDev);
+      const sd = s.sd.step(percDev);
+      const rawZ = (percDev - mean) / (eq(sd, 0) ? 0.000001 : sd);
+      const madz = s.madz.step(rawZ, volume);
+      const valSd = s.valSd.step(madz);
+      const valOb = valSd * 3;
+      const valOs = -valSd * 3;
+      if (cfg.showExtreme) {
+        const c = gt(madz, valOb) ? OB_BG : lt(madz, valOs) ? OS_BG : NO_BG;
+        s.bgColors[i] = { time, color: c };
+      }
+      const lineColor = lt(madz, cfg.osLevel) ? OS_COLOR : gt(madz, cfg.obLevel) ? OB_COLOR : color.gray;
+      const p = s.plots;
+      p[0][i] = { time, value: fin(madz), color: lineColor };
+      p[1][i] = { time, value: cfg.showDynBands ? fin(valOb) : NaN, color: OB_COLOR };
+      p[2][i] = { time, value: cfg.showDynBands ? fin(valOs) : NaN, color: OS_COLOR };
+      p[3][i] = { time, value: 0, color: color.white };
+      p[4][i] = { time, value: cfg.obLevel, color: OB_COLOR };
+      p[5][i] = { time, value: cfg.osLevel, color: OS_COLOR };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(),
+        },
+        bgColors: cfg.showExtreme ? s.bgColors.slice() : [],
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MadzMovingAverageDeviationZScoreInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MadzMovingAverageDeviationZScoreInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MadzMovingAverageDeviationZScore = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -11,8 +11,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ATRNormalizedVWMADeviationInputs {
   /** Lookback of the extremes (and of the MAD averages) */
@@ -85,83 +87,130 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ATRNormalizedVWMADeviationInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+
+interface AnvdRun extends BarRunState<Record<string, never>> {
+  vwma: ReturnType<typeof taStep.vwma>;
+  atr: ReturnType<typeof taStep.atr>;
+  devMean: ReturnType<typeof taStep.sma>;
+  mad: ReturnType<typeof taStep.sma>;
+  hiDev: ReturnType<typeof taStep.highest>;
+  loDev: ReturnType<typeof taStep.lowest>;
+  hiHigh: ReturnType<typeof taStep.highest>;
+  loLow: ReturnType<typeof taStep.lowest>;
+  hiDevArr: number[];
+  loDevArr: number[];
+  hiHighArr: number[];
+  loLowArr: number[];
+  sellSetup: boolean[];
+  buySetup: boolean[];
+  plot0: Point[];
+  plot1: Point[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<ATRNormalizedVWMADeviationInputs>): BarStudy<AnvdRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   // The averages skip +-infinity like na (Pine): they get NaN
-  const fin = (a: number[]) => a.map((v) => (Number.isFinite(v) ? v : NaN));
-
-  const ohlc4 = bars.map((b) => (b.open + b.high + b.low + b.close) / 4);
-  const vwma = A(ta.vwma(S(ohlc4), cfg.vwmaLen, S(bars.map((b) => b.volume ?? NaN))));
-  const atr = A(ta.atr(bars, cfg.atrLen));
-  // dev = (ohlc4 - vwma) / ta.atr(atr_len): a plain division (x / 0 is +-infinity, 0 / 0 na)
-  const dev = bars.map((_b, i) => (ohlc4[i] - vwma[i]) / atr[i]);
-
-  // Mean absolute deviation
-  const devMean = A(ta.sma(S(fin(dev)), cfg.lookback));
-  const mad = A(ta.sma(S(fin(dev.map((d, i) => Math.abs(d - devMean[i])))), cfg.lookback));
-
-  // Extremes of the previous bar: ta.highest(x, lookback)[1]
-  const hiDev = A(ta.highest(S(dev), cfg.lookback));
-  const loDev = A(ta.lowest(S(dev), cfg.lookback));
-  const hiHigh = A(ta.highest(S(bars.map((b) => b.high)), cfg.lookback));
-  const loLow = A(ta.lowest(S(bars.map((b) => b.low)), cfg.lookback));
-
-  const sellSetup: boolean[] = new Array(n).fill(false);
-  const buySetup: boolean[] = new Array(n).fill(false);
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const isHighestDev = i > 0 && gt(dev[i], hiDev[i - 1]);
-    const isLowestDev = i > 0 && lt(dev[i], loDev[i - 1]);
-    const isHighestPrice = i > 0 && gt(b.high, hiHigh[i - 1]);
-    const isLowestPrice = i > 0 && lt(b.low, loLow[i - 1]);
-    const aboveUpper = gt(dev[i], cfg.upperBand);
-    const belowLower = lt(dev[i], cfg.lowerBand);
-    const madOkHigh = !cfg.useMad || gt(dev[i], mad[i] * cfg.madMult);
-    const madOkLow = !cfg.useMad || lt(dev[i], -mad[i] * cfg.madMult);
-    sellSetup[i] = isHighestDev && isHighestPrice && aboveUpper && madOkHigh;
-    buySetup[i] = isLowestDev && isLowestPrice && belowLower && madOkLow;
-
-    const downCandle = lt(b.close, b.open);
-    const upCandle = gt(b.close, b.open);
-    const sellSignal = (sellSetup[i] && downCandle) || (i > 0 && sellSetup[i - 1] && downCandle);
-    const buySignal = (buySetup[i] && upCandle) || (i > 0 && buySetup[i - 1] && upCandle);
-    // bgcolor(sell_signal ? color.new(#F15156, 50) : na); bgcolor(buy_signal ? color.new(#7FD1B9, 0) : na):
-    // the later call is drawn on top
-    if (buySignal) bgColors.push({ time: b.time, color: BUY_BG });
-    else if (sellSignal) bgColors.push({ time: b.time, color: SELL_BG });
-  }
-
-  const finite = (v: number) => (Number.isFinite(v) ? v : NaN);
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(dev, 'ATR-Normalized Deviation', color.new(#1C3738, 0))
-      plot0: bars.map((b, i) => ({ time: b.time, value: finite(dev[i]), color: DEV_COL })),
-      // plot(use_mad ? mad : na, 'MAD', color.new(#7D2E68, 0))
-      plot1: bars.map((b, i) => ({ time: b.time, value: cfg.useMad ? finite(mad[i]) : NaN, color: MAD_COL })),
+    init() {
+      const vwma = taStep.vwma(cfg.vwmaLen);
+      const atr = taStep.atr(cfg.atrLen);
+      const devMean = taStep.sma();
+      const mad = taStep.sma();
+      const hiDev = taStep.highest();
+      const loDev = taStep.lowest();
+      const hiHigh = taStep.highest();
+      const loLow = taStep.lowest();
+      const s: AnvdRun = {
+        vwma, atr, devMean, mad, hiDev, loDev, hiHigh, loLow,
+        hiDevArr: [], loDevArr: [], hiHighArr: [], loLowArr: [], sellSetup: [], buySetup: [], plot0: [], plot1: [],
+        bgColors: [],
+        steps: [vwma, atr, devMean, mad, hiDev, loDev, hiHigh, loLow], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.bgColors];
+      s.series = [s.hiDevArr, s.loDevArr, s.hiHighArr, s.loLowArr, s.sellSetup, s.buySetup, s.plot0, s.plot1];
+      return s;
     },
-    hlines: [
-      { value: 0, options: { title: 'Zero', color: color.gray, linestyle: 'dashed' } },
-      { value: cfg.upperBand, options: { title: 'Upper Band', color: color.gray, linestyle: 'dashed' } },
-      { value: cfg.lowerBand, options: { title: 'Lower Band', color: color.gray, linestyle: 'dashed' } },
-    ],
-    fills: [
-      { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'Deviation Range' },
-        colors: new Array<string>(n).fill(RANGE_FILL) },
-    ],
-    bgColors,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const ohlc4 = (b.open + b.high + b.low + b.close) / 4;
+      const vwma = s.vwma.step(ohlc4, b.volume ?? NaN);
+      const atr = s.atr.step(b.high, b.low, b.close);
+      // dev = (ohlc4 - vwma) / ta.atr(atr_len): a plain division (x / 0 is +-infinity, 0 / 0 na)
+      const dev = (ohlc4 - vwma) / atr;
+
+      // Mean absolute deviation
+      const devMean = s.devMean.step(fin(dev), cfg.lookback);
+      const mad = s.mad.step(fin(Math.abs(dev - devMean)), cfg.lookback);
+
+      // Extremes of the previous bar: ta.highest(x, lookback)[1]
+      s.hiDevArr[i] = s.hiDev.step(dev, cfg.lookback);
+      s.loDevArr[i] = s.loDev.step(dev, cfg.lookback);
+      s.hiHighArr[i] = s.hiHigh.step(b.high, cfg.lookback);
+      s.loLowArr[i] = s.loLow.step(b.low, cfg.lookback);
+
+      const isHighestDev = i > 0 && gt(dev, s.hiDevArr[i - 1]);
+      const isLowestDev = i > 0 && lt(dev, s.loDevArr[i - 1]);
+      const isHighestPrice = i > 0 && gt(b.high, s.hiHighArr[i - 1]);
+      const isLowestPrice = i > 0 && lt(b.low, s.loLowArr[i - 1]);
+      const aboveUpper = gt(dev, cfg.upperBand);
+      const belowLower = lt(dev, cfg.lowerBand);
+      const madOkHigh = !cfg.useMad || gt(dev, mad * cfg.madMult);
+      const madOkLow = !cfg.useMad || lt(dev, -mad * cfg.madMult);
+      const sellSetup = isHighestDev && isHighestPrice && aboveUpper && madOkHigh;
+      const buySetup = isLowestDev && isLowestPrice && belowLower && madOkLow;
+      s.sellSetup[i] = sellSetup;
+      s.buySetup[i] = buySetup;
+
+      const downCandle = lt(b.close, b.open);
+      const upCandle = gt(b.close, b.open);
+      const sellSignal = (sellSetup && downCandle) || (i > 0 && s.sellSetup[i - 1] && downCandle);
+      const buySignal = (buySetup && upCandle) || (i > 0 && s.buySetup[i - 1] && upCandle);
+      // bgcolor(sell_signal ? color.new(#F15156, 50) : na); bgcolor(buy_signal ? color.new(#7FD1B9, 0) : na):
+      // the later call is drawn on top
+      if (buySignal) s.bgColors.push({ time: b.time, color: BUY_BG });
+      else if (sellSignal) s.bgColors.push({ time: b.time, color: SELL_BG });
+
+      // plot(dev, 'ATR-Normalized Deviation', color.new(#1C3738, 0))
+      s.plot0[i] = { time: b.time, value: fin(dev), color: DEV_COL };
+      // plot(use_mad ? mad : na, 'MAD', color.new(#7D2E68, 0))
+      s.plot1[i] = { time: b.time, value: cfg.useMad ? fin(mad) : NaN, color: MAD_COL };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [
+          { value: 0, options: { title: 'Zero', color: color.gray, linestyle: 'dashed' } },
+          { value: cfg.upperBand, options: { title: 'Upper Band', color: color.gray, linestyle: 'dashed' } },
+          { value: cfg.lowerBand, options: { title: 'Lower Band', color: color.gray, linestyle: 'dashed' } },
+        ],
+        fills: [
+          { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'Deviation Range' },
+            colors: new Array<string>(n).fill(RANGE_FILL) },
+        ],
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ATRNormalizedVWMADeviationInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ATRNormalizedVWMADeviationInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
 export const ATRNormalizedVWMADeviation = {
   calculate,
+  createRun,
+
   metadata,
   defaultInputs,
   inputConfig,

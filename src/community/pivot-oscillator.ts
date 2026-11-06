@@ -13,9 +13,11 @@
  * Original notice: © Uncle_the_shooter
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PivotOscillatorInputs {
   /** Pivot left / right bars */
@@ -141,138 +143,180 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<PivotOscillatorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface PivotOscVars {
+  /** The last pivot highs / lows (changed in place, copied by copyVars) */
+  phArray: number[];
+  plArray: number[];
+}
+
+interface PivotOscRun extends BarRunState<PivotOscVars> {
+  ph: PivotStep;
+  pl: PivotStep;
+  atr: ReturnType<typeof taStep.atr>;
+  sig: ReturnType<typeof taStep.sma>;
+  smooth: ReturnType<typeof taStep.sma>;
+  oscArr: number[];
+  smoothArr: number[];
+  plots: Point[][];
+  layers: string[][];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<PivotOscillatorInputs>): BarStudy<PivotOscRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const gradientTransparency = 85;
-
-  // ph = ta.pivothigh(high, lenSwing, lenSwing); pl = ta.pivotlow(low, lenSwing, lenSwing)
-  const ph = A(ta.pivothigh(S(bars.map((b) => b.high)), cfg.lenSwing, cfg.lenSwing));
-  const pl = A(ta.pivotlow(S(bars.map((b) => b.low)), cfg.lenSwing, cfg.lenSwing));
-  const atr = A(ta.atr(bars, cfg.atrLen));
-
-  const phArray: number[] = [];
-  const plArray: number[] = [];
   const avg = (a: number[]) => {
     let s = 0;
     for (const v of a) s += v;
     return s / a.length;
   };
-  const oscRaw: number[] = new Array(n);
-  const osc: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    if (!isNaN(ph[i])) {
-      phArray.push(ph[i]);
-      if (phArray.length > cfg.lookback) phArray.shift();
-    }
-    if (!isNaN(pl[i])) {
-      plArray.push(pl[i]);
-      if (plArray.length > cfg.lookback) plArray.shift();
-    }
-    const avgPH = phArray.length > 0 ? avg(phArray) : NaN;
-    const avgPL = plArray.length > 0 ? avg(plArray) : NaN;
-    const pivotLine = !isNaN(avgPH) && !isNaN(avgPL) ? avgPL + (avgPH - avgPL) * cfg.pivotLevel : NaN;
-    // osc_raw = close - nz(pivotLine)
-    const raw = bars[i].close - (isNaN(pivotLine) ? 0 : pivotLine);
-    oscRaw[i] = raw;
-    // atr_safe = atr > 0 ? atr : 1 (na > 0 is false)
-    const atrSafe = gt(atr[i], 0) ? atr[i] : 1;
-    const upperBound = atrSafe * cfg.multUp;
-    const lowerBound = atrSafe * cfg.multDown;
-    let scaled: number;
-    if (gt(raw, 0)) scaled = 50.0 + 50.0 * (raw / upperBound);
-    else if (lt(raw, 0)) scaled = 50.0 + 50.0 * (raw / lowerBound);
-    else scaled = 50.0;
-    osc[i] = Math.max(1.0, Math.min(100.0, scaled));
-  }
-  const oscSignal = A(ta.sma(S(osc), cfg.signalLength));
-  const smoothSignal = A(ta.sma(S(oscSignal), cfg.extraSmooth));
-
-  const lineColor = (i: number) => (gt(oscRaw[i], 0) ? cfg.bullColor : cfg.bearColor);
-  // dynSignalColor = smoothSignal > smoothSignal[1] ? bull : smoothSignal < smoothSignal[1] ? bear : color.gray
-  const dynColor = (i: number) => {
-    const prev = i > 0 ? smoothSignal[i - 1] : NaN;
-    return gt(smoothSignal[i], prev) ? cfg.signalColorBull : lt(smoothSignal[i], prev) ? cfg.signalColorBear : color.gray;
-  };
-  const t = (i: number) => bars[i].time;
-  const P = (f: (i: number) => { time: number; value: number; color?: string }) => bars.map((_b, i) => f(i));
-
-  const plots = {
-    // plot(showOverboughtGradient ? obLevel : na, color.new(oscSignal >= maOverbought ? obColor : color.gray, bandTransparency), 8)
-    plot0: P((i) => ({
-      time: t(i), value: cfg.showOverboughtGradient ? cfg.obLevel : NaN,
-      color: String(color.new(ge(oscSignal[i], cfg.maOverbought) ? cfg.obColor : color.gray, cfg.bandTransparency)),
-    })),
-    // plot(showOversoldGradient ? osLevel : na, color.new(oscSignal <= maOversold ? osColor : color.gray, bandTransparency), 8)
-    plot1: P((i) => ({
-      time: t(i), value: cfg.showOversoldGradient ? cfg.osLevel : NaN,
-      color: String(color.new(le(oscSignal[i], cfg.maOversold) ? cfg.osColor : color.gray, cfg.bandTransparency)),
-    })),
-    plot2: P((i) => ({ time: t(i), value: osc[i], color: lineColor(i) })),
-    plot3: P((i) => ({
-      time: t(i), value: cfg.showOscillatorGradient ? osc[i] : NaN, color: String(color.new(lineColor(i), gradientTransparency)),
-    })),
-    // plot(showMaGradient ? smoothSignal : smoothSignal, "Signal SMA", dynSignalColor, 2)
-    plot4: P((i) => ({ time: t(i), value: smoothSignal[i], color: dynColor(i) })),
-    // plot(showMaGradient ? smoothSignal : na, "", color.new(dynSignalColor, 60 / 35 / 0), 5 / 3 / 1)
-    plot5: P((i) => ({ time: t(i), value: cfg.showMaGradient ? smoothSignal[i] : NaN, color: String(color.new(dynColor(i), 60)) })),
-    plot6: P((i) => ({ time: t(i), value: cfg.showMaGradient ? smoothSignal[i] : NaN, color: String(color.new(dynColor(i), 35)) })),
-    plot7: P((i) => ({ time: t(i), value: cfg.showMaGradient ? smoothSignal[i] : NaN, color: String(color.new(dynColor(i), 0)) })),
-    // pMid1..4 = plot(osc_scaled * (1 - k) + 50 * k, display = display.none), k = 0.2, 0.4, 0.6, 0.8
-    plot8: P((i) => ({ time: t(i), value: osc[i] * 0.8 + 50 * 0.2 })),
-    plot9: P((i) => ({ time: t(i), value: osc[i] * 0.6 + 50 * 0.4 })),
-    plot10: P((i) => ({ time: t(i), value: osc[i] * 0.4 + 50 * 0.6 })),
-    plot11: P((i) => ({ time: t(i), value: osc[i] * 0.2 + 50 * 0.8 })),
-  };
-
-  // fill(pOsc, pMid1, fillEnabled ? color.new(lineColor, fillTransparency) : na) ... + 5, + 10, + 15
-  const layer = (k: number) => bars.map((_b, i) => (cfg.fillEnabled
-    ? String(color.new(lineColor(i), cfg.fillTransparency + k)) : 'transparent'));
-  const fills = [
-    { plot1: 'plot2', plot2: 'plot8', colors: layer(0) },
-    { plot1: 'plot8', plot2: 'plot9', colors: layer(5) },
-    { plot1: 'plot9', plot2: 'plot10', colors: layer(10) },
-    { plot1: 'plot10', plot2: 'plot11', colors: layer(15) },
-  ];
-
-  // longSignalObos = ta.crossover(osc_scaled, osLevel); shortSignalObos = ta.crossunder(osc_scaled, obLevel)
-  // (exact comparisons: crossover / crossunder have no 1e-10 tolerance)
-  // plotshape(..., location.bottom / location.top, osColor / obColor, triangleup / triangledown, size.tiny).
-  const markers: MarkerData[] = [];
-  const longFlags: boolean[] = new Array<boolean>(n).fill(false);
-  const shortFlags: boolean[] = new Array<boolean>(n).fill(false);
-  for (let i = 1; i < n; i++) {
-    longFlags[i] = osc[i] > cfg.osLevel && osc[i - 1] <= cfg.osLevel;
-    shortFlags[i] = osc[i] < cfg.obLevel && osc[i - 1] >= cfg.obLevel;
-    if (longFlags[i]) {
-      markers.push({ time: t(i), position: 'bottom', shape: 'triangleUp', color: cfg.osColor, size: 'tiny' });
-    }
-    if (shortFlags[i]) {
-      markers.push({ time: t(i), position: 'top', shape: 'triangleDown', color: cfg.obColor, size: 'tiny' });
-    }
-  }
-
-  const minMax = String(color.new(color.gray, 80));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    hlines: [
-      { value: cfg.obLevel, options: { title: 'Overbought', color: cfg.obColor, linestyle: 'dashed', linewidth: 1 } },
-      { value: cfg.osLevel, options: { title: 'Oversold', color: cfg.osColor, linestyle: 'dashed', linewidth: 1 } },
-      { value: 50, options: { title: 'Midline 50', color: cfg.midLineColor, linestyle: 'dashed', linewidth: 1 } },
-      { value: 1, options: { title: 'Min', color: minMax, linestyle: 'dotted' } },
-      { value: 100, options: { title: 'Max', color: minMax, linestyle: 'dotted' } },
-    ],
-    fills,
-    markers,
-    // alertcondition(longSignalObos, 'Buy (Oversold)') / alertcondition(shortSignalObos, 'Sell (Overbought)')
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags]),
+    init() {
+      // ph = ta.pivothigh(high, lenSwing, lenSwing); pl = ta.pivotlow(low, lenSwing, lenSwing)
+      const ph = new PivotStep(cfg.lenSwing, cfg.lenSwing, true);
+      const pl = new PivotStep(cfg.lenSwing, cfg.lenSwing, false);
+      const atr = taStep.atr(cfg.atrLen);
+      const sig = taStep.sma();
+      const smooth = taStep.sma();
+      const s: PivotOscRun = {
+        ph, pl, atr, sig, smooth, oscArr: [], smoothArr: [],
+        plots: Array.from({ length: 12 }, () => []), layers: [[], [], [], []], markers: [], flags: [[], []], times: [[], []],
+        steps: [ph, pl, atr, sig, smooth], vars: { phArray: [], plArray: [] }, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.oscArr, s.smoothArr, ...s.plots, ...s.layers, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const { phArray, plArray } = s.vars;
+      const ph = s.ph.step(i, b.high);
+      const pl = s.pl.step(i, b.low);
+      const atr = s.atr.step(b.high, b.low, b.close);
+      if (!isNaN(ph)) {
+        phArray.push(ph);
+        if (phArray.length > cfg.lookback) phArray.shift();
+      }
+      if (!isNaN(pl)) {
+        plArray.push(pl);
+        if (plArray.length > cfg.lookback) plArray.shift();
+      }
+      const avgPH = phArray.length > 0 ? avg(phArray) : NaN;
+      const avgPL = plArray.length > 0 ? avg(plArray) : NaN;
+      const pivotLine = !isNaN(avgPH) && !isNaN(avgPL) ? avgPL + (avgPH - avgPL) * cfg.pivotLevel : NaN;
+      // osc_raw = close - nz(pivotLine)
+      const raw = b.close - (isNaN(pivotLine) ? 0 : pivotLine);
+      // atr_safe = atr > 0 ? atr : 1 (na > 0 is false)
+      const atrSafe = gt(atr, 0) ? atr : 1;
+      const upperBound = atrSafe * cfg.multUp;
+      const lowerBound = atrSafe * cfg.multDown;
+      let scaled: number;
+      if (gt(raw, 0)) scaled = 50.0 + 50.0 * (raw / upperBound);
+      else if (lt(raw, 0)) scaled = 50.0 + 50.0 * (raw / lowerBound);
+      else scaled = 50.0;
+      const osc = Math.max(1.0, Math.min(100.0, scaled));
+      s.oscArr[i] = osc;
+      const oscSignal = s.sig.step(osc, cfg.signalLength);
+      const smoothSignal = s.smooth.step(oscSignal, cfg.extraSmooth);
+      s.smoothArr[i] = smoothSignal;
+
+      const lineColor = gt(raw, 0) ? cfg.bullColor : cfg.bearColor;
+      // dynSignalColor = smoothSignal > smoothSignal[1] ? bull : smoothSignal < smoothSignal[1] ? bear : color.gray
+      const prev = i > 0 ? s.smoothArr[i - 1] : NaN;
+      const dynColor = gt(smoothSignal, prev) ? cfg.signalColorBull : lt(smoothSignal, prev) ? cfg.signalColorBear : color.gray;
+      const p = s.plots;
+      // plot(showOverboughtGradient ? obLevel : na, color.new(oscSignal >= maOverbought ? obColor : color.gray, bandTransparency), 8)
+      p[0][i] = {
+        time, value: cfg.showOverboughtGradient ? cfg.obLevel : NaN,
+        color: String(color.new(ge(oscSignal, cfg.maOverbought) ? cfg.obColor : color.gray, cfg.bandTransparency)),
+      };
+      // plot(showOversoldGradient ? osLevel : na, color.new(oscSignal <= maOversold ? osColor : color.gray, bandTransparency), 8)
+      p[1][i] = {
+        time, value: cfg.showOversoldGradient ? cfg.osLevel : NaN,
+        color: String(color.new(le(oscSignal, cfg.maOversold) ? cfg.osColor : color.gray, cfg.bandTransparency)),
+      };
+      p[2][i] = { time, value: osc, color: lineColor };
+      p[3][i] = { time, value: cfg.showOscillatorGradient ? osc : NaN, color: String(color.new(lineColor, gradientTransparency)) };
+      // plot(showMaGradient ? smoothSignal : smoothSignal, "Signal SMA", dynSignalColor, 2)
+      p[4][i] = { time, value: smoothSignal, color: dynColor };
+      // plot(showMaGradient ? smoothSignal : na, "", color.new(dynSignalColor, 60 / 35 / 0), 5 / 3 / 1)
+      p[5][i] = { time, value: cfg.showMaGradient ? smoothSignal : NaN, color: String(color.new(dynColor, 60)) };
+      p[6][i] = { time, value: cfg.showMaGradient ? smoothSignal : NaN, color: String(color.new(dynColor, 35)) };
+      p[7][i] = { time, value: cfg.showMaGradient ? smoothSignal : NaN, color: String(color.new(dynColor, 0)) };
+      // pMid1..4 = plot(osc_scaled * (1 - k) + 50 * k, display = display.none), k = 0.2, 0.4, 0.6, 0.8
+      p[8][i] = { time, value: osc * 0.8 + 50 * 0.2 };
+      p[9][i] = { time, value: osc * 0.6 + 50 * 0.4 };
+      p[10][i] = { time, value: osc * 0.4 + 50 * 0.6 };
+      p[11][i] = { time, value: osc * 0.2 + 50 * 0.8 };
+
+      // fill(pOsc, pMid1, fillEnabled ? color.new(lineColor, fillTransparency) : na) ... + 5, + 10, + 15
+      for (let k = 0; k < 4; k++) {
+        s.layers[k][i] = cfg.fillEnabled ? String(color.new(lineColor, cfg.fillTransparency + k * 5)) : 'transparent';
+      }
+
+      // longSignalObos = ta.crossover(osc_scaled, osLevel); shortSignalObos = ta.crossunder(osc_scaled, obLevel)
+      // (exact comparisons: crossover / crossunder have no 1e-10 tolerance)
+      // plotshape(..., location.bottom / location.top, osColor / obColor, triangleup / triangledown, size.tiny).
+      let long = false;
+      let short = false;
+      if (i >= 1) {
+        const prevOsc = s.oscArr[i - 1];
+        long = osc > cfg.osLevel && prevOsc <= cfg.osLevel;
+        short = osc < cfg.obLevel && prevOsc >= cfg.obLevel;
+        if (long) s.markers.push({ time, position: 'bottom', shape: 'triangleUp', color: cfg.osColor, size: 'tiny' });
+        if (short) s.markers.push({ time, position: 'top', shape: 'triangleDown', color: cfg.obColor, size: 'tiny' });
+      }
+      s.flags[0][i] = long;
+      s.flags[1][i] = short;
+      if (long) s.times[0].push(time as number);
+      if (short) s.times[1].push(time as number);
+    },
+    copyVars: (v) => ({ phArray: v.phArray.slice(), plArray: v.plArray.slice() }),
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      const minMax = String(color.new(color.gray, 80));
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        hlines: [
+          { value: cfg.obLevel, options: { title: 'Overbought', color: cfg.obColor, linestyle: 'dashed', linewidth: 1 } },
+          { value: cfg.osLevel, options: { title: 'Oversold', color: cfg.osColor, linestyle: 'dashed', linewidth: 1 } },
+          { value: 50, options: { title: 'Midline 50', color: cfg.midLineColor, linestyle: 'dashed', linewidth: 1 } },
+          { value: 1, options: { title: 'Min', color: minMax, linestyle: 'dotted' } },
+          { value: 100, options: { title: 'Max', color: minMax, linestyle: 'dotted' } },
+        ],
+        fills: [
+          { plot1: 'plot2', plot2: 'plot8', colors: s.layers[0].slice() },
+          { plot1: 'plot8', plot2: 'plot9', colors: s.layers[1].slice() },
+          { plot1: 'plot9', plot2: 'plot10', colors: s.layers[2].slice() },
+          { plot1: 'plot10', plot2: 'plot11', colors: s.layers[3].slice() },
+        ],
+        markers: s.markers.slice(),
+        // alertcondition(longSignalObos, 'Buy (Oversold)') / alertcondition(shortSignalObos, 'Sell (Overbought)')
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PivotOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<PivotOscillatorInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -283,6 +327,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const PivotOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

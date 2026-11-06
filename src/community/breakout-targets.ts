@@ -26,10 +26,11 @@
  * Original notice: © AlgoAlpha
  */
 
-import { ta, Series, color, str, barTime, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, str, barTime, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BoxData, LabelData, LineDrawingData, LinefillData, MarkerData } from '../types';
 import { foregroundColorOf, mintickOf, type ChartContext } from '../chart-context';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -186,266 +187,334 @@ function register<T extends Obj>(list: T[], obj: T, max: number): T {
   return obj;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<BreakoutTargetsInputs> = {},
-  chart?: ChartContext,
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface BtVars {
+  /** All alive objects in creation order (count limit), and the arrays of the running channels (newest first) */
+  allBoxes: BoxObj[];
+  allLines: LineObj[];
+  boxes: BoxObj[];
+  boxesU: BoxObj[];
+  boxesL: BoxObj[];
+  centerLines: LineObj[];
+  /** The trade: entry, stop loss and three targets (lines and labels), and two linefills */
+  tradeLines: LineObj[];
+  tradeLabels: LabelObj[];
+  fills: Array<{ line1: LineObj; line2: LineObj; color: string }>;
+  tradeDir: number;
+  tp3Hit: boolean;
+  /** ta.valuewhen(not na(pivh), high[len_], 0) and the same for the bar index and the pivot lows */
+  pivhLvl: number;
+  pivhIndex: number;
+  pivlLvl: number;
+  pivlIndex: number;
+  wede: number;
+}
+
+interface BtRun extends BarRunState<BtVars> {
+  pivh: PivotStep;
+  pivl: PivotStep;
+  v1: ReturnType<typeof taStep.wma>;
+  v2: ReturnType<typeof taStep.ema>;
+  cross: ReturnType<typeof taStep.crossunder>;
+  volatility: ReturnType<typeof taStep.atr>;
+  atrLen: ReturnType<typeof taStep.atr>;
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<BreakoutTargetsInputs>): BarStudy<BtRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { len, green, red } = cfg;
   // overlap = not input.bool(true, "Prevent Overlap")
   const overlap = !cfg.preventOverlap;
-  // chart.fg_color, syminfo.mintick
-  const chartFg = foregroundColorOf(chart);
-  const mintick = mintickOf(chart);
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
   // len_ = int(len / 2)
   const half = Math.trunc(len / 2);
-  const pivh = A(ta.pivothigh(S(bars.map((b) => b.high)), half, half));
-  const pivl = A(ta.pivotlow(S(bars.map((b) => b.low)), half, half));
-  const body = S(bars.map((b) => Math.abs(b.close - b.open)));
-  const v1 = ta.wma(body, len);
-  const v2 = ta.ema(body, len);
-  const crossunder = ta.crossunder(v1, v2).toArray().map((v) => Boolean(v));
-  const volatility = A(ta.atr(bars, cfg.atrPeriod));
-  const atrLen = A(ta.atr(bars, len));
-
-  const fg90 = String(color.new(chartFg, 90));
-  const fg50 = String(color.new(chartFg, 50));
   const red70 = String(color.new(red, 70));
   const green70 = String(color.new(green, 70));
   const red80 = String(color.new(red, 80));
   const green80 = String(color.new(green, 80));
   const red95 = String(color.new(red, 95));
   const green95 = String(color.new(green, 95));
+  // chart.fg_color, syminfo.mintick (read from the chart of the run)
+  let chartFg = '';
+  let mintick = 0.01;
+  let fg90 = '';
+  let fg50 = '';
   const priceText = (v: number) => str.tostring(v, 'mintick', mintick);
-
-  // All alive objects in creation order (count limit), and the arrays of the running channels (newest first)
-  const allBoxes: BoxObj[] = [];
-  const allLines: LineObj[] = [];
-  const boxes: BoxObj[] = [];
-  const boxesU: BoxObj[] = [];
-  const boxesL: BoxObj[] = [];
-  const centerLines: LineObj[] = [];
-  const newBox = (left: number, top: number, right: number, bottom: number, bg: string) =>
-    register<BoxObj>(allBoxes, { dead: false, left, top, right, bottom, bg }, MAX_BOXES);
-
-  // The trade: entry, stop loss and three targets (lines and labels), and two linefills
-  let tradeLines: LineObj[] = [];
-  let tradeLabels: LabelObj[] = [];
-  let fills: Array<{ line1: LineObj; line2: LineObj; color: string }> = [];
-  let tradeDir = 0;
-  let tp3Hit = false;
-
-  const markers: MarkerData[] = [];
-  // ta.valuewhen(not na(pivh), high[len_], 0) and the same for the bar index and the pivot lows
-  let pivhLvl = NaN;
-  let pivhIndex = NaN;
-  let pivlLvl = NaN;
-  let pivlIndex = NaN;
-  let wede = 0;
-  const flags: boolean[][] = [[], [], [], [], [], []];
-
-  for (let i = 0; i < n; i++) {
-    const bar = bars[i];
-    const { close } = bar;
-    if (!Number.isNaN(pivh[i])) {
-      pivhLvl = bars[i - half].high;
-      pivhIndex = i - half;
-    }
-    if (!Number.isNaN(pivl[i])) {
-      pivlLvl = bars[i - half].low;
-      pivlIndex = i - half;
-    }
-    const vola = atrLen[i] / 2;
-
-    // wede := boxes.first().get_right() (na when the box was deleted)
-    if (boxes.length > 0) wede = boxes[0].dead ? NaN : boxes[0].right;
-
-    if (crossunder[i]) {
-      let h = NaN;
-      let l = NaN;
-      let startIdx: number;
-      if (pivhIndex > pivlIndex) {
-        // The pivot high is the closest: the lowest low since it
-        h = pivhLvl;
-        startIdx = pivhIndex;
-        const dist = i - startIdx;
-        if (dist > 0) {
-          let minVal = bar.high;
-          for (let k = 0; k <= dist - 1; k++) minVal = Math.min(minVal, bars[i - k].low);
-          l = minVal;
-        }
-      } else {
-        // The pivot low is the closest: the highest high since it
-        l = pivlLvl;
-        startIdx = pivlIndex;
-        const dist = i - startIdx;
-        if (dist > 0) {
-          let maxVal = bar.low;
-          for (let k = 0; k <= dist - 1; k++) maxVal = Math.max(maxVal, bars[i - k].high);
-          h = maxVal;
-        }
-      }
-      if (!Number.isNaN(h) && !Number.isNaN(l) && ge(h, close) && ge(close, l) && (overlap || startIdx > wede)) {
-        boxes.unshift(newBox(startIdx, h, i, l, fg90));
-        boxesU.unshift(newBox(startIdx, h, i, h - vola, red70));
-        boxesL.unshift(newBox(startIdx, l + vola, i, l, green70));
-        const centerY = (h + l) / 2;
-        centerLines.unshift(register<LineObj>(
-          allLines, { dead: false, x1: startIdx, y1: centerY, x2: i, y2: centerY, color: fg50, width: 1, style: 'dashed' }, MAX_LINES,
-        ));
-      }
-    }
-
-    let upbreak = 0;
-    let downbreak = 0;
-    let newBreakout = false;
-
-    // Breakouts and running channels, from the oldest channel to the newest
-    for (let k = boxes.length - 1; k >= 0; k--) {
-      const b = boxes[k];
-      // A deleted box has na coordinates
-      const top = b.dead ? NaN : b.top;
-      const bot = b.dead ? NaN : b.bottom;
-      const isUp = gt(close, top);
-      if (isUp || gt(bot, close)) {
-        if (isUp) upbreak = bot;
-        else downbreak = top;
-        boxes.splice(k, 1);
-        boxesU.splice(k, 1);
-        boxesL.splice(k, 1);
-        centerLines.splice(k, 1);
-
-        if (cfg.showTp) {
-          newBreakout = true;
-          tradeDir = isUp ? 1 : -1;
-          tp3Hit = false;
-          const sl = isUp ? bar.low - volatility[i] * cfg.slMultiplier : bar.high + volatility[i] * cfg.slMultiplier;
-          const risk = Math.abs(close - sl);
-          const sign = isUp ? 1 : -1;
-          const tp1 = close + sign * risk * cfg.tp1Multiplier;
-          const tp2 = close + sign * risk * cfg.tp2Multiplier;
-          const tp3 = close + sign * risk * cfg.tp3Multiplier;
-
-          // line.delete() / label.delete() / linefill.delete() of the trade before
-          for (const ln of tradeLines) {
-            ln.dead = true;
-            allLines.splice(allLines.indexOf(ln), 1);
-          }
-          const entryColor = isUp ? green : red;
-          const levels: Array<[number, string, string]> = [
-            [close, entryColor, 'Entry ▸ '],
-            [sl, red80, '✘ SL ▸ '],
-            [tp1, green80, ' ✔ TP1 ▸ '],
-            [tp2, green80, ' ✔ TP2 ▸ '],
-            [tp3, green80, ' ✔ TP3 ▸ '],
-          ];
-          tradeLines = [];
-          tradeLabels = [];
-          for (const [y, col, text] of levels) {
-            tradeLines.push(register<LineObj>(
-              allLines, { dead: false, kept: true, x1: i, y1: y, x2: i, y2: y, color: col, width: 3, style: 'solid' }, MAX_LINES,
-            ));
-            tradeLabels.push({ dead: false, x: i, y, text: text + priceText(y), color: col });
-          }
-          fills = [
-            { line1: tradeLines[0], line2: tradeLines[1], color: red95 },
-            { line1: tradeLines[0], line2: tradeLines[4], color: green95 },
-          ];
-        }
-      } else {
-        for (const box of [b, boxesU[k], boxesL[k]]) if (!box.dead) box.right = i;
-        if (!centerLines[k].dead) centerLines[k].x2 = i;
-      }
-    }
-
-    if (!newBreakout && !tp3Hit) {
-      for (const ln of tradeLines) ln.x2 = i;
-      for (const lb of tradeLabels) lb.x = i;
-      // tp3_level = line.get_y1(tp3_line)
-      const tp3Level = tradeLines.length > 0 ? tradeLines[4].y1 : NaN;
-      if (!Number.isNaN(tp3Level)) {
-        if (tradeDir === 1 && ge(bar.high, tp3Level)) tp3Hit = true;
-        else if (tradeDir === -1 && ge(tp3Level, bar.low)) tp3Hit = true;
-      }
-    }
-
-    // alertcondition(upbreak != 0, "Bullish Breakout") / alertcondition(downbreak != 0, "Bearish Breakout")
-    const isUpbreak = !Number.isNaN(upbreak) && !eq(upbreak, 0);
-    const isDownbreak = !Number.isNaN(downbreak) && !eq(downbreak, 0);
-    flags[0].push(isUpbreak);
-    flags[1].push(isDownbreak);
-    // tp1_val .. sl_val = line.get_y1(...) of the current trade (na without a trade); levels crossed on this bar
-    const [slVal, tp1Val, tp2Val, tp3Val] = tradeLines.length > 0
-      ? [tradeLines[1].y1, tradeLines[2].y1, tradeLines[3].y1, tradeLines[4].y1] : [NaN, NaN, NaN, NaN];
-    const high1 = i > 0 ? bars[i - 1].high : NaN;
-    const low1 = i > 0 ? bars[i - 1].low : NaN;
-    let tp1HitCond = false;
-    let tp2HitCond = false;
-    let tp3HitCondAlert = false;
-    let slHitCond = false;
-    if (!Number.isNaN(tp1Val)) {
-      if (tradeDir === 1) {
-        tp1HitCond = ge(bar.high, tp1Val) && lt(high1, tp1Val);
-        tp2HitCond = ge(bar.high, tp2Val) && lt(high1, tp2Val);
-        tp3HitCondAlert = ge(bar.high, tp3Val) && lt(high1, tp3Val);
-        slHitCond = le(bar.low, slVal) && gt(low1, slVal);
-      } else if (tradeDir === -1) {
-        tp1HitCond = le(bar.low, tp1Val) && gt(low1, tp1Val);
-        tp2HitCond = le(bar.low, tp2Val) && gt(low1, tp2Val);
-        tp3HitCondAlert = le(bar.low, tp3Val) && gt(low1, tp3Val);
-        slHitCond = ge(bar.high, slVal) && lt(high1, slVal);
-      }
-    }
-    flags[2].push(tp1HitCond);
-    flags[3].push(tp2HitCond);
-    flags[4].push(tp3HitCondAlert);
-    flags[5].push(slHitCond);
-
-    // plotshape(upbreak != 0 ? upbreak : na, ...), plotshape(downbreak != 0 ? downbreak : na, ...)
-    if (isUpbreak) {
-      markers.push({
-        time: bar.time, position: 'atPriceBottom', price: upbreak, shape: 'labelUp', color: green, text: '▲', textColor: chartFg,
-      });
-    }
-    if (isDownbreak) {
-      markers.push({
-        time: bar.time, position: 'atPriceTop', price: downbreak, shape: 'labelDown', color: red, text: '▼', textColor: chartFg,
-      });
-    }
-  }
-
-  const time = (index: number) => barTime(bars, index);
-  const lineOut = (ln: LineObj): LineDrawingData => ({
-    time1: time(ln.x1), price1: ln.y1, time2: time(ln.x2), price2: ln.y2, color: ln.color, width: ln.width, style: ln.style,
-  });
-  // A box of a v6 script has a white text colour by default
-  const boxOut: BoxData[] = allBoxes.map((b) => ({
-    time1: time(b.left), price1: b.top, time2: time(b.right), price2: b.bottom, bgColor: b.bg, borderColor: 'transparent',
-    textColor: '#FFFFFF',
-  }));
-  // A line or a label with an na price is not drawn
-  const drawn = (ln: LineObj) => !Number.isNaN(ln.y1) && !Number.isNaN(ln.y2);
-  const labels: LabelData[] = tradeLabels.filter((lb) => !Number.isNaN(lb.y)).map((lb) => ({
-    time: time(lb.x), price: lb.y, text: lb.text, color: lb.color, textColor: '#FFFFFF', style: 'label_left',
-  }));
-  const linefills: LinefillData[] = fills.filter((f) => drawn(f.line1) && drawn(f.line2))
-    .map((f) => ({ line1: lineOut(f.line1), line2: lineOut(f.line2), color: f.color }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    boxes: boxOut,
-    lines: allLines.filter(drawn).map(lineOut),
-    labels,
-    linefills,
-    alerts: alertStates(alertConditions, bars, flags),
+    init(_bars, chart) {
+      chartFg = foregroundColorOf(chart);
+      mintick = mintickOf(chart);
+      fg90 = String(color.new(chartFg, 90));
+      fg50 = String(color.new(chartFg, 50));
+      const s: BtRun = {
+        pivh: new PivotStep(half, half, true), pivl: new PivotStep(half, half, false), v1: taStep.wma(), v2: taStep.ema(len),
+        cross: taStep.crossunder(), volatility: taStep.atr(cfg.atrPeriod), atrLen: taStep.atr(len), markers: [],
+        flags: [[], [], [], [], [], []], times: [[], [], [], [], [], []], steps: [],
+        vars: {
+          allBoxes: [], allLines: [], boxes: [], boxesU: [], boxesL: [], centerLines: [], tradeLines: [], tradeLabels: [],
+          fills: [], tradeDir: 0, tp3Hit: false, pivhLvl: NaN, pivhIndex: NaN, pivlLvl: NaN, pivlIndex: NaN, wede: 0,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.pivh, s.pivl, s.v1, s.v2, s.cross, s.volatility, s.atrLen];
+      s.lists = [s.markers, ...s.times];
+      s.series = s.flags;
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const { allBoxes, allLines, boxes, boxesU, boxesL, centerLines } = v;
+      const newBox = (left: number, top: number, right: number, bottom: number, bg: string) =>
+        register<BoxObj>(allBoxes, { dead: false, left, top, right, bottom, bg }, MAX_BOXES);
+      const bar = bars[i];
+      const { close } = bar;
+      const pivh = s.pivh.step(i, bar.high);
+      const pivl = s.pivl.step(i, bar.low);
+      const body = Math.abs(bar.close - bar.open);
+      const crossunder = s.cross.step(s.v1.step(body, len), s.v2.step(body));
+      const volatility = s.volatility.step(bar.high, bar.low, bar.close);
+      const atrLen = s.atrLen.step(bar.high, bar.low, bar.close);
+      if (!Number.isNaN(pivh)) {
+        v.pivhLvl = bars[i - half].high;
+        v.pivhIndex = i - half;
+      }
+      if (!Number.isNaN(pivl)) {
+        v.pivlLvl = bars[i - half].low;
+        v.pivlIndex = i - half;
+      }
+      const vola = atrLen / 2;
+
+      // wede := boxes.first().get_right() (na when the box was deleted)
+      if (boxes.length > 0) v.wede = boxes[0].dead ? NaN : boxes[0].right;
+
+      if (crossunder) {
+        let h = NaN;
+        let l = NaN;
+        let startIdx: number;
+        if (v.pivhIndex > v.pivlIndex) {
+          // The pivot high is the closest: the lowest low since it
+          h = v.pivhLvl;
+          startIdx = v.pivhIndex;
+          const dist = i - startIdx;
+          if (dist > 0) {
+            let minVal = bar.high;
+            for (let k = 0; k <= dist - 1; k++) minVal = Math.min(minVal, bars[i - k].low);
+            l = minVal;
+          }
+        } else {
+          // The pivot low is the closest: the highest high since it
+          l = v.pivlLvl;
+          startIdx = v.pivlIndex;
+          const dist = i - startIdx;
+          if (dist > 0) {
+            let maxVal = bar.low;
+            for (let k = 0; k <= dist - 1; k++) maxVal = Math.max(maxVal, bars[i - k].high);
+            h = maxVal;
+          }
+        }
+        if (!Number.isNaN(h) && !Number.isNaN(l) && ge(h, close) && ge(close, l) && (overlap || startIdx > v.wede)) {
+          boxes.unshift(newBox(startIdx, h, i, l, fg90));
+          boxesU.unshift(newBox(startIdx, h, i, h - vola, red70));
+          boxesL.unshift(newBox(startIdx, l + vola, i, l, green70));
+          const centerY = (h + l) / 2;
+          centerLines.unshift(register<LineObj>(
+            allLines, { dead: false, x1: startIdx, y1: centerY, x2: i, y2: centerY, color: fg50, width: 1, style: 'dashed' }, MAX_LINES,
+          ));
+        }
+      }
+
+      let upbreak = 0;
+      let downbreak = 0;
+      let newBreakout = false;
+
+      // Breakouts and running channels, from the oldest channel to the newest
+      for (let k = boxes.length - 1; k >= 0; k--) {
+        const b = boxes[k];
+        // A deleted box has na coordinates
+        const top = b.dead ? NaN : b.top;
+        const bot = b.dead ? NaN : b.bottom;
+        const isUp = gt(close, top);
+        if (isUp || gt(bot, close)) {
+          if (isUp) upbreak = bot;
+          else downbreak = top;
+          boxes.splice(k, 1);
+          boxesU.splice(k, 1);
+          boxesL.splice(k, 1);
+          centerLines.splice(k, 1);
+
+          if (cfg.showTp) {
+            newBreakout = true;
+            v.tradeDir = isUp ? 1 : -1;
+            v.tp3Hit = false;
+            const sl = isUp ? bar.low - volatility * cfg.slMultiplier : bar.high + volatility * cfg.slMultiplier;
+            const risk = Math.abs(close - sl);
+            const sign = isUp ? 1 : -1;
+            const tp1 = close + sign * risk * cfg.tp1Multiplier;
+            const tp2 = close + sign * risk * cfg.tp2Multiplier;
+            const tp3 = close + sign * risk * cfg.tp3Multiplier;
+
+            // line.delete() / label.delete() / linefill.delete() of the trade before
+            for (const ln of v.tradeLines) {
+              ln.dead = true;
+              allLines.splice(allLines.indexOf(ln), 1);
+            }
+            const entryColor = isUp ? green : red;
+            const levels: Array<[number, string, string]> = [
+              [close, entryColor, 'Entry ▸ '],
+              [sl, red80, '✘ SL ▸ '],
+              [tp1, green80, ' ✔ TP1 ▸ '],
+              [tp2, green80, ' ✔ TP2 ▸ '],
+              [tp3, green80, ' ✔ TP3 ▸ '],
+            ];
+            v.tradeLines = [];
+            v.tradeLabels = [];
+            for (const [y, col, text] of levels) {
+              v.tradeLines.push(register<LineObj>(
+                allLines, { dead: false, kept: true, x1: i, y1: y, x2: i, y2: y, color: col, width: 3, style: 'solid' }, MAX_LINES,
+              ));
+              v.tradeLabels.push({ dead: false, x: i, y, text: text + priceText(y), color: col });
+            }
+            v.fills = [
+              { line1: v.tradeLines[0], line2: v.tradeLines[1], color: red95 },
+              { line1: v.tradeLines[0], line2: v.tradeLines[4], color: green95 },
+            ];
+          }
+        } else {
+          for (const box of [b, boxesU[k], boxesL[k]]) if (!box.dead) box.right = i;
+          if (!centerLines[k].dead) centerLines[k].x2 = i;
+        }
+      }
+
+      const { tradeLines, tradeLabels, tradeDir } = v;
+      if (!newBreakout && !v.tp3Hit) {
+        for (const ln of tradeLines) ln.x2 = i;
+        for (const lb of tradeLabels) lb.x = i;
+        // tp3_level = line.get_y1(tp3_line)
+        const tp3Level = tradeLines.length > 0 ? tradeLines[4].y1 : NaN;
+        if (!Number.isNaN(tp3Level)) {
+          if (tradeDir === 1 && ge(bar.high, tp3Level)) v.tp3Hit = true;
+          else if (tradeDir === -1 && ge(tp3Level, bar.low)) v.tp3Hit = true;
+        }
+      }
+
+      // alertcondition(upbreak != 0, "Bullish Breakout") / alertcondition(downbreak != 0, "Bearish Breakout")
+      const isUpbreak = !Number.isNaN(upbreak) && !eq(upbreak, 0);
+      const isDownbreak = !Number.isNaN(downbreak) && !eq(downbreak, 0);
+      // tp1_val .. sl_val = line.get_y1(...) of the current trade (na without a trade); levels crossed on this bar
+      const [slVal, tp1Val, tp2Val, tp3Val] = tradeLines.length > 0
+        ? [tradeLines[1].y1, tradeLines[2].y1, tradeLines[3].y1, tradeLines[4].y1] : [NaN, NaN, NaN, NaN];
+      const high1 = i > 0 ? bars[i - 1].high : NaN;
+      const low1 = i > 0 ? bars[i - 1].low : NaN;
+      let tp1HitCond = false;
+      let tp2HitCond = false;
+      let tp3HitCondAlert = false;
+      let slHitCond = false;
+      if (!Number.isNaN(tp1Val)) {
+        if (tradeDir === 1) {
+          tp1HitCond = ge(bar.high, tp1Val) && lt(high1, tp1Val);
+          tp2HitCond = ge(bar.high, tp2Val) && lt(high1, tp2Val);
+          tp3HitCondAlert = ge(bar.high, tp3Val) && lt(high1, tp3Val);
+          slHitCond = le(bar.low, slVal) && gt(low1, slVal);
+        } else if (tradeDir === -1) {
+          tp1HitCond = le(bar.low, tp1Val) && gt(low1, tp1Val);
+          tp2HitCond = le(bar.low, tp2Val) && gt(low1, tp2Val);
+          tp3HitCondAlert = le(bar.low, tp3Val) && gt(low1, tp3Val);
+          slHitCond = ge(bar.high, slVal) && lt(high1, slVal);
+        }
+      }
+      const flags = [isUpbreak, isDownbreak, tp1HitCond, tp2HitCond, tp3HitCondAlert, slHitCond];
+      for (let k = 0; k < 6; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(bar.time as number);
+      }
+
+      // plotshape(upbreak != 0 ? upbreak : na, ...), plotshape(downbreak != 0 ? downbreak : na, ...)
+      if (isUpbreak) {
+        s.markers.push({
+          time: bar.time, position: 'atPriceBottom', price: upbreak, shape: 'labelUp', color: green, text: '▲', textColor: chartFg,
+        });
+      }
+      if (isDownbreak) {
+        s.markers.push({
+          time: bar.time, position: 'atPriceTop', price: downbreak, shape: 'labelDown', color: red, text: '▼', textColor: chartFg,
+        });
+      }
+    },
+    copyVars: (v) => {
+      // a deleted object is not changed any more: it is shared, the alive ones are copied
+      const copies = new Map<Obj, Obj>();
+      const cp = <T extends Obj>(o: T): T => {
+        if (o.dead) return o;
+        let c = copies.get(o) as T | undefined;
+        if (!c) {
+          c = { ...o };
+          copies.set(o, c);
+        }
+        return c;
+      };
+      const tradeLines = v.tradeLines.map(cp);
+      return {
+        allBoxes: v.allBoxes.map(cp),
+        allLines: v.allLines.map(cp),
+        boxes: v.boxes.map(cp),
+        boxesU: v.boxesU.map(cp),
+        boxesL: v.boxesL.map(cp),
+        centerLines: v.centerLines.map(cp),
+        tradeLines,
+        tradeLabels: v.tradeLabels.map((l) => ({ ...l })),
+        fills: v.fills.map((f) => ({ line1: cp(f.line1), line2: cp(f.line2), color: f.color })),
+        tradeDir: v.tradeDir,
+        tp3Hit: v.tp3Hit,
+        pivhLvl: v.pivhLvl,
+        pivhIndex: v.pivhIndex,
+        pivlLvl: v.pivlLvl,
+        pivlIndex: v.pivlIndex,
+        wede: v.wede,
+      };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const { allBoxes, allLines, tradeLabels, fills } = s.vars;
+      const time = (index: number) => barTime(bars, index);
+      const lineOut = (ln: LineObj): LineDrawingData => ({
+        time1: time(ln.x1), price1: ln.y1, time2: time(ln.x2), price2: ln.y2, color: ln.color, width: ln.width, style: ln.style,
+      });
+      // A box of a v6 script has a white text colour by default
+      const boxOut: BoxData[] = allBoxes.map((b) => ({
+        time1: time(b.left), price1: b.top, time2: time(b.right), price2: b.bottom, bgColor: b.bg, borderColor: 'transparent',
+        textColor: '#FFFFFF',
+      }));
+      // A line or a label with an na price is not drawn
+      const drawn = (ln: LineObj) => !Number.isNaN(ln.y1) && !Number.isNaN(ln.y2);
+      const labels: LabelData[] = tradeLabels.filter((lb) => !Number.isNaN(lb.y)).map((lb) => ({
+        time: time(lb.x), price: lb.y, text: lb.text, color: lb.color, textColor: '#FFFFFF', style: 'label_left',
+      }));
+      const linefills: LinefillData[] = fills.filter((f) => drawn(f.line1) && drawn(f.line2))
+        .map((f) => ({ line1: lineOut(f.line1), line2: lineOut(f.line2), color: f.color }));
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        boxes: boxOut,
+        lines: allLines.filter(drawn).map(lineOut),
+        labels,
+        linefills,
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
 }
 
-export const BreakoutTargets = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BreakoutTargetsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BreakoutTargetsInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const BreakoutTargets = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

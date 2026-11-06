@@ -11,8 +11,10 @@
  * Original notice: © DotGain
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RsiBbOversoldScalperWithMacdConfirmationInputs {
   useBB: boolean;
@@ -79,89 +81,127 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface ScalperVars {
+  setupIsActive: boolean;
+  barsSinceSetup: number;
+}
+
+interface ScalperRun extends BarRunState<ScalperVars> {
+  bb: ReturnType<typeof taStep.bb>;
+  rsi: ReturnType<typeof taStep.rsi>;
+  high_: ReturnType<typeof taStep.highest>;
+  low_: ReturnType<typeof taStep.lowest>;
+  ema1: ReturnType<typeof taStep.ema>;
+  high_2: ReturnType<typeof taStep.highest>;
+  low_2: ReturnType<typeof taStep.lowest>;
+  dssLine: ReturnType<typeof taStep.ema>;
+  dssSig: ReturnType<typeof taStep.ema>;
+  macd: ReturnType<typeof taStep.macd>;
+  lowestBB: ReturnType<typeof taStep.lowest>;
+  lowestRSI: ReturnType<typeof taStep.lowest>;
+  dssCross: ReturnType<typeof taStep.crossover>;
+  macdCross: ReturnType<typeof taStep.crossover>;
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<RsiBbOversoldScalperWithMacdConfirmationInputs>): BarStudy<ScalperRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const buyColor = String(color.new(color.lime, 60));
+  return {
+    init() {
+      const s: ScalperRun = {
+        bb: taStep.bb(cfg.bbLen, cfg.bbMult), rsi: taStep.rsi(cfg.rsiLen),
+        high_: taStep.highest(), low_: taStep.lowest(), ema1: taStep.ema(cfg.dssSmooth),
+        high_2: taStep.highest(), low_2: taStep.lowest(), dssLine: taStep.ema(cfg.dssSmooth), dssSig: taStep.ema(cfg.dssSmooth),
+        macd: taStep.macd(cfg.macdFast, cfg.macdSlow, cfg.macdSignal),
+        lowestBB: taStep.lowest(), lowestRSI: taStep.lowest(), dssCross: taStep.crossover(), macdCross: taStep.crossover(),
+        markers: [],
+        steps: [], vars: { setupIsActive: false, barsSinceSetup: 0 }, lists: [], series: [],
+      };
+      s.steps = [
+        s.bb, s.rsi, s.high_, s.low_, s.ema1, s.high_2, s.low_2, s.dssLine, s.dssSig, s.macd, s.lowestBB, s.lowestRSI,
+        s.dssCross, s.macdCross,
+      ];
+      s.lists = [s.markers];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const c = b.close;
+      // [_, upper_b, lower_b] = ta.bb(close, bbLen, bbMult): [basis, upper, lower]
+      // (the first ta.bb call of the Pine script gives the same values and its result is not used)
+      const [, upperB, lowerB] = s.bb.step(c);
+      // bbPercentB = (close - lower_b) / (upper_b - lower_b): plain division (x / 0 is +-infinity, 0 / 0 is na)
+      const bbPercentB = (c - lowerB) / (upperB - lowerB);
+
+      const rsiVal = s.rsi.step(c);
+
+      // calc_dss(dssLen, dssSmooth): called on every bar
+      const high_ = s.high_.step(b.high, cfg.dssLen);
+      const low_ = s.low_.step(b.low, cfg.dssLen);
+      const delta = high_ - low_;
+      const frac = gt(delta, 0) ? ((c - low_) / delta) * 100 : 0;
+      const ema1 = s.ema1.step(frac);
+      const high_2 = s.high_2.step(ema1, cfg.dssLen);
+      const low_2 = s.low_2.step(ema1, cfg.dssLen);
+      const delta2 = high_2 - low_2;
+      const frac2 = gt(delta2, 0) ? ((ema1 - low_2) / delta2) * 100 : 0;
+      const dssLine = s.dssLine.step(frac2);
+      const dssSig = s.dssSig.step(dssLine);
+
+      const [macdLine, signalLine] = s.macd.step(c);
+
+      const lowestBB = s.lowestBB.step(bbPercentB, cfg.lookbackBB);
+      const lowestRSI = s.lowestRSI.step(rsiVal, cfg.lookbackRSI);
+      const dssCross = s.dssCross.step(dssLine, dssSig);
+      const macdBullishCross = s.macdCross.step(macdLine, signalLine);
+
+      const v = s.vars;
+      const condBB = lt(lowestBB, 0);
+      const condRSI = lt(lowestRSI, 30);
+      const condDSS = dssCross && lt(dssLine, 20);
+      const setupTrigger = (cfg.useBB ? condBB : true) && (cfg.useRSI ? condRSI : true) && (cfg.useDSS ? condDSS : true);
+
+      if (setupTrigger) {
+        v.setupIsActive = true;
+        v.barsSinceSetup = 0;
+      }
+      if (v.setupIsActive) v.barsSinceSetup = v.barsSinceSetup + 1;
+      if (v.barsSinceSetup > cfg.validWindow) v.setupIsActive = false;
+
+      const buySignal = v.setupIsActive && macdBullishCross;
+      if (buySignal) {
+        v.setupIsActive = false;
+        v.barsSinceSetup = 0;
+        // plotshape(buySignal, 'Buy Signal', shape.labelup, location.belowbar, color.new(color.lime, 60), size.small)
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: buyColor, size: 'small' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(
+  inputs: Partial<RsiBbOversoldScalperWithMacdConfirmationInputs> = {},
+  chart: ChartContext = {},
+): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<RsiBbOversoldScalperWithMacdConfirmationInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (arr: number[]) => Series.fromArray(bars, arr);
-  const closeArr = bars.map((b) => b.close);
-  const close = S(closeArr);
-
-  // [_, upper_b, lower_b] = ta.bb(close, bbLen, bbMult): [basis, upper, lower]
-  // (the first ta.bb call of the Pine script gives the same values and its result is not used)
-  const [, bbUpper, bbLower] = ta.bb(close, cfg.bbLen, cfg.bbMult);
-  const upperB = A(bbUpper);
-  const lowerB = A(bbLower);
-  // bbPercentB = (close - lower_b) / (upper_b - lower_b): plain division (x / 0 is +-infinity, 0 / 0 is na)
-  const bbPercentB = closeArr.map((c, i) => (c - lowerB[i]) / (upperB[i] - lowerB[i]));
-
-  const rsiVal = A(ta.rsi(close, cfg.rsiLen));
-
-  // calc_dss(dssLen, dssSmooth): called on every bar
-  const high_ = A(ta.highest(S(bars.map((b) => b.high)), cfg.dssLen));
-  const low_ = A(ta.lowest(S(bars.map((b) => b.low)), cfg.dssLen));
-  const frac = closeArr.map((c, i) => {
-    const delta = high_[i] - low_[i];
-    return gt(delta, 0) ? ((c - low_[i]) / delta) * 100 : 0;
-  });
-  const ema1S = ta.ema(S(frac), cfg.dssSmooth);
-  const ema1 = A(ema1S);
-  const high_2 = A(ta.highest(ema1S, cfg.dssLen));
-  const low_2 = A(ta.lowest(ema1S, cfg.dssLen));
-  const frac2 = ema1.map((e, i) => {
-    const delta2 = high_2[i] - low_2[i];
-    return gt(delta2, 0) ? ((e - low_2[i]) / delta2) * 100 : 0;
-  });
-  const dssLineS = ta.ema(S(frac2), cfg.dssSmooth);
-  const dssLine = A(dssLineS);
-  const dssSigS = ta.ema(dssLineS, cfg.dssSmooth);
-
-  const [macdLineS, signalLineS] = ta.macd(close, cfg.macdFast, cfg.macdSlow, cfg.macdSignal);
-
-  const lowestBB = A(ta.lowest(S(bbPercentB), cfg.lookbackBB));
-  const lowestRSI = A(ta.lowest(S(rsiVal), cfg.lookbackRSI));
-  const dssCross = A(ta.crossover(dssLineS, dssSigS));
-  const macdBullishCross = A(ta.crossover(macdLineS, signalLineS));
-
-  const markers: MarkerData[] = [];
-  let setupIsActive = false;
-  let barsSinceSetup = 0;
-  for (let i = 0; i < n; i++) {
-    const condBB = lt(lowestBB[i], 0);
-    const condRSI = lt(lowestRSI[i], 30);
-    const condDSS = dssCross[i] === 1 && lt(dssLine[i], 20);
-    const setupTrigger = (cfg.useBB ? condBB : true) && (cfg.useRSI ? condRSI : true) && (cfg.useDSS ? condDSS : true);
-
-    if (setupTrigger) {
-      setupIsActive = true;
-      barsSinceSetup = 0;
-    }
-    if (setupIsActive) barsSinceSetup = barsSinceSetup + 1;
-    if (barsSinceSetup > cfg.validWindow) setupIsActive = false;
-
-    const buySignal = setupIsActive && macdBullishCross[i] === 1;
-    if (buySignal) {
-      setupIsActive = false;
-      barsSinceSetup = 0;
-      // plotshape(buySignal, 'Buy Signal', shape.labelup, location.belowbar, color.new(color.lime, 60), size.small)
-      markers.push({
-        time: bars[i].time,
-        position: 'belowBar',
-        shape: 'labelUp',
-        color: String(color.new(color.lime, 60)),
-        size: 'small',
-      });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
-export const RsiBbOversoldScalperWithMacdConfirmation = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+export const RsiBbOversoldScalperWithMacdConfirmation = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

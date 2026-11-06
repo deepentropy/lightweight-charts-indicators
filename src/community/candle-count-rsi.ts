@@ -13,8 +13,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CandleCountRsiInputs {
   /** RSI length (standard RSI and candle count RSI) */
@@ -173,124 +175,155 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CandleCountRsiInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+
+interface CandleCountVars {
+  greenStreak: number;
+  redStreak: number;
+}
+
+interface CandleCountRun extends BarRunState<CandleCountVars> {
+  rawRSI: ReturnType<typeof taStep.rsi>;
+  smoothRSI: ReturnType<typeof taStep.wma> | null;
+  avgUp: ReturnType<typeof taStep.rma>;
+  avgDown: ReturnType<typeof taStep.rma>;
+  smoothCandle: ReturnType<typeof taStep.wma> | null;
+  rsi: number[];
+  candleRSI: number[];
+  plots: Point[][];
+  histColor: string[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<CandleCountRsiInputs>): BarStudy<CandleCountRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // Standard RSI
-  const rawRSI = ta.rsi(S(bars.map((b) => b.close)), cfg.length);
-  const rsi = A(cfg.smoothStandard ? ta.wma(rawRSI, cfg.smoothLenStandard) : rawRSI);
-
-  // Candle count RSI: RMA of the up / down candle flags
-  const avgUp = A(ta.rma(S(bars.map((b) => (gt(b.close, b.open) ? 1.0 : 0.0))), cfg.length));
-  const avgDown = A(ta.rma(S(bars.map((b) => (lt(b.close, b.open) ? 1.0 : 0.0))), cfg.length));
-  const unsmoothed: number[] = new Array(n);
-  let greenStreak = 0;
-  let redStreak = 0;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    // rs = avgDown == 0 ? na : avgUp / avgDown; rawCandleRSI = avgDown == 0 ? 100 : 100 - 100 / (1 + rs)
-    const down0 = eq(avgDown[i], 0);
-    const rs = down0 ? NaN : avgUp[i] / avgDown[i];
-    const rawCandleRSI = down0 ? 100 : 100 - 100 / (1 + rs);
-    // Streaks (an unchanged bar keeps both)
-    if (gt(b.close, b.open)) {
-      greenStreak += 1;
-      redStreak = 0;
-    } else if (lt(b.close, b.open)) {
-      redStreak += 1;
-      greenStreak = 0;
-    }
-    const streakLength = gt(b.close, b.open) ? greenStreak : redStreak;
-    const streakMult = 1 + Math.min(streakLength, 10) * 0.05;
-    unsmoothed[i] = gt(rawCandleRSI, 50)
-      ? 50 + (rawCandleRSI - 50) * streakMult
-      : 50 - (50 - rawCandleRSI) * streakMult;
-  }
-  const candleRSI = cfg.smoothCandle ? A(ta.wma(S(unsmoothed), cfg.smoothLenCandle)) : unsmoothed;
-
   // Directional histogram colour
   const histBull = String(color.new(cfg.histBullColor, cfg.histTransparency));
   const histBear = String(color.new(cfg.histBearColor, cfg.histTransparency));
   const histNeutral = String(color.new(cfg.histNeutralColor, cfg.histTransparency));
-  const histColor = bars.map((_b, i) => {
-    const candleSlope = i > 0 ? candleRSI[i] - candleRSI[i - 1] : NaN;
-    const standardSlope = i > 0 ? rsi[i] - rsi[i - 1] : NaN;
-    if (gt(candleSlope, 0) && gt(standardSlope, 0)) return histBull;
-    if (lt(candleSlope, 0) && lt(standardSlope, 0)) return histBear;
-    return histNeutral;
-  });
-
-  // Backgrounds, in the order of the Pine bgcolor calls (a later call is drawn on top); id bgcolor<k> = k-th call
-  const bgColors: BgColorData[] = [];
   const glowOn = cfg.masterGlowToggle && cfg.showGlow;
   const divOn = cfg.masterGlowToggle && cfg.showDivBG;
   const divBull = String(color.new(cfg.bullDivColor, cfg.divTransp));
   const divBear = String(color.new(cfg.bearDivColor, cfg.divTransp));
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    const c = candleRSI[i];
-    // bullFadeStrength = candleRSI > 50 ? 100 - min((candleRSI - 50) * mult, 100) : na (bear: below 50)
-    const bullFade = gt(c, 50) ? 100 - Math.min((c - 50) * cfg.glowStrengthMult, 100) : NaN;
-    const bearFade = lt(c, 50) ? 100 - Math.min((50 - c) * cfg.glowStrengthMult, 100) : NaN;
-    const bullGlow = !isNaN(bullFade) ? String(color.new(cfg.bullGlowColor, bullFade)) : null;
-    const bearGlow = !isNaN(bearFade) ? String(color.new(cfg.bearGlowColor, bearFade)) : null;
-    const bullDiv = gt(c, 50) && lt(rsi[i], cfg.bullDivThresh);
-    const bearDiv = lt(c, 50) && gt(rsi[i], cfg.bearDivThresh);
-    const layers: Array<[boolean, string | null, boolean]> = [
-      [glowOn && cfg.showSubpaneGlow, bullGlow, false],
-      [glowOn && cfg.showSubpaneGlow, bearGlow, false],
-      [glowOn && cfg.showChartGlow, bullGlow, true],
-      [glowOn && cfg.showChartGlow, bearGlow, true],
-      [divOn && cfg.showDivSubpane && bullDiv, divBull, false],
-      [divOn && cfg.showDivSubpane && bearDiv, divBear, false],
-      [divOn && cfg.showDivChart && bullDiv, divBull, true],
-      [divOn && cfg.showDivChart && bearDiv, divBear, true],
-    ];
-    layers.forEach(([on, col, overlay], k) => {
-      const id = `bgcolor${k}`;
-      if (on && col !== null) bgColors.push(overlay ? { id, time, color: col, forceOverlay: true } : { id, time, color: col });
-    });
-  }
-
   const hist = cfg.showDirectionHistogram;
   const glowLines = cfg.masterGlowToggle;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: hist ? candleRSI[i] - rsi[i] + 50 : NaN })),
-      plot1: bars.map((b) => ({ time: b.time, value: hist ? 50 : NaN })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: cfg.showStandard ? rsi[i] : NaN, color: cfg.standardColor })),
-      plot3: bars.map((b, i) => ({
-        time: b.time, value: glowLines && cfg.showStandardGlow ? rsi[i] : NaN, color: cfg.standardColorGlow,
-      })),
-      plot4: bars.map((b, i) => ({ time: b.time, value: cfg.showCandle ? candleRSI[i] : NaN, color: cfg.candleCountColor })),
-      plot5: bars.map((b, i) => ({
-        time: b.time, value: glowLines && cfg.showCandleGlow ? candleRSI[i] : NaN, color: cfg.candleCountColorGlow,
-      })),
+    init() {
+      const s: CandleCountRun = {
+        rawRSI: taStep.rsi(cfg.length), smoothRSI: cfg.smoothStandard ? taStep.wma() : null,
+        avgUp: taStep.rma(cfg.length), avgDown: taStep.rma(cfg.length), smoothCandle: cfg.smoothCandle ? taStep.wma() : null,
+        rsi: [], candleRSI: [], plots: [[], [], [], [], [], []], histColor: [], bgColors: [],
+        steps: [], vars: { greenStreak: 0, redStreak: 0 }, lists: [], series: [],
+      };
+      s.steps = [s.rawRSI, ...(s.smoothRSI ? [s.smoothRSI] : []), s.avgUp, s.avgDown, ...(s.smoothCandle ? [s.smoothCandle] : [])];
+      s.lists = [s.bgColors];
+      s.series = [s.rsi, s.candleRSI, ...s.plots, s.histColor];
+      return s;
     },
-    // hline(masterGlowToggle ? level : na, ...): an na level draws no line
-    hlines: hlineConfig.filter((h) => glowLines || !GLOW_LEVELS.has(h.id)).map((h) => ({
-      value: h.price,
-      options: { title: h.title, color: h.color, linestyle: h.linestyle, linewidth: h.linewidth ?? 1 },
-    })),
-    fills: [
-      {
-        plot1: 'plot0', plot2: 'plot1', options: { title: 'Directional Histogram Fill' },
-        colors: histColor.map((c) => (hist ? c : 'transparent')),
-      },
-    ],
-    bgColors,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const v = s.vars;
+      // Standard RSI
+      const rawRSI = s.rawRSI.step(b.close);
+      const rsi = s.smoothRSI ? s.smoothRSI.step(rawRSI, cfg.smoothLenStandard) : rawRSI;
+      s.rsi[i] = rsi;
+
+      // Candle count RSI: RMA of the up / down candle flags
+      const avgUp = s.avgUp.step(gt(b.close, b.open) ? 1.0 : 0.0);
+      const avgDown = s.avgDown.step(lt(b.close, b.open) ? 1.0 : 0.0);
+      // rs = avgDown == 0 ? na : avgUp / avgDown; rawCandleRSI = avgDown == 0 ? 100 : 100 - 100 / (1 + rs)
+      const down0 = eq(avgDown, 0);
+      const rs = down0 ? NaN : avgUp / avgDown;
+      const rawCandleRSI = down0 ? 100 : 100 - 100 / (1 + rs);
+      // Streaks (an unchanged bar keeps both)
+      if (gt(b.close, b.open)) {
+        v.greenStreak += 1;
+        v.redStreak = 0;
+      } else if (lt(b.close, b.open)) {
+        v.redStreak += 1;
+        v.greenStreak = 0;
+      }
+      const streakLength = gt(b.close, b.open) ? v.greenStreak : v.redStreak;
+      const streakMult = 1 + Math.min(streakLength, 10) * 0.05;
+      const unsmoothed = gt(rawCandleRSI, 50)
+        ? 50 + (rawCandleRSI - 50) * streakMult
+        : 50 - (50 - rawCandleRSI) * streakMult;
+      const c = s.smoothCandle ? s.smoothCandle.step(unsmoothed, cfg.smoothLenCandle) : unsmoothed;
+      s.candleRSI[i] = c;
+
+      const candleSlope = i > 0 ? c - s.candleRSI[i - 1] : NaN;
+      const standardSlope = i > 0 ? rsi - s.rsi[i - 1] : NaN;
+      const histColor = gt(candleSlope, 0) && gt(standardSlope, 0)
+        ? histBull
+        : lt(candleSlope, 0) && lt(standardSlope, 0) ? histBear : histNeutral;
+      s.histColor[i] = hist ? histColor : 'transparent';
+
+      // Backgrounds, in the order of the Pine bgcolor calls (a later call is drawn on top); id bgcolor<k> = k-th call
+      // bullFadeStrength = candleRSI > 50 ? 100 - min((candleRSI - 50) * mult, 100) : na (bear: below 50)
+      const bullFade = gt(c, 50) ? 100 - Math.min((c - 50) * cfg.glowStrengthMult, 100) : NaN;
+      const bearFade = lt(c, 50) ? 100 - Math.min((50 - c) * cfg.glowStrengthMult, 100) : NaN;
+      const bullGlow = !isNaN(bullFade) ? String(color.new(cfg.bullGlowColor, bullFade)) : null;
+      const bearGlow = !isNaN(bearFade) ? String(color.new(cfg.bearGlowColor, bearFade)) : null;
+      const bullDiv = gt(c, 50) && lt(rsi, cfg.bullDivThresh);
+      const bearDiv = lt(c, 50) && gt(rsi, cfg.bearDivThresh);
+      const bg = s.bgColors;
+      if (glowOn && cfg.showSubpaneGlow && bullGlow !== null) bg.push({ id: 'bgcolor0', time, color: bullGlow });
+      if (glowOn && cfg.showSubpaneGlow && bearGlow !== null) bg.push({ id: 'bgcolor1', time, color: bearGlow });
+      if (glowOn && cfg.showChartGlow && bullGlow !== null) bg.push({ id: 'bgcolor2', time, color: bullGlow, forceOverlay: true });
+      if (glowOn && cfg.showChartGlow && bearGlow !== null) bg.push({ id: 'bgcolor3', time, color: bearGlow, forceOverlay: true });
+      if (divOn && cfg.showDivSubpane && bullDiv) bg.push({ id: 'bgcolor4', time, color: divBull });
+      if (divOn && cfg.showDivSubpane && bearDiv) bg.push({ id: 'bgcolor5', time, color: divBear });
+      if (divOn && cfg.showDivChart && bullDiv) bg.push({ id: 'bgcolor6', time, color: divBull, forceOverlay: true });
+      if (divOn && cfg.showDivChart && bearDiv) bg.push({ id: 'bgcolor7', time, color: divBear, forceOverlay: true });
+
+      s.plots[0][i] = { time, value: hist ? c - rsi + 50 : NaN };
+      s.plots[1][i] = { time, value: hist ? 50 : NaN };
+      s.plots[2][i] = { time, value: cfg.showStandard ? rsi : NaN, color: cfg.standardColor };
+      s.plots[3][i] = { time, value: glowLines && cfg.showStandardGlow ? rsi : NaN, color: cfg.standardColorGlow };
+      s.plots[4][i] = { time, value: cfg.showCandle ? c : NaN, color: cfg.candleCountColor };
+      s.plots[5][i] = { time, value: glowLines && cfg.showCandleGlow ? c : NaN, color: cfg.candleCountColorGlow };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice(),
+          plot4: s.plots[4].slice(), plot5: s.plots[5].slice(),
+        },
+        // hline(masterGlowToggle ? level : na, ...): an na level draws no line
+        hlines: hlineConfig.filter((h) => glowLines || !GLOW_LEVELS.has(h.id)).map((h) => ({
+          value: h.price,
+          options: { title: h.title, color: h.color, linestyle: h.linestyle, linewidth: h.linewidth ?? 1 },
+        })),
+        fills: [
+          {
+            plot1: 'plot0', plot2: 'plot1', options: { title: 'Directional Histogram Fill' },
+            colors: s.histColor.slice(),
+          },
+        ],
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CandleCountRsiInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<CandleCountRsiInputs> = {},
+): IndicatorResult & { bgColors: BgColorData[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const CandleCountRsi = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

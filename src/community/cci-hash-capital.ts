@@ -15,10 +15,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, math, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, math, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { barInterval, barTime } from '../bar-time';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CciHashCapitalInputs {
   /** CCI period */
@@ -85,24 +86,45 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CciHashCapitalInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Ma = { step(v: number): number; commit(): void };
 
-  // Smoothed CCI
-  const src = getSourceSeries(bars, cfg.src);
-  const srcArr = A(src);
-  const ma = A(ta.sma(src, cfg.length));
-  const deviation = A(ta.dev(src, cfg.length));
-  // A plain division: x / 0 is +-infinity (ta.ema skips it as na), 0 / 0 is na
-  const rawCci = srcArr.map((s, i) => (s - ma[i]) / (0.015 * deviation[i]));
-  const cci1 = A(ta.ema(S(rawCci), cfg.smoothing));
-  const cci = A(ta.ema(S(cci1), 2));
+interface CciRun extends BarRunState<Record<string, never>> {
+  ma: ReturnType<typeof taStep.sma>;
+  dev: ReturnType<typeof taStep.dev>;
+  ema1: Ma;
+  ema2: Ma;
+  vol: ReturnType<typeof taStep.stdev>;
+  pl: PivotStep;
+  ph: PivotStep;
+  barsBull: ReturnType<typeof taStep.barssince>;
+  barsBear: ReturnType<typeof taStep.barssince>;
+  vwBullCci: ReturnType<typeof taStep.valuewhen>;
+  vwBullLow: ReturnType<typeof taStep.valuewhen>;
+  vwBearCci: ReturnType<typeof taStep.valuewhen>;
+  vwBearHigh: ReturnType<typeof taStep.valuewhen>;
+  cci: number[];
+  momentum: number[];
+  plFound: boolean[];
+  phFound: boolean[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  plot4: Point[];
+  plot5: Point[];
+  plot6: Point[];
+  fill0: string[];
+  fill1: string[];
+  fill2: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<CciHashCapitalInputs>): BarStudy<CciRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
 
   // getAdaptiveColor(): green spectrum for a positive CCI, red spectrum for a negative one
   const colorScale = cfg.colorIntensity / 10.0;
@@ -137,127 +159,180 @@ export function calculate(
   const lookbackLeft = 5;
   const rangeUpper = 60;
   const rangeLower = 5;
-  const cciLbr = cci.map((_v, i) => (i >= lookbackRight ? cci[i - lookbackRight] : NaN));
-  const plFound: boolean[] = new Array(n).fill(false);
-  const phFound: boolean[] = new Array(n).fill(false);
-  const bullCond: boolean[] = new Array(n).fill(false);
-  const bearCond: boolean[] = new Array(n).fill(false);
-  if (cfg.calculateDivergence) {
-    const lowLbr = bars.map((_b, i) => (i >= lookbackRight ? bars[i - lookbackRight].low : NaN));
-    const highLbr = bars.map((_b, i) => (i >= lookbackRight ? bars[i - lookbackRight].high : NaN));
-    const pl = A(ta.pivotlow(S(cci), lookbackLeft, lookbackRight));
-    const ph = A(ta.pivothigh(S(cci), lookbackLeft, lookbackRight));
-    for (let i = 0; i < n; i++) {
-      plFound[i] = !isNaN(pl[i]);
-      phFound[i] = !isNaN(ph[i]);
-    }
-    const B = (a: boolean[]) => S(a.map((x) => (x ? 1 : 0)));
-    // _inRange(found[1]): rangeLower <= ta.barssince(found[1]) <= rangeUpper
-    const barsBull = A(ta.barssince(B(plFound.map((_x, i) => i > 0 && plFound[i - 1]))));
-    const barsBear = A(ta.barssince(B(phFound.map((_x, i) => i > 0 && phFound[i - 1]))));
-    const vwBullCci = A(ta.valuewhen(B(plFound), S(cciLbr), 1));
-    const vwBullLow = A(ta.valuewhen(B(plFound), S(lowLbr), 1));
-    const vwBearCci = A(ta.valuewhen(B(phFound), S(cciLbr), 1));
-    const vwBearHigh = A(ta.valuewhen(B(phFound), S(highLbr), 1));
-    for (let i = 0; i < n; i++) {
-      const inRangeBull = rangeLower <= barsBull[i] && barsBull[i] <= rangeUpper;
-      const cciHl = gt(cciLbr[i], vwBullCci[i]) && inRangeBull;
-      const priceLl = lt(lowLbr[i], vwBullLow[i]);
-      bullCond[i] = priceLl && cciHl && plFound[i];
-      const inRangeBear = rangeLower <= barsBear[i] && barsBear[i] <= rangeUpper;
-      const cciLh = lt(cciLbr[i], vwBearCci[i]) && inRangeBear;
-      const priceHh = gt(highLbr[i], vwBearHigh[i]);
-      bearCond[i] = priceHh && cciLh && phFound[i];
-    }
-  }
-
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const t = (i: number) => bars[i].time;
-  const interval = barInterval(bars);
-  const adaptive = cci.map(adaptiveColor);
   const bullColor = String(color.new('#00FF00', 0));
   const bearColor = String(color.new('#FF0000', 0));
-
-  const plot0: Point[] = [];
-  const plot1: Point[] = [];
-  const plot2: Point[] = [];
-  const plot3: Point[] = [];
-  const plot4: Point[] = [];
-  const plot5: Point[] = [];
-  const plot6: Point[] = [];
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const c = fin(cci[i]);
-    plot0.push({ time: t(i), value: c, color: adaptive[i] });
-    plot1.push({ time: t(i), value: c, color: glowColor(cci[i]) });
-    plot2.push({ time: t(i), value: 0 });
-    // plot(cci > 100 ? cci : 100) / plot(cci < -100 ? cci : -100), display = display.none
-    plot3.push({ time: t(i), value: gt(cci[i], 100) ? c : 100 });
-    plot4.push({ time: t(i), value: lt(cci[i], -100) ? c : -100 });
-    // offset = -lookbackRight: the value of bar i is drawn on bar i - 5
-    if (i >= lookbackRight) {
-      const at = barTime(bars, i - lookbackRight, interval);
-      const v = fin(cciLbr[i]);
-      plot5.push({ time: at, value: plFound[i] ? v : NaN, color: bullCond[i] ? bullColor : WHITE_100 });
-      plot6.push({ time: at, value: phFound[i] ? v : NaN, color: bearCond[i] ? bearColor : WHITE_100 });
-      if (bullCond[i] && !isNaN(v)) {
-        markers.push({ time: at, position: 'atPriceBottom', price: v, shape: 'labelUp', color: bullColor,
-          text: ' Bull ', textColor: color.black });
-      }
-      if (bearCond[i] && !isNaN(v)) {
-        markers.push({ time: at, position: 'atPriceTop', price: v, shape: 'labelDown', color: bearColor,
-          text: ' Bear ', textColor: color.white });
-      }
-    }
-  }
-
-  const fills = [
-    // fill(cciMainLine, zeroLinePlot, color.new(getAdaptiveColor(), 85))
-    { plot1: 'plot0', plot2: 'plot2', options: { title: 'CCI Area Fill' },
-      colors: adaptive.map((c) => String(color.new(c, 85))) },
-    { plot1: 'plot0', plot2: 'plot3', options: { title: 'Overbought Extreme Zone' },
-      colors: cci.map((c) => (gt(c, 100) ? String(color.new('#00FF00', 90)) : 'transparent')) },
-    { plot1: 'plot0', plot2: 'plot4', options: { title: 'Oversold Extreme Zone' },
-      colors: cci.map((c) => (lt(c, -100) ? String(color.new('#FF0000', 90)) : 'transparent')) },
-  ];
-
-  // Signals: momentum = ta.change(cci), velocity = ta.change(momentum), adaptive levels 100 + 0.3 x ta.stdev(cci, 30)
-  const momentum = cci.map((c, i) => (i > 0 ? c - cci[i - 1] : NaN));
-  const velocity = momentum.map((m, i) => (i > 0 ? m - momentum[i - 1] : NaN));
-  const volatility = A(ta.stdev(S(cci), 30));
-  const momentumCrossUp = crossedOver(momentum, 0);
-  const momentumCrossDown = crossedUnder(momentum, 0);
+  const overColor = String(color.new('#00FF00', 90));
+  const underColor = String(color.new('#FF0000', 90));
   const signalMultiplier = cfg.signalSensitivity / 10.0;
-  const flags: boolean[][] = [[], [], [], [], [], []];
-  for (let i = 0; i < n; i++) {
-    const upperLevel = 100 + volatility[i] * 0.3;
-    const lowerLevel = -100 - volatility[i] * 0.3;
-    const extremeUpper = upperLevel * 1.3;
-    const extremeLower = lowerLevel * 1.3;
-    // extremeOversoldReversal, extremeOverboughtReversal, oversoldReversal, overboughtReversal, bullCond, bearCond
-    flags[0].push(lt(cci[i], extremeLower * 0.8) && momentumCrossUp[i]);
-    flags[1].push(gt(cci[i], extremeUpper * 0.8) && momentumCrossDown[i]);
-    flags[2].push(lt(cci[i], lowerLevel * signalMultiplier) && gt(momentum[i], 0) && gt(velocity[i], 0));
-    flags[3].push(gt(cci[i], upperLevel * signalMultiplier) && lt(momentum[i], 0) && lt(velocity[i], 0));
-    flags[4].push(bullCond[i]);
-    flags[5].push(bearCond[i]);
-  }
 
-  const lineColor = String(color.new(color.white, 50));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3, plot4, plot5, plot6 },
-    hlines: [
-      { value: 0, options: { title: 'Zero', color: lineColor, linestyle: 'solid', linewidth: 1 } },
-      { value: 100, options: { title: 'Extreme Overbought', color: lineColor, linestyle: 'dotted', linewidth: 2 } },
-      { value: -100, options: { title: 'Extreme Oversold', color: lineColor, linestyle: 'dotted', linewidth: 2 } },
-    ],
-    fills,
-    markers,
-    alerts: alertStates(alertConditions, bars, flags),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const ma = taStep.sma();
+      const dev = taStep.dev(cfg.length);
+      const ema1 = taStep.ema(cfg.smoothing);
+      const ema2 = taStep.ema(2);
+      const vol = taStep.stdev();
+      const pl = new PivotStep(lookbackLeft, lookbackRight, false);
+      const ph = new PivotStep(lookbackLeft, lookbackRight, true);
+      const barsBull = taStep.barssince();
+      const barsBear = taStep.barssince();
+      const vwBullCci = taStep.valuewhen(1);
+      const vwBullLow = taStep.valuewhen(1);
+      const vwBearCci = taStep.valuewhen(1);
+      const vwBearHigh = taStep.valuewhen(1);
+      const div = cfg.calculateDivergence ? [pl, ph, barsBull, barsBear, vwBullCci, vwBullLow, vwBearCci, vwBearHigh] : [];
+      const s: CciRun = {
+        ma, dev, ema1, ema2, vol, pl, ph, barsBull, barsBear, vwBullCci, vwBullLow, vwBearCci, vwBearHigh,
+        cci: [], momentum: [], plFound: [], phFound: [],
+        plot0: [], plot1: [], plot2: [], plot3: [], plot4: [], plot5: [], plot6: [], fill0: [], fill1: [], fill2: [],
+        markers: [], flags: [[], [], [], [], [], []], times: [[], [], [], [], [], []],
+        steps: [ma, dev, ema1, ema2, vol, ...div], vars: {}, lists: [], series: [],
+      };
+      s.lists = [...s.times, s.markers];
+      s.series = [
+        s.cci, s.momentum, s.plFound, s.phFound, s.plot0, s.plot1, s.plot2, s.plot3, s.plot4, s.plot5, s.plot6,
+        s.fill0, s.fill1, s.fill2, ...s.flags,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // Smoothed CCI
+      const sv = value(b);
+      const ma = s.ma.step(sv, cfg.length);
+      const deviation = s.dev.step(sv);
+      // A plain division: x / 0 is +-infinity (ta.ema skips it as na), 0 / 0 is na
+      const rawCci = (sv - ma) / (0.015 * deviation);
+      const cci1 = s.ema1.step(rawCci);
+      const cci = s.ema2.step(cci1);
+      s.cci[i] = cci;
+
+      const cciLbr = i >= lookbackRight ? s.cci[i - lookbackRight] : NaN;
+      let plFound = false;
+      let phFound = false;
+      let bullCond = false;
+      let bearCond = false;
+      if (cfg.calculateDivergence) {
+        const lowLbr = i >= lookbackRight ? bars[i - lookbackRight].low : NaN;
+        const highLbr = i >= lookbackRight ? bars[i - lookbackRight].high : NaN;
+        plFound = !isNaN(s.pl.step(i, cci));
+        phFound = !isNaN(s.ph.step(i, cci));
+        // _inRange(found[1]): rangeLower <= ta.barssince(found[1]) <= rangeUpper
+        const barsBull = s.barsBull.step(i > 0 && s.plFound[i - 1]);
+        const barsBear = s.barsBear.step(i > 0 && s.phFound[i - 1]);
+        const vwBullCci = s.vwBullCci.step(plFound, cciLbr);
+        const vwBullLow = s.vwBullLow.step(plFound, lowLbr);
+        const vwBearCci = s.vwBearCci.step(phFound, cciLbr);
+        const vwBearHigh = s.vwBearHigh.step(phFound, highLbr);
+        const inRangeBull = rangeLower <= barsBull && barsBull <= rangeUpper;
+        const cciHl = gt(cciLbr, vwBullCci) && inRangeBull;
+        const priceLl = lt(lowLbr, vwBullLow);
+        bullCond = priceLl && cciHl && plFound;
+        const inRangeBear = rangeLower <= barsBear && barsBear <= rangeUpper;
+        const cciLh = lt(cciLbr, vwBearCci) && inRangeBear;
+        const priceHh = gt(highLbr, vwBearHigh);
+        bearCond = priceHh && cciLh && phFound;
+      }
+      s.plFound[i] = plFound;
+      s.phFound[i] = phFound;
+
+      const c = fin(cci);
+      const adaptive = adaptiveColor(cci);
+      s.plot0[i] = { time, value: c, color: adaptive };
+      s.plot1[i] = { time, value: c, color: glowColor(cci) };
+      s.plot2[i] = { time, value: 0 };
+      // plot(cci > 100 ? cci : 100) / plot(cci < -100 ? cci : -100), display = display.none
+      s.plot3[i] = { time, value: gt(cci, 100) ? c : 100 };
+      s.plot4[i] = { time, value: lt(cci, -100) ? c : -100 };
+      // offset = -lookbackRight: the value of bar i is drawn on bar i - 5 (bar i is the only writer of that slot)
+      if (i >= lookbackRight) {
+        const at = bars[i - lookbackRight].time;
+        const v = fin(cciLbr);
+        s.plot5[i - lookbackRight] = { time: at, value: plFound ? v : NaN, color: bullCond ? bullColor : WHITE_100 };
+        s.plot6[i - lookbackRight] = { time: at, value: phFound ? v : NaN, color: bearCond ? bearColor : WHITE_100 };
+        if (bullCond && !isNaN(v)) {
+          s.markers.push({ time: at, position: 'atPriceBottom', price: v, shape: 'labelUp', color: bullColor,
+            text: ' Bull ', textColor: color.black });
+        }
+        if (bearCond && !isNaN(v)) {
+          s.markers.push({ time: at, position: 'atPriceTop', price: v, shape: 'labelDown', color: bearColor,
+            text: ' Bear ', textColor: color.white });
+        }
+      }
+      // fill(cciMainLine, zeroLinePlot, color.new(getAdaptiveColor(), 85)) and the extreme zones
+      s.fill0[i] = String(color.new(adaptive, 85));
+      s.fill1[i] = gt(cci, 100) ? overColor : 'transparent';
+      s.fill2[i] = lt(cci, -100) ? underColor : 'transparent';
+
+      // Signals: momentum = ta.change(cci), velocity = ta.change(momentum), adaptive levels 100 + 0.3 x ta.stdev(cci, 30)
+      const momentum = i > 0 ? cci - s.cci[i - 1] : NaN;
+      s.momentum[i] = momentum;
+      const prevMomentum = i > 0 ? s.momentum[i - 1] : NaN;
+      const velocity = i > 0 ? momentum - prevMomentum : NaN;
+      const volatility = s.vol.step(cci, 30);
+      const momentumCrossUp = momentum > 0 && prevMomentum <= 0;
+      const momentumCrossDown = momentum < 0 && prevMomentum >= 0;
+      const upperLevel = 100 + volatility * 0.3;
+      const lowerLevel = -100 - volatility * 0.3;
+      const extremeUpper = upperLevel * 1.3;
+      const extremeLower = lowerLevel * 1.3;
+      // extremeOversoldReversal, extremeOverboughtReversal, oversoldReversal, overboughtReversal, bullCond, bearCond
+      const f0 = lt(cci, extremeLower * 0.8) && momentumCrossUp;
+      const f1 = gt(cci, extremeUpper * 0.8) && momentumCrossDown;
+      const f2 = lt(cci, lowerLevel * signalMultiplier) && gt(momentum, 0) && gt(velocity, 0);
+      const f3 = gt(cci, upperLevel * signalMultiplier) && lt(momentum, 0) && lt(velocity, 0);
+      s.flags[0][i] = f0;
+      s.flags[1][i] = f1;
+      s.flags[2][i] = f2;
+      s.flags[3][i] = f3;
+      s.flags[4][i] = bullCond;
+      s.flags[5][i] = bearCond;
+      if (f0) s.times[0].push(time as number);
+      if (f1) s.times[1].push(time as number);
+      if (f2) s.times[2].push(time as number);
+      if (f3) s.times[3].push(time as number);
+      if (bullCond) s.times[4].push(time as number);
+      if (bearCond) s.times[5].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const shifted = Math.max(0, n - lookbackRight);
+      const lineColor = String(color.new(color.white, 50));
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice(),
+          plot4: s.plot4.slice(), plot5: s.plot5.slice(0, shifted), plot6: s.plot6.slice(0, shifted),
+        },
+        hlines: [
+          { value: 0, options: { title: 'Zero', color: lineColor, linestyle: 'solid', linewidth: 1 } },
+          { value: 100, options: { title: 'Extreme Overbought', color: lineColor, linestyle: 'dotted', linewidth: 2 } },
+          { value: -100, options: { title: 'Extreme Oversold', color: lineColor, linestyle: 'dotted', linewidth: 2 } },
+        ],
+        fills: [
+          // fill(cciMainLine, zeroLinePlot, color.new(getAdaptiveColor(), 85))
+          { plot1: 'plot0', plot2: 'plot2', options: { title: 'CCI Area Fill' }, colors: s.fill0.slice() },
+          { plot1: 'plot0', plot2: 'plot3', options: { title: 'Overbought Extreme Zone' }, colors: s.fill1.slice() },
+          { plot1: 'plot0', plot2: 'plot4', options: { title: 'Oversold Extreme Zone' }, colors: s.fill2.slice() },
+        ],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CciHashCapitalInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CciHashCapitalInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert0', title: 'Strong Buy', message: 'Extreme oversold reversal signal' },
@@ -270,6 +345,8 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const CciHashCapital = {
   calculate,
+  createRun,
+
   metadata,
   defaultInputs,
   inputConfig,

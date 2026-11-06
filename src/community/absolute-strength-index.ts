@@ -13,9 +13,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type ASIMAType = 'SMA' | 'EMA' | 'WMA' | 'RMA' | 'HMA';
 
@@ -114,147 +116,196 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AbsoluteStrengthIndexInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Ma = { step(v: number): number; commit(): void };
+
+interface AsiVars {
+  prevASILow: number;
+  prevPriceLow: number;
+  prevASIHigh: number;
+  prevPriceHigh: number;
+}
+
+interface AsiRun extends BarRunState<AsiVars> {
+  ma: Ma | null;
+  lowest: ReturnType<typeof taStep.lowest>;
+  highest: ReturnType<typeof taStep.highest>;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  bullPlot: Point[];
+  bearPlot: Point[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+/** The signal line machine of the MA type (null: an unknown type, na) */
+function maStep(maType: ASIMAType, length: number): Ma | null {
+  switch (maType) {
+    case 'SMA': { const m = taStep.sma(); return { step: (v) => m.step(v, length), commit: () => m.commit() }; }
+    case 'EMA': return taStep.ema(length);
+    case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, length), commit: () => m.commit() }; }
+    case 'RMA': return taStep.rma(length);
+    case 'HMA': return taStep.hma(length);
+    default: return null;
+  }
+}
+
+function study(inputs: Partial<AbsoluteStrengthIndexInputs>): BarStudy<AsiRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const close = bars.map((b) => b.close);
   const L = cfg.returnLookback;
-
-  const asi: number[] = new Array(n);
-  for (let b = 0; b < n; b++) {
-    // for i = 1 to returnLookback: if not na(close[i]) and not na(close[i + 1]): push(close[i] / close[i + 1] - 1)
-    const returns: number[] = [];
-    for (let i = 1; i <= L; i++) {
-      if (b - i - 1 < 0) continue;
-      const c0 = close[b - i];
-      const c1 = close[b - i - 1];
-      if (isNaN(c0) || isNaN(c1)) continue;
-      // a close of 0 gives +-infinity (x / 0) or na (0 / 0), as in Pine
-      returns.push(c0 / c1 - 1);
-    }
-    let value = 0.0; // ASI = 0.0
-    if (returns.length > 0) {
-      // array.sort(order.ascending): -infinity first, +infinity after the numbers, na last
-      const sorted = [...returns].sort((x, y) => (isNaN(x) ? (isNaN(y) ? 0 : 1) : isNaN(y) ? -1 : x === y ? 0 : x - y));
-      const size = sorted.length;
-      const winnerIndex = Math.ceil(size * (1 - cfg.topPercentile)) - 1;
-      const loserIndex = Math.ceil(size * cfg.bottomPercentile) - 1;
-      const thresholdWinner = winnerIndex >= 0 && winnerIndex < size ? sorted[winnerIndex] : 0;
-      const thresholdLoser = loserIndex >= 0 && loserIndex < size ? sorted[loserIndex] : 0;
-      // currentReturn = close / close[returnLookback] - 1 (na before bar returnLookback; x / 0 is +-infinity)
-      const currentReturn = b - L >= 0 ? close[b] / close[b - L] - 1 : NaN;
-      const range = thresholdWinner - thresholdLoser;
-      // not na(currentReturn) (false for +-infinity) and (thresholdWinner - thresholdLoser) != 0 (na != 0 is false,
-      // infinity != 0 is true)
-      if (Number.isFinite(currentReturn) && !isNaN(range) && range !== 0) {
-        value = ((currentReturn - thresholdLoser) / range) * 2 - 1;
-      } else {
-        value = 0;
-      }
-    }
-    asi[b] = value;
-  }
-
-  const asiSeries = Series.fromArray(bars, asi);
-  const maFn = { SMA: ta.sma, EMA: ta.ema, WMA: ta.wma, RMA: ta.rma, HMA: ta.hma }[cfg.maType];
-  const smoothingMA = maFn ? maFn(asiSeries, cfg.maLength).toArray().map((v) => v ?? NaN) : new Array<number>(n).fill(NaN);
-
-  // Divergence (ta.lowest / ta.highest run on every bar when the input is on)
-  const lowestAsi = cfg.calculateDivergence ? ta.lowest(asiSeries, cfg.lookback).toArray().map((v) => v ?? NaN) : [];
-  const highestAsi = cfg.calculateDivergence ? ta.highest(asiSeries, cfg.lookback).toArray().map((v) => v ?? NaN) : [];
-  let prevASILow = NaN;
-  let prevPriceLow = NaN;
-  let prevASIHigh = NaN;
-  let prevPriceHigh = NaN;
-
-  const bullPlot: { time: number; value: number; color: string }[] = [];
-  const bearPlot: { time: number; value: number; color: string }[] = [];
-  const markers: MarkerData[] = [];
-  const bullFlags: boolean[] = [];
-  const bearFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    let plFound = false;
-    let phFound = false;
-    let bullCond = false;
-    let bearCond = false;
-    if (cfg.calculateDivergence) {
-      // isASILow = ASI == ta.lowest(ASI, lookback)
-      const isASILow = asi[i] === lowestAsi[i];
-      plFound = isASILow;
-      if (isASILow) {
-        bullCond = !isNaN(prevASILow) && gt(asi[i], prevASILow) && lt(bars[i].low, prevPriceLow);
-        prevASILow = asi[i];
-        prevPriceLow = bars[i].low;
-      }
-      // isASIHigh = ASI == ta.highest(ASI, lookback)
-      const isASIHigh = asi[i] === highestAsi[i];
-      phFound = isASIHigh;
-      if (isASIHigh) {
-        bearCond = !isNaN(prevASIHigh) && lt(asi[i], prevASIHigh) && gt(bars[i].high, prevPriceHigh);
-        prevASIHigh = asi[i];
-        prevPriceHigh = bars[i].high;
-      }
-    }
-    bullFlags.push(bullCond);
-    bearFlags.push(bearCond);
-    // plot(plFound ? ASI : na, linewidth = 2, color = bullCond ? bullColor : na, display = display.pane)
-    bullPlot.push({ time: t, value: plFound ? asi[i] : NaN, color: bullCond ? cfg.bullColor : 'transparent' });
-    bearPlot.push({ time: t, value: phFound ? asi[i] : NaN, color: bearCond ? cfg.bearColor : 'transparent' });
-    // plotshape(bullCond ? ASI : na, text = "Bull", style = shape.labelup, location = location.absolute)
-    if (bullCond) {
-      markers.push({ time: t, position: 'atPriceBottom', price: asi[i], shape: 'labelUp', color: cfg.bullColor,
-        text: 'Bull', textColor: cfg.textColor });
-    }
-    // plotshape(bearCond ? ASI : na, text = "Bear", style = shape.labeldown, location = location.absolute)
-    if (bearCond) {
-      markers.push({ time: t, position: 'atPriceTop', price: asi[i], shape: 'labelDown', color: cfg.bearColor,
-        text: 'Bear', textColor: cfg.textColor });
-    }
-  }
-
-  // fill(ASIPlot, midLinePlot, 8, 5, top_color = color.new(obColor, 0), bottom_color = color.new(obColor, 100))
-  // fill(ASIPlot, midLinePlot, -5, -8, top_color = color.new(osColor, 100), bottom_color = color.new(osColor, 0))
-  const obTop = String(color.new(cfg.obColor, 0));
-  const obBottom = String(color.new(cfg.obColor, 100));
-  const osTop = String(color.new(cfg.osColor, 100));
-  const osBottom = String(color.new(cfg.osColor, 0));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 1 },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: asi[i], color: cfg.asiColor })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: smoothingMA[i], color: cfg.maAsiColor })),
-      // midLinePlot = plot(0, color = na, display = display.none)
-      plot2: bars.map((b) => ({ time: b.time, value: 0 })),
-      plot3: bullPlot,
-      plot4: bearPlot,
+    init() {
+      const ma = maStep(cfg.maType, cfg.maLength);
+      const lowest = taStep.lowest();
+      const highest = taStep.highest();
+      const s: AsiRun = {
+        ma, lowest, highest, plot0: [], plot1: [], plot2: [], bullPlot: [], bearPlot: [], markers: [],
+        flags: [[], []], times: [[], []],
+        steps: [...(ma ? [ma] : []), ...(cfg.calculateDivergence ? [lowest, highest] : [])],
+        vars: { prevASILow: NaN, prevPriceLow: NaN, prevASIHigh: NaN, prevPriceHigh: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.plot0, s.plot1, s.plot2, s.bullPlot, s.bearPlot, ...s.flags];
+      return s;
     },
-    hlines: [
-      { value: 8, options: { title: 'ASI Upper Band', color: cfg.fillColor, linestyle: 'dashed' } },
-      { value: 0, options: { title: 'ASI Middle Band', color: String(color.new(cfg.fillColor, 50)), linestyle: 'dashed' } },
-      { value: -8, options: { title: 'ASI Lower Band', color: cfg.fillColor, linestyle: 'dashed' } },
-    ],
-    fills: [
-      // fill(ASIUpperBand, ASILowerBand, color = color.new(fillColor, 90))
-      { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'ASI Background Fill' },
-        colors: new Array<string>(n).fill(String(color.new(cfg.fillColor, 90))) },
-      { plot1: 'plot0', plot2: 'plot2', options: { title: 'Overbought Gradient Fill' },
-        gradient: { topValue: new Array(n).fill(8), bottomValue: new Array(n).fill(5),
-          topColor: new Array(n).fill(obTop), bottomColor: new Array(n).fill(obBottom) } },
-      { plot1: 'plot0', plot2: 'plot2', options: { title: 'Oversold Gradient Fill' },
-        gradient: { topValue: new Array(n).fill(-5), bottomValue: new Array(n).fill(-8),
-          topColor: new Array(n).fill(osTop), bottomColor: new Array(n).fill(osBottom) } },
-    ],
-    markers,
-    // alertcondition(bullCond, ...) / alertcondition(bearCond, ...)
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags]),
+    bar(s, b, bars) {
+      const close = (j: number) => bars[j].close;
+      // for i = 1 to returnLookback: if not na(close[i]) and not na(close[i + 1]): push(close[i] / close[i + 1] - 1)
+      const returns: number[] = [];
+      for (let i = 1; i <= L; i++) {
+        if (b - i - 1 < 0) continue;
+        const c0 = close(b - i);
+        const c1 = close(b - i - 1);
+        if (isNaN(c0) || isNaN(c1)) continue;
+        // a close of 0 gives +-infinity (x / 0) or na (0 / 0), as in Pine
+        returns.push(c0 / c1 - 1);
+      }
+      let value = 0.0; // ASI = 0.0
+      if (returns.length > 0) {
+        // array.sort(order.ascending): -infinity first, +infinity after the numbers, na last
+        const sorted = [...returns].sort((x, y) => (isNaN(x) ? (isNaN(y) ? 0 : 1) : isNaN(y) ? -1 : x === y ? 0 : x - y));
+        const size = sorted.length;
+        const winnerIndex = Math.ceil(size * (1 - cfg.topPercentile)) - 1;
+        const loserIndex = Math.ceil(size * cfg.bottomPercentile) - 1;
+        const thresholdWinner = winnerIndex >= 0 && winnerIndex < size ? sorted[winnerIndex] : 0;
+        const thresholdLoser = loserIndex >= 0 && loserIndex < size ? sorted[loserIndex] : 0;
+        // currentReturn = close / close[returnLookback] - 1 (na before bar returnLookback; x / 0 is +-infinity)
+        const currentReturn = b - L >= 0 ? close(b) / close(b - L) - 1 : NaN;
+        const range = thresholdWinner - thresholdLoser;
+        // not na(currentReturn) (false for +-infinity) and (thresholdWinner - thresholdLoser) != 0 (na != 0 is false,
+        // infinity != 0 is true)
+        if (Number.isFinite(currentReturn) && !isNaN(range) && range !== 0) {
+          value = ((currentReturn - thresholdLoser) / range) * 2 - 1;
+        } else {
+          value = 0;
+        }
+      }
+      const asi = value;
+      const smoothingMA = s.ma ? s.ma.step(asi) : NaN;
+
+      const bar = bars[b];
+      const t = bar.time;
+      const v = s.vars;
+      let plFound = false;
+      let phFound = false;
+      let bullCond = false;
+      let bearCond = false;
+      // Divergence (ta.lowest / ta.highest run on every bar when the input is on)
+      if (cfg.calculateDivergence) {
+        const lowestAsi = s.lowest.step(asi, cfg.lookback);
+        const highestAsi = s.highest.step(asi, cfg.lookback);
+        // isASILow = ASI == ta.lowest(ASI, lookback)
+        const isASILow = asi === lowestAsi;
+        plFound = isASILow;
+        if (isASILow) {
+          bullCond = !isNaN(v.prevASILow) && gt(asi, v.prevASILow) && lt(bar.low, v.prevPriceLow);
+          v.prevASILow = asi;
+          v.prevPriceLow = bar.low;
+        }
+        // isASIHigh = ASI == ta.highest(ASI, lookback)
+        const isASIHigh = asi === highestAsi;
+        phFound = isASIHigh;
+        if (isASIHigh) {
+          bearCond = !isNaN(v.prevASIHigh) && lt(asi, v.prevASIHigh) && gt(bar.high, v.prevPriceHigh);
+          v.prevASIHigh = asi;
+          v.prevPriceHigh = bar.high;
+        }
+      }
+      s.flags[0][b] = bullCond;
+      s.flags[1][b] = bearCond;
+      if (bullCond) s.times[0].push(t as number);
+      if (bearCond) s.times[1].push(t as number);
+      s.plot0[b] = { time: t, value: asi, color: cfg.asiColor };
+      s.plot1[b] = { time: t, value: smoothingMA, color: cfg.maAsiColor };
+      // midLinePlot = plot(0, color = na, display = display.none)
+      s.plot2[b] = { time: t, value: 0 };
+      // plot(plFound ? ASI : na, linewidth = 2, color = bullCond ? bullColor : na, display = display.pane)
+      s.bullPlot[b] = { time: t, value: plFound ? asi : NaN, color: bullCond ? cfg.bullColor : 'transparent' };
+      s.bearPlot[b] = { time: t, value: phFound ? asi : NaN, color: bearCond ? cfg.bearColor : 'transparent' };
+      // plotshape(bullCond ? ASI : na, text = "Bull", style = shape.labelup, location = location.absolute)
+      if (bullCond) {
+        s.markers.push({ time: t, position: 'atPriceBottom', price: asi, shape: 'labelUp', color: cfg.bullColor,
+          text: 'Bull', textColor: cfg.textColor });
+      }
+      // plotshape(bearCond ? ASI : na, text = "Bear", style = shape.labeldown, location = location.absolute)
+      if (bearCond) {
+        s.markers.push({ time: t, position: 'atPriceTop', price: asi, shape: 'labelDown', color: cfg.bearColor,
+          text: 'Bear', textColor: cfg.textColor });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // fill(ASIPlot, midLinePlot, 8, 5, top_color = color.new(obColor, 0), bottom_color = color.new(obColor, 100))
+      // fill(ASIPlot, midLinePlot, -5, -8, top_color = color.new(osColor, 100), bottom_color = color.new(osColor, 0))
+      const obTop = String(color.new(cfg.obColor, 0));
+      const obBottom = String(color.new(cfg.obColor, 100));
+      const osTop = String(color.new(cfg.osColor, 100));
+      const osBottom = String(color.new(cfg.osColor, 0));
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 1 },
+        plots: {
+          plot0: s.plot0.slice(),
+          plot1: s.plot1.slice(),
+          plot2: s.plot2.slice(),
+          plot3: s.bullPlot.slice(),
+          plot4: s.bearPlot.slice(),
+        },
+        hlines: [
+          { value: 8, options: { title: 'ASI Upper Band', color: cfg.fillColor, linestyle: 'dashed' } },
+          { value: 0, options: { title: 'ASI Middle Band', color: String(color.new(cfg.fillColor, 50)), linestyle: 'dashed' } },
+          { value: -8, options: { title: 'ASI Lower Band', color: cfg.fillColor, linestyle: 'dashed' } },
+        ],
+        fills: [
+          // fill(ASIUpperBand, ASILowerBand, color = color.new(fillColor, 90))
+          { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'ASI Background Fill' },
+            colors: new Array<string>(n).fill(String(color.new(cfg.fillColor, 90))) },
+          { plot1: 'plot0', plot2: 'plot2', options: { title: 'Overbought Gradient Fill' },
+            gradient: { topValue: new Array(n).fill(8), bottomValue: new Array(n).fill(5),
+              topColor: new Array(n).fill(obTop), bottomColor: new Array(n).fill(obBottom) } },
+          { plot1: 'plot0', plot2: 'plot2', options: { title: 'Oversold Gradient Fill' },
+            gradient: { topValue: new Array(n).fill(-5), bottomValue: new Array(n).fill(-8),
+              topColor: new Array(n).fill(osTop), bottomColor: new Array(n).fill(osBottom) } },
+        ],
+        markers: s.markers.slice(),
+        // alertcondition(bullCond, ...) / alertcondition(bearCond, ...)
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AbsoluteStrengthIndexInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AbsoluteStrengthIndexInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert0', title: 'Regular Bullish Divergence', message: 'Found a new Regular Bullish Divergence' },
@@ -263,6 +314,8 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const AbsoluteStrengthIndex = {
   calculate,
+  createRun,
+
   metadata,
   defaultInputs,
   inputConfig,

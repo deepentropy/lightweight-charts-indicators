@@ -21,10 +21,11 @@
  * Reference: "Squeeze Momentum V2 with Divergence" by JOEXYZzz (based on "Squeeze Momentum Indicator" by LazyBear)
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, LabelData, LineDrawingData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
 import { foregroundColorOf, backgroundColorOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SqueezeMomentumV2Inputs {
   bbLength: number;
@@ -119,214 +120,262 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<SqueezeMomentumV2Inputs> = {},
-  chart?: ChartContext,
-): Omit<IndicatorResult, 'markers'> & {
+type Point = { time: number; value: number; color: string };
+
+const at = (arr: number[], j: number) => (j >= 0 && j < arr.length ? arr[j] : NaN);
+const L = (bars: Bar[], j: number) => (j >= 0 ? bars[j].low : NaN);
+const H = (bars: Bar[], j: number) => (j >= 0 ? bars[j].high : NaN);
+const time = (bars: Bar[], j: number) => bars[j].time as number;
+type Result = Omit<IndicatorResult, 'markers'> & {
   markers: MarkerData[];
   labels: LabelData[];
   lines: LineDrawingData[];
   alerts: AlertConditionState[];
-} {
+};
+
+interface SqzRun extends BarRunState<Record<string, never>> {
+  fg: string;
+  bgClear: string;
+  zeroColor: string;
+  sigColor: string;
+  basisSma: ReturnType<typeof taStep.sma>;
+  bbDev: ReturnType<typeof taStep.stdev>;
+  kcSma: ReturnType<typeof taStep.sma>;
+  tr: ReturnType<typeof taStep.tr>;
+  rangeSma: ReturnType<typeof taStep.sma>;
+  hh: ReturnType<typeof taStep.highest>;
+  ll: ReturnType<typeof taStep.lowest>;
+  lr: ReturnType<typeof taStep.linreg>;
+  sigSma: ReturnType<typeof taStep.sma>;
+  ph: PivotStep;
+  pl: PivotStep;
+  val: number[];
+  pTop: number[];
+  pBot: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  topValue: number[];
+  bottomValue: number[];
+  topColor: string[];
+  bottomColor: string[];
+  /** Every line and label made (the result keeps the last MAX_LINES / MAX_LABELS: the oldest are deleted) */
+  lines: LineDrawingData[];
+  labels: LabelData[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<SqueezeMomentumV2Inputs>): BarStudy<SqzRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const num = (v: number | null | undefined) => (v == null ? NaN : v);
-  const fg = foregroundColorOf(chart);
-  const bgClear = String(color.new(backgroundColorOf(chart), 100));
-
-  const close = new Series(bars, (b) => b.close);
-  const high = new Series(bars, (b) => b.high);
-  const low = new Series(bars, (b) => b.low);
-
-  // BB: basis = ta.sma(source, lengthBB); dev = multBB * ta.stdev(source, lengthBB)
-  const basis = ta.sma(close, cfg.bbLength).toArray().map(num);
-  const dev = ta.stdev(close, cfg.bbLength).toArray().map((v) => num(v) * cfg.bbMult);
-  // KC: ma = ta.sma(source, lengthKC); trRange = useTrueRange ? ta.tr : high - low; rangema = ta.sma(trRange, lengthKC)
-  const ma = ta.sma(close, cfg.kcLength).toArray().map(num);
-  const trRange = cfg.useTrueRange ? ta.tr(bars, false) : high.sub(low);
-  const rangema = ta.sma(trRange, cfg.kcLength).toArray().map(num);
-
-  const sqzOn: boolean[] = [];
-  const sqzOff: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const upperBB = basis[i] + dev[i];
-    const lowerBB = basis[i] - dev[i];
-    const upperKC = ma[i] + rangema[i] * cfg.kcMult;
-    const lowerKC = ma[i] - rangema[i] * cfg.kcMult;
-    sqzOn.push(gt(lowerBB, lowerKC) && lt(upperBB, upperKC));
-    sqzOff.push(lt(lowerBB, lowerKC) && gt(upperBB, upperKC));
-  }
-
-  // val = ta.linreg(source - math.avg(math.avg(highestHigh, lowestLow), ta.sma(close, lengthKC)), lengthKC, 0)
-  const hh = ta.highest(high, cfg.kcLength);
-  const ll = ta.lowest(low, cfg.kcLength);
-  const avgValue = hh.add(ll).div(2).add(ta.sma(close, cfg.kcLength)).div(2);
-  const valSeries = ta.linreg(close.sub(avgValue), cfg.kcLength, 0);
-  const val = valSeries.toArray().map(num);
-  // sig = ta.sma(val, signalPeriod)
-  const sig = ta.sma(Series.fromArray(bars, val), cfg.signalPeriod).toArray().map(num);
-
-  // pTop = ta.pivothigh(val, lookbackLeft, lookbackRight); pBot = ta.pivotlow(val, lookbackLeft, lookbackRight)
-  const valForPivots = Series.fromArray(bars, val);
-  const pTop = ta.pivothigh(valForPivots, cfg.lookbackLeft, cfg.lookbackRight).toArray().map(num);
-  const pBot = ta.pivotlow(valForPivots, cfg.lookbackLeft, cfg.lookbackRight).toArray().map(num);
-
-  const at = (arr: number[], i: number) => (i >= 0 && i < arr.length ? arr[i] : NaN);
-  const L = (i: number) => (i >= 0 ? bars[i].low : NaN);
-  const H = (i: number) => (i >= 0 ? bars[i].high : NaN);
-  const time = (i: number) => bars[i].time as number;
-
-  const lines: LineDrawingData[] = [];
-  const labels: LabelData[] = [];
-  const addLine = (l: LineDrawingData) => {
-    lines.push(l);
-    if (lines.length > MAX_LINES) lines.shift();
-  };
-  const addLabel = (l: LabelData) => {
-    labels.push(l);
-    if (labels.length > MAX_LABELS) labels.shift();
-  };
-
   const bullClear = String(color.new(BULL_COLOR, 100));
   const bearClear = String(color.new(BEAR_COLOR, 100));
   const bullFaded = String(color.new(BULL_COLOR, 50));
   const bearFaded = String(color.new(BEAR_COLOR, 50));
-
-  const markers: MarkerData[] = [];
-  const bullFlags: boolean[] = [];
-  const bearFlags: boolean[] = [];
   const rb = cfg.lookbackRight;
-
-  for (let i = 0; i < n; i++) {
-    const p = i - rb; // bar_index[lookbackRight]
-    let bullDiv = false;
-    let bearDiv = false;
-    let hiddenBullDiv = false;
-    let hiddenBearDiv = false;
-
-    // Regular Bullish
-    if (!isNaN(pBot[i])) {
-      for (let k = cfg.rangeLower; k <= cfg.rangeUpper; k++) {
-        const q = i - k - rb; // bar_index[i + lookbackRight]
-        if (!isNaN(at(pBot, i - k)) && gt(at(val, p), at(val, q)) && lt(L(p), L(q))) {
-          bullDiv = true;
-          if (cfg.showDiv) addLine({ time1: time(q), price1: val[q], time2: time(p), price2: val[p], color: BULL_COLOR, width: 2 });
-          if (cfg.showPriceDiv) {
-            addLine({ time1: time(q), price1: L(q), time2: time(p), price2: L(p), color: BULL_COLOR, width: 2, forceOverlay: true });
-            addLabel({ time: time(p), price: L(p), text: 'Bull', color: bullClear, textColor: BULL_COLOR, style: 'label_up', size: 'small', forceOverlay: true });
-          }
-          break;
-        }
-      }
-    }
-
-    // Regular Bearish
-    if (!isNaN(pTop[i])) {
-      for (let k = cfg.rangeLower; k <= cfg.rangeUpper; k++) {
-        const q = i - k - rb;
-        if (!isNaN(at(pTop, i - k)) && lt(at(val, p), at(val, q)) && gt(H(p), H(q))) {
-          bearDiv = true;
-          if (cfg.showDiv) addLine({ time1: time(q), price1: val[q], time2: time(p), price2: val[p], color: BEAR_COLOR, width: 2 });
-          if (cfg.showPriceDiv) {
-            addLine({ time1: time(q), price1: H(q), time2: time(p), price2: H(p), color: BEAR_COLOR, width: 2, forceOverlay: true });
-            addLabel({ time: time(p), price: H(p), text: 'Bear', color: bearClear, textColor: BEAR_COLOR, style: 'label_down', size: 'small', forceOverlay: true });
-          }
-          break;
-        }
-      }
-    }
-
-    // Hidden Bullish
-    if (!isNaN(pBot[i])) {
-      for (let k = cfg.rangeLower; k <= cfg.rangeUpper; k++) {
-        const q = i - k - rb;
-        if (!isNaN(at(pBot, i - k)) && lt(at(val, p), at(val, q)) && gt(L(p), L(q))) {
-          hiddenBullDiv = true;
-          if (cfg.showPriceDiv) {
-            addLabel({ time: time(p), price: L(p), text: 'H-Bull', color: bullClear, textColor: BULL_COLOR, style: 'label_up', size: 'tiny', forceOverlay: true });
-          }
-          break;
-        }
-      }
-    }
-
-    // Hidden Bearish
-    if (!isNaN(pTop[i])) {
-      for (let k = cfg.rangeLower; k <= cfg.rangeUpper; k++) {
-        const q = i - k - rb;
-        if (!isNaN(at(pTop, i - k)) && gt(at(val, p), at(val, q)) && lt(H(p), H(q))) {
-          hiddenBearDiv = true;
-          if (cfg.showPriceDiv) {
-            addLabel({ time: time(p), price: H(p), text: 'H-Bear', color: bearClear, textColor: BEAR_COLOR, style: 'label_down', size: 'tiny', forceOverlay: true });
-          }
-          break;
-        }
-      }
-    }
-
-    bullFlags.push(bullDiv);
-    bearFlags.push(bearDiv);
-
-    // plotshape(showDiv and <cond> ? val[lookbackRight] : na, ..., location.absolute, offset = -lookbackRight,
-    //   textcolor = chart.fg_color, size = size.tiny): drawn on bar i - lookbackRight at val[lookbackRight]
-    if (cfg.showDiv && p >= 0 && !isNaN(val[p])) {
-      const t = time(p);
-      const y = val[p];
-      if (bullDiv) markers.push({ id: 'shape0', time: t, position: 'atPriceBottom', price: y, shape: 'labelUp', color: BULL_COLOR, text: 'Bull', textColor: fg, size: 'tiny' });
-      if (bearDiv) markers.push({ id: 'shape1', time: t, position: 'atPriceTop', price: y, shape: 'labelDown', color: BEAR_COLOR, text: 'Bear', textColor: fg, size: 'tiny' });
-      if (hiddenBullDiv) markers.push({ id: 'shape2', time: t, position: 'atPriceMiddle', price: y, shape: 'diamond', color: BULL_COLOR, text: 'H-Bull', textColor: fg, size: 'tiny' });
-      if (hiddenBearDiv) markers.push({ id: 'shape3', time: t, position: 'atPriceMiddle', price: y, shape: 'diamond', color: BEAR_COLOR, text: 'H-Bear', textColor: fg, size: 'tiny' });
-    }
-  }
-
-  // Plots
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const plot2: { time: number; value: number; color: string }[] = [];
-  const plot3: { time: number; value: number; color: string }[] = [];
-  const zeroColor = String(color.new(fg, 80));
-  const sigColor = String(color.new(fg, 30));
-  const topValue: number[] = [];
-  const bottomValue: number[] = [];
-  const topColor: string[] = [];
-  const bottomColor: string[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = time(i);
-    const v = val[i];
-    const prev = i > 0 && !isNaN(val[i - 1]) ? val[i - 1] : 0; // nz(val[1])
-    // valColor = val > 0 ? (val > nz(val[1]) ? BULL : color.new(BULL, 50)) : (val < nz(val[1]) ? BEAR : color.new(BEAR, 50))
-    const valColor = gt(v, 0) ? (gt(v, prev) ? BULL_COLOR : bullFaded) : (lt(v, prev) ? BEAR_COLOR : bearFaded);
-    // sqzColor = noSqz ? NO_SQZ_COLOR : sqzOn ? SQZ_ON_COLOR : SQZ_OFF_COLOR
-    const noSqz = !sqzOn[i] && !sqzOff[i];
-    const sqzColor = noSqz ? NO_SQZ_COLOR : sqzOn[i] ? SQZ_ON_COLOR : SQZ_OFF_COLOR;
-    // plot(0, "Squeeze Dots", sqzColor, 2, plot.style_cross)
-    plot0.push({ time: t, value: 0, color: sqzColor });
-    // plot(val, "Momentum", valColor, 2, plot.style_columns)
-    plot1.push({ time: t, value: v, color: valColor });
-    // plot(0, "Zero Line", color.new(chart.fg_color, 80))
-    plot2.push({ time: t, value: 0, color: zeroColor });
-    // plot(sig, "Signal", color.new(chart.fg_color, 30), 1)
-    plot3.push({ time: t, value: sig[i], color: sigColor });
-    // fill(pVal, pZero, math.max(val, 0), math.min(val, 0), val > 0 ? BULL : bg clear, val > 0 ? bg clear : BEAR)
-    topValue.push(isNaN(v) ? NaN : Math.max(v, 0));
-    bottomValue.push(isNaN(v) ? NaN : Math.min(v, 0));
-    topColor.push(gt(v, 0) ? BULL_COLOR : bgClear);
-    bottomColor.push(gt(v, 0) ? bgClear : BEAR_COLOR);
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
-    fills: [
-      { id: 'fill0', plot1: 'plot1', plot2: 'plot2', options: { title: 'Plots Background' },
-        gradient: { topValue, bottomValue, topColor, bottomColor } },
-    ],
-    markers,
-    labels,
-    lines,
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags, sqzOn, sqzOff]),
+    init(_bars, chart) {
+      const fg = foregroundColorOf(chart);
+      const basisSma = taStep.sma();
+      const bbDev = taStep.stdev();
+      const kcSma = taStep.sma();
+      const tr = taStep.tr(false);
+      const rangeSma = taStep.sma();
+      const hh = taStep.highest();
+      const ll = taStep.lowest();
+      const lr = taStep.linreg(cfg.kcLength, 0);
+      const sigSma = taStep.sma();
+      const ph = new PivotStep(cfg.lookbackLeft, cfg.lookbackRight, true);
+      const pl = new PivotStep(cfg.lookbackLeft, cfg.lookbackRight, false);
+      const s: SqzRun = {
+        fg, bgClear: String(color.new(backgroundColorOf(chart), 100)),
+        zeroColor: String(color.new(fg, 80)), sigColor: String(color.new(fg, 30)),
+        basisSma, bbDev, kcSma, tr, rangeSma, hh, ll, lr, sigSma, ph, pl,
+        val: [], pTop: [], pBot: [], plot0: [], plot1: [], plot2: [], plot3: [],
+        topValue: [], bottomValue: [], topColor: [], bottomColor: [],
+        lines: [], labels: [], markers: [], flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [basisSma, bbDev, kcSma, tr, rangeSma, hh, ll, lr, sigSma, ph, pl], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.lines, s.labels, s.markers, ...s.times];
+      s.series = [
+        s.val, s.pTop, s.pBot, s.plot0, s.plot1, s.plot2, s.plot3, s.topValue, s.bottomValue, s.topColor,
+        s.bottomColor, ...s.flags,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const val = s.val;
+      const pTop = s.pTop;
+      const pBot = s.pBot;
+      // BB: basis = ta.sma(source, lengthBB); dev = multBB * ta.stdev(source, lengthBB)
+      const basis = s.basisSma.step(b.close, cfg.bbLength);
+      const dev = s.bbDev.step(b.close, cfg.bbLength) * cfg.bbMult;
+      // KC: ma = ta.sma(source, lengthKC); trRange = useTrueRange ? ta.tr : high - low; rangema = ta.sma(trRange, lengthKC)
+      // (the same ta.sma call when the lengths are equal: one machine)
+      const ma = cfg.kcLength === cfg.bbLength ? basis : s.kcSma.step(b.close, cfg.kcLength);
+      const trv = s.tr.step(b.high, b.low, b.close);
+      const rangema = s.rangeSma.step(cfg.useTrueRange ? trv : b.high - b.low, cfg.kcLength);
+      const upperBB = basis + dev;
+      const lowerBB = basis - dev;
+      const upperKC = ma + rangema * cfg.kcMult;
+      const lowerKC = ma - rangema * cfg.kcMult;
+      const sqzOn = gt(lowerBB, lowerKC) && lt(upperBB, upperKC);
+      const sqzOff = lt(lowerBB, lowerKC) && gt(upperBB, upperKC);
+
+      // val = ta.linreg(source - math.avg(math.avg(highestHigh, lowestLow), ta.sma(close, lengthKC)), lengthKC, 0)
+      const hh = s.hh.step(b.high, cfg.kcLength);
+      const ll = s.ll.step(b.low, cfg.kcLength);
+      const avgValue = ((hh + ll) / 2 + ma) / 2;
+      const v = s.lr.step(b.close - avgValue);
+      val[i] = v;
+      // sig = ta.sma(val, signalPeriod)
+      const sig = s.sigSma.step(v, cfg.signalPeriod);
+
+      // pTop = ta.pivothigh(val, lookbackLeft, lookbackRight); pBot = ta.pivotlow(val, lookbackLeft, lookbackRight)
+      pTop[i] = s.ph.step(i, v);
+      pBot[i] = s.pl.step(i, v);
+
+      const addLine = (l: LineDrawingData) => s.lines.push(l);
+      const addLabel = (l: LabelData) => s.labels.push(l);
+
+      const p = i - rb; // bar_index[lookbackRight]
+      let bullDiv = false;
+      let bearDiv = false;
+      let hiddenBullDiv = false;
+      let hiddenBearDiv = false;
+
+      // Regular Bullish
+      if (!isNaN(pBot[i])) {
+        for (let k = cfg.rangeLower; k <= cfg.rangeUpper; k++) {
+          const q = i - k - rb; // bar_index[i + lookbackRight]
+          if (!isNaN(at(pBot, i - k)) && gt(at(val, p), at(val, q)) && lt(L(bars, p), L(bars, q))) {
+            bullDiv = true;
+            if (cfg.showDiv) addLine({ time1: time(bars, q), price1: val[q], time2: time(bars, p), price2: val[p], color: BULL_COLOR, width: 2 });
+            if (cfg.showPriceDiv) {
+              addLine({ time1: time(bars, q), price1: L(bars, q), time2: time(bars, p), price2: L(bars, p), color: BULL_COLOR, width: 2, forceOverlay: true });
+              addLabel({ time: time(bars, p), price: L(bars, p), text: 'Bull', color: bullClear, textColor: BULL_COLOR, style: 'label_up', size: 'small', forceOverlay: true });
+            }
+            break;
+          }
+        }
+      }
+
+      // Regular Bearish
+      if (!isNaN(pTop[i])) {
+        for (let k = cfg.rangeLower; k <= cfg.rangeUpper; k++) {
+          const q = i - k - rb;
+          if (!isNaN(at(pTop, i - k)) && lt(at(val, p), at(val, q)) && gt(H(bars, p), H(bars, q))) {
+            bearDiv = true;
+            if (cfg.showDiv) addLine({ time1: time(bars, q), price1: val[q], time2: time(bars, p), price2: val[p], color: BEAR_COLOR, width: 2 });
+            if (cfg.showPriceDiv) {
+              addLine({ time1: time(bars, q), price1: H(bars, q), time2: time(bars, p), price2: H(bars, p), color: BEAR_COLOR, width: 2, forceOverlay: true });
+              addLabel({ time: time(bars, p), price: H(bars, p), text: 'Bear', color: bearClear, textColor: BEAR_COLOR, style: 'label_down', size: 'small', forceOverlay: true });
+            }
+            break;
+          }
+        }
+      }
+
+      // Hidden Bullish
+      if (!isNaN(pBot[i])) {
+        for (let k = cfg.rangeLower; k <= cfg.rangeUpper; k++) {
+          const q = i - k - rb;
+          if (!isNaN(at(pBot, i - k)) && lt(at(val, p), at(val, q)) && gt(L(bars, p), L(bars, q))) {
+            hiddenBullDiv = true;
+            if (cfg.showPriceDiv) {
+              addLabel({ time: time(bars, p), price: L(bars, p), text: 'H-Bull', color: bullClear, textColor: BULL_COLOR, style: 'label_up', size: 'tiny', forceOverlay: true });
+            }
+            break;
+          }
+        }
+      }
+
+      // Hidden Bearish
+      if (!isNaN(pTop[i])) {
+        for (let k = cfg.rangeLower; k <= cfg.rangeUpper; k++) {
+          const q = i - k - rb;
+          if (!isNaN(at(pTop, i - k)) && gt(at(val, p), at(val, q)) && lt(H(bars, p), H(bars, q))) {
+            hiddenBearDiv = true;
+            if (cfg.showPriceDiv) {
+              addLabel({ time: time(bars, p), price: H(bars, p), text: 'H-Bear', color: bearClear, textColor: BEAR_COLOR, style: 'label_down', size: 'tiny', forceOverlay: true });
+            }
+            break;
+          }
+        }
+      }
+
+      // alertcondition(bullDiv / bearDiv / sqzOn / sqzOff)
+      s.flags[0][i] = bullDiv;
+      s.flags[1][i] = bearDiv;
+      s.flags[2][i] = sqzOn;
+      s.flags[3][i] = sqzOff;
+      if (bullDiv) s.times[0].push(time(bars, i));
+      if (bearDiv) s.times[1].push(time(bars, i));
+      if (sqzOn) s.times[2].push(time(bars, i));
+      if (sqzOff) s.times[3].push(time(bars, i));
+
+      // plotshape(showDiv and <cond> ? val[lookbackRight] : na, ..., location.absolute, offset = -lookbackRight,
+      //   textcolor = chart.fg_color, size = size.tiny): drawn on bar i - lookbackRight at val[lookbackRight]
+      if (cfg.showDiv && p >= 0 && !isNaN(val[p])) {
+        const t = time(bars, p);
+        const y = val[p];
+        const fg = s.fg;
+        if (bullDiv) s.markers.push({ id: 'shape0', time: t, position: 'atPriceBottom', price: y, shape: 'labelUp', color: BULL_COLOR, text: 'Bull', textColor: fg, size: 'tiny' });
+        if (bearDiv) s.markers.push({ id: 'shape1', time: t, position: 'atPriceTop', price: y, shape: 'labelDown', color: BEAR_COLOR, text: 'Bear', textColor: fg, size: 'tiny' });
+        if (hiddenBullDiv) s.markers.push({ id: 'shape2', time: t, position: 'atPriceMiddle', price: y, shape: 'diamond', color: BULL_COLOR, text: 'H-Bull', textColor: fg, size: 'tiny' });
+        if (hiddenBearDiv) s.markers.push({ id: 'shape3', time: t, position: 'atPriceMiddle', price: y, shape: 'diamond', color: BEAR_COLOR, text: 'H-Bear', textColor: fg, size: 'tiny' });
+      }
+
+      // Plots
+      const t = time(bars, i);
+      const prev = i > 0 && !isNaN(val[i - 1]) ? val[i - 1] : 0; // nz(val[1])
+      // valColor = val > 0 ? (val > nz(val[1]) ? BULL : color.new(BULL, 50)) : (val < nz(val[1]) ? BEAR : color.new(BEAR, 50))
+      const valColor = gt(v, 0) ? (gt(v, prev) ? BULL_COLOR : bullFaded) : (lt(v, prev) ? BEAR_COLOR : bearFaded);
+      // sqzColor = noSqz ? NO_SQZ_COLOR : sqzOn ? SQZ_ON_COLOR : SQZ_OFF_COLOR
+      const noSqz = !sqzOn && !sqzOff;
+      const sqzColor = noSqz ? NO_SQZ_COLOR : sqzOn ? SQZ_ON_COLOR : SQZ_OFF_COLOR;
+      // plot(0, "Squeeze Dots", sqzColor, 2, plot.style_cross)
+      s.plot0[i] = { time: t, value: 0, color: sqzColor };
+      // plot(val, "Momentum", valColor, 2, plot.style_columns)
+      s.plot1[i] = { time: t, value: v, color: valColor };
+      // plot(0, "Zero Line", color.new(chart.fg_color, 80))
+      s.plot2[i] = { time: t, value: 0, color: s.zeroColor };
+      // plot(sig, "Signal", color.new(chart.fg_color, 30), 1)
+      s.plot3[i] = { time: t, value: sig, color: s.sigColor };
+      // fill(pVal, pZero, math.max(val, 0), math.min(val, 0), val > 0 ? BULL : bg clear, val > 0 ? bg clear : BEAR)
+      s.topValue[i] = isNaN(v) ? NaN : Math.max(v, 0);
+      s.bottomValue[i] = isNaN(v) ? NaN : Math.min(v, 0);
+      s.topColor[i] = gt(v, 0) ? BULL_COLOR : s.bgClear;
+      s.bottomColor[i] = gt(v, 0) ? s.bgClear : BEAR_COLOR;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+        fills: [
+          { id: 'fill0', plot1: 'plot1', plot2: 'plot2', options: { title: 'Plots Background' },
+            gradient: { topValue: s.topValue.slice(), bottomValue: s.bottomValue.slice(), topColor: s.topColor.slice(), bottomColor: s.bottomColor.slice() } },
+        ],
+        markers: s.markers.slice(),
+        labels: s.labels.slice(-MAX_LABELS),
+        lines: s.lines.slice(-MAX_LINES),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
 }
 
-export const SqueezeMomentumV2 = { calculate, metadata, defaultInputs, inputConfig, plotConfig, fillConfig, alertConditions };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SqueezeMomentumV2Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SqueezeMomentumV2Inputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const SqueezeMomentumV2 = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, fillConfig, alertConditions };

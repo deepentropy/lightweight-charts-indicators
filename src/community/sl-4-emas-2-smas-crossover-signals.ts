@@ -11,10 +11,12 @@
  */
 
 import {
-  ta, Series, color, getSourceSeries,
+  taStep, color,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface Sl4Emas2SmasCrossoverSignalsInputs {
   ema1Length: number;
@@ -70,78 +72,123 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<Sl4Emas2SmasCrossoverSignalsInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+type Sma = WindowSma;
+type Ema = ReturnType<typeof taStep.ema>;
+
+interface Sl4Run extends BarRunState<Record<string, never>> {
+  ema1: Ema;
+  ema2: Ema;
+  ema3: Ema;
+  ema4: Ema;
+  sma1: Sma;
+  sma2: Sma;
+  rsi: ReturnType<typeof taStep.rsi>;
+  volSma: Sma;
+  crossUp: ReturnType<typeof taStep.crossover>;
+  crossDown: ReturnType<typeof taStep.crossunder>;
+  /** ema1..ema4, sma1, sma2 */
+  values: number[][];
+  plots: Point[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<Sl4Emas2SmasCrossoverSignalsInputs>): BarStudy<Sl4Run, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => (v === null || v === undefined ? NaN : v));
-  const src = getSourceSeries(bars, cfg.priceSource);
-
-  const ema1S = ta.ema(src, cfg.ema1Length);
-  const ema2S = ta.ema(src, cfg.ema2Length);
-  const ema1 = A(ema1S);
-  const ema2 = A(ema2S);
-  const ema3 = A(ta.ema(src, cfg.ema3Length));
-  const ema4 = A(ta.ema(src, cfg.ema4Length));
-  const sma1 = A(ta.sma(src, cfg.sma1Length));
-  const sma2 = A(ta.sma(src, cfg.sma2Length));
-  const rsiValue = A(ta.rsi(src, cfg.rsiPeriod));
-  const volSma = A(ta.sma(Series.fromArray(bars, bars.map((b) => b.volume ?? NaN)), 20));
-  // ta.crossover / ta.crossunder (exact comparisons, with the last bar where both values were not na)
-  const crossUp = A(ta.crossover(ema1S, ema2S));
-  const crossDown = A(ta.crossunder(ema1S, ema2S));
-
-  const markers: MarkerData[] = [];
-  const prev = (a: number[], i: number) => (i > 0 ? a[i - 1] : NaN);
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const isBullishTrend = gt(ema1[i], ema2[i]) && gt(ema2[i], ema3[i]) && gt(ema3[i], ema4[i]);
-    const isBearishTrend = lt(ema1[i], ema2[i]) && lt(ema2[i], ema3[i]) && lt(ema3[i], ema4[i]);
-    const priceAboveLongTerm = gt(b.close, sma2[i]);
-    const priceBelowLongTerm = lt(b.close, sma2[i]);
-    const rsiBullish = gt(rsiValue[i], 50);
-    const rsiBearish = lt(rsiValue[i], 50);
-    const allSlopesUp = gt(ema1[i], prev(ema1, i)) && gt(ema2[i], prev(ema2, i))
-      && gt(ema3[i], prev(ema3, i)) && gt(ema4[i], prev(ema4, i));
-    const allSlopesDn = lt(ema1[i], prev(ema1, i)) && lt(ema2[i], prev(ema2, i))
-      && lt(ema3[i], prev(ema3, i)) && lt(ema4[i], prev(ema4, i));
-    const volumeFilter = gt(b.volume ?? NaN, volSma[i]);
-    const buySignal = crossUp[i] === 1 && isBullishTrend && priceAboveLongTerm && rsiBullish && allSlopesUp && volumeFilter;
-    const sellSignal = crossDown[i] === 1 && isBearishTrend && priceBelowLongTerm && rsiBearish && allSlopesDn && volumeFilter;
-    // plotshape(buySignal, "Buy Signal", location.belowbar, color.lime, shape.labelup, text = "BUY",
-    //   textcolor = color.black, size = size.small)
-    if (buySignal) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.lime, text: 'BUY',
-        textColor: color.black, size: 'small' });
-    }
-    // plotshape(sellSignal, "Sell Signal", location.abovebar, color.red, shape.labeldown, text = "SELL",
-    //   textcolor = color.white, size = size.small)
-    if (sellSignal) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
-        textColor: color.white, size: 'small' });
-    }
-  }
-
-  const line = (a: number[]) => bars.map((b, i) => ({ time: b.time, value: a[i] }));
-
+  const value = barSource(cfg.priceSource);
+  const cur = new Array<number>(6);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(ema1),
-      plot1: line(ema2),
-      plot2: line(ema3),
-      plot3: line(ema4),
-      plot4: line(sma1),
-      plot5: line(sma2),
+    fullRunReason: () => (isBarSource(cfg.priceSource) ? null : 'source of another study'),
+    init() {
+      const s: Sl4Run = {
+        ema1: taStep.ema(cfg.ema1Length), ema2: taStep.ema(cfg.ema2Length), ema3: taStep.ema(cfg.ema3Length),
+        ema4: taStep.ema(cfg.ema4Length), sma1: new WindowSma(cfg.sma1Length), sma2: new WindowSma(cfg.sma2Length), rsi: taStep.rsi(cfg.rsiPeriod),
+        volSma: new WindowSma(20), crossUp: taStep.crossover(), crossDown: taStep.crossunder(),
+        values: Array.from({ length: 6 }, () => []), plots: Array.from({ length: 6 }, () => []), markers: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.ema1, s.ema2, s.ema3, s.ema4, s.sma1, s.sma2, s.rsi, s.volSma, s.crossUp, s.crossDown];
+      s.lists = [s.markers];
+      s.series = [...s.values, ...s.plots];
+      return s;
     },
-    markers,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const src = value(b);
+      const ema1 = s.ema1.step(src);
+      const ema2 = s.ema2.step(src);
+      const ema3 = s.ema3.step(src);
+      const ema4 = s.ema4.step(src);
+      const sma1 = s.sma1.step(src);
+      const sma2 = s.sma2.step(src);
+      const rsiValue = s.rsi.step(src);
+      const volSma = s.volSma.step(b.volume ?? NaN);
+      // ta.crossover / ta.crossunder (exact comparisons, with the last bar where both values were not na)
+      const crossUp = s.crossUp.step(ema1, ema2);
+      const crossDown = s.crossDown.step(ema1, ema2);
+      cur[0] = ema1;
+      cur[1] = ema2;
+      cur[2] = ema3;
+      cur[3] = ema4;
+      cur[4] = sma1;
+      cur[5] = sma2;
+      for (let k = 0; k < 6; k++) {
+        s.values[k][i] = cur[k];
+        s.plots[k][i] = { time: b.time, value: cur[k] };
+      }
+      const prev = (k: number) => (i > 0 ? s.values[k][i - 1] : NaN);
+
+      const isBullishTrend = gt(ema1, ema2) && gt(ema2, ema3) && gt(ema3, ema4);
+      const isBearishTrend = lt(ema1, ema2) && lt(ema2, ema3) && lt(ema3, ema4);
+      const priceAboveLongTerm = gt(b.close, sma2);
+      const priceBelowLongTerm = lt(b.close, sma2);
+      const rsiBullish = gt(rsiValue, 50);
+      const rsiBearish = lt(rsiValue, 50);
+      const allSlopesUp = gt(ema1, prev(0)) && gt(ema2, prev(1)) && gt(ema3, prev(2)) && gt(ema4, prev(3));
+      const allSlopesDn = lt(ema1, prev(0)) && lt(ema2, prev(1)) && lt(ema3, prev(2)) && lt(ema4, prev(3));
+      const volumeFilter = gt(b.volume ?? NaN, volSma);
+      const buySignal = crossUp && isBullishTrend && priceAboveLongTerm && rsiBullish && allSlopesUp && volumeFilter;
+      const sellSignal = crossDown && isBearishTrend && priceBelowLongTerm && rsiBearish && allSlopesDn && volumeFilter;
+      // plotshape(buySignal, "Buy Signal", location.belowbar, color.lime, shape.labelup, text = "BUY",
+      //   textcolor = color.black, size = size.small)
+      if (buySignal) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.lime, text: 'BUY',
+          textColor: color.black, size: 'small' });
+      }
+      // plotshape(sellSignal, "Sell Signal", location.abovebar, color.red, shape.labeldown, text = "SELL",
+      //   textcolor = color.white, size = size.small)
+      if (sellSignal) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
+          textColor: color.white, size: 'small' });
+      }
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(),
+        },
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<Sl4Emas2SmasCrossoverSignalsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<Sl4Emas2SmasCrossoverSignalsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const Sl4Emas2SmasCrossoverSignals = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

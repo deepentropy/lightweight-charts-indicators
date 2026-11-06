@@ -16,13 +16,14 @@
  */
 
 import {
-  ta, Series, color, timeframe,
+  taStep, color, timeframe,
   type Bar, type FillConfig, type FillData, type IndicatorResult, type InputConfig, type PlotConfig, type ShapeConfig,
 } from 'oakscriptjs';
 import type { MarkerData } from '../types';
 import type { ChartContext } from '../chart-context';
 import { chartTimeframe } from '../anchor-period';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SuperTrendVInputs {
   /** tf: minutes of the EMA window on intraday bars (length = tf / chart multiplier * 7) */
@@ -105,128 +106,164 @@ const gt = (a: number, b: number) => a - b > 1e-10;
 const lt = (a: number, b: number) => b - a > 1e-10;
 const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<SuperTrendVInputs> = {},
-  chart?: ChartContext,
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alerts: AlertConditionState[] };
+
+interface StvVars {
+  /** upTrend / downTrend / trend of the previous bar */
+  up1: number;
+  dn1: number;
+  trend: number;
+}
+
+interface StvRun extends BarRunState<StvVars> {
+  cum: ReturnType<typeof taStep.cum>;
+  priceSpread: WindowStdev;
+  smooth: WindowSma;
+  vSpread: WindowStdev;
+  c: ReturnType<typeof taStep.ema>;
+  o: ReturnType<typeof taStep.ema>;
+  atr: ReturnType<typeof taStep.atr>;
+  crossUp: ReturnType<typeof taStep.crossover>;
+  crossDn: ReturnType<typeof taStep.crossunder>;
+  sdev: WindowStdev;
+  low1: ReturnType<typeof taStep.crossover>;
+  high1: ReturnType<typeof taStep.crossunder>;
+  stLine: number[];
+  plots: Point[][];
+  fillColors: string[];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<SuperTrendVInputs>): BarStudy<StvRun, Result> {
   const { tf, stMult, stPeriod, multiplier, len5 } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => (v === null || v === undefined ? NaN : v));
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // Volume-weighted price
-  const spreadvol = bars.map((b) => (b.close - b.open) * 100 * ((b.volume ?? NaN) / ((b.high - b.low) * 100)));
-  const cumSv = A(ta.cum(S(spreadvol)));
-  const v = spreadvol.map((x, i) => x + cumSv[i]);
-  const priceSpread = A(ta.stdev(S(bars.map((b) => b.high - b.low)), 28));
-  const smooth = A(ta.sma(S(v), 14));
-  const dv = v.map((x, i) => x - smooth[i]);
-  const vSpread = A(ta.stdev(S(dv), 28));
-  const out = bars.map((b, i) => {
-    const shadow = dv[i] / vSpread[i] * priceSpread[i];
-    return gt(shadow, 0) ? b.high + shadow : b.low + shadow;
-  });
-
-  // len = isintraday and multiplier >= 1 ? tf / multiplier * 7 : ... : 7
-  const tfInfo = timeframe.info(chartTimeframe(bars, chart) || '1D');
-  const len = tfInfo.isintraday && tfInfo.multiplier >= 1 ? Math.trunc(tf / tfInfo.multiplier * 7) : 7;
-  const c = A(ta.ema(S(out), len));
-  const o = A(ta.ema(S(bars.map((b) => b.open)), len));
-
-  // SuperTrend on vpt = ema(out, len) = c
-  const atr = A(ta.atr(bars, stPeriod));
-  const upTrend: number[] = new Array(n);
-  const downTrend: number[] = new Array(n);
-  const trend: number[] = new Array(n);
-  const stLine: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const upLev = c[i] - stMult * atr[i];
-    const dnLev = c[i] + stMult * atr[i];
-    const close1 = i > 0 ? bars[i - 1].close : NaN;
-    const up1 = i > 0 ? upTrend[i - 1] : NaN;
-    const dn1 = i > 0 ? downTrend[i - 1] : NaN;
-    upTrend[i] = gt(close1, up1) ? Math.max(upLev, up1) : upLev;
-    downTrend[i] = lt(close1, dn1) ? Math.min(dnLev, dn1) : dnLev;
-    const close = bars[i].close;
-    trend[i] = gt(close, dn1) ? 1 : lt(close, up1) ? -1 : (i > 0 ? trend[i - 1] : 1);
-    stLine[i] = trend[i] === 1 ? upTrend[i] : downTrend[i];
-  }
-  const closeS = S(bars.map((b) => b.close));
-  const crossUp = ta.crossover(closeS, S(stLine)).toArray();
-  const crossDn = ta.crossunder(closeS, S(stLine)).toArray();
-
-  // calcSlope(close, len5): least squares over the last len5 closes, x = 2 .. len5 + 1
-  const vwap1: number[] = new Array(n);
-  for (let k = 0; k < n; k++) {
-    let sumX = 0, sumY = 0, sumXSqr = 0, sumXY = 0;
-    for (let i = 1; i <= len5; i++) {
-      const j = k - (len5 - i);
-      const val = j >= 0 ? bars[j].close : NaN;
-      const per = i + 1.0;
-      sumX = sumX + per;
-      sumY = sumY + val;
-      sumXSqr = sumXSqr + per * per;
-      sumXY = sumXY + val * per;
-    }
-    const slope = (len5 * sumXY - sumX * sumY) / (len5 * sumXSqr - sumX * sumX);
-    const average = sumY / len5;
-    const intercept = average - slope * sumX / len5 + slope;
-    vwap1[k] = fin(intercept + slope * (len5 - 0));
-  }
-  const sdev = A(ta.stdev(closeS, len5));
-  const z1 = vwap1.map((x, i) => x + multiplier * sdev[i]);
-  const x1 = vwap1.map((x, i) => x - multiplier * sdev[i]);
-  const low1 = ta.crossover(closeS, S(x1)).toArray();
-  const high1 = ta.crossunder(closeS, S(z1)).toArray();
-
-  const p0: Array<{ time: number; value: number }> = [];
-  const p1: Array<{ time: number; value: number }> = [];
-  const p2: Array<{ time: number; value: number; color: string }> = [];
-  const p3: Array<{ time: number; value: number; color: string }> = [];
-  const p4: Array<{ time: number; value: number; color: string }> = [];
-  const fillColors: string[] = [];
-  const markers: MarkerData[] = [];
-  const flags: boolean[][] = [[], [], [], []];
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    const up = gt(c[i], o[i]);
-    p0.push({ time, value: fin(c[i]) });
-    p1.push({ time, value: fin(o[i]) });
-    p2.push({ time, value: fin(c[i]), color: up ? C_LIME_60 : C_ORANGE_60 });
-    p3.push({ time, value: fin(o[i]), color: up ? C_LIME_80 : C_ORANGE_80 });
-    fillColors.push(up ? F_LIME : F_ORANGE);
-    // plot(st_line[1], color = trend == 1 ? green : red)
-    p4.push({ time, value: i > 0 ? fin(stLine[i - 1]) : NaN, color: trend[i] === 1 ? GREEN : RED });
-
-    const close = bars[i].close;
-    const buy = !!crossUp[i] && gt(close, o[i]);
-    const sell = !!crossDn[i] && lt(close, o[i]);
-    const tpLow = !!low1[i];
-    const tpHigh = !!high1[i];
-    flags[0].push(buy);
-    flags[1].push(sell);
-    flags[2].push(tpLow);
-    flags[3].push(tpHigh);
-    if (buy) markers.push({ id: 'shape0', time, position: 'belowBar', shape: 'labelUp', color: GREEN, text: 'Buy', textColor: WHITE, size: 'small' });
-    if (sell) markers.push({ id: 'shape1', time, position: 'aboveBar', shape: 'labelDown', color: RED, text: 'Sell', textColor: WHITE, size: 'small' });
-    if (tpLow) markers.push({ id: 'shape2', time, position: 'belowBar', shape: 'labelUp', color: RED, text: 'TP', textColor: WHITE, size: 'small' });
-    if (tpHigh) markers.push({ id: 'shape3', time, position: 'aboveBar', shape: 'labelDown', color: GREEN, text: 'TP', textColor: WHITE, size: 'small' });
-  }
-
-  const fills: FillData[] = [
-    { id: 'fill0', plot1: 'plot2', plot2: 'plot3', options: { title: 'Plots Background' }, colors: fillColors },
-  ];
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: p0, plot1: p1, plot2: p2, plot3: p3, plot4: p4 },
-    fills,
-    markers,
-    alerts: alertStates(alertConditions, bars, flags),
+    // the EMA length follows the chart timeframe (from the bar gaps without a chart timeframe)
+    key: (bars, chart) => chartTimeframe(bars, chart),
+    init(bars, chart) {
+      // len = isintraday and multiplier >= 1 ? tf / multiplier * 7 : ... : 7
+      const tfInfo = timeframe.info(chartTimeframe(bars, chart) || '1D');
+      const len = tfInfo.isintraday && tfInfo.multiplier >= 1 ? Math.trunc(tf / tfInfo.multiplier * 7) : 7;
+      const s: StvRun = {
+        cum: taStep.cum(), priceSpread: new WindowStdev(28), smooth: new WindowSma(14), vSpread: new WindowStdev(28),
+        c: taStep.ema(len), o: taStep.ema(len), atr: taStep.atr(stPeriod), crossUp: taStep.crossover(),
+        crossDn: taStep.crossunder(), sdev: new WindowStdev(len5), low1: taStep.crossover(), high1: taStep.crossunder(),
+        stLine: [], plots: [[], [], [], [], []], fillColors: [], flags: [[], [], [], []], times: [[], [], [], []], markers: [],
+        steps: [], vars: { up1: NaN, dn1: NaN, trend: 1 }, lists: [], series: [],
+      };
+      s.steps = [s.cum, s.priceSpread, s.smooth, s.vSpread, s.c, s.o, s.atr, s.crossUp, s.crossDn, s.sdev, s.low1, s.high1];
+      s.lists = [...s.times, s.markers];
+      s.series = [s.stLine, ...s.plots, s.fillColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const vs = s.vars;
+      // Volume-weighted price
+      const spreadvol = (b.close - b.open) * 100 * ((b.volume ?? NaN) / ((b.high - b.low) * 100));
+      const v = spreadvol + s.cum.step(spreadvol);
+      const priceSpread = s.priceSpread.step(b.high - b.low);
+      const dv = v - s.smooth.step(v);
+      const vSpread = s.vSpread.step(dv);
+      const shadow = dv / vSpread * priceSpread;
+      const out = gt(shadow, 0) ? b.high + shadow : b.low + shadow;
+      const c = s.c.step(out);
+      const o = s.o.step(b.open);
+
+      // SuperTrend on vpt = ema(out, len) = c
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const upLev = c - stMult * atr;
+      const dnLev = c + stMult * atr;
+      const close1 = i > 0 ? bars[i - 1].close : NaN;
+      const up1 = i > 0 ? vs.up1 : NaN;
+      const dn1 = i > 0 ? vs.dn1 : NaN;
+      const upTrend = gt(close1, up1) ? Math.max(upLev, up1) : upLev;
+      const downTrend = lt(close1, dn1) ? Math.min(dnLev, dn1) : dnLev;
+      const close = b.close;
+      const trend = gt(close, dn1) ? 1 : lt(close, up1) ? -1 : (i > 0 ? vs.trend : 1);
+      const stLine = trend === 1 ? upTrend : downTrend;
+      vs.up1 = upTrend;
+      vs.dn1 = downTrend;
+      vs.trend = trend;
+      s.stLine[i] = stLine;
+      const crossUp = s.crossUp.step(close, stLine);
+      const crossDn = s.crossDn.step(close, stLine);
+
+      // calcSlope(close, len5): least squares over the last len5 closes, x = 2 .. len5 + 1
+      let sumX = 0, sumY = 0, sumXSqr = 0, sumXY = 0;
+      for (let k = 1; k <= len5; k++) {
+        const j = i - (len5 - k);
+        const val = j >= 0 ? bars[j].close : NaN;
+        const per = k + 1.0;
+        sumX = sumX + per;
+        sumY = sumY + val;
+        sumXSqr = sumXSqr + per * per;
+        sumXY = sumXY + val * per;
+      }
+      const slope = (len5 * sumXY - sumX * sumY) / (len5 * sumXSqr - sumX * sumX);
+      const average = sumY / len5;
+      const intercept = average - slope * sumX / len5 + slope;
+      const vwap1 = fin(intercept + slope * (len5 - 0));
+      const sdev = s.sdev.step(close);
+      const z1 = vwap1 + multiplier * sdev;
+      const x1 = vwap1 - multiplier * sdev;
+      const low1 = s.low1.step(close, x1);
+      const high1 = s.high1.step(close, z1);
+
+      const up = gt(c, o);
+      const p = s.plots;
+      p[0][i] = { time, value: fin(c) };
+      p[1][i] = { time, value: fin(o) };
+      p[2][i] = { time, value: fin(c), color: up ? C_LIME_60 : C_ORANGE_60 };
+      p[3][i] = { time, value: fin(o), color: up ? C_LIME_80 : C_ORANGE_80 };
+      s.fillColors[i] = up ? F_LIME : F_ORANGE;
+      // plot(st_line[1], color = trend == 1 ? green : red)
+      p[4][i] = { time, value: i > 0 ? fin(s.stLine[i - 1]) : NaN, color: trend === 1 ? GREEN : RED };
+
+      const buy = !!crossUp && gt(close, o);
+      const sell = !!crossDn && lt(close, o);
+      const tpLow = !!low1;
+      const tpHigh = !!high1;
+      const f = s.flags;
+      f[0][i] = buy;
+      f[1][i] = sell;
+      f[2][i] = tpLow;
+      f[3][i] = tpHigh;
+      for (let k = 0; k < 4; k++) if (f[k][i]) s.times[k].push(time as number);
+      if (buy) s.markers.push({ id: 'shape0', time, position: 'belowBar', shape: 'labelUp', color: GREEN, text: 'Buy', textColor: WHITE, size: 'small' });
+      if (sell) s.markers.push({ id: 'shape1', time, position: 'aboveBar', shape: 'labelDown', color: RED, text: 'Sell', textColor: WHITE, size: 'small' });
+      if (tpLow) s.markers.push({ id: 'shape2', time, position: 'belowBar', shape: 'labelUp', color: RED, text: 'TP', textColor: WHITE, size: 'small' });
+      if (tpHigh) s.markers.push({ id: 'shape3', time, position: 'aboveBar', shape: 'labelDown', color: GREEN, text: 'TP', textColor: WHITE, size: 'small' });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      const fills: FillData[] = [
+        { id: 'fill0', plot1: 'plot2', plot2: 'plot3', options: { title: 'Plots Background' }, colors: s.fillColors.slice() },
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice() },
+        fills,
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SuperTrendVInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SuperTrendVInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
 export const SuperTrendV = {
-  calculate, metadata, defaultInputs, inputConfig, plotConfig, fillConfig, shapeConfig, alertConditions,
+  calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, fillConfig, shapeConfig, alertConditions,
 };

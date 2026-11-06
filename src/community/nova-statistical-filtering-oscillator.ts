@@ -13,9 +13,11 @@
  * Original notice: © Pineify
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertcondition() calls, in declaration order */
 export const alertConditions: AlertConditionDecl[] = [
@@ -69,86 +71,139 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<NovaStatisticalFilteringOscillatorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface NovaRun extends BarRunState<Record<string, never>> {
+  /** ta.sma(close, length) and ta.stdev(close, length) share the window sum of the closes (the same doubles) */
+  sum: ReturnType<typeof taStep.sum>;
+  squares: ReturnType<typeof taStep.sum>;
+  ema1: ReturnType<typeof taStep.ema>;
+  ema2: ReturnType<typeof taStep.ema>;
+  ema3: ReturnType<typeof taStep.ema>;
+  bandSd: ReturnType<typeof taStep.stdev>;
+  bull: ReturnType<typeof taStep.crossover>;
+  bear: ReturnType<typeof taStep.crossunder>;
+  plots: Point[][];
+  topValue: number[];
+  bottomValue: number[];
+  topColor: string[];
+  bottomColor: string[];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<NovaStatisticalFilteringOscillatorInputs>): BarStudy<NovaRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-
-  // zScore = stdevPrice == 0 ? 0 : (close - meanPrice) / stdevPrice
-  const mean = A(ta.sma(S(close), cfg.lengthInput));
-  const sd = A(ta.stdev(S(close), cfg.lengthInput));
-  const z = close.map((c, i) => (eq(sd[i], 0) ? 0 : (c - mean[i]) / sd[i]));
-
-  // tema(src, len) => 3 * (ema1 - ema2) + ema3
-  const ema1 = A(ta.ema(S(z), cfg.smoothInput));
-  const ema2 = A(ta.ema(S(ema1), cfg.smoothInput));
-  const ema3 = A(ta.ema(S(ema2), cfg.smoothInput));
-  const sm = ema1.map((e1, i) => 3 * (e1 - ema2[i]) + ema3[i]);
-
-  const bandSd = A(ta.stdev(S(sm), cfg.lengthInput));
-  const upper = bandSd.map((v) => v * cfg.multInput);
-  const lower = bandSd.map((v) => -v * cfg.multInput);
-
-  const oscColor = sm.map((v, i) => String(color.from_gradient(v, lower[i], upper[i], cfg.bearColor, cfg.bullColor)));
-
-  const t = (i: number) => bars[i].time;
   const upCol = String(color.new(cfg.bearColor, 50));
   const loCol = String(color.new(cfg.bullColor, 50));
   const baseCol = String(color.new(color.gray, 50));
-  const plots = {
-    plot0: bars.map((_b, i) => ({ time: t(i), value: upper[i], color: upCol })),
-    plot1: bars.map((_b, i) => ({ time: t(i), value: lower[i], color: loCol })),
-    plot2: bars.map((_b, i) => ({ time: t(i), value: 0, color: baseCol })),
-    plot3: bars.map((_b, i) => ({ time: t(i), value: sm[i], color: oscColor[i] })),
-    plot4: bars.map((_b, i) => ({ time: t(i), value: sm[i], color: String(color.new(oscColor[i], 70)) })),
-  };
-
-  // fill(oscPlot, baseline, math.max(s, 0), math.min(s, 0), s > 0 ? color.new(bullColor, 50) : color.new(bearColor, 100),
-  //      s > 0 ? color.new(bullColor, 100) : color.new(bearColor, 50))
   const bull50 = String(color.new(cfg.bullColor, 50));
   const bull100 = String(color.new(cfg.bullColor, 100));
   const bear50 = String(color.new(cfg.bearColor, 50));
   const bear100 = String(color.new(cfg.bearColor, 100));
-  const fills = [{
-    plot1: 'plot3', plot2: 'plot2',
-    gradient: {
-      topValue: sm.map((v) => (isNaN(v) ? NaN : Math.max(v, 0))),
-      bottomValue: sm.map((v) => (isNaN(v) ? NaN : Math.min(v, 0))),
-      topColor: sm.map((v) => (gt(v, 0) ? bull50 : bear100)),
-      bottomColor: sm.map((v) => (gt(v, 0) ? bull100 : bear50)),
-    },
-  }];
-
-  // bullSignal = ta.crossover(smoothedStat, lowerBand); bearSignal = ta.crossunder(smoothedStat, upperBand)
-  const bull = A(ta.crossover(S(sm), S(lower)));
-  const bear = A(ta.crossunder(S(sm), S(upper)));
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    // plotshape(bullSignal ? smoothedStat : na, "Buy Signal", shape.circle, location.absolute, bullColor, size = size.tiny)
-    if (bull[i] && !isNaN(sm[i])) {
-      markers.push({ time: t(i), position: 'atPriceMiddle', price: sm[i], shape: 'circle', color: cfg.bullColor, size: 'tiny', id: 'shape0' });
-    }
-    if (bear[i] && !isNaN(sm[i])) {
-      markers.push({ time: t(i), position: 'atPriceMiddle', price: sm[i], shape: 'circle', color: cfg.bearColor, size: 'tiny', id: 'shape1' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    markers,
-    alerts: alertStates(alertConditions, bars, [bull.map((v) => !!v), bear.map((v) => !!v)]),
+    init() {
+      const s: NovaRun = {
+        sum: taStep.sum(), squares: taStep.sum(),
+        ema1: taStep.ema(cfg.smoothInput), ema2: taStep.ema(cfg.smoothInput), ema3: taStep.ema(cfg.smoothInput),
+        bandSd: taStep.stdev(), bull: taStep.crossover(), bear: taStep.crossunder(),
+        plots: [[], [], [], [], []], topValue: [], bottomValue: [], topColor: [], bottomColor: [],
+        flags: [[], []], times: [[], []], markers: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.sum, s.squares, s.ema1, s.ema2, s.ema3, s.bandSd, s.bull, s.bear];
+      s.lists = [s.markers, ...s.times];
+      s.series = [...s.plots, s.topValue, s.bottomValue, s.topColor, s.bottomColor, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const { time, close: c } = bars[i];
+      // zScore = stdevPrice == 0 ? 0 : (close - meanPrice) / stdevPrice
+      // ta.sma: sum / length; ta.stdev: sqrt(sumSq / length - mean * mean), 0 when not positive
+      const len = Math.floor(cfg.lengthInput);
+      const mean = s.sum.step(c, len) / len;
+      const variance = s.squares.step(isNaN(c) ? NaN : c * c, len) / len - mean * mean;
+      const sd = Number.isNaN(variance) ? NaN : variance > 0 ? Math.sqrt(variance) : 0;
+      const z = eq(sd, 0) ? 0 : (c - mean) / sd;
+
+      // tema(src, len) => 3 * (ema1 - ema2) + ema3
+      const ema1 = s.ema1.step(z);
+      const ema2 = s.ema2.step(ema1);
+      const ema3 = s.ema3.step(ema2);
+      const sm = 3 * (ema1 - ema2) + ema3;
+
+      const bandSd = s.bandSd.step(sm, cfg.lengthInput);
+      const upper = bandSd * cfg.multInput;
+      const lower = -bandSd * cfg.multInput;
+
+      const oscColor = String(color.from_gradient(sm, lower, upper, cfg.bearColor, cfg.bullColor));
+      s.plots[0][i] = { time, value: upper, color: upCol };
+      s.plots[1][i] = { time, value: lower, color: loCol };
+      s.plots[2][i] = { time, value: 0, color: baseCol };
+      s.plots[3][i] = { time, value: sm, color: oscColor };
+      s.plots[4][i] = { time, value: sm, color: String(color.new(oscColor, 70)) };
+
+      // fill(oscPlot, baseline, math.max(s, 0), math.min(s, 0), s > 0 ? color.new(bullColor, 50) : color.new(bearColor, 100),
+      //      s > 0 ? color.new(bullColor, 100) : color.new(bearColor, 50))
+      s.topValue[i] = isNaN(sm) ? NaN : Math.max(sm, 0);
+      s.bottomValue[i] = isNaN(sm) ? NaN : Math.min(sm, 0);
+      s.topColor[i] = gt(sm, 0) ? bull50 : bear100;
+      s.bottomColor[i] = gt(sm, 0) ? bull100 : bear50;
+
+      // bullSignal = ta.crossover(smoothedStat, lowerBand); bearSignal = ta.crossunder(smoothedStat, upperBand)
+      const bull = s.bull.step(sm, lower);
+      const bear = s.bear.step(sm, upper);
+      // plotshape(bullSignal ? smoothedStat : na, "Buy Signal", shape.circle, location.absolute, bullColor, size = size.tiny)
+      if (bull && !isNaN(sm)) {
+        s.markers.push({ time, position: 'atPriceMiddle', price: sm, shape: 'circle', color: cfg.bullColor, size: 'tiny', id: 'shape0' });
+      }
+      if (bear && !isNaN(sm)) {
+        s.markers.push({ time, position: 'atPriceMiddle', price: sm, shape: 'circle', color: cfg.bearColor, size: 'tiny', id: 'shape1' });
+      }
+      s.flags[0][i] = bull;
+      s.flags[1][i] = bear;
+      if (bull) s.times[0].push(time as number);
+      if (bear) s.times[1].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice(),
+          plot4: s.plots[4].slice(),
+        },
+        fills: [{
+          plot1: 'plot3', plot2: 'plot2',
+          gradient: {
+            topValue: s.topValue.slice(), bottomValue: s.bottomValue.slice(), topColor: s.topColor.slice(),
+            bottomColor: s.bottomColor.slice(),
+          },
+        }],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<NovaStatisticalFilteringOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<NovaStatisticalFilteringOscillatorInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const NovaStatisticalFilteringOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

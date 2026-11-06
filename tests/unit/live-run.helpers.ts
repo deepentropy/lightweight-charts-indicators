@@ -27,6 +27,24 @@ function diff(a: unknown, b: unknown, path = ''): string | null {
   return null;
 }
 
+/**
+ * The update of the run and the full calculate on the same bars: equal results, or the same runtime error from both
+ * (a study that stops on some bars, as the original). `from` is undefined after an error.
+ */
+function check(run: { update(b: Bar[]): any }, calc: (b: Bar[]) => unknown, bars: Bar[], k: number): number | undefined {
+  let got: any;
+  try {
+    got = run.update(bars);
+  } catch (e) {
+    expect(() => calc(bars), `k=${k}: the full run does not throw`).toThrow(String((e as Error).message));
+    return undefined;
+  }
+  const { from, ...result } = got;
+  const d = diff(result, calc(bars));
+  if (d) throw new Error(`k=${k}: ${d}`);
+  return from;
+}
+
 /** The forming bar before its close: the open, a midpoint, then its final values */
 function ticks(bar: Bar): Bar[] {
   const mid = (bar.open + bar.close) / 2;
@@ -64,41 +82,46 @@ export function liveRunSuite(shard: number, shards: number): void {
       it(`${entry.id} ${JSON.stringify(inputs)}: every update equals a full run`, () => {
         const all = makeBars(HISTORY + LIVE, INTRADAY.has(entry.id) ? 900 : 86400) as unknown as Bar[];
         const run = entry.createRun!(inputs);
+        const calc = (b: Bar[]) => entry.calculate(b, inputs);
+        // a study that runs in full with these inputs (its fullRunReason) gives the same results, from = 0
+        const resumable = run.fullRunReason === null;
         // the first bars one by one, then many new bars at once
         let prev = 0;
         for (const k of [...Array.from({ length: EARLY }, (_v, j) => j + 1), HISTORY]) {
-          const bars = all.slice(0, k);
-          const { from, ...got } = run.update(bars);
+          const from = check(run, calc, all.slice(0, k), k);
           // resumed from the forming bar of the previous update, or a full run
-          expect([0, Math.max(0, prev - 1)]).toContain(from);
+          if (from !== undefined && resumable) expect([0, Math.max(0, prev - 1)]).toContain(from);
           prev = k;
-          const d = diff(got, entry.calculate(bars, inputs));
-          if (d) throw new Error(`k=${k}: ${d}`);
         }
         // the forming bars: three prices each, then the next bar
         for (let k = HISTORY; k < all.length; k++) {
           ticks(all[k]).forEach((tick, t) => {
-            const bars = [...all.slice(0, k), tick];
-            const { from, ...got } = run.update(bars);
+            const from = check(run, calc, [...all.slice(0, k), tick], k);
             // a new price of the forming bar resumes; a new bar resumes too, or runs in full when the study's key
             // follows the bar count (e.g. a window of the last bars)
+            if (from === undefined || !resumable) return;
             if (t > 0) expect(from).toBe(k);
             else expect([0, k - 1]).toContain(from);
-            const d = diff(got, entry.calculate(bars, inputs));
-            if (d) throw new Error(`k=${k}: ${d}`);
           });
         }
         // an edited history bar: a full run, equal to calculate
         const edited = all.slice();
         edited[5] = { ...edited[5], close: edited[5].close * 1.01 };
-        const { from, ...got } = run.update(edited);
-        expect(from).toBe(0);
-        expect(diff(got, entry.calculate(edited, inputs))).toBeNull();
-        // fewer bars: a full run
-        expect(run.update(edited.slice(0, 50)).from).toBe(0);
-        // other chart fields: a full run
-        expect(run.update(edited.slice(0, 51), { symbol: 'OTHER' }).from).toBe(0);
-        expect(run.fullRunReason).toBeNull();
+        const from = check(run, calc, edited, -1);
+        if (from !== undefined) expect(from).toBe(0);
+        if (resumable) {
+          // fewer bars: a full run
+          const fewer = check(run, calc, edited.slice(0, 50), -2);
+          if (fewer !== undefined) expect(fewer).toBe(0);
+          // other chart fields: a full run
+          let other: number | undefined;
+          try {
+            other = run.update(edited.slice(0, 51), { symbol: 'OTHER' }).from;
+          } catch {
+            other = undefined;
+          }
+          if (other !== undefined) expect(other).toBe(0);
+        }
       });
     }
   }

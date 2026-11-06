@@ -31,9 +31,11 @@
  * Original notice: © LuxAlgo
  */
 
-import { ta, str, color, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, str, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall, BarColorData, BoxData, LabelData, TableData, TableCellData, TableMergeData } from '../types';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -174,50 +176,101 @@ interface Trade {
   consecBars: number;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<LiquidityDeltaProfilerInputs> = {},
-): Omit<IndicatorResult, 'boxes' | 'labels' | 'tables' | 'barColors'> & {
+type Result = Omit<IndicatorResult, 'boxes' | 'labels' | 'tables' | 'barColors'> & {
   boxes: BoxData[]; labels: LabelData[]; tables: TableData[]; barColors: BarColorData[]; alertCalls: AlertCall[];
-} {
+};
+
+type Counts = { ABS: number; EXH: number; DIV: number; REJ: number };
+
+/** The drawings and the state of the script, changed in place: copyVars copies them (one copy per update) */
+interface LdpVars {
+  boxes: Bx[];
+  /**
+   * Labels in creation order: when a creation brings the count above max + 5, the oldest are deleted until max
+   * remain. A deleted label ignores later changes.
+   */
+  labels: Lb[];
+  bsl: Zone[];
+  ssl: Zone[];
+  trades: Trade[];
+  totals: Counts;
+  wins: Counts;
+}
+
+interface LdpRun extends BarRunState<LdpVars> {
+  atrStep: ReturnType<typeof taStep.atr>;
+  ph: PivotStep;
+  pl: PivotStep;
+  volSma: ReturnType<typeof taStep.sma>;
+  atr: number[];
+  barColors: BarColorData[];
+  alertCalls: AlertCall[];
+}
+
+/** A copy of the state: the zones point to the copies of their boxes and labels (also the deleted ones) */
+function copyState(v: LdpVars): LdpVars {
+  const boxCopies = new Map<Bx, Bx>();
+  const labelCopies = new Map<Lb, Lb>();
+  const box = (b: Bx) => {
+    let c = boxCopies.get(b);
+    if (!c) {
+      c = { ...b };
+      boxCopies.set(b, c);
+    }
+    return c;
+  };
+  const label = (l: Lb) => {
+    let c = labelCopies.get(l);
+    if (!c) {
+      c = { ...l };
+      labelCopies.set(l, c);
+    }
+    return c;
+  };
+  const zone = (z: Zone): Zone => ({
+    ...z, quads: z.quads.map(box), deltas: z.deltas.slice(), outline: box(z.outline), decayLabel: label(z.decayLabel),
+  });
+  return {
+    boxes: v.boxes.map(box), labels: v.labels.map(label), bsl: v.bsl.map(zone), ssl: v.ssl.map(zone),
+    trades: v.trades.map((t) => ({ ...t })), totals: { ...v.totals }, wins: { ...v.wins },
+  };
+}
+
+function study(inputs: Partial<LiquidityDeltaProfilerInputs>): BarStudy<LdpRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const length = Math.trunc(cfg.length);
   const { maxZones, showSwept, showDecay, bslColor, sslColor, buyDeltaColor, sellDeltaColor } = cfg;
-
-  const atr = ta.atr(bars, 14).toArray().map((v) => v ?? NaN);
-  const ph = ta.pivothigh(new Series(bars, (b) => b.high), length, length).toArray();
-  const pl = ta.pivotlow(new Series(bars, (b) => b.low), length, length).toArray();
-  const volSma = ta.sma(new Series(bars, (b) => b.volume ?? NaN), length).toArray();
 
   /** color.rgb(color.r(c), color.g(c), color.b(c), transp) */
   const rgbT = (c: string, transp: number) => String(color.rgb(color.r(c), color.g(c), color.b(c), transp));
   const newT = (c: string, transp: number) => String(color.new(c, transp));
 
-  const boxes: Bx[] = [];
-  // Labels in creation order: when a creation brings the count above max + 5, the oldest are deleted until max
-  // remain. A deleted label ignores later changes.
-  const labels: Lb[] = [];
+  /** The state, the bars and the vars of the bar being calculated (set by bar()) */
+  let S: LdpRun;
+  let B: Bar[];
+  let V: LdpVars;
+  const alert = (i: number, message: string) => S.alertCalls.push({ time: B[i].time, message, freq: 'once_per_bar' });
+
   const newBox = (b: Omit<Bx, 'deleted'>): Bx => {
     const o = { ...b, deleted: false };
-    boxes.push(o);
+    V.boxes.push(o);
     return o;
   };
   const deleteBox = (b: Bx) => {
     if (b.deleted) return;
     b.deleted = true;
-    boxes.splice(boxes.indexOf(b), 1);
+    V.boxes.splice(V.boxes.indexOf(b), 1);
   };
   const deleteLabel = (l: Lb) => {
     if (l.deleted) return;
     l.deleted = true;
-    labels.splice(labels.indexOf(l), 1);
+    V.labels.splice(V.labels.indexOf(l), 1);
   };
   const newLabel = (l: Omit<Lb, 'deleted'>): Lb => {
     const o = { ...l, deleted: false };
-    labels.push(o);
-    if (labels.length > MAX_LABELS + 5) {
-      for (const old of labels.splice(0, labels.length - MAX_LABELS)) old.deleted = true;
+    V.labels.push(o);
+    if (V.labels.length > MAX_LABELS + 5) {
+      for (const old of V.labels.splice(0, V.labels.length - MAX_LABELS)) old.deleted = true;
     }
     return o;
   };
@@ -227,18 +280,9 @@ export function calculate(
     deleteLabel(z.decayLabel);
   };
 
-  const bslZones: Zone[] = [];
-  const sslZones: Zone[] = [];
-  const activeTrades: Trade[] = [];
-  const totals = { ABS: 0, EXH: 0, DIV: 0, REJ: 0 };
-  const wins = { ABS: 0, EXH: 0, DIV: 0, REJ: 0 };
-  const barColors: BarColorData[] = [];
-  const alertCalls: AlertCall[] = [];
-  const alert = (i: number, message: string) => alertCalls.push({ time: bars[i].time, message, freq: 'once_per_bar' });
-
   /** A new zone at the pivot of `length` bars ago (top / bottom already known) */
   const createZone = (i: number, isBsl: boolean, zTop: number, zBot: number, capacity: number) => {
-    const zones = isBsl ? bslZones : sslZones;
+    const zones = isBsl ? V.bsl : V.ssl;
     const baseC = isBsl ? bslColor : sslColor;
     const pivotIdx = i - length;
     const step = (zTop - zBot) / 4;
@@ -271,7 +315,7 @@ export function calculate(
 
   /** The overlap filter: true when the new zone must not be created */
   const overlapSkip = (isBsl: boolean, zTop: number, zBot: number): boolean => {
-    const zones = isBsl ? bslZones : sslZones;
+    const zones = isBsl ? V.bsl : V.ssl;
     if (!cfg.filterOverlaps) return false;
     for (let k = zones.length - 1; k >= 0; k--) {
       if (k >= zones.length) continue;
@@ -290,7 +334,7 @@ export function calculate(
 
   const evaluateReversals = (z: Zone, isBsl: boolean, i: number, barDelta: number, barVol: number) => {
     if (!cfg.enableReversals || z.signaled) return;
-    const b = bars[i];
+    const b = B[i];
     let absTotalD = 0;
     for (const d of z.deltas) absTotalD += Math.abs(d);
     if (!gt(absTotalD, 0)) return;
@@ -351,7 +395,7 @@ export function calculate(
       x: i, y: isBsl ? b.high : b.low, text: signalType, color: newT(isBsl ? color.red : color.green, trans),
       style: isBsl ? 'label_down' : 'label_up', size, tooltip,
     });
-    activeTrades.push({ type: signalType, dir: isBsl ? -1 : 1, entry: b.close, entryBar: i, consecBars: 0 });
+    V.trades.push({ type: signalType, dir: isBsl ? -1 : 1, entry: b.close, entryBar: i, consecBars: 0 });
   };
 
   const updateVisuals = (z: Zone, isBsl: boolean) => {
@@ -400,8 +444,8 @@ export function calculate(
 
   /** The active zones of one side on bar i */
   const processZones = (isBsl: boolean, i: number, vol: number, totalRange: number, barDelta: number) => {
-    const zones = isBsl ? bslZones : sslZones;
-    const b = bars[i];
+    const zones = isBsl ? V.bsl : V.ssl;
+    const b = B[i];
     for (let k = zones.length - 1; k >= 0; k--) {
       const z = zones[k];
       if (z.swept) continue;
@@ -456,136 +500,174 @@ export function calculate(
     }
   };
 
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    // avgVol = nz(ta.sma(volume, length)); 0 -> 1
-    const sma = volSma[i];
-    let avgVol = sma === null || sma === undefined || !Number.isFinite(sma) ? 0 : sma;
-    if (eq(avgVol, 0)) avgVol = 1;
-    const currentZoneCap = avgVol * cfg.zoneCapacity;
 
-    const high = ph[i];
-    if (high !== null && high !== undefined && !isNaN(high) && i >= length) {
-      const p = bars[i - length];
-      const minHeight = atr[i - length] * 0.1;
-      let pBot = Math.max(p.close, p.open);
-      if (lt(p.high - pBot, minHeight)) pBot = p.high - minHeight;
-      if (!overlapSkip(true, p.high, pBot)) createZone(i, true, p.high, pBot, currentZoneCap);
-    }
-    const low = pl[i];
-    if (low !== null && low !== undefined && !isNaN(low) && i >= length) {
-      const p = bars[i - length];
-      const minHeight = atr[i - length] * 0.1;
-      let pTop = Math.min(p.close, p.open);
-      if (lt(pTop - p.low, minHeight)) pTop = p.low + minHeight;
-      if (!overlapSkip(false, pTop, p.low)) createZone(i, false, pTop, p.low, currentZoneCap);
-    }
-
-    const volume = b.volume ?? NaN;
-    const vol = Number.isFinite(volume) ? volume : 0;
-    const totalRange = b.high - b.low;
-    const barDelta = eq(totalRange, 0) ? 0 : (vol * (b.close - b.open)) / totalRange;
-
-    processZones(true, i, vol, totalRange, barDelta);
-    processZones(false, i, vol, totalRange, barDelta);
-
-    // Signals under evaluation
-    let barHighlight: string | null = null;
-    for (let k = activeTrades.length - 1; k >= 0; k--) {
-      const t = activeTrades[k];
-      if (i <= t.entryBar) continue;
-      const inProfit = (t.dir === 1 && gt(b.close, t.entry)) || (t.dir === -1 && lt(b.close, t.entry));
-      if (inProfit) {
-        t.consecBars += 1;
-        if (barHighlight === null || barHighlight === color.yellow) barHighlight = color.aqua;
-      } else {
-        t.consecBars = 0;
-        if (barHighlight === null) barHighlight = color.yellow;
-      }
-      let done = false;
-      if (t.consecBars >= cfg.dashboardHoldInput) {
-        done = true;
-        wins[t.type] += 1;
-      } else if (i - t.entryBar >= cfg.dashboardWindowInput) {
-        done = true;
-      }
-      if (done) {
-        totals[t.type] += 1;
-        activeTrades.splice(k, 1);
-      }
-    }
-    if (cfg.dashboardHighlightInput && barHighlight !== null) barColors.push({ time: b.time, color: barHighlight });
-  }
-
-  // Dashboard (barstate.islast). Without it the table stays, with no cell and no colour: nothing is drawn.
-  const tables: TableData[] = [];
-  const position = cfg.dashboardPositionInput === 'Bottom Right' ? 'bottom_right'
-    : cfg.dashboardPositionInput === 'Bottom Left' ? 'bottom_left' : 'top_right';
-  if (n > 0 && !cfg.dashboardInput) {
-    tables.push({
-      position, columns: 4, rows: 11, cells: [], bgColor: 'transparent', frameColor: 'transparent', frameWidth: 1,
-      borderWidth: 0, forceOverlay: true,
-    });
-  }
-  if (n > 0 && cfg.dashboardInput) {
-    const textSize = cfg.dashboardSizeInput.toLowerCase() as 'tiny' | 'small' | 'normal' | 'large' | 'huge';
-    const cells: TableCellData[] = [];
-    const merges: TableMergeData[] = [];
-    const cell = (column: number, row: number, text: string, textColor: string, textHAlign: 'left' | 'center' | 'right', height = 0) => {
-      cells.push({ column, row, text, textColor, textSize, textHAlign, ...(height ? { height } : {}) });
-    };
-    const mergeRow = (row: number) => merges.push({ startColumn: 0, startRow: row, endColumn: 3, endRow: row });
-    const divider = (row: number) => {
-      mergeRow(row);
-      cell(0, row, '━━━━━━━━━━━━━━━━', BORDERS, 'center', 0.5);
-    };
-    mergeRow(0);
-    cell(0, 0, 'Reversal Performance (Time-Based)', DATA, 'center');
-    divider(1);
-    cell(0, 2, 'Signal', HEADERS, 'left');
-    cell(1, 2, 'Total', HEADERS, 'right');
-    cell(2, 2, 'Wins', HEADERS, 'right');
-    cell(3, 2, 'Win %', HEADERS, 'right');
-    (['ABS', 'EXH', 'DIV', 'REJ'] as const).forEach((type, k) => {
-      divider(3 + 2 * k);
-      const row = 4 + 2 * k;
-      const total = totals[type];
-      const rate = total > 0 ? (wins[type] / total) * 100 : 0;
-      cell(0, row, type, DATA, 'left');
-      cell(1, row, str.tostring(total), DATA, 'right');
-      cell(2, row, str.tostring(wins[type]), DATA, 'right');
-      cell(3, row, `${str.tostring(rate, '#.##')}%`, total > 0 ? (ge(rate, 50) ? color.green : color.red) : DATA, 'right');
-    });
-    tables.push({
-      position, columns: 4, rows: 11, cells, merges, bgColor: BACKGROUND, frameColor: BORDERS, frameWidth: 1,
-      borderWidth: 0, forceOverlay: true,
-    });
-  }
-
-  const interval = barInterval(bars);
-  const T = (index: number) => barTime(bars, index, interval);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    boxes: boxes.map((b) => ({
-      time1: T(b.left), price1: b.top, time2: T(b.right), price2: b.bottom,
-      bgColor: b.bg ?? 'transparent', borderColor: b.borderColor ?? 'transparent',
-      ...(b.dashed ? { borderStyle: 'dashed' as const } : {}),
-      ...(b.quad ? { text: b.text, textColor: b.textColor ?? 'transparent', textHAlign: 'right' as const, textSize: 'auto' as const } : {}),
-    })),
-    // a label with an na x (the decay label when "Show Zone Decay" is off) is not drawn
-    labels: labels.filter((l) => !isNaN(l.x)).map((l) => ({
-      time: T(l.x), price: l.y, text: l.text, color: l.color, textColor: WHITE, style: l.style, size: l.size,
-      ...(l.tooltip ? { tooltip: l.tooltip } : {}),
-    })),
-    tables,
-    barColors,
-    alertCalls,
+    init() {
+      const s: LdpRun = {
+        atrStep: taStep.atr(14), ph: new PivotStep(length, length, true), pl: new PivotStep(length, length, false),
+        volSma: taStep.sma(), atr: [], barColors: [], alertCalls: [],
+        steps: [], vars: {
+          boxes: [], labels: [], bsl: [], ssl: [], trades: [],
+          totals: { ABS: 0, EXH: 0, DIV: 0, REJ: 0 }, wins: { ABS: 0, EXH: 0, DIV: 0, REJ: 0 },
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.atrStep, s.ph, s.pl, s.volSma];
+      s.lists = [s.barColors, s.alertCalls];
+      s.series = [s.atr];
+      return s;
+    },
+    bar(s, i, bars) {
+      S = s;
+      B = bars;
+      V = s.vars;
+      const b = bars[i];
+      // avgVol = nz(ta.sma(volume, length)); 0 -> 1
+      const sma = s.volSma.step(b.volume ?? NaN, length);
+      s.atr[i] = s.atrStep.step(b.high, b.low, b.close);
+      const ph = s.ph.step(i, b.high);
+      const pl = s.pl.step(i, b.low);
+      let avgVol = sma === null || sma === undefined || !Number.isFinite(sma) ? 0 : sma;
+      if (eq(avgVol, 0)) avgVol = 1;
+      const currentZoneCap = avgVol * cfg.zoneCapacity;
+
+      const high = ph;
+      if (high !== null && high !== undefined && !isNaN(high) && i >= length) {
+        const p = bars[i - length];
+        const minHeight = s.atr[i - length] * 0.1;
+        let pBot = Math.max(p.close, p.open);
+        if (lt(p.high - pBot, minHeight)) pBot = p.high - minHeight;
+        if (!overlapSkip(true, p.high, pBot)) createZone(i, true, p.high, pBot, currentZoneCap);
+      }
+      const low = pl;
+      if (low !== null && low !== undefined && !isNaN(low) && i >= length) {
+        const p = bars[i - length];
+        const minHeight = s.atr[i - length] * 0.1;
+        let pTop = Math.min(p.close, p.open);
+        if (lt(pTop - p.low, minHeight)) pTop = p.low + minHeight;
+        if (!overlapSkip(false, pTop, p.low)) createZone(i, false, pTop, p.low, currentZoneCap);
+      }
+
+      const volume = b.volume ?? NaN;
+      const vol = Number.isFinite(volume) ? volume : 0;
+      const totalRange = b.high - b.low;
+      const barDelta = eq(totalRange, 0) ? 0 : (vol * (b.close - b.open)) / totalRange;
+
+      processZones(true, i, vol, totalRange, barDelta);
+      processZones(false, i, vol, totalRange, barDelta);
+
+      // Signals under evaluation
+      let barHighlight: string | null = null;
+      for (let k = V.trades.length - 1; k >= 0; k--) {
+        const t = V.trades[k];
+        if (i <= t.entryBar) continue;
+        const inProfit = (t.dir === 1 && gt(b.close, t.entry)) || (t.dir === -1 && lt(b.close, t.entry));
+        if (inProfit) {
+          t.consecBars += 1;
+          if (barHighlight === null || barHighlight === color.yellow) barHighlight = color.aqua;
+        } else {
+          t.consecBars = 0;
+          if (barHighlight === null) barHighlight = color.yellow;
+        }
+        let done = false;
+        if (t.consecBars >= cfg.dashboardHoldInput) {
+          done = true;
+          V.wins[t.type] += 1;
+        } else if (i - t.entryBar >= cfg.dashboardWindowInput) {
+          done = true;
+        }
+        if (done) {
+          V.totals[t.type] += 1;
+          V.trades.splice(k, 1);
+        }
+      }
+      if (cfg.dashboardHighlightInput && barHighlight !== null) s.barColors.push({ time: b.time, color: barHighlight });
+    },
+    copyVars: copyState,
+    result(s, bars) {
+      const n = bars.length;
+      const V = s.vars;
+      // Dashboard (barstate.islast). Without it the table stays, with no cell and no colour: nothing is drawn.
+      const tables: TableData[] = [];
+      const position = cfg.dashboardPositionInput === 'Bottom Right' ? 'bottom_right'
+        : cfg.dashboardPositionInput === 'Bottom Left' ? 'bottom_left' : 'top_right';
+      if (n > 0 && !cfg.dashboardInput) {
+        tables.push({
+          position, columns: 4, rows: 11, cells: [], bgColor: 'transparent', frameColor: 'transparent', frameWidth: 1,
+          borderWidth: 0, forceOverlay: true,
+        });
+      }
+      if (n > 0 && cfg.dashboardInput) {
+        const textSize = cfg.dashboardSizeInput.toLowerCase() as 'tiny' | 'small' | 'normal' | 'large' | 'huge';
+        const cells: TableCellData[] = [];
+        const merges: TableMergeData[] = [];
+        const cell = (column: number, row: number, text: string, textColor: string, textHAlign: 'left' | 'center' | 'right', height = 0) => {
+          cells.push({ column, row, text, textColor, textSize, textHAlign, ...(height ? { height } : {}) });
+        };
+        const mergeRow = (row: number) => merges.push({ startColumn: 0, startRow: row, endColumn: 3, endRow: row });
+        const divider = (row: number) => {
+          mergeRow(row);
+          cell(0, row, '━━━━━━━━━━━━━━━━', BORDERS, 'center', 0.5);
+        };
+        mergeRow(0);
+        cell(0, 0, 'Reversal Performance (Time-Based)', DATA, 'center');
+        divider(1);
+        cell(0, 2, 'Signal', HEADERS, 'left');
+        cell(1, 2, 'Total', HEADERS, 'right');
+        cell(2, 2, 'Wins', HEADERS, 'right');
+        cell(3, 2, 'Win %', HEADERS, 'right');
+        (['ABS', 'EXH', 'DIV', 'REJ'] as const).forEach((type, k) => {
+          divider(3 + 2 * k);
+          const row = 4 + 2 * k;
+          const total = V.totals[type];
+          const rate = total > 0 ? (V.wins[type] / total) * 100 : 0;
+          cell(0, row, type, DATA, 'left');
+          cell(1, row, str.tostring(total), DATA, 'right');
+          cell(2, row, str.tostring(V.wins[type]), DATA, 'right');
+          cell(3, row, `${str.tostring(rate, '#.##')}%`, total > 0 ? (ge(rate, 50) ? color.green : color.red) : DATA, 'right');
+        });
+        tables.push({
+          position, columns: 4, rows: 11, cells, merges, bgColor: BACKGROUND, frameColor: BORDERS, frameWidth: 1,
+          borderWidth: 0, forceOverlay: true,
+        });
+      }
+
+      const interval = barInterval(bars);
+      const T = (index: number) => barTime(bars, index, interval);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        boxes: V.boxes.map((b) => ({
+          time1: T(b.left), price1: b.top, time2: T(b.right), price2: b.bottom,
+          bgColor: b.bg ?? 'transparent', borderColor: b.borderColor ?? 'transparent',
+          ...(b.dashed ? { borderStyle: 'dashed' as const } : {}),
+          ...(b.quad ? { text: b.text, textColor: b.textColor ?? 'transparent', textHAlign: 'right' as const, textSize: 'auto' as const } : {}),
+        })),
+        // a label with an na x (the decay label when "Show Zone Decay" is off) is not drawn
+        labels: V.labels.filter((l) => !isNaN(l.x)).map((l) => ({
+          time: T(l.x), price: l.y, text: l.text, color: l.color, textColor: WHITE, style: l.style, size: l.size,
+          ...(l.tooltip ? { tooltip: l.tooltip } : {}),
+        })),
+        tables,
+        barColors: s.barColors.slice(),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<LiquidityDeltaProfilerInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<LiquidityDeltaProfilerInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const LiquidityDeltaProfiler = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

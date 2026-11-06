@@ -16,9 +16,11 @@
  * Original notice: © QuantAlgo
  */
 
-import { ta, getSourceSeries, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type WaveletTransformTrendPreset = 'Default' | 'Fast Response' | 'Smooth Trend';
 export type WaveletTransformTrendColorPreset = 'Classic' | 'Aqua' | 'Cosmic' | 'Cyber' | 'Neon' | 'Custom';
@@ -147,15 +149,35 @@ const le = (a: number, b: number): boolean => !isNaN(a) && !isNaN(b) && !(a - b 
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<WaveletTransformTrendInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] }
-  & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] }
+  & { alerts: AlertConditionState[] };
+
+interface WttVars {
+  upperBand: number;
+  lowerBand: number;
+  level: number;
+  /** trend_dir (0 before the first band) */
+  dir: number;
+}
+
+interface WttRun extends BarRunState<WttVars> {
+  /** the source, then the approximations a1..a6 */
+  approx: number[][];
+  rmas: ReturnType<typeof taStep.rma>[];
+  atr: ReturnType<typeof taStep.atr>;
+  wavelet: number[];
+  plots: Point[][];
+  radialFill: string[][];
+  waveFill: string[][];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<WaveletTransformTrendInputs>): BarStudy<WttRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
+  const srcOf = barSource(cfg.src);
 
   const periodRaw = cfg.preset === 'Fast Response' ? 8 : cfg.preset === 'Smooth Trend' ? 32 : cfg.periodInput;
   const levelsRaw = cfg.preset === 'Fast Response' ? 2 : cfg.preset === 'Smooth Trend' ? 4 : cfg.levelsInput;
@@ -171,66 +193,11 @@ export function calculate(
   const base = Math.max(1, Math.trunc(Math.round((periodRaw - 1) / Math.max(1.0, levelSpan))));
   const shifts = [1, 2, 4, 8, 16, 32].map((k) => Math.min(base * k, periodRaw));
 
-  // Haar approximations a1..a6 and details d1..d6
-  const src = A(getSourceSeries(bars, cfg.src));
-  const approx: number[][] = [];
-  const details: number[][] = [];
-  let prev = src;
-  for (let k = 1; k <= 6; k++) {
-    const sh = shifts[k - 1];
-    const p = prev;
-    // a_k = levels >= k ? (a_(k-1) + a_(k-1)[shift_k]) * 0.5 : a_(k-1) (level 1 always)
-    const a = k === 1 || levels >= k ? p.map((v, i) => (i >= sh ? (v + p[i - sh]) * 0.5 : NaN)) : p.slice();
-    approx.push(a);
-    details.push(p.map((v, i) => v - a[i]));
-    prev = a;
-  }
-  const a6 = approx[5];
-
   // softThresh(d_k, detail_mult * ta.rma(math.abs(d_k), atr_len) * 1.2533), summed over the six levels
   const softThresh = (x: number, t: number) => {
     const ax = Math.abs(x);
     return le(ax, t) ? 0.0 : Math.sign(x) * (ax - t);
   };
-  const thresholds = details.map((d) => A(ta.rma(S(d.map((v) => Math.abs(v))), atrLen)).map((r) => cfg.detailMult * (r * 1.2533)));
-  const waveletPath = a6.map((v, i) => {
-    if (cfg.approxOnly) return v;
-    let sum = 0;
-    for (let k = 0; k < 6; k++) sum += softThresh(details[k][i], thresholds[k][i]);
-    return v + sum;
-  });
-
-  // Historical bars are confirmed: wavelet_confirmed = wavelet_path, mid_confirmed = hl2
-  const waveletConfirmed = waveletPath;
-  const midConfirmed = bars.map((b) => (b.high + b.low) / 2);
-  const atr = A(ta.atr(bars, atrLen));
-
-  const trendDir: number[] = new Array(n);
-  const trendLevel: number[] = new Array(n);
-  let upperBand = NaN;
-  let lowerBand = NaN;
-  let level = NaN;
-  let dir = 0;
-  for (let i = 0; i < n; i++) {
-    const trendDev = atr[i] * atrMult;
-    const upperRaw = waveletConfirmed[i] + trendDev;
-    const lowerRaw = waveletConfirmed[i] - trendDev;
-    if (!isNaN(upperRaw) && !isNaN(lowerRaw)) {
-      const prevUpper = isNaN(upperBand) ? upperRaw : upperBand;
-      const prevLower = isNaN(lowerBand) ? lowerRaw : lowerBand;
-      const close = bars[i].close;
-      const prevClose = i > 0 && !isNaN(bars[i - 1].close) ? bars[i - 1].close : close;
-      const prevDir = dir;
-      lowerBand = gt(lowerRaw, prevLower) || lt(prevClose, prevLower) ? lowerRaw : prevLower;
-      upperBand = lt(upperRaw, prevUpper) || gt(prevClose, prevUpper) ? upperRaw : prevUpper;
-      dir = prevDir === 0 ? (gt(close, waveletConfirmed[i]) ? 1 : -1)
-        : prevDir === -1 ? (gt(close, upperBand) ? 1 : -1)
-          : (lt(close, lowerBand) ? -1 : 1);
-      level = dir === 1 ? lowerBand : upperBand;
-    }
-    trendDir[i] = dir;
-    trendLevel[i] = level;
-  }
 
   const showLine = cfg.displayStyle === 'Line';
   const radialT = (idx: number) => {
@@ -254,73 +221,149 @@ export function calculate(
     Math.min(97, cfg.waveBrightness + 36),
   ];
 
-  const plots: Record<string, Point[]> = {};
-  for (let p = 0; p < 16; p++) plots[`plot${p}`] = [];
-  const radialFill: string[][] = Array.from({ length: 7 }, () => new Array(n));
-  const waveFill: string[][] = Array.from({ length: 5 }, () => new Array(n));
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  const bullFlags: boolean[] = [], bearFlags: boolean[] = [], anyFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const d = trendDir[i];
-    const prevD = i > 0 ? trendDir[i - 1] : 0; // nz(trend_dir[1])
-    // bullish_trend_shift / bearish_trend_shift / any_trend_shift
-    const bullShift = d === 1 && prevD === -1;
-    const bearShift = d === -1 && prevD === 1;
-    const anyShift = bullShift || bearShift;
-    bullFlags.push(bullShift);
-    bearFlags.push(bearShift);
-    anyFlags.push(anyShift);
-    const trendColor = d === -1 ? bearishColor : bullishColor;
-    const showWave = !showLine && !isNaN(waveletConfirmed[i]);
-    const hasTrend = d !== 0 && !isNaN(trendLevel[i]);
-    const lineLive = showLine && hasTrend && !anyShift;
-
-    const line = lineLive ? trendLevel[i] : NaN;
-    plots.plot0.push({ time: t, value: line, color: String(color.new(trendColor, 70)) });
-    plots.plot1.push({ time: t, value: line, color: trendColor });
-
-    // Radial layers between the trend level and the bar midpoint
-    const radialOn = showLine && cfg.showRadial && lineLive;
-    const radialBase = radialOn ? trendLevel[i] : NaN;
-    const radialEdge = radialOn ? midConfirmed[i] : NaN;
-    const radialGap = radialEdge - radialBase;
-    plots.plot2.push({ time: t, value: radialBase });
-    for (let k = 0; k < 6; k++) plots[`plot${3 + k}`].push({ time: t, value: radialOn ? radialBase + radialGap * radialK[k] : NaN });
-    plots.plot9.push({ time: t, value: radialEdge });
-    for (let k = 0; k < 7; k++) radialFill[k][i] = radialOn ? String(color.new(trendColor, radialTs[k])) : 'transparent';
-
-    // Wave layers: lagged copies of the wavelet path
-    for (let k = 0; k < 6; k++) {
-      const on = showWave && (k < 4 || cfg.waveLayers >= k);
-      const j = i - waveOffs[k];
-      plots[`plot${10 + k}`].push({ time: t, value: on && j >= 0 ? waveletConfirmed[j] : NaN });
-    }
-    for (let k = 0; k < 5; k++) {
-      const on = showWave && hasTrend && (k < 3 || cfg.waveLayers >= k + 1);
-      waveFill[k][i] = on ? String(color.new(trendColor, waveT[k])) : 'transparent';
-    }
-
-    // barcolor(show_candles and has_trend ? color.new(trend_color, bar_trans) : na); bgcolor likewise
-    if (cfg.showCandles && hasTrend) barColors.push({ time: t, color: String(color.new(trendColor, cfg.barTrans)) });
-    if (cfg.showBgcolor && hasTrend) bgColors.push({ time: t, color: String(color.new(trendColor, cfg.bgTrans)) });
-  }
-
-  const fills = [
-    ...radialFill.map((colors, k) => ({ plot1: `plot${2 + k}`, plot2: `plot${3 + k}`, options: { title: `Radial Layer ${k + 1}` }, colors })),
-    ...waveFill.map((colors, k) => ({ plot1: `plot${10 + k}`, plot2: `plot${11 + k}`, options: { title: `Wave Layer ${k + 1}` }, colors })),
-  ];
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    markers: [],
-    barColors,
-    bgColors,
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags, anyFlags]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: WttRun = {
+        approx: Array.from({ length: 7 }, () => []),
+        rmas: Array.from({ length: 6 }, () => taStep.rma(atrLen)),
+        atr: taStep.atr(atrLen),
+        wavelet: [],
+        plots: Array.from({ length: 16 }, () => []),
+        radialFill: Array.from({ length: 7 }, () => []),
+        waveFill: Array.from({ length: 5 }, () => []),
+        barColors: [], bgColors: [],
+        flags: [[], [], []], times: [[], [], []],
+        steps: [],
+        vars: { upperBand: NaN, lowerBand: NaN, level: NaN, dir: 0 },
+        lists: [], series: [],
+      };
+      s.steps = [...s.rmas, s.atr];
+      s.lists = [s.barColors, s.bgColors, ...s.times];
+      s.series = [...s.approx, s.wavelet, ...s.plots, ...s.radialFill, ...s.waveFill, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const ap = s.approx;
+      // Haar approximations a1..a6 and details d1..d6
+      ap[0][i] = srcOf(b);
+      let sum = 0;
+      for (let k = 1; k <= 6; k++) {
+        const sh = shifts[k - 1];
+        const p = ap[k - 1];
+        const pv = p[i];
+        // a_k = levels >= k ? (a_(k-1) + a_(k-1)[shift_k]) * 0.5 : a_(k-1) (level 1 always)
+        const a = k === 1 || levels >= k ? (i >= sh ? (pv + p[i - sh]) * 0.5 : NaN) : pv;
+        ap[k][i] = a;
+        if (!cfg.approxOnly) {
+          const d = pv - a;
+          const threshold = cfg.detailMult * (s.rmas[k - 1].step(Math.abs(d)) * 1.2533);
+          sum += softThresh(d, threshold);
+        }
+      }
+      const a6 = ap[6][i];
+      const waveletPath = cfg.approxOnly ? a6 : a6 + sum;
+      // Historical bars are confirmed: wavelet_confirmed = wavelet_path, mid_confirmed = hl2
+      const waveletConfirmed = waveletPath;
+      s.wavelet[i] = waveletConfirmed;
+      const midConfirmed = (b.high + b.low) / 2;
+      const atr = s.atr.step(b.high, b.low, b.close);
+
+      const prevD = v.dir; // nz(trend_dir[1])
+      const trendDev = atr * atrMult;
+      const upperRaw = waveletConfirmed + trendDev;
+      const lowerRaw = waveletConfirmed - trendDev;
+      if (!isNaN(upperRaw) && !isNaN(lowerRaw)) {
+        const prevUpper = isNaN(v.upperBand) ? upperRaw : v.upperBand;
+        const prevLower = isNaN(v.lowerBand) ? lowerRaw : v.lowerBand;
+        const close = b.close;
+        const prevClose = i > 0 && !isNaN(bars[i - 1].close) ? bars[i - 1].close : close;
+        const prevDir = v.dir;
+        v.lowerBand = gt(lowerRaw, prevLower) || lt(prevClose, prevLower) ? lowerRaw : prevLower;
+        v.upperBand = lt(upperRaw, prevUpper) || gt(prevClose, prevUpper) ? upperRaw : prevUpper;
+        v.dir = prevDir === 0 ? (gt(close, waveletConfirmed) ? 1 : -1)
+          : prevDir === -1 ? (gt(close, v.upperBand) ? 1 : -1)
+            : (lt(close, v.lowerBand) ? -1 : 1);
+        v.level = v.dir === 1 ? v.lowerBand : v.upperBand;
+      }
+      const d = v.dir;
+      const trendLevel = v.level;
+
+      const t = b.time;
+      // bullish_trend_shift / bearish_trend_shift / any_trend_shift
+      const bullShift = d === 1 && prevD === -1;
+      const bearShift = d === -1 && prevD === 1;
+      const anyShift = bullShift || bearShift;
+      const shiftFlags = [bullShift, bearShift, anyShift];
+      for (let k = 0; k < 3; k++) {
+        s.flags[k][i] = shiftFlags[k];
+        if (shiftFlags[k]) s.times[k].push(t as number);
+      }
+      const trendColor = d === -1 ? bearishColor : bullishColor;
+      const showWave = !showLine && !isNaN(waveletConfirmed);
+      const hasTrend = d !== 0 && !isNaN(trendLevel);
+      const lineLive = showLine && hasTrend && !anyShift;
+
+      const plots = s.plots;
+      const line = lineLive ? trendLevel : NaN;
+      plots[0][i] = { time: t, value: line, color: String(color.new(trendColor, 70)) };
+      plots[1][i] = { time: t, value: line, color: trendColor };
+
+      // Radial layers between the trend level and the bar midpoint
+      const radialOn = showLine && cfg.showRadial && lineLive;
+      const radialBase = radialOn ? trendLevel : NaN;
+      const radialEdge = radialOn ? midConfirmed : NaN;
+      const radialGap = radialEdge - radialBase;
+      plots[2][i] = { time: t, value: radialBase };
+      for (let k = 0; k < 6; k++) plots[3 + k][i] = { time: t, value: radialOn ? radialBase + radialGap * radialK[k] : NaN };
+      plots[9][i] = { time: t, value: radialEdge };
+      for (let k = 0; k < 7; k++) s.radialFill[k][i] = radialOn ? String(color.new(trendColor, radialTs[k])) : 'transparent';
+
+      // Wave layers: lagged copies of the wavelet path
+      for (let k = 0; k < 6; k++) {
+        const on = showWave && (k < 4 || cfg.waveLayers >= k);
+        const j = i - waveOffs[k];
+        plots[10 + k][i] = { time: t, value: on && j >= 0 ? s.wavelet[j] : NaN };
+      }
+      for (let k = 0; k < 5; k++) {
+        const on = showWave && hasTrend && (k < 3 || cfg.waveLayers >= k + 1);
+        s.waveFill[k][i] = on ? String(color.new(trendColor, waveT[k])) : 'transparent';
+      }
+
+      // barcolor(show_candles and has_trend ? color.new(trend_color, bar_trans) : na); bgcolor likewise
+      if (cfg.showCandles && hasTrend) s.barColors.push({ time: t, color: String(color.new(trendColor, cfg.barTrans)) });
+      if (cfg.showBgcolor && hasTrend) s.bgColors.push({ time: t, color: String(color.new(trendColor, cfg.bgTrans)) });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      for (let p = 0; p < 16; p++) plots[`plot${p}`] = s.plots[p].slice();
+      const fills = [
+        ...s.radialFill.map((colors, k) => ({ plot1: `plot${2 + k}`, plot2: `plot${3 + k}`, options: { title: `Radial Layer ${k + 1}` }, colors: colors.slice() })),
+        ...s.waveFill.map((colors, k) => ({ plot1: `plot${10 + k}`, plot2: `plot${11 + k}`, options: { title: `Wave Layer ${k + 1}` }, colors: colors.slice() })),
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+        markers: [],
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WaveletTransformTrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<WaveletTransformTrendInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -332,6 +375,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const WaveletTransformTrend = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

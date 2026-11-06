@@ -27,8 +27,9 @@ import {
   color, timeframe, mapToChart, barInterval, time as pineTime,
   type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar,
 } from 'oakscriptjs';
-import { chartTimeframe, higherTimeframeBars } from '../anchor-period';
+import { chartTimeframe, hasCalendar, higherTimeframeBars } from '../anchor-period';
 import { timezoneOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface IctSessionsInputs {
   /** Show High / Low */
@@ -148,47 +149,160 @@ function dailyHighLow(bars: Bar[], chart?: ChartContext): { ph: number[]; pl: nu
   };
 }
 
-export function calculate(bars: Bar[], inputs: Partial<IctSessionsInputs> = {}, chart?: ChartContext): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const tz = timezoneOf(chart);
-  const ms = chart?.timeUnit === 'ms' || (chart?.timeUnit === undefined && n > 0 && bars[0].time >= 1e12);
-  const barMs = n > 1 ? barInterval(bars) * (ms ? 1 : 1000) : undefined;
-  const { ph, pl } = n > 0 ? dailyHighLow(bars, chart) : { ph: [], pl: [] };
+const DAY_MS = 86400000;
 
+type Point = { time: number; value: number };
+
+interface IctVars {
+  /** UTC day of the current daily period (the periods of the chart bars without the exchange calendar), its first
+   *  bar and its high / low so far */
+  day: number;
+  dayStart: number;
+  dayHigh: number;
+  dayLow: number;
+}
+
+interface IctRun extends BarRunState<IctVars> {
+  /** 'direct': the chart bars are the daily bars; 'pre': the daily values of the whole bar set (exchange calendar);
+   *  'utc': the UTC days of the bars, the bars of a day written when the next day opens (the last day in result) */
+  mode: 'direct' | 'pre' | 'utc';
+  pre: { ph: number[]; pl: number[] } | null;
+  inMs: boolean;
+  /** The time unit of the UTC days of the daily periods (periodStarts: the first bar) */
+  utcMs: boolean;
+  barMs: number | undefined;
+  /** BarInSession of each session on each bar */
+  inSession: boolean[][];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<IctSessionsInputs>): BarStudy<IctRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  // BarInSession(sess) => time(period, sess) != 0. In this version a session without days covers Monday to Friday
+  const sessions = SESSIONS.map((s) => {
+    const raw = String(cfg[s.input]).trim();
+    return raw.includes(':') ? raw : `${raw}:23456`;
+  });
+  const cols = fillColors(cfg.fillcheck);
   // a number as a condition: na and 0 are false
   const truthy = (x: number) => !Number.isNaN(x) && x !== 0;
-  const plots: Record<string, Array<{ time: number; value: number }>> = {};
-  const series = (f: (i: number) => number) => bars.map((b, i) => ({ time: b.time, value: f(i) }));
+  let tz = 'Etc/UTC';
 
-  plots.plot0 = series((i) => (cfg.shl && truthy(ph[i]) ? ph[i] : NaN));
-  plots.plot1 = series((i) => (cfg.shl && truthy(pl[i]) ? pl[i] : NaN));
-
-  const high2 = ph.map((h, i) => h + (h - pl[i]) * 0.01 * cfg.boxheight);
-  const low2 = pl.map((l, i) => l - (ph[i] - l) * 0.01 * cfg.boxheight);
-  SESSIONS.forEach((s, g) => {
-    // BarInSession(sess) => time(period, sess) != 0. In this version a session without days covers Monday to Friday
-    const raw = String(cfg[s.input]).trim();
-    const session = raw.includes(':') ? raw : `${raw}:23456`;
-    const inSession = bars.map((b) => pineTime.inSession(ms ? b.time : b.time * 1000, session, tz, barMs));
-    const values = [high2, ph, pl, low2];
-    const conds = [ph, ph, pl, pl];
-    values.forEach((v, k) => {
-      plots[`plot${2 + g * 4 + k}`] = series((i) => (truthy(conds[k][i]) && inSession[i] ? v[i] : NaN));
-    });
-  });
-
-  const cols = fillColors(cfg.fillcheck);
-  const fills = SESSIONS.flatMap((_s, g) => fillPairs(g).map(([plot1, plot2], k) => ({
-    id: `fill${g * 3 + k}`, plot1, plot2, options: { title: FILL_TITLES[g][k] },
-    colors: bars.map(() => cols[g][k]),
-  })));
+  /** The points of bar `j` (plots, in place) from the daily high and low of its day */
+  const write = (plots: Point[][], s: IctRun, j: number, time: number, ph: number, pl: number) => {
+    plots[0][j] = { time, value: cfg.shl && truthy(ph) ? ph : NaN };
+    plots[1][j] = { time, value: cfg.shl && truthy(pl) ? pl : NaN };
+    const high2 = ph + (ph - pl) * 0.01 * cfg.boxheight;
+    const low2 = pl - (ph - pl) * 0.01 * cfg.boxheight;
+    const okH = truthy(ph);
+    const okL = truthy(pl);
+    for (let g = 0; g < 4; g++) {
+      const inS = s.inSession[g][j];
+      const o = 2 + g * 4;
+      plots[o][j] = { time, value: okH && inS ? high2 : NaN };
+      plots[o + 1][j] = { time, value: okH && inS ? ph : NaN };
+      plots[o + 2][j] = { time, value: okL && inS ? pl : NaN };
+      plots[o + 3][j] = { time, value: okL && inS ? low2 : NaN };
+    }
+  };
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
+    // the chart timeframe and the bar interval come from the bar gaps, the time unit from the first bar
+    key: (bars, chart) => {
+      const n = bars.length;
+      const ms = chart?.timeUnit === 'ms' || (chart?.timeUnit === undefined && n > 0 && bars[0].time >= 1e12);
+      return `${chartTimeframe(bars, chart)}|${n > 1 ? barInterval(bars) : ''}|${ms}|${n > 0 && bars[0].time >= 1e12}`;
+    },
+    // with the exchange calendar the daily periods come from the calendar of the whole bar set
+    fullRunReason: (chart) => (hasCalendar(chart) ? 'exchange calendar periods' : null),
+    init(bars, chart) {
+      const n = bars.length;
+      tz = timezoneOf(chart);
+      const ms = chart?.timeUnit === 'ms' || (chart?.timeUnit === undefined && n > 0 && bars[0].time >= 1e12);
+      let mode: IctRun['mode'] = 'direct';
+      let pre: IctRun['pre'] = null;
+      if (n > 0) {
+        // security(tickerid, 'D', high) and low of this version 2 script: every chart bar of a day shows the value of
+        // that whole day. On a daily chart it is the chart series itself.
+        const chartTf = chartTimeframe(bars, chart);
+        const day = timeframe.in_seconds('D');
+        if (chartTf === '' || timeframe.in_seconds(chartTf) === day) {
+          mode = 'direct';
+        } else if (timeframe.in_seconds(chartTf) > day) {
+          throw new Error(`ICT Sessions: the daily high and low need daily bars, and the chart timeframe "${chartTf}" is above one day.`);
+        } else if (hasCalendar(chart)) {
+          mode = 'pre';
+          const { htf, group } = higherTimeframeBars(bars, 'D', chart);
+          pre = {
+            ph: mapToChart(htf.map((b) => b.high), group, [], true, false),
+            pl: mapToChart(htf.map((b) => b.low), group, [], true, false),
+          };
+        } else {
+          mode = 'utc';
+        }
+      }
+      const s: IctRun = {
+        mode, pre, inMs: ms, utcMs: n > 0 && bars[0].time >= 1e12, barMs: n > 1 ? barInterval(bars) * (ms ? 1 : 1000) : undefined,
+        inSession: SESSIONS.map(() => []), plots: Array.from({ length: 18 }, () => []),
+        steps: [], vars: { day: NaN, dayStart: 0, dayHigh: NaN, dayLow: NaN }, lists: [], series: [],
+      };
+      s.series = [...s.inSession, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = s.inMs ? b.time : b.time * 1000;
+      for (let g = 0; g < 4; g++) s.inSession[g][i] = pineTime.inSession(t, sessions[g], tz, s.barMs);
+      if (s.mode === 'direct') {
+        write(s.plots, s, i, b.time, b.high, b.low);
+      } else if (s.mode === 'pre') {
+        write(s.plots, s, i, b.time, s.pre!.ph[i] ?? NaN, s.pre!.pl[i] ?? NaN);
+      } else {
+        const v = s.vars;
+        const day = Math.floor((s.utcMs ? b.time : b.time * 1000) / DAY_MS);
+        if (i === 0 || day !== v.day) {
+          // the day before is complete: its bars show its high and low
+          for (let j = v.dayStart; j < i; j++) write(s.plots, s, j, bars[j].time, v.dayHigh, v.dayLow);
+          v.day = day;
+          v.dayStart = i;
+          v.dayHigh = b.high;
+          v.dayLow = b.low;
+        } else {
+          v.dayHigh = Math.max(v.dayHigh, b.high);
+          v.dayLow = Math.min(v.dayLow, b.low);
+        }
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const out = s.plots.map((p) => p.slice());
+      if (s.mode === 'utc' && n > 0) {
+        // the bars of the last day show its high and low so far
+        const v = s.vars;
+        for (let j = v.dayStart; j < n; j++) write(out, s, j, bars[j].time, v.dayHigh, v.dayLow);
+      }
+      const plots: Record<string, Point[]> = {};
+      out.forEach((p, k) => { plots[`plot${k}`] = p; });
+      const fills = SESSIONS.flatMap((_s, g) => fillPairs(g).map(([plot1, plot2], k) => ({
+        id: `fill${g * 3 + k}`, plot1, plot2, options: { title: FILL_TITLES[g][k] },
+        colors: new Array<string>(n).fill(cols[g][k]),
+      })));
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+      };
+    },
   };
 }
 
-export const IctSessions = { calculate, metadata, defaultInputs, inputConfig, plotConfig, fillConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IctSessionsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<IctSessionsInputs> = {}, chart?: ChartContext): IndicatorResult {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const IctSessions = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, fillConfig };

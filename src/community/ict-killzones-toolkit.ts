@@ -40,10 +40,11 @@
  * Original notice: © LuxAlgo
  */
 
-import { ta, Series, color, str, timeframe, time as pineTime, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { chartTimeframe, periodChanges } from '../anchor-period';
+import { taStep, color, str, timeframe, time as pineTime, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { chartTimeframe, hasCalendar, periodChanges } from '../anchor-period';
 import type { BgColorData, BoxData, LabelData, LineDrawingData } from '../types';
 import { mintickOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type Display = 'All' | 'First' | 'Last';
 
@@ -299,520 +300,608 @@ interface MSS { ln: Ln; bx: Bx }
 /** `var` variables of one call of the killzones method */
 interface KzSite { max: number; mid: number; min: number; sbT: number; xt: boolean; xb: boolean; area: Bx | null; s1: boolean }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<IctKillzonesToolkitInputs> = {},
-  chart?: ChartContext,
-): IndicatorResult & { lines: LineDrawingData[]; boxes: BoxData[]; labels: LabelData[]; bgColors: BgColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const ms = n > 0 && bars[0].time >= 1e12;
-  const tMs = bars.map((b) => (ms ? b.time : b.time * 1000));
-  const tfName = chartTimeframe(bars, chart);
-  const tfInfo = tfName === '' ? null : timeframe.info(tfName);
-  const isIntraday = tfInfo?.isintraday ?? false;
-  const tfM = tfInfo?.multiplier ?? 1;
-  const shown = tfM <= cfg.kzSH;
-  // bar duration for the session test (clock-change rule of the library)
-  const barMs = tfName === '' ? undefined : timeframe.in_seconds(tfName) * 1000;
+type Result = IndicatorResult & { lines: LineDrawingData[]; boxes: BoxData[]; labels: LabelData[]; bgColors: BgColorData[] };
 
-  const lines = new Live<Ln>();
-  const boxes = new Live<Bx>();
-  const labels = new Live<Lb>();
-  const bgColors: BgColorData[] = [];
-  const newLine = (x1: number, y1: number, x2: number, y2: number, byTime: boolean, css: string, style?: 'dotted') =>
-    lines.add({ x1, y1, x2, y2, byTime, color: css, style, dead: false });
-  const newBox = (b: Omit<Bx, 'dead'>) => boxes.add({ ...b, dead: false });
-  const newLabel = (l: Omit<Lb, 'dead'>) => labels.add({ ...l, dead: false });
+const DAY_MS = 86400000;
+
+/** The study's variables: the drawings and every object that points at them (copied together by copyVars) */
+interface IctVars {
+  lines: Live<Ln>;
+  boxes: Live<Bx>;
+  labels: Live<Lb>;
+  // var KZ kz: one object for the four killzone calls
+  kz: { lnT: Ln | null; lnM: Ln | null; lnB: Ln | null; lnO: Ln | null; lb: Lb | null; lbO: Lb | null };
+  dwm: { ln: Ln | null; lb: Lb | null };
+  sites: KzSite[];
+  bOB: OB[];
+  aOB: OB[];
+  bBB: BB[];
+  aBB: BB[];
+  bLS: number[];
+  aLS: number[];
+  bMSS: MSS[];
+  aMSS: MSS[];
+  pp: { h: number; hi: number; hx: boolean; l: number; li: number; lx: boolean };
+  shift: number;
+  bFVG: FVG[];
+  aFVG: FVG[];
+  // swings()
+  os: number;
+  top: Swing;
+  btm: Swing;
+  // pOBB() / pFVG() variables
+  sbI: number;
+  obXb: boolean;
+  obXa: boolean;
+  fvgXb: boolean;
+  fvgXa: boolean;
+  inKZ1: boolean;
+  bullG1: boolean;
+  bearG1: boolean;
+}
+
+interface IctRun extends BarRunState<IctVars> {
+  upperStep: ReturnType<typeof taStep.highest>;
+  lowerStep: ReturnType<typeof taStep.lowest>;
+  atrStep: ReturnType<typeof taStep.atr>;
+  ppHStep: PivotStep;
+  ppLStep: PivotStep;
+  bgColors: BgColorData[];
+}
+
+/** A copy of the variables: the object graph cloned with its shared references */
+function copyIctVars(v: IctVars): IctVars {
+  const c = structuredClone(v);
+  for (const r of [c.lines, c.boxes, c.labels]) Object.setPrototypeOf(r, Live.prototype);
+  return c;
+}
+
+function study(inputs: Partial<IctKillzonesToolkitInputs>): BarStudy<IctRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  // read from the whole bar set and the chart by init
+  let ms = false;
+  let isIntraday = false;
+  let shown = false;
+  let barMs: number | undefined;
+  let mintick = 0.01;
+  /** The chart context of the period changes, with the chart timeframe of the whole bar set */
+  let calChart: ChartContext | undefined;
+
   // format.mintick: the symbol price tick
-  const mintick = mintickOf(chart);
   const priceText = (v: number) => str.tostring(v, 'mintick', mintick);
   const opaque = (c: string) => String(color.new(c, 0));
-
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const highS = new Series(bars, (b) => b.high);
-  const lowS = new Series(bars, (b) => b.low);
-  const upper = A(ta.highest(highS, cfg.obbLN));
-  const lower = A(ta.lowest(lowS, cfg.obbLN));
-  const atr = A(ta.atr(bars, 144));
-  const ppH = A(ta.pivothigh(highS, cfg.mssLN, cfg.mssLN));
-  const ppL = A(ta.pivotlow(lowS, cfg.mssLN, cfg.mssLN));
   const dwmTf = cfg.dwmO === 'the Day' ? 'D' : cfg.dwmO === 'the Week' ? 'W' : cfg.dwmO === 'the Month' ? 'M' : null;
-  const dwmChanges = dwmTf ? periodChanges(bars, dwmTf, chart) : null;
   const xTxt = dwmTf ? `${dwmTf}O` : '';
   const kzO = cfg.dwmO === 'Killzones';
   const obbMP = cfg.obbMT === 'Closing Price';
   const { obSH: obS, bbSH: bbS, obbEX: obbE, obbSH: obbD, obbR } = cfg;
-
-  // History helpers (na before the first bar)
-  const H = (i: number) => (i >= 0 ? bars[i].high : NaN);
-  const L = (i: number) => (i >= 0 ? bars[i].low : NaN);
-  const C = (i: number) => (i >= 0 ? bars[i].close : NaN);
-  const O = (i: number) => (i >= 0 ? bars[i].open : NaN);
-  const T = (i: number) => (i >= 0 ? tMs[i] : NaN);
-  const MX = (i: number) => (i < 0 ? NaN : cfg.useBody ? Math.max(bars[i].close, bars[i].open) : bars[i].high);
-  const MN = (i: number) => (i < 0 ? NaN : cfg.useBody ? Math.min(bars[i].close, bars[i].open) : bars[i].low);
-
-  // var KZ kz: one object for the four killzone calls
-  const kz: { lnT: Ln | null; lnM: Ln | null; lnB: Ln | null; lnO: Ln | null; lb: Lb | null; lbO: Lb | null } =
-    { lnT: null, lnM: null, lnB: null, lnO: null, lb: null, lbO: null };
-  const dwm: { ln: Ln | null; lb: Lb | null } = { ln: null, lb: null };
-  const site = (): KzSite => ({ max: NaN, mid: NaN, min: NaN, sbT: NaN, xt: false, xb: false, area: null, s1: false });
   const zones = [
-    { st: site(), on: cfg.nySH, sess: cfg.nyS, css: cfg.nyC, name: cfg.nyST },
-    { st: site(), on: cfg.ldnOSH, sess: cfg.ldnOS, css: cfg.ldnOC, name: cfg.ldnOST },
-    { st: site(), on: cfg.ldnCSH, sess: cfg.ldnCS, css: cfg.ldnCC, name: cfg.ldnCST },
-    { st: site(), on: cfg.asSH, sess: cfg.asS, css: cfg.asC, name: cfg.asST },
+    { on: cfg.nySH, sess: cfg.nyS, css: cfg.nyC, name: cfg.nyST },
+    { on: cfg.ldnOSH, sess: cfg.ldnOS, css: cfg.ldnOC, name: cfg.ldnOST },
+    { on: cfg.ldnCSH, sess: cfg.ldnCS, css: cfg.ldnCC, name: cfg.ldnCST },
+    { on: cfg.asSH, sess: cfg.asS, css: cfg.asC, name: cfg.asST },
   ].map((z) => ({ ...z, tC: String(color.rgb(color.r(z.css), color.g(z.css), color.b(z.css))) }));
   const olC = opaque(cfg.dwmC);
-
-  let bOB: OB[] = [];
-  let aOB: OB[] = [];
-  let bBB: BB[] = [];
-  let aBB: BB[] = [];
-  const bLS: number[] = [];
-  const aLS: number[] = [];
-  let bMSS: MSS[] = [];
-  let aMSS: MSS[] = [];
-  const pp = { h: NaN, hi: NaN, hx: false, l: NaN, li: NaN, lx: false };
-  let shift = 0;
-  let bFVG: FVG[] = [];
-  let aFVG: FVG[] = [];
-
-  // swings()
-  let os = 0;
-  let top: Swing = { y: NaN, i: NaN, x: false };
-  let btm: Swing = { y: NaN, i: NaN, x: false };
-  // pOBB() / pFVG() variables
-  let sbI = 0;
-  let obXb = false;
-  let obXa = false;
-  let fvgXb = false;
-  let fvgXa = false;
-  let inKZ1 = false;
-  let bullG1 = false;
-  let bearG1 = false;
+  const site = (): KzSite => ({ max: NaN, mid: NaN, min: NaN, sbT: NaN, xt: false, xb: false, area: null, s1: false });
 
   // Setters that do nothing on a deleted (or na) object
   const live = <X extends { dead: boolean }>(o: X | null): o is X => o !== null && !o.dead;
   const maxOf = (a: number[]) => (a.length === 0 ? NaN : Math.max(...a));
 
-  for (let i = 0; i < n; i++) {
-    const bar = bars[i];
-    const { open, high, low } = bar;
-    const t = tMs[i];
-    const active = zones.map((z) => pineTime.inSession(t, z.sess, TZ, barMs) && z.on && shown);
-    const inKZ = active.some(Boolean);
-
-    // Killzones
-    zones.forEach((z, k) => {
-      const st = z.st;
-      const s = active[k] && isIntraday;
-      if (s && !st.s1) {
-        st.max = high;
-        st.sbT = t;
-        st.min = low;
-        st.mid = (st.max + st.min) / 2;
-        st.area = newBox({ left: i, top: st.max, right: i, bottom: st.min, byTime: false, border: NA_COLOR, bg: z.css });
-        if (cfg.kzMML) {
-          kz.lnT = newLine(st.sbT, st.max, st.sbT, st.max, true, z.tC);
-          kz.lnB = newLine(st.sbT, st.min, st.sbT, st.min, true, z.tC);
-        }
-        if (cfg.kzML) kz.lnM = newLine(st.sbT, st.mid, st.sbT, st.mid, true, z.tC, 'dotted');
-        if (kzO) {
-          kz.lnO = newLine(st.sbT, open, st.sbT, open, true, olC, 'dotted');
-          if (cfg.dwmL) {
-            kz.lbO = newLabel({ x: st.sbT, y: open, text: 'KZO(' + priceText(open) + ')', color: NA_COLOR, style: 'label_left', textColor: olC, size: 'tiny' });
-          }
-        }
-        if (cfg.kzLB) {
-          kz.lb = newLabel({ x: st.sbT, y: st.max, text: z.name, color: '#ffffff00', style: 'label_down', textColor: z.tC, size: 'small' });
-        }
-      }
-      if (s) {
-        st.max = Math.max(high, st.max);
-        st.min = Math.min(low, st.min);
-        st.mid = (st.max + st.min) / 2;
-        st.xt = true;
-        st.xb = true;
-        if (live(st.area)) {
-          st.area.top = st.max;
-          st.area.right = i;
-          st.area.bottom = st.min;
-        }
-        if (cfg.kzLB && live(kz.lb)) {
-          kz.lb.x = Math.trunc((t + st.sbT) / 2);
-          kz.lb.y = st.max;
-        }
-        if (cfg.kzMML) {
-          if (live(kz.lnT)) {
-            kz.lnT.y1 = st.max;
-            kz.lnT.x2 = t;
-            kz.lnT.y2 = st.max;
-          }
-          if (live(kz.lnB)) {
-            kz.lnB.y1 = st.min;
-            kz.lnB.x2 = t;
-            kz.lnB.y2 = st.min;
-          }
-        }
-        if (cfg.kzML && live(kz.lnM)) {
-          kz.lnM.y1 = st.mid;
-          kz.lnM.x2 = t;
-          kz.lnM.y2 = st.mid;
-        }
-        if (kzO) {
-          if (live(kz.lnO)) kz.lnO.x2 = t;
-          if (cfg.dwmL && live(kz.lbO)) kz.lbO.x = t;
-        }
-      }
-      if (!s && cfg.kzLE && !inKZ) {
-        if (cfg.kzMML) {
-          if (st.xt) {
-            const y = live(kz.lnT) ? kz.lnT.y1 : NaN;
-            if (live(kz.lnT)) kz.lnT.x2 = t;
-            if (!lt(high, y)) st.xt = false;
-          }
-          if (st.xb) {
-            const y = live(kz.lnB) ? kz.lnB.y1 : NaN;
-            if (live(kz.lnB)) kz.lnB.x2 = t;
-            if (!gt(low, y)) st.xb = false;
-          }
-        }
-        if (cfg.kzML && live(kz.lnM)) kz.lnM.x2 = t;
-      }
-      st.s1 = s;
-    });
-
-    // Open price of the day / week / month
-    const xChg = dwmChanges !== null && dwmChanges[i];
-    if (!kzO && isIntraday && shown) {
-      if (xChg) {
-        labels.del(dwm.lb);
-        dwm.ln = newLine(t, open, t, open, true, olC, 'dotted');
-        if (cfg.dwmL) {
-          dwm.lb = newLabel({ x: t, y: open, text: xTxt + '(' + priceText(open) + ')', color: NA_COLOR, style: 'label_left', textColor: olC, size: 'tiny' });
-        }
-      } else {
-        if (live(dwm.ln)) dwm.ln.x2 = t;
-        if (cfg.dwmL && live(dwm.lb)) dwm.lb.x = t;
-      }
-    }
-    if (cfg.dwmS && !kzO && isIntraday && shown && xChg) bgColors.push({ time: bar.time, color: cfg.dwmC });
-
-    // swings(obbLN)
-    const os1 = i > 0 ? os : NaN;
-    os = gt(H(i - cfg.obbLN), upper[i]) ? 0 : lt(L(i - cfg.obbLN), lower[i]) ? 1 : os;
-    if (os === 0 && os1 === 1) top = { y: H(i - cfg.obbLN), i: i - cfg.obbLN, x: false };
-    if (os === 1 && os1 === 0) btm = { y: L(i - cfg.obbLN), i: i - cfg.obbLN, x: false };
-
-    // Order blocks & breaker blocks
-    if (obS || bbS) {
-      const s = inKZ;
-      if (s && !inKZ1) {
-        sbI = i;
-        obXb = true;
-        obXa = true;
-        if (obbE) {
-          bOB = [];
-          aOB = [];
-          bBB = [];
-          aBB = [];
-        }
-      }
-      const obBox = (css: string) => newBox({
-        left: NaN, top: NaN, right: NaN, bottom: NaN, byTime: true, border: NA_COLOR,
-        text: cfg.obbTX ? 'OB' : '', textSize: 'tiny', textColor: opaque(css),
-      });
-      const bbBoxes = (css: string): BB => ({
-        bxOB: newBox({ left: NaN, top: NaN, right: NaN, bottom: NaN, byTime: true, border: NA_COLOR }),
-        bxBB: newBox({
-          left: NaN, top: NaN, right: NaN, bottom: NaN, byTime: true, border: NA_COLOR,
-          text: cfg.obbTX ? 'BB' : '', textSize: 'tiny', textColor: opaque(css),
-        }),
-        ext: true, bb: false, bbI: NaN,
-      });
-      if (s) {
-        if (gt(C(i - 1), top.y) && !top.x && top.i >= sbI) {
-          top.x = true;
-          let minima = MX(i - 1);
-          let maxima = MN(i - 1);
-          let sBT = T(i - 1);
-          const last = i - top.i - 1;
-          for (let k = 1; last >= 1 ? k <= last : k >= last; k += last >= 1 ? 1 : -1) {
-            minima = Math.min(MN(i - k), minima);
-            if (eq(minima, MN(i - k))) {
-              maxima = MX(i - k);
-              sBT = T(i - k);
-            }
-          }
-          bOB.unshift({ top: maxima, btm: minima, obI: sBT, bxOB: obBox(cfg.bullOC), ext: true });
-          bBB.unshift(bbBoxes(cfg.bullBC));
-        }
-        if (lt(C(i - 1), btm.y) && !btm.x && top.i >= sbI) {
-          btm.x = true;
-          let minima = MN(i - 1);
-          let maxima = MX(i - 1);
-          let sBT = T(i - 1);
-          const last = i - btm.i - 1;
-          for (let k = 1; last >= 1 ? k <= last : k >= last; k += last >= 1 ? 1 : -1) {
-            maxima = Math.max(MX(i - k), maxima);
-            if (eq(maxima, MX(i - k))) {
-              minima = MN(i - k);
-              sBT = T(i - k);
-            }
-          }
-          aOB.unshift({ top: maxima, btm: minima, obI: sBT, bxOB: obBox(cfg.bearOC), ext: true });
-          aBB.unshift(bbBoxes(cfg.bearBC));
-        }
-      }
-
-      if (obbE || s) {
-        const side = (obs: OB[], bbs: BB[], bull: boolean, cOB: string, cBB: string, ls: number[]) => {
-          for (let k = obs.length - 1; k >= 0; k--) {
-            const ob = obs[k];
-            const bb = bbs[k];
-            const isFirst = obbD === 'First' ? k === obs.length - 1 : true;
-            const bg = obbD === 'Last' ? (k === 0 ? cOB : NA_COLOR) : cOB;
-            const tc = obbD === 'Last' ? (k === 0 ? opaque(cOB) : NA_COLOR) : opaque(cOB);
-            if (obbR) {
-              if (!ob.ext) boxes.del(ob.bxOB);
-              if (!bb.ext) {
-                boxes.del(bb.bxOB);
-                boxes.del(bb.bxBB);
-              }
-            }
-            const outline = () => {
-              if (live(bb.bxOB)) {
-                bb.bxOB.left = ob.obI;
-                bb.bxOB.top = ob.top;
-                bb.bxOB.right = bb.bbI;
-                bb.bxOB.bottom = ob.btm;
-                bb.bxOB.bg = NA_COLOR;
-                bb.bxOB.border = cBB;
-              }
-            };
-            if (!bb.bb) {
-              if (obS && isFirst && live(ob.bxOB)) {
-                ob.bxOB.left = ob.obI;
-                ob.bxOB.top = ob.top;
-                ob.bxOB.right = t;
-                ob.bxOB.bottom = ob.btm;
-                ob.bxOB.bg = bg;
-                ob.bxOB.textColor = tc;
-              }
-              const broken = bull
-                ? lt(Math.min(obbMP ? C(i - 1) : L(i - 1), O(i - 1)), ob.btm)
-                : gt(Math.max(obbMP ? C(i - 1) : H(i - 1), O(i - 1)), ob.top);
-              if (broken) {
-                bb.bb = true;
-                if (obS) {
-                  if (live(ob.bxOB)) ob.bxOB.right = T(i - 1);
-                  ob.ext = false;
-                }
-                if (bbS && (bull ? obXb : obXa)) {
-                  bb.bbI = T(i - 1);
-                  if (live(bb.bxBB)) {
-                    bb.bxBB.left = bb.bbI;
-                    bb.bxBB.top = ob.top;
-                    bb.bxBB.right = t;
-                    bb.bxBB.bottom = ob.btm;
-                    bb.bxBB.bg = cBB;
-                  }
-                  if (!obS || obbR || !isFirst) outline();
-                  if (obbD === 'First') {
-                    if (bull) obXb = false;
-                    else obXa = false;
-                  }
-                  if (obbD === 'Last') ls.push(bb.bbI);
-                }
-              }
-            } else {
-              if (bull ? gt(obbMP ? C(i - 1) : H(i - 1), ob.top) : lt(obbMP ? C(i - 1) : L(i - 1), ob.btm)) bb.ext = false;
-              if (obS && live(ob.bxOB)) {
-                ob.bxOB.bg = bg;
-                ob.bxOB.textColor = tc;
-              }
-              if (bbS && bb.ext && live(bb.bxBB)) bb.bxBB.right = t;
-              if (bbS && obbD === 'Last') {
-                if (k !== 0) outline();
-                const left = live(bb.bxBB) ? bb.bxBB.left : NaN;
-                const lsMax = maxOf(ls);
-                // `!=` is false when a side is na
-                if (!Number.isNaN(left) && !Number.isNaN(lsMax) && lsMax !== left) {
-                  if (live(bb.bxBB)) {
-                    bb.bxBB.bg = NA_COLOR;
-                    bb.bxBB.textColor = NA_COLOR;
-                  }
-                  if (live(bb.bxOB)) bb.bxOB.border = NA_COLOR;
-                }
-              }
-            }
-          }
-        };
-        side(bOB, bBB, true, cfg.bullOC, cfg.bullBC, bLS);
-        side(aOB, aBB, false, cfg.bearOC, cfg.bearBC, aLS);
-      } else {
-        bOB = [];
-        aOB = [];
-        bBB = [];
-        aBB = [];
-      }
-    }
-
-    // Market structure shifts
-    if (!Number.isNaN(ppH[i])) {
-      pp.h = ppH[i];
-      pp.hx = false;
-      pp.hi = i - cfg.mssLN;
-    }
-    if (!Number.isNaN(ppL[i])) {
-      pp.l = ppL[i];
-      pp.lx = false;
-      pp.li = i - cfg.mssLN;
-    }
-    if (!inKZ) {
-      pp.l = 0;
-      pp.h = 10e8;
-      shift = 0;
-      bMSS = [];
-      aMSS = [];
-    }
-    if (cfg.mssSH && inKZ) {
-      const mss = (x: number, y: number, css: string, vAlign: 'top' | 'bottom'): MSS => ({
-        ln: newLine(x, y, i - 1, y, false, css),
-        bx: newBox({
-          left: x, top: y, right: i - 1, bottom: y, byTime: false, border: NA_COLOR, bg: NA_COLOR,
-          text: 'CHoCH', textSize: 'tiny', hAlign: 'left', vAlign, textColor: cfg.mssTX ? css : NA_COLOR,
-        }),
-      });
-      const drop = (m: MSS | undefined) => {
-        if (!m) return;
-        lines.del(m.ln);
-        boxes.del(m.bx);
-      };
-      if (gt(C(i - 1), pp.h) && !pp.hx) {
-        pp.hx = true;
-        if (shift === -1 || shift === 0) {
-          if (cfg.mssDO === 'First' ? bMSS.length < 1 : true) bMSS.unshift(mss(pp.hi, pp.h, cfg.ppLCB, 'bottom'));
-          if (bMSS.length > 1 && cfg.mssDO === 'Last') drop(bMSS.pop());
-        }
-        shift = 1;
-      }
-      if (lt(C(i - 1), pp.l) && !pp.lx) {
-        pp.lx = true;
-        if (shift === 1 || shift === 0) {
-          if (cfg.mssDO === 'First' ? aMSS.length < 1 : true) aMSS.unshift(mss(pp.li, pp.l, cfg.ppLCS, 'top'));
-          if (aMSS.length > 1 && cfg.mssDO === 'Last') drop(aMSS.pop());
-        }
-        shift = -1;
-      }
-    }
-
-    // Fair value gaps
-    if (cfg.fvgSH) {
-      const s = inKZ;
-      const fvgATR = (Number.isFinite(atr[i]) ? atr[i] : 0) * cfg.fvgTH;
-      if (s && !inKZ1) {
-        fvgXb = true;
-        fvgXa = true;
-        if (cfg.fvgE) {
-          bFVG = [];
-          aFVG = [];
-        }
-      }
-      const bullG = gt(low, H(i - 1));
-      const bearG = lt(high, L(i - 1));
-      if (s) {
-        const fvgBox = (boxTop: number, boxBottom: number, css: string): FVG => ({
-          bx: newBox({
-            left: i - 1, top: boxTop, right: i, bottom: boxBottom, byTime: false, border: NA_COLOR, bg: css,
-            text: cfg.fvgTX ? 'FVG' : '', textSize: 'tiny', textColor: opaque(css),
-          }),
-          e: true,
-        });
-        const bull = gt(low - H(i - 2), fvgATR) && gt(low, H(i - 2)) && gt(C(i - 1), H(i - 2)) && !(bullG || bullG1);
-        if (bull && fvgXb) {
-          bFVG.unshift(fvgBox(low, H(i - 2), cfg.fvgBC));
-          if (cfg.fvgDO === 'First') fvgXb = false;
-          if (bFVG.length > 1 && cfg.fvgDO === 'Last') boxes.del(bFVG.pop()!.bx);
-        }
-        const bear = gt(L(i - 2) - high, fvgATR) && lt(high, L(i - 2)) && lt(C(i - 1), L(i - 2)) && !(bearG || bearG1);
-        if (bear && fvgXa) {
-          aFVG.unshift(fvgBox(L(i - 2), high, cfg.fvgSC));
-          if (cfg.fvgDO === 'First') fvgXa = false;
-          if (aFVG.length > 1 && cfg.fvgDO === 'Last') boxes.del(aFVG.pop()!.bx);
-        }
-      }
-      if (cfg.fvgE || s) {
-        for (let k = bFVG.length - 1; k >= 0; k--) {
-          const fvg = bFVG[k];
-          const fvgB = live(fvg.bx) ? fvg.bx.bottom : NaN;
-          if (!fvg.e) continue;
-          if (live(fvg.bx)) fvg.bx.right = i;
-          if (lt(low, fvgB)) {
-            if (cfg.fvgR) boxes.del(fvg.bx);
-            fvg.e = false;
-          }
-        }
-        for (let k = aFVG.length - 1; k >= 0; k--) {
-          const fvg = aFVG[k];
-          const fvgT = live(fvg.bx) ? fvg.bx.top : NaN;
-          if (!fvg.e) continue;
-          if (live(fvg.bx)) fvg.bx.right = i;
-          if (gt(high, fvgT)) {
-            if (cfg.fvgR) boxes.del(fvg.bx);
-            fvg.e = false;
-          }
-        }
-      } else {
-        bFVG = [];
-        aFVG = [];
-      }
-      bullG1 = bullG;
-      bearG1 = bearG;
-    }
-    inKZ1 = inKZ;
-  }
-
-  // Output: a time between two bars is drawn on the next bar (the first bar at or after it)
-  const barOf = (time: number) => {
-    let lo = 0;
-    let hi = n - 1;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (tMs[mid] >= time) hi = mid;
-      else lo = mid + 1;
-    }
-    return lo;
+  /**
+   * periodChanges(bars, tf, chart)[i]: with the exchange calendar, the one of bars i - 1 and i (the calendar reads the
+   * chart timeframe of the whole set); else a new UTC calendar period (the rule of periodStarts for D / W / M)
+   */
+  const periodChange = (bars: Bar[], i: number, tf: 'D' | 'W' | 'M'): boolean => {
+    if (i === 0) return false;
+    if (hasCalendar(calChart)) return periodChanges([bars[i - 1], bars[i]], tf, calChart)[1];
+    const key = (time: number) => {
+      const t = ms ? time : time * 1000;
+      const day = Math.floor(t / DAY_MS) * DAY_MS;
+      if (tf === 'D') return day;
+      const d = new Date(day);
+      if (tf === 'W') return day - ((d.getUTCDay() + 6) % 7) * DAY_MS;
+      return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+    };
+    return key(bars[i].time) !== key(bars[i - 1].time);
   };
-  const X = (x: number, byTime: boolean) => bars[byTime ? barOf(x) : x].time;
-  const drawn = (...v: number[]) => v.every((x) => !Number.isNaN(x));
-  const outLines: LineDrawingData[] = lines.list.filter((l) => drawn(l.x1, l.y1, l.x2, l.y2)).map((l) => ({
-    time1: X(l.x1, l.byTime), price1: l.y1, time2: X(l.x2, l.byTime), price2: l.y2, color: l.color,
-    ...(l.style ? { style: l.style } : {}),
-  }));
-  const outBoxes: BoxData[] = boxes.list.filter((b) => drawn(b.left, b.top, b.right, b.bottom)).map((b) => ({
-    time1: X(b.left, b.byTime), price1: b.top, time2: X(b.right, b.byTime), price2: b.bottom, borderColor: b.border,
-    ...(b.bg !== undefined ? { bgColor: b.bg } : {}),
-    ...(b.text !== undefined ? { text: b.text } : {}),
-    ...(b.textSize ? { textSize: b.textSize } : {}),
-    ...(b.textColor !== undefined ? { textColor: b.textColor } : {}),
-    ...(b.hAlign ? { textHAlign: b.hAlign } : {}),
-    ...(b.vAlign ? { textVAlign: b.vAlign } : {}),
-  }));
-  const outLabels: LabelData[] = labels.list.filter((l) => drawn(l.x, l.y)).map((l) => ({
-    time: X(l.x, true), price: l.y, text: l.text, color: l.color, style: l.style, textColor: l.textColor, size: l.size,
-  }));
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    lines: outLines,
-    boxes: outBoxes,
-    labels: outLabels,
-    bgColors,
+    // the chart timeframe comes from the bar gaps (or the context), the time unit from the first bar
+    key: (bars, chart) => `${chartTimeframe(bars, chart)}|${bars.length > 0 && bars[0].time >= 1e12}`,
+    init(bars, chart) {
+      ms = bars.length > 0 && bars[0].time >= 1e12;
+      const tfName = chartTimeframe(bars, chart);
+      const tfInfo = tfName === '' ? null : timeframe.info(tfName);
+      isIntraday = tfInfo?.isintraday ?? false;
+      const tfM = tfInfo?.multiplier ?? 1;
+      shown = tfM <= cfg.kzSH;
+      // bar duration for the session test (clock-change rule of the library)
+      barMs = tfName === '' ? undefined : timeframe.in_seconds(tfName) * 1000;
+      mintick = mintickOf(chart);
+      // periodChanges of two bars equals the one of the whole set when the calendar reads the same chart timeframe
+      calChart = tfName === '' || chart.timeframe ? chart : { ...chart, timeframe: tfName };
+      const upperStep = taStep.highest();
+      const lowerStep = taStep.lowest();
+      const atrStep = taStep.atr(144);
+      const ppHStep = new PivotStep(cfg.mssLN, cfg.mssLN, true);
+      const ppLStep = new PivotStep(cfg.mssLN, cfg.mssLN, false);
+      const s: IctRun = {
+        upperStep, lowerStep, atrStep, ppHStep, ppLStep, bgColors: [],
+        steps: [upperStep, lowerStep, atrStep, ppHStep, ppLStep],
+        vars: {
+          lines: new Live<Ln>(), boxes: new Live<Bx>(), labels: new Live<Lb>(),
+          kz: { lnT: null, lnM: null, lnB: null, lnO: null, lb: null, lbO: null },
+          dwm: { ln: null, lb: null },
+          sites: zones.map(() => site()),
+          bOB: [], aOB: [], bBB: [], aBB: [], bLS: [], aLS: [], bMSS: [], aMSS: [],
+          pp: { h: NaN, hi: NaN, hx: false, l: NaN, li: NaN, lx: false },
+          shift: 0, bFVG: [], aFVG: [],
+          os: 0, top: { y: NaN, i: NaN, x: false }, btm: { y: NaN, i: NaN, x: false },
+          sbI: 0, obXb: false, obXa: false, fvgXb: false, fvgXa: false, inKZ1: false, bullG1: false, bearG1: false,
+        },
+        lists: [], series: [],
+      };
+      s.lists = [s.bgColors];
+      return s;
+    },
+    copyVars: copyIctVars,
+    bar(s, i, bars) {
+      const v = s.vars;
+      const { lines, boxes, labels, kz, dwm, pp } = v;
+      const newLine = (x1: number, y1: number, x2: number, y2: number, byTime: boolean, css: string, style?: 'dotted') =>
+        lines.add({ x1, y1, x2, y2, byTime, color: css, style, dead: false });
+      const newBox = (b: Omit<Bx, 'dead'>) => boxes.add({ ...b, dead: false });
+      const newLabel = (l: Omit<Lb, 'dead'>) => labels.add({ ...l, dead: false });
+
+      // History helpers (na before the first bar)
+      const H = (j: number) => (j >= 0 ? bars[j].high : NaN);
+      const L = (j: number) => (j >= 0 ? bars[j].low : NaN);
+      const C = (j: number) => (j >= 0 ? bars[j].close : NaN);
+      const O = (j: number) => (j >= 0 ? bars[j].open : NaN);
+      const T = (j: number) => (j >= 0 ? (ms ? bars[j].time : bars[j].time * 1000) : NaN);
+      const MX = (j: number) => (j < 0 ? NaN : cfg.useBody ? Math.max(bars[j].close, bars[j].open) : bars[j].high);
+      const MN = (j: number) => (j < 0 ? NaN : cfg.useBody ? Math.min(bars[j].close, bars[j].open) : bars[j].low);
+
+      const bar = bars[i];
+      const { open, high, low } = bar;
+      const t = T(i);
+      const upper = s.upperStep.step(high, cfg.obbLN);
+      const lower = s.lowerStep.step(low, cfg.obbLN);
+      const atr = s.atrStep.step(high, low, bar.close);
+      const ppH = s.ppHStep.step(i, high);
+      const ppL = s.ppLStep.step(i, low);
+      const active = zones.map((z) => pineTime.inSession(t, z.sess, TZ, barMs) && z.on && shown);
+      const inKZ = active.some(Boolean);
+
+      // Killzones
+      zones.forEach((z, k) => {
+        const st = v.sites[k];
+        const s = active[k] && isIntraday;
+        if (s && !st.s1) {
+          st.max = high;
+          st.sbT = t;
+          st.min = low;
+          st.mid = (st.max + st.min) / 2;
+          st.area = newBox({ left: i, top: st.max, right: i, bottom: st.min, byTime: false, border: NA_COLOR, bg: z.css });
+          if (cfg.kzMML) {
+            kz.lnT = newLine(st.sbT, st.max, st.sbT, st.max, true, z.tC);
+            kz.lnB = newLine(st.sbT, st.min, st.sbT, st.min, true, z.tC);
+          }
+          if (cfg.kzML) kz.lnM = newLine(st.sbT, st.mid, st.sbT, st.mid, true, z.tC, 'dotted');
+          if (kzO) {
+            kz.lnO = newLine(st.sbT, open, st.sbT, open, true, olC, 'dotted');
+            if (cfg.dwmL) {
+              kz.lbO = newLabel({ x: st.sbT, y: open, text: 'KZO(' + priceText(open) + ')', color: NA_COLOR, style: 'label_left', textColor: olC, size: 'tiny' });
+            }
+          }
+          if (cfg.kzLB) {
+            kz.lb = newLabel({ x: st.sbT, y: st.max, text: z.name, color: '#ffffff00', style: 'label_down', textColor: z.tC, size: 'small' });
+          }
+        }
+        if (s) {
+          st.max = Math.max(high, st.max);
+          st.min = Math.min(low, st.min);
+          st.mid = (st.max + st.min) / 2;
+          st.xt = true;
+          st.xb = true;
+          if (live(st.area)) {
+            st.area.top = st.max;
+            st.area.right = i;
+            st.area.bottom = st.min;
+          }
+          if (cfg.kzLB && live(kz.lb)) {
+            kz.lb.x = Math.trunc((t + st.sbT) / 2);
+            kz.lb.y = st.max;
+          }
+          if (cfg.kzMML) {
+            if (live(kz.lnT)) {
+              kz.lnT.y1 = st.max;
+              kz.lnT.x2 = t;
+              kz.lnT.y2 = st.max;
+            }
+            if (live(kz.lnB)) {
+              kz.lnB.y1 = st.min;
+              kz.lnB.x2 = t;
+              kz.lnB.y2 = st.min;
+            }
+          }
+          if (cfg.kzML && live(kz.lnM)) {
+            kz.lnM.y1 = st.mid;
+            kz.lnM.x2 = t;
+            kz.lnM.y2 = st.mid;
+          }
+          if (kzO) {
+            if (live(kz.lnO)) kz.lnO.x2 = t;
+            if (cfg.dwmL && live(kz.lbO)) kz.lbO.x = t;
+          }
+        }
+        if (!s && cfg.kzLE && !inKZ) {
+          if (cfg.kzMML) {
+            if (st.xt) {
+              const y = live(kz.lnT) ? kz.lnT.y1 : NaN;
+              if (live(kz.lnT)) kz.lnT.x2 = t;
+              if (!lt(high, y)) st.xt = false;
+            }
+            if (st.xb) {
+              const y = live(kz.lnB) ? kz.lnB.y1 : NaN;
+              if (live(kz.lnB)) kz.lnB.x2 = t;
+              if (!gt(low, y)) st.xb = false;
+            }
+          }
+          if (cfg.kzML && live(kz.lnM)) kz.lnM.x2 = t;
+        }
+        st.s1 = s;
+      });
+
+      // Open price of the day / week / month
+      const xChg = dwmTf !== null && periodChange(bars, i, dwmTf);
+      if (!kzO && isIntraday && shown) {
+        if (xChg) {
+          labels.del(dwm.lb);
+          dwm.ln = newLine(t, open, t, open, true, olC, 'dotted');
+          if (cfg.dwmL) {
+            dwm.lb = newLabel({ x: t, y: open, text: xTxt + '(' + priceText(open) + ')', color: NA_COLOR, style: 'label_left', textColor: olC, size: 'tiny' });
+          }
+        } else {
+          if (live(dwm.ln)) dwm.ln.x2 = t;
+          if (cfg.dwmL && live(dwm.lb)) dwm.lb.x = t;
+        }
+      }
+      if (cfg.dwmS && !kzO && isIntraday && shown && xChg) s.bgColors.push({ time: bar.time, color: cfg.dwmC });
+
+      // swings(obbLN)
+      const os1 = i > 0 ? v.os : NaN;
+      v.os = gt(H(i - cfg.obbLN), upper) ? 0 : lt(L(i - cfg.obbLN), lower) ? 1 : v.os;
+      if (v.os === 0 && os1 === 1) v.top = { y: H(i - cfg.obbLN), i: i - cfg.obbLN, x: false };
+      if (v.os === 1 && os1 === 0) v.btm = { y: L(i - cfg.obbLN), i: i - cfg.obbLN, x: false };
+      const { top, btm } = v;
+
+      // Order blocks & breaker blocks
+      if (obS || bbS) {
+        const s = inKZ;
+        if (s && !v.inKZ1) {
+          v.sbI = i;
+          v.obXb = true;
+          v.obXa = true;
+          if (obbE) {
+            v.bOB = [];
+            v.aOB = [];
+            v.bBB = [];
+            v.aBB = [];
+          }
+        }
+        const obBox = (css: string) => newBox({
+          left: NaN, top: NaN, right: NaN, bottom: NaN, byTime: true, border: NA_COLOR,
+          text: cfg.obbTX ? 'OB' : '', textSize: 'tiny', textColor: opaque(css),
+        });
+        const bbBoxes = (css: string): BB => ({
+          bxOB: newBox({ left: NaN, top: NaN, right: NaN, bottom: NaN, byTime: true, border: NA_COLOR }),
+          bxBB: newBox({
+            left: NaN, top: NaN, right: NaN, bottom: NaN, byTime: true, border: NA_COLOR,
+            text: cfg.obbTX ? 'BB' : '', textSize: 'tiny', textColor: opaque(css),
+          }),
+          ext: true, bb: false, bbI: NaN,
+        });
+        if (s) {
+          if (gt(C(i - 1), top.y) && !top.x && top.i >= v.sbI) {
+            top.x = true;
+            let minima = MX(i - 1);
+            let maxima = MN(i - 1);
+            let sBT = T(i - 1);
+            const last = i - top.i - 1;
+            for (let k = 1; last >= 1 ? k <= last : k >= last; k += last >= 1 ? 1 : -1) {
+              minima = Math.min(MN(i - k), minima);
+              if (eq(minima, MN(i - k))) {
+                maxima = MX(i - k);
+                sBT = T(i - k);
+              }
+            }
+            v.bOB.unshift({ top: maxima, btm: minima, obI: sBT, bxOB: obBox(cfg.bullOC), ext: true });
+            v.bBB.unshift(bbBoxes(cfg.bullBC));
+          }
+          if (lt(C(i - 1), btm.y) && !btm.x && top.i >= v.sbI) {
+            btm.x = true;
+            let minima = MN(i - 1);
+            let maxima = MX(i - 1);
+            let sBT = T(i - 1);
+            const last = i - btm.i - 1;
+            for (let k = 1; last >= 1 ? k <= last : k >= last; k += last >= 1 ? 1 : -1) {
+              maxima = Math.max(MX(i - k), maxima);
+              if (eq(maxima, MX(i - k))) {
+                minima = MN(i - k);
+                sBT = T(i - k);
+              }
+            }
+            v.aOB.unshift({ top: maxima, btm: minima, obI: sBT, bxOB: obBox(cfg.bearOC), ext: true });
+            v.aBB.unshift(bbBoxes(cfg.bearBC));
+          }
+        }
+
+        if (obbE || s) {
+          const side = (obs: OB[], bbs: BB[], bull: boolean, cOB: string, cBB: string, ls: number[]) => {
+            for (let k = obs.length - 1; k >= 0; k--) {
+              const ob = obs[k];
+              const bb = bbs[k];
+              const isFirst = obbD === 'First' ? k === obs.length - 1 : true;
+              const bg = obbD === 'Last' ? (k === 0 ? cOB : NA_COLOR) : cOB;
+              const tc = obbD === 'Last' ? (k === 0 ? opaque(cOB) : NA_COLOR) : opaque(cOB);
+              if (obbR) {
+                if (!ob.ext) boxes.del(ob.bxOB);
+                if (!bb.ext) {
+                  boxes.del(bb.bxOB);
+                  boxes.del(bb.bxBB);
+                }
+              }
+              const outline = () => {
+                if (live(bb.bxOB)) {
+                  bb.bxOB.left = ob.obI;
+                  bb.bxOB.top = ob.top;
+                  bb.bxOB.right = bb.bbI;
+                  bb.bxOB.bottom = ob.btm;
+                  bb.bxOB.bg = NA_COLOR;
+                  bb.bxOB.border = cBB;
+                }
+              };
+              if (!bb.bb) {
+                if (obS && isFirst && live(ob.bxOB)) {
+                  ob.bxOB.left = ob.obI;
+                  ob.bxOB.top = ob.top;
+                  ob.bxOB.right = t;
+                  ob.bxOB.bottom = ob.btm;
+                  ob.bxOB.bg = bg;
+                  ob.bxOB.textColor = tc;
+                }
+                const broken = bull
+                  ? lt(Math.min(obbMP ? C(i - 1) : L(i - 1), O(i - 1)), ob.btm)
+                  : gt(Math.max(obbMP ? C(i - 1) : H(i - 1), O(i - 1)), ob.top);
+                if (broken) {
+                  bb.bb = true;
+                  if (obS) {
+                    if (live(ob.bxOB)) ob.bxOB.right = T(i - 1);
+                    ob.ext = false;
+                  }
+                  if (bbS && (bull ? v.obXb : v.obXa)) {
+                    bb.bbI = T(i - 1);
+                    if (live(bb.bxBB)) {
+                      bb.bxBB.left = bb.bbI;
+                      bb.bxBB.top = ob.top;
+                      bb.bxBB.right = t;
+                      bb.bxBB.bottom = ob.btm;
+                      bb.bxBB.bg = cBB;
+                    }
+                    if (!obS || obbR || !isFirst) outline();
+                    if (obbD === 'First') {
+                      if (bull) v.obXb = false;
+                      else v.obXa = false;
+                    }
+                    if (obbD === 'Last') ls.push(bb.bbI);
+                  }
+                }
+              } else {
+                if (bull ? gt(obbMP ? C(i - 1) : H(i - 1), ob.top) : lt(obbMP ? C(i - 1) : L(i - 1), ob.btm)) bb.ext = false;
+                if (obS && live(ob.bxOB)) {
+                  ob.bxOB.bg = bg;
+                  ob.bxOB.textColor = tc;
+                }
+                if (bbS && bb.ext && live(bb.bxBB)) bb.bxBB.right = t;
+                if (bbS && obbD === 'Last') {
+                  if (k !== 0) outline();
+                  const left = live(bb.bxBB) ? bb.bxBB.left : NaN;
+                  const lsMax = maxOf(ls);
+                  // `!=` is false when a side is na
+                  if (!Number.isNaN(left) && !Number.isNaN(lsMax) && lsMax !== left) {
+                    if (live(bb.bxBB)) {
+                      bb.bxBB.bg = NA_COLOR;
+                      bb.bxBB.textColor = NA_COLOR;
+                    }
+                    if (live(bb.bxOB)) bb.bxOB.border = NA_COLOR;
+                  }
+                }
+              }
+            }
+          };
+          side(v.bOB, v.bBB, true, cfg.bullOC, cfg.bullBC, v.bLS);
+          side(v.aOB, v.aBB, false, cfg.bearOC, cfg.bearBC, v.aLS);
+        } else {
+          v.bOB = [];
+          v.aOB = [];
+          v.bBB = [];
+          v.aBB = [];
+        }
+      }
+
+      // Market structure shifts
+      if (!Number.isNaN(ppH)) {
+        pp.h = ppH;
+        pp.hx = false;
+        pp.hi = i - cfg.mssLN;
+      }
+      if (!Number.isNaN(ppL)) {
+        pp.l = ppL;
+        pp.lx = false;
+        pp.li = i - cfg.mssLN;
+      }
+      if (!inKZ) {
+        pp.l = 0;
+        pp.h = 10e8;
+        v.shift = 0;
+        v.bMSS = [];
+        v.aMSS = [];
+      }
+      if (cfg.mssSH && inKZ) {
+        const mss = (x: number, y: number, css: string, vAlign: 'top' | 'bottom'): MSS => ({
+          ln: newLine(x, y, i - 1, y, false, css),
+          bx: newBox({
+            left: x, top: y, right: i - 1, bottom: y, byTime: false, border: NA_COLOR, bg: NA_COLOR,
+            text: 'CHoCH', textSize: 'tiny', hAlign: 'left', vAlign, textColor: cfg.mssTX ? css : NA_COLOR,
+          }),
+        });
+        const drop = (m: MSS | undefined) => {
+          if (!m) return;
+          lines.del(m.ln);
+          boxes.del(m.bx);
+        };
+        if (gt(C(i - 1), pp.h) && !pp.hx) {
+          pp.hx = true;
+          if (v.shift === -1 || v.shift === 0) {
+            if (cfg.mssDO === 'First' ? v.bMSS.length < 1 : true) v.bMSS.unshift(mss(pp.hi, pp.h, cfg.ppLCB, 'bottom'));
+            if (v.bMSS.length > 1 && cfg.mssDO === 'Last') drop(v.bMSS.pop());
+          }
+          v.shift = 1;
+        }
+        if (lt(C(i - 1), pp.l) && !pp.lx) {
+          pp.lx = true;
+          if (v.shift === 1 || v.shift === 0) {
+            if (cfg.mssDO === 'First' ? v.aMSS.length < 1 : true) v.aMSS.unshift(mss(pp.li, pp.l, cfg.ppLCS, 'top'));
+            if (v.aMSS.length > 1 && cfg.mssDO === 'Last') drop(v.aMSS.pop());
+          }
+          v.shift = -1;
+        }
+      }
+
+      // Fair value gaps
+      if (cfg.fvgSH) {
+        const s = inKZ;
+        const fvgATR = (Number.isFinite(atr) ? atr : 0) * cfg.fvgTH;
+        if (s && !v.inKZ1) {
+          v.fvgXb = true;
+          v.fvgXa = true;
+          if (cfg.fvgE) {
+            v.bFVG = [];
+            v.aFVG = [];
+          }
+        }
+        const bullG = gt(low, H(i - 1));
+        const bearG = lt(high, L(i - 1));
+        if (s) {
+          const fvgBox = (boxTop: number, boxBottom: number, css: string): FVG => ({
+            bx: newBox({
+              left: i - 1, top: boxTop, right: i, bottom: boxBottom, byTime: false, border: NA_COLOR, bg: css,
+              text: cfg.fvgTX ? 'FVG' : '', textSize: 'tiny', textColor: opaque(css),
+            }),
+            e: true,
+          });
+          const bull = gt(low - H(i - 2), fvgATR) && gt(low, H(i - 2)) && gt(C(i - 1), H(i - 2)) && !(bullG || v.bullG1);
+          if (bull && v.fvgXb) {
+            v.bFVG.unshift(fvgBox(low, H(i - 2), cfg.fvgBC));
+            if (cfg.fvgDO === 'First') v.fvgXb = false;
+            if (v.bFVG.length > 1 && cfg.fvgDO === 'Last') boxes.del(v.bFVG.pop()!.bx);
+          }
+          const bear = gt(L(i - 2) - high, fvgATR) && lt(high, L(i - 2)) && lt(C(i - 1), L(i - 2)) && !(bearG || v.bearG1);
+          if (bear && v.fvgXa) {
+            v.aFVG.unshift(fvgBox(L(i - 2), high, cfg.fvgSC));
+            if (cfg.fvgDO === 'First') v.fvgXa = false;
+            if (v.aFVG.length > 1 && cfg.fvgDO === 'Last') boxes.del(v.aFVG.pop()!.bx);
+          }
+        }
+        if (cfg.fvgE || s) {
+          for (let k = v.bFVG.length - 1; k >= 0; k--) {
+            const fvg = v.bFVG[k];
+            const fvgB = live(fvg.bx) ? fvg.bx.bottom : NaN;
+            if (!fvg.e) continue;
+            if (live(fvg.bx)) fvg.bx.right = i;
+            if (lt(low, fvgB)) {
+              if (cfg.fvgR) boxes.del(fvg.bx);
+              fvg.e = false;
+            }
+          }
+          for (let k = v.aFVG.length - 1; k >= 0; k--) {
+            const fvg = v.aFVG[k];
+            const fvgT = live(fvg.bx) ? fvg.bx.top : NaN;
+            if (!fvg.e) continue;
+            if (live(fvg.bx)) fvg.bx.right = i;
+            if (gt(high, fvgT)) {
+              if (cfg.fvgR) boxes.del(fvg.bx);
+              fvg.e = false;
+            }
+          }
+        } else {
+          v.bFVG = [];
+          v.aFVG = [];
+        }
+        v.bullG1 = bullG;
+        v.bearG1 = bearG;
+      }
+      v.inKZ1 = inKZ;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const { lines, boxes, labels } = s.vars;
+      const tAt = (k: number) => (ms ? bars[k].time : bars[k].time * 1000);
+      // Output: a time between two bars is drawn on the next bar (the first bar at or after it)
+      const barOf = (time: number) => {
+        let lo = 0;
+        let hi = n - 1;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (tAt(mid) >= time) hi = mid;
+          else lo = mid + 1;
+        }
+        return lo;
+      };
+      const X = (x: number, byTime: boolean) => bars[byTime ? barOf(x) : x].time;
+      const drawn = (...v: number[]) => v.every((x) => !Number.isNaN(x));
+      const outLines: LineDrawingData[] = lines.list.filter((l) => drawn(l.x1, l.y1, l.x2, l.y2)).map((l) => ({
+        time1: X(l.x1, l.byTime), price1: l.y1, time2: X(l.x2, l.byTime), price2: l.y2, color: l.color,
+        ...(l.style ? { style: l.style } : {}),
+      }));
+      const outBoxes: BoxData[] = boxes.list.filter((b) => drawn(b.left, b.top, b.right, b.bottom)).map((b) => ({
+        time1: X(b.left, b.byTime), price1: b.top, time2: X(b.right, b.byTime), price2: b.bottom, borderColor: b.border,
+        ...(b.bg !== undefined ? { bgColor: b.bg } : {}),
+        ...(b.text !== undefined ? { text: b.text } : {}),
+        ...(b.textSize ? { textSize: b.textSize } : {}),
+        ...(b.textColor !== undefined ? { textColor: b.textColor } : {}),
+        ...(b.hAlign ? { textHAlign: b.hAlign } : {}),
+        ...(b.vAlign ? { textVAlign: b.vAlign } : {}),
+      }));
+      const outLabels: LabelData[] = labels.list.filter((l) => drawn(l.x, l.y)).map((l) => ({
+        time: X(l.x, true), price: l.y, text: l.text, color: l.color, style: l.style, textColor: l.textColor, size: l.size,
+      }));
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        lines: outLines,
+        boxes: outBoxes,
+        labels: outLabels,
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
 }
 
-export const IctKillzonesToolkit = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IctKillzonesToolkitInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<IctKillzonesToolkitInputs> = {},
+  chart?: ChartContext,
+): IndicatorResult & { lines: LineDrawingData[]; boxes: BoxData[]; labels: LabelData[]; bgColors: BgColorData[] } {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const IctKillzonesToolkit = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

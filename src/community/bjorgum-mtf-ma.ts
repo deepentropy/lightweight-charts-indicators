@@ -31,13 +31,14 @@
  */
 
 import {
-  ta, Series, getSourceSeries, color, timeframe, mapToChart, heikinAshi,
+  ta, taStep, Series, getSourceSeries, color, timeframe, mapToChart, heikinAshi,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { BarColorData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
 import { periodStarts, chartTimeframe, higherTimeframeBars, hasCalendar } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 type MaType = 'EMA' | 'HEMA' | 'SMA' | 'HMA' | 'WMA' | 'DEMA' | 'VWMA' | 'VWAP' | 'T3' | 'IT';
 type ColType = 'RSI' | 'MA';
@@ -242,13 +243,20 @@ function timeframeBars(bars: Bar[], tf: string, context?: ChartContext): Timefra
   return higherTimeframeBars(bars, tf, context);
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<BjorgumMtfMaInputs> = {},
-  chart?: ChartContext,
-): IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
+/** One average on the chart bars: the plotted value, its direction, its RSI, the value of the signals, the bar condition */
+interface Slot {
+  plot: number[];
+  con: boolean[];
+  rsi: number[];
+  sig: number[];
+  bar: boolean[];
+}
+
+/**
+ * The averages calculated with the series of the whole bar set: a higher timeframe (its bars built from the chart
+ * bars), the type "VWAP" (sums restarted on each trading day) and the trendline of another study's output.
+ */
+function arraySlots(bars: Bar[], cfg: BjorgumMtfMaInputs, chart?: ChartContext): (type: MaType, lengthInput: number, tf: string) => Slot {
   const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
   const alpha = cfg.alpha;
   const chartTf = chartTimeframe(bars, chart);
@@ -351,7 +359,7 @@ export function calculate(
   };
 
   /** One average: the plotted value, its direction, its RSI and the bar condition, on the chart bars */
-  const slot = (type: MaType, lengthInput: number, tf: string) => {
+  const slot = (type: MaType, lengthInput: number, tf: string): Slot => {
     const { ctx, series } = contextOf(tf);
     const ma = series.getMA(type, lengthInput === 0 ? 1 : lengthInput);
     // maDirec = ma >= ma[1], a bool that can be na (1 / 0 / NaN)
@@ -381,64 +389,235 @@ export function calculate(
     };
   };
 
-  const s1 = slot(cfg.maType1, cfg.maLength1, cfg.tf1);
-  const s2 = slot(cfg.maType2, cfg.maLength2, cfg.tf2);
-  const s3 = slot(cfg.maType3, cfg.maLength3, cfg.tf3);
+  return slot;
+}
 
-  const grad = (rsi: number, bear: string, bull: string) => color.from_gradient(rsi, 30, 70, bear, bull);
-  const plot0: Array<{ time: number; value: number; color: string }> = [];
-  const plot1: typeof plot0 = [];
-  const plot2: typeof plot0 = [];
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    const rsi1col = grad(s1.rsi[i], cfg.rsiBear1, cfg.rsiBull1);
-    const rsi2col = grad(s2.rsi[i], cfg.rsiBear2, cfg.rsiBull2);
-    const rsi3col = grad(s3.rsi[i], cfg.rsiBear3, cfg.rsiBull3);
-    const ma1Col = cfg.colType1 === 'MA' ? (s1.con[i] ? cfg.maBull1 : cfg.maBear1) : rsi1col;
-    const ma2Col = cfg.colType2 === 'MA' ? (s2.con[i] ? cfg.maBull2 : cfg.maBear2) : rsi2col;
-    const ma3Col = cfg.colType3 === 'MA' ? (s3.con[i] ? cfg.maBull3 : cfg.maBear3) : rsi3col;
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] };
 
-    // plotMA2 = maType2 == "IT" ? plotMa2 : maLength2 == 0 ? na : plotMa2
-    const v2 = cfg.maType2 === 'IT' || cfg.maLength2 !== 0 ? s2.plot[i] : NaN;
-    const v3 = cfg.maType3 === 'IT' || cfg.maLength3 !== 0 ? s3.plot[i] : NaN;
-    plot0.push({ time, value: s1.plot[i], color: String(color.new(ma1Col, cfg.transp1)) });
-    plot1.push({ time, value: v2, color: String(color.new(ma2Col, cfg.transp2)) });
-    plot2.push({ time, value: v3, color: String(color.new(ma3Col, cfg.transp3)) });
+/** An average calculated bar by bar on the chart bars (timeframe "" and not "VWAP") */
+interface StepMa {
+  /** The average of the bar from the close / the Heikin Ashi open / the instantaneous trendline of the bar */
+  step(b: Bar, haOpen: number, itrend: number): number;
+  steps: Committable[];
+}
 
-    if (cfg.bar) {
-      // the gradient of an na RSI is na: the bar keeps its colour
-      let barColor: string | null = null;
-      switch (cfg.bartype) {
-        case 'MA 1': barColor = s1.bar[i] ? cfg.maBull1 : cfg.maBear1; break;
-        case 'MA 2': barColor = s2.bar[i] ? cfg.maBull2 : cfg.maBear2; break;
-        case 'MA 3': barColor = s3.bar[i] ? cfg.maBull3 : cfg.maBear3; break;
-        case 'RSI 1': barColor = Number.isNaN(s1.rsi[i]) ? null : rsi1col; break;
-        case 'RSI 2': barColor = Number.isNaN(s2.rsi[i]) ? null : rsi2col; break;
-        case 'RSI 3': barColor = Number.isNaN(s3.rsi[i]) ? null : rsi3col; break;
-        default: barColor = null;
-      }
-      if (barColor !== null) barColors.push({ time, color: barColor });
+/** getMA(type, length) on the chart bars, one bar at a time */
+function stepMa(type: MaType, length: number): StepMa {
+  const ema = () => taStep.ema(length);
+  switch (type) {
+    case 'HEMA': { const e = ema(); return { step: (_b, ha) => e.step(ha), steps: [e] }; }
+    case 'SMA': { const m = taStep.sma(); return { step: (b) => m.step(b.close, length), steps: [m] }; }
+    case 'HMA': { const m = taStep.hma(length); return { step: (b) => m.step(b.close), steps: [m] }; }
+    case 'WMA': { const m = taStep.wma(); return { step: (b) => m.step(b.close, length), steps: [m] }; }
+    case 'VWMA': { const m = taStep.vwma(length); return { step: (b) => m.step(b.close, b.volume ?? NaN), steps: [m] }; }
+    case 'DEMA': {
+      const e1 = ema();
+      const e2 = ema();
+      return { step: (b) => { const v = e1.step(b.close); return 2 * v - e2.step(v); }, steps: [e1, e2] };
     }
+    case 'T3': {
+      const e = [ema(), ema(), ema(), ema(), ema(), ema()];
+      const ab = 0.7;
+      const ac1 = -ab * ab * ab;
+      const ac2 = 3 * ab * ab + 3 * ab * ab * ab;
+      const ac3 = -6 * ab * ab - 3 * ab - 3 * ab * ab * ab;
+      const ac4 = 1 + 3 * ab + ab * ab * ab + 3 * ab * ab;
+      return {
+        step: (b) => {
+          const axe1 = e[0].step(b.close);
+          const axe2 = e[1].step(axe1);
+          const axe3 = e[2].step(axe2);
+          const axe4 = e[3].step(axe3);
+          const axe5 = e[4].step(axe4);
+          const axe6 = e[5].step(axe5);
+          return ac1 * axe6 + ac2 * axe5 + ac3 * axe4 + ac4 * axe3;
+        },
+        steps: e,
+      };
+    }
+    case 'IT': return { step: (_b, _ha, it) => it, steps: [] };
+    default: { const e = ema(); return { step: (b) => e.step(b.close), steps: [e] }; }
   }
+}
 
-  // maSig = tf == "" ? ma : ma step; crossover / crossunder of the close and of the averages
-  const close = bars.map((b) => b.close);
-  const flags = [
-    crossedOver(close, s1.sig), crossedUnder(close, s1.sig),
-    crossedOver(close, s2.sig), crossedUnder(close, s2.sig),
-    crossedOver(close, s3.sig), crossedUnder(close, s3.sig),
-    crossedOver(s1.sig, s2.sig), crossedUnder(s1.sig, s2.sig),
-    crossedOver(s1.sig, s3.sig), crossedUnder(s1.sig, s3.sig),
-    crossedOver(s2.sig, s3.sig), crossedUnder(s2.sig, s3.sig),
+/** The alert pairs (a, b) of crossover(a, b) / crossunder(a, b): 0-2 the averages' signal values, 3 the close */
+const CROSS_PAIRS: Array<[number, number]> = [[3, 0], [3, 1], [3, 2], [0, 1], [0, 2], [1, 2]];
+
+interface BjVars {
+  /** The Heikin Ashi open and close of the bar before */
+  haOpen: number;
+  haClose: number;
+}
+
+/** One of the three averages: bar by bar ("step") or calculated on the whole bar set ("pre") */
+interface SlotRun {
+  ma: StepMa | null;
+  rsi: ReturnType<typeof taStep.rsi> | null;
+  pre: Slot | null;
+  /** maSig of each bar (the average on the chart timeframe, else the step value of the timeframe) */
+  sig: number[];
+}
+
+interface BjRun extends BarRunState<BjVars> {
+  slots: SlotRun[];
+  /** The source of the instantaneous trendline and the trendline (read 1 and 2 bars back) */
+  inp: number[];
+  itrend: number[];
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<BjorgumMtfMaInputs>): BarStudy<BjRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const alpha = cfg.alpha;
+  const specs: Array<{ type: MaType; length: number; tf: string }> = [
+    { type: cfg.maType1, length: cfg.maLength1, tf: cfg.tf1 },
+    { type: cfg.maType2, length: cfg.maLength2, tf: cfg.tf2 },
+    { type: cfg.maType3, length: cfg.maLength3, tf: cfg.tf3 },
   ];
-
+  // a higher timeframe, the type "VWAP" (trading days) and the trendline of another study's output are calculated on
+  // the whole bar set
+  const preOf = (sp: { type: MaType; tf: string }) =>
+    sp.tf !== '' || sp.type === 'VWAP' || (sp.type === 'IT' && !isBarSource(cfg.inp));
+  const anyPre = specs.some(preOf);
+  const anyIt = specs.some((sp) => !preOf(sp) && sp.type === 'IT');
+  const anyHa = specs.some((sp) => !preOf(sp) && sp.type === 'HEMA');
+  const inpOf = barSource(cfg.inp);
+  const bulls = [cfg.maBull1, cfg.maBull2, cfg.maBull3];
+  const bears = [cfg.maBear1, cfg.maBear2, cfg.maBear3];
+  const rsiBulls = [cfg.rsiBull1, cfg.rsiBull2, cfg.rsiBull3];
+  const rsiBears = [cfg.rsiBear1, cfg.rsiBear2, cfg.rsiBear3];
+  const colTypes = [cfg.colType1, cfg.colType2, cfg.colType3];
+  const transps = [cfg.transp1, cfg.transp2, cfg.transp3];
+  // plotMA2 = maType2 == "IT" ? plotMa2 : maLength2 == 0 ? na : plotMa2
+  const shown = [true, cfg.maType2 === 'IT' || cfg.maLength2 !== 0, cfg.maType3 === 'IT' || cfg.maLength3 !== 0];
+  const barSlot = cfg.bartype === 'MA 1' || cfg.bartype === 'RSI 1' ? 0 : cfg.bartype === 'MA 2' || cfg.bartype === 'RSI 2' ? 1 : 2;
+  const barRsi = cfg.bartype.startsWith('RSI');
+  const grad = (rsi: number, bear: string, bull: string) => color.from_gradient(rsi, 30, 70, bear, bull);
+  // the values of one slot on the current bar
+  const plot = [NaN, NaN, NaN];
+  const con = [false, false, false];
+  const rsis = [NaN, NaN, NaN];
+  const sigs = [NaN, NaN, NaN, NaN];
+  const prevs = [NaN, NaN, NaN, NaN];
+  const barConds = [false, false, false];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    barColors,
-    alerts: alertStates(alertConditions, bars, flags),
+    fullRunReason: () => (anyPre ? 'average calculated on the whole bar set (higher timeframe, VWAP)' : null),
+    init(bars, chart) {
+      const slotOf = anyPre ? arraySlots(bars, cfg, chart) : null;
+      const slots: SlotRun[] = specs.map((sp) => {
+        if (preOf(sp)) return { ma: null, rsi: null, pre: slotOf!(sp.type, sp.length, sp.tf), sig: [] };
+        return { ma: stepMa(sp.type, sp.length === 0 ? 1 : sp.length), rsi: taStep.rsi(cfg.rsiLen), pre: null, sig: [] };
+      });
+      const s: BjRun = {
+        slots, inp: [], itrend: [], plots: [[], [], []], flags: Array.from({ length: 12 }, () => []),
+        times: Array.from({ length: 12 }, () => []), barColors: [],
+        steps: slots.flatMap((sl) => (sl.ma ? [...sl.ma.steps, sl.rsi!] : [])),
+        vars: { haOpen: NaN, haClose: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.barColors, ...s.times];
+      s.series = [s.inp, s.itrend, ...s.plots, ...s.flags, ...slots.map((sl) => sl.sig)];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const v = s.vars;
+      // _haOpen(): the open of the Heikin Ashi bars ((open + close) / 2 on the first bar)
+      let haOpen = NaN;
+      if (anyHa) {
+        haOpen = i > 0 ? (v.haOpen + v.haClose) / 2 : (b.open + b.close) / 2;
+        v.haOpen = haOpen;
+        v.haClose = (b.open + b.high + b.low + b.close) / 4;
+      }
+      // _itrend(): Ehlers instantaneous trendline of the source input
+      let it = NaN;
+      if (anyIt) {
+        const s0 = inpOf(b);
+        s.inp[i] = s0;
+        const s1 = i > 0 ? nz(s.inp[i - 1]) : 0;
+        const s2 = i > 1 ? nz(s.inp[i - 2]) : 0;
+        const t1 = i > 0 ? nz(s.itrend[i - 1]) : 0;
+        const t2 = i > 1 ? nz(s.itrend[i - 2]) : 0;
+        it = i < 7
+          ? (s0 + 2 * s1 + s2) / 4
+          : (alpha - (alpha ** 2) / 4) * s0 + 0.5 * (alpha ** 2) * s1 - (alpha - 0.75 * (alpha ** 2)) * s2
+            + 2 * (1 - alpha) * t1 - ((1 - alpha) ** 2) * t2;
+        s.itrend[i] = it;
+      }
+      for (let k = 0; k < 3; k++) {
+        const sl = s.slots[k];
+        if (sl.pre) {
+          plot[k] = sl.pre.plot[i];
+          con[k] = sl.pre.con[i];
+          rsis[k] = sl.pre.rsi[i];
+          sigs[k] = sl.pre.sig[i];
+          barConds[k] = sl.pre.bar[i];
+        } else {
+          const ma = sl.ma!.step(b, haOpen, it);
+          // maDirec = ma >= ma[1]
+          con[k] = i > 0 && ge(ma, sl.sig[i - 1]);
+          plot[k] = ma;
+          rsis[k] = sl.rsi!.step(b.close);
+          sigs[k] = ma;
+          barConds[k] = ge(b.close, ma);
+        }
+        sl.sig[i] = sigs[k];
+      }
+
+      let barColor: string | null = null;
+      for (let k = 0; k < 3; k++) {
+        const rsiCol = grad(rsis[k], rsiBears[k], rsiBulls[k]);
+        const maCol = colTypes[k] === 'MA' ? (con[k] ? bulls[k] : bears[k]) : rsiCol;
+        s.plots[k][i] = { time, value: shown[k] ? plot[k] : NaN, color: String(color.new(maCol, transps[k])) };
+        if (cfg.bar && k === barSlot) {
+          // the gradient of an na RSI is na: the bar keeps its colour
+          barColor = barRsi ? (Number.isNaN(rsis[k]) ? null : rsiCol) : barConds[k] ? bulls[k] : bears[k];
+        }
+      }
+      if (barColor !== null) s.barColors.push({ time, color: barColor });
+
+      // maSig = tf == "" ? ma : ma step; crossover / crossunder of the close and of the averages
+      // (a > b and a[1] <= b[1] / a < b and a[1] >= b[1]; slot 3 = the close)
+      sigs[3] = b.close;
+      for (let k = 0; k < 4; k++) prevs[k] = i === 0 ? NaN : k === 3 ? bars[i - 1].close : s.slots[k].sig[i - 1];
+      for (let k = 0; k < 6; k++) {
+        const [x, y] = CROSS_PAIRS[k];
+        const a = sigs[x], w = sigs[y], pa = prevs[x], pw = prevs[y];
+        const over = a > w && pa <= pw;
+        const under = a < w && pa >= pw;
+        s.flags[2 * k][i] = over;
+        s.flags[2 * k + 1][i] = under;
+        if (over) s.times[2 * k].push(time as number);
+        if (under) s.times[2 * k + 1].push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BjorgumMtfMaInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<BjorgumMtfMaInputs> = {},
+  chart?: ChartContext,
+): IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 /** The original's alertconditions */
@@ -460,6 +639,7 @@ export const alertConditions: AlertConditionDecl[] = [
 export const BjorgumMtfMa = {
   alertConditions,
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -10,7 +10,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type SmoothingType = 'None' | 'SMA' | 'SMA + Bollinger Bands' | 'EMA' | 'SMMA (RMA)' | 'WMA' | 'VWMA';
 
@@ -63,68 +65,103 @@ const TERMS: ReadonlyArray<[number, number, number]> = [
   [130, 195, 1], [130, 265, 2], [130, 390, 3], [195, 530, 4],
 ];
 
-export function calculate(bars: Bar[], inputs: Partial<PringSpecialKA2mInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+type Ma = { step(v: number, volume: number): number; commit(): void };
+
+interface PskRun extends BarRunState<Record<string, never>> {
+  /** ta.roc(src, r) of each distinct length (the same values for the terms with the same length) */
+  rocs: ReturnType<typeof taStep.roc>[];
+  smas: WindowSma[];
+  ma: Ma | null;
+  dev: WindowStdev | null;
+  plots: Point[][];
+}
+
+const ROC_LENGTHS = [...new Set(TERMS.map(([r]) => r))];
+const ROC_OF_TERM = TERMS.map(([r]) => ROC_LENGTHS.indexOf(r));
+
+function study(inputs: Partial<PringSpecialKA2mInputs>): BarStudy<PskRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = getSourceSeries(bars, cfg.src);
-
-  // psk = sma(roc(src, 10), 10) + sma(roc(src, 10), 15) * 2 + ... (left to right: the first term has no weight)
-  const terms = TERMS.map(([r, s, w]) => {
-    const v = A(ta.sma(ta.roc(src, r), s));
-    return w === 1 ? v : v.map((x) => x * w);
-  });
-  const psk = new Array<number>(n);
-  for (let i = 0; i < n; i++) {
-    let sum = terms[0][i];
-    for (let k = 1; k < terms.length; k++) sum = sum + terms[k][i];
-    psk[i] = sum;
-  }
-
+  const value = barSource(cfg.src);
   // Smoothing (the MA type is a constant input: the switch runs one branch on every bar)
   const enableMA = cfg.maType !== 'None';
   const isBB = cfg.maType === 'SMA + Bollinger Bands';
-  const pskS = S(psk);
-  let smoothingMA = new Array<number>(n).fill(NaN);
-  if (enableMA) {
-    let maS: Series;
+  const maStep = (): Ma | null => {
+    const len = cfg.maLength;
     switch (cfg.maType) {
-      case 'EMA': maS = ta.ema(pskS, cfg.maLength); break;
-      case 'SMMA (RMA)': maS = ta.rma(pskS, cfg.maLength); break;
-      case 'WMA': maS = ta.wma(pskS, cfg.maLength); break;
-      case 'VWMA': maS = ta.vwma(pskS, cfg.maLength, S(bars.map((b) => b.volume ?? NaN))); break;
-      default: maS = ta.sma(pskS, cfg.maLength); break;
+      case 'None': return null;
+      case 'EMA': { const m = taStep.ema(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'SMMA (RMA)': { const m = taStep.rma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+      case 'VWMA': return taStep.vwma(len);
+      default: { const m = new WindowSma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
     }
-    smoothingMA = A(maS);
-  }
-  const smoothingStDev = isBB ? A(ta.stdev(pskS, cfg.maLength)).map((v) => v * cfg.bbMult) : new Array<number>(n).fill(NaN);
-
+  };
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const t = (i: number) => bars[i].time;
-  const plots = {
-    // pskColor = psk >= 0 ? #0ebb23 : #ff0000
-    plot0: bars.map((_b, i) => ({ time: t(i), value: fin(psk[i]), color: ge(psk[i], 0) ? '#0ebb23' : '#ff0000' })),
-    plot1: bars.map((_b, i) => ({ time: t(i), value: fin(smoothingMA[i]), color: color.blue })),
-    plot2: bars.map((_b, i) => ({ time: t(i), value: isBB ? fin(smoothingMA[i] + smoothingStDev[i]) : NaN, color: color.green })),
-    plot3: bars.map((_b, i) => ({ time: t(i), value: isBB ? fin(smoothingMA[i] - smoothingStDev[i]) : NaN, color: color.green })),
-  };
-
-  // fill(bbUpperBand, bbLowerBand, color.new(color.green, 90), "BB Fill", display = isBB ? display.all : display.none)
-  // The fill is always declared (Style settings); without the bands (display.none) it draws nothing
-  const fills = [{ plot1: 'plot2', plot2: 'plot3', options: { title: 'BB Fill' },
-    colors: new Array<string>(n).fill(isBB ? String(color.new(color.green, 90)) : 'transparent') }];
-
+  const rocValues = new Array<number>(ROC_LENGTHS.length);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    hlines: [{ value: 0, options: { title: 'Zero', color: color.gray, linestyle: 'dotted' } }],
-    fills,
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: PskRun = {
+        rocs: ROC_LENGTHS.map((r) => taStep.roc(r)), smas: TERMS.map(([, len]) => new WindowSma(len)),
+        ma: enableMA ? maStep() : null, dev: isBB ? new WindowStdev(cfg.maLength) : null,
+        plots: Array.from({ length: 4 }, () => []), steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [...s.rocs, ...s.smas, ...(s.ma ? [s.ma] : []), ...(s.dev ? [s.dev] : [])];
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const v = value(b);
+      for (let k = 0; k < s.rocs.length; k++) rocValues[k] = s.rocs[k].step(v);
+      // psk = sma(roc(src, 10), 10) + sma(roc(src, 10), 15) * 2 + ... (left to right: the first term has no weight)
+      let psk = NaN;
+      for (let k = 0; k < TERMS.length; k++) {
+        const w = TERMS[k][2];
+        const x = s.smas[k].step(rocValues[ROC_OF_TERM[k]]);
+        const term = w === 1 ? x : x * w;
+        psk = k === 0 ? term : psk + term;
+      }
+      const smoothingMA = s.ma ? s.ma.step(psk, b.volume ?? NaN) : NaN;
+      const smoothingStDev = s.dev ? s.dev.step(psk) * cfg.bbMult : NaN;
+      const p = s.plots;
+      // pskColor = psk >= 0 ? #0ebb23 : #ff0000
+      p[0][i] = { time, value: fin(psk), color: ge(psk, 0) ? '#0ebb23' : '#ff0000' };
+      p[1][i] = { time, value: fin(smoothingMA), color: color.blue };
+      p[2][i] = { time, value: isBB ? fin(smoothingMA + smoothingStDev) : NaN, color: color.green };
+      p[3][i] = { time, value: isBB ? fin(smoothingMA - smoothingStDev) : NaN, color: color.green };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      // fill(bbUpperBand, bbLowerBand, color.new(color.green, 90), "BB Fill", display = isBB ? display.all : display.none)
+      // The fill is always declared (Style settings); without the bands (display.none) it draws nothing
+      const fills = [{ plot1: 'plot2', plot2: 'plot3', options: { title: 'BB Fill' },
+        colors: new Array<string>(n).fill(isBB ? String(color.new(color.green, 90)) : 'transparent') }];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice() },
+        hlines: [{ value: 0, options: { title: 'Zero', color: color.gray, linestyle: 'dotted' } }],
+        fills,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PringSpecialKA2mInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PringSpecialKA2mInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PringSpecialKA2m = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

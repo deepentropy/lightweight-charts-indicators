@@ -15,11 +15,11 @@
  * Original notice: © D_QUANT
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
-import {
-  alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState,
-} from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CycleFlowIndicatorDQuantInputs {
   /** STC stochastic / EMA length */
@@ -93,94 +93,206 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const ne0 = (x: number) => !Number.isNaN(x) && Number.isFinite(x) ? Math.abs(x) > EPS : false;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CycleFlowIndicatorDQuantInputs> = {},
-): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } & { alerts: AlertConditionState[] };
+type Ema = ReturnType<typeof taStep.ema>;
+
+/** ta.sar(start, inc, max): the state of the oakscriptjs loop at the end of the last bar (same operations) */
+interface CfaVars {
+  sarValue: number;
+  extremePoint: number;
+  acceleration: number;
+  isUpTrend: boolean;
+}
+
+interface CfaRun extends BarRunState<CfaVars> {
+  emaFast: Ema;
+  emaSlow: Ema;
+  lo1: WindowExtreme;
+  hi1: WindowExtreme;
+  d1: Ema;
+  lo2: WindowExtreme;
+  hi2: WindowExtreme;
+  stc: Ema;
+  eom: WindowSma;
+  hma: ReturnType<typeof taStep.hma>;
+  atr: ReturnType<typeof taStep.atr>;
+  stcArr: number[];
+  state: number[];
+  plots: Point[][];
+  cloud: string[];
+  candles: PlotCandleData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+const CLOUD_BULL = String(color.new(COL_BULL, 60));
+const CLOUD_BEAR = String(color.new(COL_BEAR, 60));
+const CLOUD_NEUT = String(color.new(color.gray, 90));
+const EXT_BULL = String(color.new(COL_BULL, 85));
+const EXT_BEAR = String(color.new(COL_BEAR, 85));
+
+function study(inputs: Partial<CycleFlowIndicatorDQuantInputs>): BarStudy<CfaRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-
-  // math_stoch(src, len): max - min != 0 ? 100 * (src - min) / (max - min) : 0.0
-  const stoch = (src: number[], len: number) => {
-    const lo = A(ta.lowest(S(src), len));
-    const hi = A(ta.highest(S(src), len));
-    return src.map((v, i) => (ne0(hi[i] - lo[i]) ? (100 * (v - lo[i])) / (hi[i] - lo[i]) : 0.0));
-  };
-
-  // calc_stc
-  const emaFast = A(ta.ema(S(close), cfg.stcFast));
-  const emaSlow = A(ta.ema(S(close), cfg.stcSlow));
-  const macd = close.map((_c, i) => emaFast[i] - emaSlow[i]);
-  const k1 = stoch(macd, 14);
-  const d1 = A(ta.ema(S(k1), cfg.stcLength));
-  const k2 = stoch(d1, cfg.stcLength);
-  const stc = A(ta.ema(S(k2), cfg.stcLength));
-
-  // calc_psar: close > ta.sar(start, inc, max) ? 1 : -1
-  const sar = A(ta.sar(bars, cfg.psarStart, cfg.psarInc, cfg.psarMax));
-
-  // calc_eom
-  const rawEom = bars.map((b, i) => {
-    const dist = i > 0 ? (b.high + b.low) / 2 - (bars[i - 1].high + bars[i - 1].low) / 2 : NaN;
-    const range = b.high - b.low;
-    const boxRatio = ne0(range) ? b.volume! / cfg.eomDiv / range : 0.0;
-    return ne0(boxRatio) ? dist / boxRatio : 0.0;
-  });
-  const smoothEom = A(ta.sma(S(rawEom), cfg.eomLength));
-
-  const state: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    let dir = 0;
-    if (gt(stc[i], 25)) dir = 1;
-    if (lt(stc[i], 75) && lt(stc[i], i > 0 ? stc[i - 1] : NaN)) dir = -1;
-    const sigPsar = gt(close[i], sar[i]) ? 1 : -1;
-    const sigEom = gt(smoothEom[i], 0) ? 1 : -1;
-    // the three votes are never na: score_cnt is 3
-    const avg = (0.0 + dir + sigPsar + sigEom) / 3;
-    state[i] = gt(avg, cfg.treshBull) ? 1 : lt(avg, cfg.treshBear) ? -1 : 0;
-  }
-  const colTrend = state.map((s) => (s === 1 ? COL_BULL : s === -1 ? COL_BEAR : COL_NEUT));
-
-  const baseMean = A(ta.hma(S(close), 20));
-  const atr = A(ta.atr(bars, 14));
-
-  const candles: PlotCandleData[] = bars.map((b, i) => ({
-    time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
-    color: colTrend[i], wickColor: colTrend[i], borderColor: colTrend[i], forceOverlay: true,
-  }));
-
-  const cloudBull = String(color.new(COL_BULL, 60));
-  const cloudBear = String(color.new(COL_BEAR, 60));
-  const cloudNeut = String(color.new(color.gray, 90));
-  const extBull = String(color.new(COL_BULL, 85));
-  const extBear = String(color.new(COL_BEAR, 85));
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-
+  // math_stoch(src, len): max - min != 0 ? 100 * (src - min) / (max - min) : 0.0
+  const stoch = (v: number, lo: number, hi: number) => (ne0(hi - lo) ? (100 * (v - lo)) / (hi - lo) : 0.0);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(base_mean, "Baseline", color = col_trend, linewidth = 2)
-      plot0: bars.map((b, i) => ({ time: b.time, value: fin(baseMean[i]), color: colTrend[i] })),
-      // plot(close, "Ghost Source", color = na, display = display.none)
-      plot1: bars.map((b) => ({ time: b.time, value: b.close, color: 'transparent' })),
-      // plot(trend_state == 1 ? band_top : na, "Upper Volatility", col_bull, style = plot.style_linebr)
-      plot2: bars.map((b, i) => ({ time: b.time, value: state[i] === 1 ? fin(baseMean[i] + atr[i]) : NaN, color: COL_BULL })),
-      // plot(trend_state == -1 ? band_bot : na, "Lower Volatility", col_bear, style = plot.style_linebr)
-      plot3: bars.map((b, i) => ({ time: b.time, value: state[i] === -1 ? fin(baseMean[i] - atr[i]) : NaN, color: COL_BEAR })),
+    init() {
+      const s: CfaRun = {
+        emaFast: taStep.ema(cfg.stcFast), emaSlow: taStep.ema(cfg.stcSlow), lo1: new WindowExtreme(true, 14),
+        hi1: new WindowExtreme(false, 14), d1: taStep.ema(cfg.stcLength), lo2: new WindowExtreme(true, cfg.stcLength),
+        hi2: new WindowExtreme(false, cfg.stcLength), stc: taStep.ema(cfg.stcLength), eom: new WindowSma(cfg.eomLength), hma: taStep.hma(20),
+        atr: taStep.atr(14), stcArr: [], state: [], plots: Array.from({ length: 4 }, () => []), cloud: [], candles: [],
+        flags: [[], []], times: [[], []], steps: [],
+        vars: { sarValue: NaN, extremePoint: NaN, acceleration: cfg.psarStart, isUpTrend: false },
+        lists: [], series: [],
+      };
+      s.steps = [s.emaFast, s.emaSlow, s.lo1, s.hi1, s.d1, s.lo2, s.hi2, s.stc, s.eom, s.hma, s.atr];
+      s.lists = s.times;
+      s.series = [s.stcArr, s.state, ...s.plots, s.cloud, s.candles, ...s.flags];
+      return s;
     },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Momentum Cloud' },
-        colors: state.map((s) => (s === 1 ? cloudBull : s === -1 ? cloudBear : cloudNeut)) },
-      { plot1: 'plot0', plot2: 'plot2', options: { title: 'Bullish Extension', color: extBull }, colors: bars.map(() => extBull) },
-      { plot1: 'plot0', plot2: 'plot3', options: { title: 'Bearish Extension', color: extBear }, colors: bars.map(() => extBear) },
-    ],
-    plotCandles: { quantCandles: candles },
-    // tx_bull = ta.crossover(trend_state, 0) / tx_bear = ta.crossunder(trend_state, 0)
-    alerts: alertStates(alertConditions, bars, [crossedOver(state, 0), crossedUnder(state, 0)]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const close = b.close;
+
+      // calc_stc
+      const macd = s.emaFast.step(close) - s.emaSlow.step(close);
+      const k1 = stoch(macd, s.lo1.step(macd), s.hi1.step(macd));
+      const d1 = s.d1.step(k1);
+      const k2 = stoch(d1, s.lo2.step(d1), s.hi2.step(d1));
+      const stc = s.stc.step(k2);
+      s.stcArr[i] = stc;
+
+      // calc_psar: close > ta.sar(start, inc, max) ? 1 : -1
+      let sar = NaN;
+      if (i > 0) {
+        const v = s.vars;
+        const { psarStart: start, psarInc: inc, psarMax: max } = cfg;
+        const high = b.high;
+        const low = b.low;
+        let isFirstTrendBar = false;
+        if (i === 1) {
+          if (close > bars[i - 1].close) {
+            v.isUpTrend = true;
+            v.extremePoint = high;
+            v.sarValue = bars[i - 1].low;
+          } else {
+            v.isUpTrend = false;
+            v.extremePoint = low;
+            v.sarValue = bars[i - 1].high;
+          }
+          isFirstTrendBar = true;
+          v.acceleration = start;
+        }
+        v.sarValue = v.sarValue + v.acceleration * (v.extremePoint - v.sarValue);
+        if (v.isUpTrend) {
+          if (v.sarValue > low) {
+            isFirstTrendBar = true;
+            v.isUpTrend = false;
+            v.sarValue = Math.max(high, v.extremePoint);
+            v.extremePoint = low;
+            v.acceleration = start;
+          }
+        } else if (v.sarValue < high) {
+          isFirstTrendBar = true;
+          v.isUpTrend = true;
+          v.sarValue = Math.min(low, v.extremePoint);
+          v.extremePoint = high;
+          v.acceleration = start;
+        }
+        if (!isFirstTrendBar) {
+          if (v.isUpTrend) {
+            if (high > v.extremePoint) {
+              v.extremePoint = high;
+              v.acceleration = Math.min(v.acceleration + inc, max);
+            }
+          } else if (low < v.extremePoint) {
+            v.extremePoint = low;
+            v.acceleration = Math.min(v.acceleration + inc, max);
+          }
+        }
+        if (v.isUpTrend) {
+          v.sarValue = Math.min(v.sarValue, bars[i - 1].low);
+          if (i > 1) v.sarValue = Math.min(v.sarValue, bars[i - 2].low);
+        } else {
+          v.sarValue = Math.max(v.sarValue, bars[i - 1].high);
+          if (i > 1) v.sarValue = Math.max(v.sarValue, bars[i - 2].high);
+        }
+        sar = v.sarValue;
+      }
+
+      // calc_eom
+      const dist = i > 0 ? (b.high + b.low) / 2 - (bars[i - 1].high + bars[i - 1].low) / 2 : NaN;
+      const range = b.high - b.low;
+      const boxRatio = ne0(range) ? b.volume! / cfg.eomDiv / range : 0.0;
+      const rawEom = ne0(boxRatio) ? dist / boxRatio : 0.0;
+      const smoothEom = s.eom.step(rawEom);
+
+      let dir = 0;
+      if (gt(stc, 25)) dir = 1;
+      if (lt(stc, 75) && lt(stc, i > 0 ? s.stcArr[i - 1] : NaN)) dir = -1;
+      const sigPsar = gt(close, sar) ? 1 : -1;
+      const sigEom = gt(smoothEom, 0) ? 1 : -1;
+      // the three votes are never na: score_cnt is 3
+      const avg = (0.0 + dir + sigPsar + sigEom) / 3;
+      const state = gt(avg, cfg.treshBull) ? 1 : lt(avg, cfg.treshBear) ? -1 : 0;
+      s.state[i] = state;
+      const colTrend = state === 1 ? COL_BULL : state === -1 ? COL_BEAR : COL_NEUT;
+
+      const baseMean = s.hma.step(close);
+      const atr = s.atr.step(b.high, b.low, close);
+
+      s.candles[i] = {
+        time, open: b.open, high: b.high, low: b.low, close,
+        color: colTrend, wickColor: colTrend, borderColor: colTrend, forceOverlay: true,
+      };
+      const p = s.plots;
+      // plot(base_mean, "Baseline", color = col_trend, linewidth = 2)
+      p[0][i] = { time, value: fin(baseMean), color: colTrend };
+      // plot(close, "Ghost Source", color = na, display = display.none)
+      p[1][i] = { time, value: close, color: 'transparent' };
+      // plot(trend_state == 1 ? band_top : na, "Upper Volatility", col_bull, style = plot.style_linebr)
+      p[2][i] = { time, value: state === 1 ? fin(baseMean + atr) : NaN, color: COL_BULL };
+      // plot(trend_state == -1 ? band_bot : na, "Lower Volatility", col_bear, style = plot.style_linebr)
+      p[3][i] = { time, value: state === -1 ? fin(baseMean - atr) : NaN, color: COL_BEAR };
+      s.cloud[i] = state === 1 ? CLOUD_BULL : state === -1 ? CLOUD_BEAR : CLOUD_NEUT;
+
+      // tx_bull = ta.crossover(trend_state, 0) / tx_bear = ta.crossunder(trend_state, 0)
+      const prev = i > 0 ? s.state[i - 1] : NaN;
+      const flags = [state > 0 && prev <= 0, state < 0 && prev >= 0];
+      for (let k = 0; k < 2; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice() },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Momentum Cloud' }, colors: s.cloud.slice() },
+          { plot1: 'plot0', plot2: 'plot2', options: { title: 'Bullish Extension', color: EXT_BULL }, colors: new Array<string>(n).fill(EXT_BULL) },
+          { plot1: 'plot0', plot2: 'plot3', options: { title: 'Bearish Extension', color: EXT_BEAR }, colors: new Array<string>(n).fill(EXT_BEAR) },
+        ],
+        plotCandles: { quantCandles: s.candles.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CycleFlowIndicatorDQuantInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CycleFlowIndicatorDQuantInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -191,6 +303,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const CycleFlowIndicatorDQuant = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

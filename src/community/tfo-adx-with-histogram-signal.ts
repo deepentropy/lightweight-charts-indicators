@@ -15,9 +15,11 @@
  * Original notice: © VP_Futures
  */
 
-import { taCore, math, color, fixnan, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, compare, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BgColorData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, WindowSum, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export type TfoSignalType = 'EMA' | 'WMA' | 'HMA';
 
@@ -84,99 +86,200 @@ const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TfoAdxWithHistogramSignalInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const high = bars.map((b) => b.high);
-  const low = bars.map((b) => b.low);
-  const close = bars.map((b) => b.close);
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
+/** `ta.mfi(source, length)` with a constant length: the {@link WindowSum}s of the money flow of the up and down bars
+ *  (the operations of taStep.mfi: the same doubles) */
+class WindowMfi implements Committable {
+  private readonly upper: WindowSum;
+  private readonly lower: WindowSum;
+  private prev = NaN;
+  private bars = 0;
+  private pending = NaN;
+  private stepped = false;
 
-  // MFI scaled to -1..+1
-  const mfi = taCore.mfi(src, cfg.mfiLen, volume).map((v) => (v - 50) / 50);
-
-  // CMF: ad = high == low ? 0 : ((2 * close - high - low) / (high - low)) * volume; plain division of the sums
-  const ad = bars.map((_b, i) => (eq(high[i], low[i]) ? 0 : ((2 * close[i] - high[i] - low[i]) / (high[i] - low[i])) * volume[i]));
-  const adSum = math.sum(ad, cfg.cmfLen) as number[];
-  const volSum = math.sum(volume, cfg.cmfLen) as number[];
-  const cmf = adSum.map((v, i) => v / volSum[i]);
-
-  const tfoRaw = cmf.map((c, i) => c + mfi[i]);
-  const tfo = cfg.smoothLen > 1 ? taCore.sma(tfoRaw, cfg.smoothLen) : tfoRaw;
-
-  let signal: number[];
-  if (cfg.signalType === 'WMA') {
-    signal = taCore.wma(tfo, cfg.signalLen);
-  } else if (cfg.signalType === 'HMA') {
-    // ta.hma(x, 1) is a Pine runtime error (wma of length 0)
-    if (Math.floor(cfg.signalLen / 2) < 1) {
-      throw new Error("Error on bar 0: Invalid value of the 'length' argument (0.0) in the 'wma' function. It must be > 0.");
-    }
-    signal = taCore.hma(tfo, cfg.signalLen);
-  } else {
-    signal = taCore.ema(tfo, cfg.signalLen);
+  constructor(length: number) {
+    // the length checks of ta.mfi (the same errors)
+    taStep.mfi(length);
+    this.upper = new WindowSum(length);
+    this.lower = new WindowSum(length);
   }
-  const hist = tfo.map((v, i) => v - signal[i]);
 
-  // dirmov(diLen): up = ta.change(high), down = -ta.change(low)
-  const up = taCore.change(high, 1);
-  const down = taCore.change(low, 1).map((v) => -v);
-  const plusDM = up.map((u, i) => (isNaN(u) ? NaN : gt(u, down[i]) && gt(u, 0) ? u : 0));
-  const minusDM = down.map((d, i) => (isNaN(d) ? NaN : gt(d, up[i]) && gt(d, 0) ? d : 0));
-  const trRma = taCore.rma(taCore.tr(false, high, low, close), cfg.diLen);
-  const plusRma = taCore.rma(plusDM, cfg.diLen);
-  const minusRma = taCore.rma(minusDM, cfg.diLen);
-  // fixnan keeps +-infinity (x / 0); only na is replaced
-  const plus = fixnan(plusRma.map((v, i) => (100 * v) / trRma[i]));
-  const minus = fixnan(minusRma.map((v, i) => (100 * v) / trRma[i]));
-  // adx_calc: 100 * ta.rma(math.abs(p - m) / (sumDM == 0 ? 1 : sumDM), adxS)
-  const dx = plus.map((p, i) => {
-    const sumDM = p + minus[i];
-    return Math.abs(p - minus[i]) / (eq(sumDM, 0) ? 1 : sumDM);
-  });
-  const adxRaw = taCore.rma(dx, cfg.adxLen).map((v) => 100 * v);
-  const adxClipped = adxRaw.map((v) => Math.max(-1.5, Math.min(1.5, (v - 25) / 25)));
+  step(value: number, volume: number): number {
+    this.stepped = true;
+    this.pending = value;
+    const change = this.bars === 0 ? NaN : value - this.prev;
+    const flow = volume * value;
+    const zero = (x: number): number => (Math.abs(x) <= 1e-10 ? 0 : x);
+    const u = zero(this.upper.step(compare.le(change, 0) ? 0 : flow));
+    const l = zero(this.lower.step(compare.ge(change, 0) ? 0 : flow));
+    if (Number.isNaN(u) || Number.isNaN(l)) return NaN;
+    if (l === 0) return 100;
+    const ratio = 1 + u / l;
+    return ratio === 0 ? NaN : 100 - 100 / ratio;
+  }
 
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.prev = this.pending;
+    this.bars++;
+    this.upper.commit();
+    this.lower.commit();
+  }
+}
+
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+type Step = { step(v: number): number; commit(): void };
+
+interface TfoVars {
+  /** fixnan of the DI values (keeps +-infinity: only na is replaced) */
+  lastPlus: number;
+  lastMinus: number;
+}
+
+interface TfoRun extends BarRunState<TfoVars> {
+  mfi: WindowMfi;
+  adSum: WindowSum;
+  volSum: WindowSum;
+  smooth: WindowSma | null;
+  signal: Step;
+  up: ReturnType<typeof taStep.change>;
+  down: ReturnType<typeof taStep.change>;
+  tr: ReturnType<typeof taStep.tr>;
+  trRma: ReturnType<typeof taStep.rma>;
+  plusRma: ReturnType<typeof taStep.rma>;
+  minusRma: ReturnType<typeof taStep.rma>;
+  adxRma: ReturnType<typeof taStep.rma>;
+  tfo: number[];
+  hist: number[];
+  plots: Point[][];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<TfoAdxWithHistogramSignalInputs>): BarStudy<TfoRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
   const green = String(color.new(color.green, 0));
   const red = String(color.new(color.red, 0));
   const tfoColor = String(color.new(color.white, 80));
   const extremeColor = String(color.new(color.gray, 95));
-  const plots: Record<string, { time: number; value: number; color?: string }[]> = { plot0: [], plot1: [], plot2: [], plot3: [] };
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    plots.plot0.push({ time: t, value: fin(hist[i]), color: ge(hist[i], 0) ? green : red });
-    plots.plot1.push({ time: t, value: fin(signal[i]), color: '#5b9cf6' });
-    plots.plot2.push({ time: t, value: fin(tfo[i]), color: tfoColor });
-    plots.plot3.push({ time: t, value: fin(adxClipped[i]), color: '#fdd835' });
-    // bgcolor(math.abs(tfo) > 1.0 ? color.new(color.gray, 95) : na, title = "Extreme Zones")
-    if (gt(Math.abs(tfo[i]), 1.0)) bgColors.push({ time: t, color: extremeColor });
-  }
-
-  // bullCross = ta.crossover(hist, 0), bearCross = ta.crossunder(hist, 0)
-  // extremeHigh = ta.crossunder(tfo, 1.0) and tfo > 1.0, extremeLow = ta.crossover(tfo, -1.0) and tfo < -1.0
   const lt = (a: number, b: number) => b - a > EPS;
-  const xHigh = crossedUnder(tfo, 1.0);
-  const xLow = crossedOver(tfo, -1.0);
-  const flags = [
-    crossedOver(hist, 0),
-    crossedUnder(hist, 0),
-    tfo.map((v, i) => xHigh[i] && gt(v, 1.0)),
-    tfo.map((v, i) => xLow[i] && lt(v, -1.0)),
-  ];
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    alerts: alertStates(alertConditions, bars, flags),
-    hlines: hlineConfig.map((h) => ({ value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle } })),
-    bgColors,
+  // ta.crossover / ta.crossunder of the alerts: plain comparisons with the previous bar
+  const over = (v: number, w: number, pv: number, pw: number) => v > w && pv <= pw;
+  const under = (v: number, w: number, pv: number, pw: number) => v < w && pv >= pw;
+  const signalStep = (): Step => {
+    if (cfg.signalType === 'WMA') {
+      const m = taStep.wma();
+      return { step: (v) => m.step(v, cfg.signalLen), commit: () => m.commit() };
+    }
+    if (cfg.signalType === 'HMA') {
+      // ta.hma(x, 1) is a Pine runtime error (wma of length 0)
+      if (Math.floor(cfg.signalLen / 2) < 1) {
+        throw new Error("Error on bar 0: Invalid value of the 'length' argument (0.0) in the 'wma' function. It must be > 0.");
+      }
+      return taStep.hma(cfg.signalLen);
+    }
+    return taStep.ema(cfg.signalLen);
   };
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: TfoRun = {
+        mfi: new WindowMfi(cfg.mfiLen), adSum: new WindowSum(cfg.cmfLen), volSum: new WindowSum(cfg.cmfLen),
+        smooth: cfg.smoothLen > 1 ? new WindowSma(cfg.smoothLen) : null, signal: signalStep(), up: taStep.change(), down: taStep.change(),
+        tr: taStep.tr(false), trRma: taStep.rma(cfg.diLen), plusRma: taStep.rma(cfg.diLen), minusRma: taStep.rma(cfg.diLen),
+        adxRma: taStep.rma(cfg.adxLen), tfo: [], hist: [], plots: [[], [], [], []], bgColors: [],
+        flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [], vars: { lastPlus: NaN, lastMinus: NaN }, lists: [], series: [],
+      };
+      s.steps = [
+        s.mfi, s.adSum, s.volSum, ...(s.smooth ? [s.smooth] : []), s.signal, s.up, s.down, s.tr, s.trRma, s.plusRma,
+        s.minusRma, s.adxRma,
+      ];
+      s.lists = [s.bgColors, ...s.times];
+      s.series = [s.tfo, s.hist, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const v = s.vars;
+      const volume = b.volume ?? NaN;
+      // MFI scaled to -1..+1
+      const mfi = (s.mfi.step(value(b), volume) - 50) / 50;
+
+      // CMF: ad = high == low ? 0 : ((2 * close - high - low) / (high - low)) * volume; plain division of the sums
+      const ad = eq(b.high, b.low) ? 0 : ((2 * b.close - b.high - b.low) / (b.high - b.low)) * volume;
+      const cmf = s.adSum.step(ad) / s.volSum.step(volume);
+
+      const tfoRaw = cmf + mfi;
+      const tfo = s.smooth ? s.smooth.step(tfoRaw) : tfoRaw;
+      const signal = s.signal.step(tfo);
+      const hist = tfo - signal;
+      s.tfo[i] = tfo;
+      s.hist[i] = hist;
+
+      // dirmov(diLen): up = ta.change(high), down = -ta.change(low)
+      const up = s.up.step(b.high);
+      const down = -s.down.step(b.low);
+      const plusDM = isNaN(up) ? NaN : gt(up, down) && gt(up, 0) ? up : 0;
+      const minusDM = isNaN(down) ? NaN : gt(down, up) && gt(down, 0) ? down : 0;
+      const trRma = s.trRma.step(s.tr.step(b.high, b.low, b.close));
+      // fixnan keeps +-infinity (x / 0); only na is replaced
+      const p = (100 * s.plusRma.step(plusDM)) / trRma;
+      const m = (100 * s.minusRma.step(minusDM)) / trRma;
+      if (!Number.isNaN(p)) v.lastPlus = p;
+      if (!Number.isNaN(m)) v.lastMinus = m;
+      const plus = v.lastPlus;
+      const minus = v.lastMinus;
+      // adx_calc: 100 * ta.rma(math.abs(p - m) / (sumDM == 0 ? 1 : sumDM), adxS)
+      const sumDM = plus + minus;
+      const adxRaw = 100 * s.adxRma.step(Math.abs(plus - minus) / (eq(sumDM, 0) ? 1 : sumDM));
+      const adxClipped = Math.max(-1.5, Math.min(1.5, (adxRaw - 25) / 25));
+
+      const pl = s.plots;
+      pl[0][i] = { time: t, value: fin(hist), color: ge(hist, 0) ? green : red };
+      pl[1][i] = { time: t, value: fin(signal), color: '#5b9cf6' };
+      pl[2][i] = { time: t, value: fin(tfo), color: tfoColor };
+      pl[3][i] = { time: t, value: fin(adxClipped), color: '#fdd835' };
+      // bgcolor(math.abs(tfo) > 1.0 ? color.new(color.gray, 95) : na, title = "Extreme Zones")
+      if (gt(Math.abs(tfo), 1.0)) s.bgColors.push({ time: t, color: extremeColor });
+
+      // bullCross = ta.crossover(hist, 0), bearCross = ta.crossunder(hist, 0)
+      // extremeHigh = ta.crossunder(tfo, 1.0) and tfo > 1.0, extremeLow = ta.crossover(tfo, -1.0) and tfo < -1.0
+      const pHist = i > 0 ? s.hist[i - 1] ?? NaN : NaN;
+      const pTfo = i > 0 ? s.tfo[i - 1] ?? NaN : NaN;
+      const f = s.flags;
+      f[0][i] = over(hist ?? NaN, 0, pHist, i > 0 ? 0 : NaN);
+      f[1][i] = under(hist ?? NaN, 0, pHist, i > 0 ? 0 : NaN);
+      f[2][i] = under(tfo ?? NaN, 1.0, pTfo, i > 0 ? 1.0 : NaN) && gt(tfo, 1.0);
+      f[3][i] = over(tfo ?? NaN, -1.0, pTfo, i > 0 ? -1.0 : NaN) && lt(tfo, -1.0);
+      for (let k = 0; k < 4; k++) if (f[k][i]) s.times[k].push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const pl = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: pl[0].slice(), plot1: pl[1].slice(), plot2: pl[2].slice(), plot3: pl[3].slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+        hlines: hlineConfig.map((h) => ({ value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle } })),
+        bgColors: s.bgColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TfoAdxWithHistogramSignalInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TfoAdxWithHistogramSignalInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -189,6 +292,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const TfoAdxWithHistogramSignal = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

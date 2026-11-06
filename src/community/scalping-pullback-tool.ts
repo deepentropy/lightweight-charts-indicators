@@ -25,10 +25,12 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, heikinAshi, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData, BgColorData } from '../types';
 import type { ArrowData } from 'oakscriptjs';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ScalpingPullbackToolInputs {
   /** High Low PAC channel Length */
@@ -131,144 +133,224 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !Number.isNaN(a) && !Number.isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !Number.isNaN(a) && !Number.isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ScalpingPullbackToolInputs> = {},
-): IndicatorResult & { arrows: ArrowData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number };
+type Result = IndicatorResult & { arrows: ArrowData[] } & { alerts: AlertConditionState[] };
+
+interface ScalpVars {
+  /** heikinashi(): open and close of the Heikin Ashi candle before */
+  haOpen: number;
+  haClose: number;
+  /** valuewhen(filteredtopf, high[2], 0 / 1 / 2) and valuewhen(filteredbotf, low[2], 0 / 1 / 2) (changed in place) */
+  tops: number[];
+  bottoms: number[];
+  /** barssince(haClose < pacC), barssince(haClose > pacC), barssince(close > pacC) */
+  sinceBelow: number;
+  sinceAbove: number;
+  sinceCloseAbove: number;
+}
+
+interface ScalpRun extends BarRunState<ScalpVars> {
+  fast: ReturnType<typeof taStep.ema>;
+  medium: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  pacCStep: ReturnType<typeof taStep.ema>;
+  pacLStep: ReturnType<typeof taStep.ema>;
+  pacUStep: ReturnType<typeof taStep.ema>;
+  tradeDirection: number[];
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+  arrows: ArrowData[];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+}
+
+const highAt = (bars: Bar[], k: number) => (k >= 0 ? bars[k].high : NaN);
+const lowAt = (bars: Bar[], k: number) => (k >= 0 ? bars[k].low : NaN);
+
+function study(inputs: Partial<ScalpingPullbackToolInputs>): BarStudy<ScalpRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
   const delay = cfg.delayArrow ? 1 : 0;
-
-  // heikinashi(tickerid) on the chart timeframe: the Heikin Ashi candles of the bars
-  const candles = cfg.useHAcandles ? heikinAshi(bars) : bars;
-  const haOpen = candles.map((b) => b.open);
-  const haClose = candles.map((b) => b.close);
-  const closeSeries = Series.fromArray(bars, haClose);
-  const fastEMA = A(ta.ema(closeSeries, cfg.fastEMAlength));
-  const mediumEMA = A(ta.ema(closeSeries, cfg.mediumEMAlength));
-  const slowEMA = A(ta.ema(closeSeries, cfg.slowEMAlength));
-  const pacC = A(ta.ema(closeSeries, cfg.hiLoLen));
-  const pacL = A(ta.ema(Series.fromArray(bars, candles.map((b) => b.low)), cfg.hiLoLen));
-  const pacU = A(ta.ema(Series.fromArray(bars, candles.map((b) => b.high)), cfg.hiLoLen));
-
-  const high = (i: number) => (i >= 0 ? bars[i].high : NaN);
-  const low = (i: number) => (i >= 0 ? bars[i].low : NaN);
-  const t = (i: number) => bars[i].time;
-
-  const markers: MarkerData[] = [];
-  const arrows: ArrowData[] = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
   const bgGreen = T(GREEN, 90);
   const bgRed = T(RED, 90);
   const bgYellow = T(YELLOW, 90);
   const arrowUp = T(GREEN, 20);
   const arrowDown = T(MAROON, 20);
-
-  // valuewhen(filteredtopf, high[2], 0 / 1 / 2) and valuewhen(filteredbotf, low[2], 0 / 1 / 2)
-  const tops: number[] = [NaN, NaN, NaN];
-  const bottoms: number[] = [NaN, NaN, NaN];
-  // barssince(haClose < pacC), barssince(haClose > pacC)
-  let sinceBelow = NaN;
-  let sinceAbove = NaN;
-  let sinceCloseAbove = NaN; // barssince(close > pacC)
-  const tradeDirection: number[] = [];
-
-  for (let i = 0; i < n; i++) {
-    const trendDirection = gt(fastEMA[i], mediumEMA[i]) && gt(pacL[i], mediumEMA[i]) ? 1
-      : lt(fastEMA[i], mediumEMA[i]) && lt(pacU[i], mediumEMA[i]) ? -1 : 0;
-
-    // Fractals on the chart highs / lows; the centre is 2 bars back
-    const h0 = high(i), h1 = high(i - 1), h2 = high(i - 2), h3 = high(i - 3), h4 = high(i - 4);
-    const l0 = low(i), l1 = low(i - 1), l2 = low(i - 2), l3 = low(i - 3), l4 = low(i - 4);
-    const topf = cfg.filterBW
-      ? lt(h4, h3) && lt(h3, h2) && gt(h2, h1) && gt(h1, h0)
-      : lt(h4, h2) && le(h3, h2) && ge(h2, h1) && gt(h2, h0);
-    const botf = cfg.filterBW
-      ? gt(l4, l3) && gt(l3, l2) && lt(l2, l1) && lt(l1, l0)
-      : gt(l4, l2) && ge(l3, l2) && le(l2, l1) && lt(l2, l0);
-    if (topf) tops.unshift(h2);
-    if (botf) bottoms.unshift(l2);
-    const higherhigh = topf && lt(tops[1], tops[0]) && lt(tops[2], tops[0]);
-    const lowerhigh = topf && gt(tops[1], tops[0]) && gt(tops[2], tops[0]);
-    const higherlow = botf && lt(bottoms[1], bottoms[0]) && lt(bottoms[2], bottoms[0]);
-    const lowerlow = botf && gt(bottoms[1], bottoms[0]) && gt(bottoms[2], bottoms[0]);
-
-    // barcolor(ShowBarColor ? BARcolor : na)
-    if (cfg.showBarColor) {
-      barColors.push({ time: t(i), color: gt(haClose[i], pacU[i]) ? BLUE : lt(haClose[i], pacL[i]) ? RED : GRAY });
-    }
-    // bgcolor(ShowTrendBGcolor ? BGcolor : na, transp = 90)
-    if (cfg.showTrendBGcolor) {
-      bgColors.push({ time: t(i), color: trendDirection === 1 ? bgGreen : trendDirection === -1 ? bgRed : bgYellow });
-    }
-
-    // plotshape(..., offset = -2): the shape of bar i is drawn on bar i - 2
-    if (i >= 2) {
-      const at = t(i - 2);
-      if (cfg.showFractals && topf) markers.push({ time: at, position: 'aboveBar', shape: 'triangleDown', color: RED, id: 'shape0' });
-      if (cfg.showFractals && botf) markers.push({ time: at, position: 'belowBar', shape: 'triangleUp', color: LIME, id: 'shape1' });
-      if (cfg.showHHLL && higherhigh) markers.push({ time: at, position: 'aboveBar', shape: 'square', color: MAROON, text: '[HH]', id: 'shape2' });
-      if (cfg.showHHLL && lowerhigh) markers.push({ time: at, position: 'aboveBar', shape: 'square', color: MAROON, text: '[LH]', id: 'shape3' });
-      if (cfg.showHHLL && higherlow) markers.push({ time: at, position: 'belowBar', shape: 'square', color: GREEN, text: '[HL]', id: 'shape4' });
-      if (cfg.showHHLL && lowerlow) markers.push({ time: at, position: 'belowBar', shape: 'square', color: GREEN, text: '[LL]', id: 'shape5' });
-    }
-
-    // Pullback recovery
-    sinceBelow = lt(haClose[i], pacC[i]) ? 0 : sinceBelow + 1;
-    sinceAbove = gt(haClose[i], pacC[i]) ? 0 : sinceAbove + 1;
-    sinceCloseAbove = gt(bars[i].close, pacC[i]) ? 0 : sinceCloseAbove + 1;
-    // plotshape(barssince(haClose<pacC), color=na, location=location.bottom) and plotshape(barssince(close>pacC), ...):
-    // the default xcross, drawn where the count is not 0 / na, with no colour
-    if (sinceBelow > 0) markers.push({ time: t(i), position: 'bottom', shape: 'xcross', color: 'transparent', id: 'shape6' });
-    if (sinceCloseAbove > 0) markers.push({ time: t(i), position: 'bottom', shape: 'xcross', color: 'transparent', id: 'shape7' });
-    const pacExitU = lt(haOpen[i], pacU[i]) && gt(haClose[i], pacU[i]) && le(sinceBelow, cfg.lookback);
-    const pacExitL = gt(haOpen[i], pacL[i]) && lt(haClose[i], pacL[i]) && le(sinceAbove, cfg.lookback);
-    const buy = trendDirection === 1 && pacExitU;
-    const sell = trendDirection === -1 && pacExitL;
-    // Keep the trading state until a pullback or a new recovery
-    const prev = i > 0 ? tradeDirection[i - 1] : 0;
-    tradeDirection.push(prev === 1 && lt(haClose[i], pacC[i]) ? 0
-      : prev === -1 && gt(haClose[i], pacC[i]) ? 0
-        : prev === 0 && buy ? 1
-          : prev === 0 && sell ? -1 : prev);
-
-    // plotarrow(ShowBuySell and nz(TradeDirection[1 + Delay]) == 0 and TradeDirection[Delay] != 0
-    //   ? TradeDirection[Delay] : na, offset = -Delay)
-    if (cfg.showBuySell && i - delay >= 0) {
-      const before = i - delay - 1 >= 0 ? tradeDirection[i - delay - 1] : 0;
-      const now = tradeDirection[i - delay];
-      if (before === 0 && now !== 0) {
-        arrows.push({ time: t(i - delay), id: 'arrow0', value: now, color: now > 0 ? arrowUp : arrowDown });
-      }
-    }
-  }
-
-  // Long = nz(TradeDirection[1]) == 0 and TradeDirection == 1; Short: TradeDirection == -1
-  const prevDir = (i: number) => (i > 0 ? tradeDirection[i - 1] : 0);
-  const longFlags = tradeDirection.map((d, i) => prevDir(i) === 0 && d === 1);
-  const shortFlags = tradeDirection.map((d, i) => prevDir(i) === 0 && d === -1);
-
-  const P = (values: number[], on: boolean) => bars.map((b, i) => ({ time: b.time, value: on ? values[i] : NaN }));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: P(pacL, true),
-      plot1: P(pacU, true),
-      plot2: P(pacC, true),
-      plot3: P(fastEMA, cfg.showFastEMA),
-      plot4: P(mediumEMA, cfg.showMediumEMA),
-      plot5: P(slowEMA, cfg.showSlowEMA),
+    init() {
+      const s: ScalpRun = {
+        fast: taStep.ema(cfg.fastEMAlength), medium: taStep.ema(cfg.mediumEMAlength), slow: taStep.ema(cfg.slowEMAlength),
+        pacCStep: taStep.ema(cfg.hiLoLen), pacLStep: taStep.ema(cfg.hiLoLen), pacUStep: taStep.ema(cfg.hiLoLen),
+        tradeDirection: [], plots: [[], [], [], [], [], []], flags: [[], []], times: [[], []],
+        markers: [], arrows: [], barColors: [], bgColors: [],
+        steps: [],
+        vars: {
+          haOpen: NaN, haClose: NaN, tops: [NaN, NaN, NaN], bottoms: [NaN, NaN, NaN],
+          sinceBelow: NaN, sinceAbove: NaN, sinceCloseAbove: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.fast, s.medium, s.slow, s.pacCStep, s.pacLStep, s.pacUStep];
+      s.lists = [s.markers, s.arrows, s.barColors, s.bgColors, ...s.times];
+      s.series = [s.tradeDirection, ...s.plots, ...s.flags];
+      return s;
     },
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: T(GRAY, 90), title: 'Fill HiLo PAC' } }],
-    markers,
-    arrows,
-    barColors,
-    bgColors,
-    // alertcondition(Long, "Buy Condition") / alertcondition(Short, "Sell Condition")
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const v = s.vars;
+      // heikinashi(tickerid) on the chart timeframe: the Heikin Ashi candles of the bars
+      let haOpen = b.open;
+      let haClose = b.close;
+      let haHigh = b.high;
+      let haLow = b.low;
+      if (cfg.useHAcandles) {
+        haClose = (b.open + b.high + b.low + b.close) / 4;
+        haOpen = i > 0 ? (v.haOpen + v.haClose) / 2 : (b.open + b.close) / 2;
+        haHigh = Math.max(b.high, haOpen, haClose);
+        haLow = Math.min(b.low, haOpen, haClose);
+        v.haOpen = haOpen;
+        v.haClose = haClose;
+      }
+      const fastEMA = s.fast.step(haClose);
+      const mediumEMA = s.medium.step(haClose);
+      const slowEMA = s.slow.step(haClose);
+      const pacC = s.pacCStep.step(haClose);
+      const pacL = s.pacLStep.step(haLow);
+      const pacU = s.pacUStep.step(haHigh);
+
+      const trendDirection = gt(fastEMA, mediumEMA) && gt(pacL, mediumEMA) ? 1
+        : lt(fastEMA, mediumEMA) && lt(pacU, mediumEMA) ? -1 : 0;
+
+      // Fractals on the chart highs / lows; the centre is 2 bars back
+      const h0 = highAt(bars, i), h1 = highAt(bars, i - 1), h2 = highAt(bars, i - 2), h3 = highAt(bars, i - 3), h4 = highAt(bars, i - 4);
+      const l0 = lowAt(bars, i), l1 = lowAt(bars, i - 1), l2 = lowAt(bars, i - 2), l3 = lowAt(bars, i - 3), l4 = lowAt(bars, i - 4);
+      const topf = cfg.filterBW
+        ? lt(h4, h3) && lt(h3, h2) && gt(h2, h1) && gt(h1, h0)
+        : lt(h4, h2) && le(h3, h2) && ge(h2, h1) && gt(h2, h0);
+      const botf = cfg.filterBW
+        ? gt(l4, l3) && gt(l3, l2) && lt(l2, l1) && lt(l1, l0)
+        : gt(l4, l2) && ge(l3, l2) && le(l2, l1) && lt(l2, l0);
+      const tops = v.tops;
+      const bottoms = v.bottoms;
+      if (topf) {
+        tops[2] = tops[1];
+        tops[1] = tops[0];
+        tops[0] = h2;
+      }
+      if (botf) {
+        bottoms[2] = bottoms[1];
+        bottoms[1] = bottoms[0];
+        bottoms[0] = l2;
+      }
+      const higherhigh = topf && lt(tops[1], tops[0]) && lt(tops[2], tops[0]);
+      const lowerhigh = topf && gt(tops[1], tops[0]) && gt(tops[2], tops[0]);
+      const higherlow = botf && lt(bottoms[1], bottoms[0]) && lt(bottoms[2], bottoms[0]);
+      const lowerlow = botf && gt(bottoms[1], bottoms[0]) && gt(bottoms[2], bottoms[0]);
+
+      // barcolor(ShowBarColor ? BARcolor : na)
+      if (cfg.showBarColor) {
+        s.barColors.push({ time, color: gt(haClose, pacU) ? BLUE : lt(haClose, pacL) ? RED : GRAY });
+      }
+      // bgcolor(ShowTrendBGcolor ? BGcolor : na, transp = 90)
+      if (cfg.showTrendBGcolor) {
+        s.bgColors.push({ time, color: trendDirection === 1 ? bgGreen : trendDirection === -1 ? bgRed : bgYellow });
+      }
+
+      // plotshape(..., offset = -2): the shape of bar i is drawn on bar i - 2
+      const markers = s.markers;
+      if (i >= 2) {
+        const at = bars[i - 2].time;
+        if (cfg.showFractals && topf) markers.push({ time: at, position: 'aboveBar', shape: 'triangleDown', color: RED, id: 'shape0' });
+        if (cfg.showFractals && botf) markers.push({ time: at, position: 'belowBar', shape: 'triangleUp', color: LIME, id: 'shape1' });
+        if (cfg.showHHLL && higherhigh) markers.push({ time: at, position: 'aboveBar', shape: 'square', color: MAROON, text: '[HH]', id: 'shape2' });
+        if (cfg.showHHLL && lowerhigh) markers.push({ time: at, position: 'aboveBar', shape: 'square', color: MAROON, text: '[LH]', id: 'shape3' });
+        if (cfg.showHHLL && higherlow) markers.push({ time: at, position: 'belowBar', shape: 'square', color: GREEN, text: '[HL]', id: 'shape4' });
+        if (cfg.showHHLL && lowerlow) markers.push({ time: at, position: 'belowBar', shape: 'square', color: GREEN, text: '[LL]', id: 'shape5' });
+      }
+
+      // Pullback recovery
+      v.sinceBelow = lt(haClose, pacC) ? 0 : v.sinceBelow + 1;
+      v.sinceAbove = gt(haClose, pacC) ? 0 : v.sinceAbove + 1;
+      v.sinceCloseAbove = gt(b.close, pacC) ? 0 : v.sinceCloseAbove + 1;
+      // plotshape(barssince(haClose<pacC), color=na, location=location.bottom) and plotshape(barssince(close>pacC), ...):
+      // the default xcross, drawn where the count is not 0 / na, with no colour
+      if (v.sinceBelow > 0) markers.push({ time, position: 'bottom', shape: 'xcross', color: 'transparent', id: 'shape6' });
+      if (v.sinceCloseAbove > 0) markers.push({ time, position: 'bottom', shape: 'xcross', color: 'transparent', id: 'shape7' });
+      const pacExitU = lt(haOpen, pacU) && gt(haClose, pacU) && le(v.sinceBelow, cfg.lookback);
+      const pacExitL = gt(haOpen, pacL) && lt(haClose, pacL) && le(v.sinceAbove, cfg.lookback);
+      const buy = trendDirection === 1 && pacExitU;
+      const sell = trendDirection === -1 && pacExitL;
+      // Keep the trading state until a pullback or a new recovery
+      const td = s.tradeDirection;
+      const prev = i > 0 ? td[i - 1] : 0;
+      const dir = prev === 1 && lt(haClose, pacC) ? 0
+        : prev === -1 && gt(haClose, pacC) ? 0
+          : prev === 0 && buy ? 1
+            : prev === 0 && sell ? -1 : prev;
+      td[i] = dir;
+
+      // plotarrow(ShowBuySell and nz(TradeDirection[1 + Delay]) == 0 and TradeDirection[Delay] != 0
+      //   ? TradeDirection[Delay] : na, offset = -Delay)
+      if (cfg.showBuySell && i - delay >= 0) {
+        const before = i - delay - 1 >= 0 ? td[i - delay - 1] : 0;
+        const now = td[i - delay];
+        if (before === 0 && now !== 0) {
+          s.arrows.push({ time: bars[i - delay].time, id: 'arrow0', value: now, color: now > 0 ? arrowUp : arrowDown });
+        }
+      }
+
+      // Long = nz(TradeDirection[1]) == 0 and TradeDirection == 1; Short: TradeDirection == -1
+      const long = prev === 0 && dir === 1;
+      const short = prev === 0 && dir === -1;
+      s.flags[0][i] = long;
+      s.flags[1][i] = short;
+      if (long) s.times[0].push(time as number);
+      if (short) s.times[1].push(time as number);
+
+      s.plots[0][i] = { time, value: pacL };
+      s.plots[1][i] = { time, value: pacU };
+      s.plots[2][i] = { time, value: pacC };
+      s.plots[3][i] = { time, value: cfg.showFastEMA ? fastEMA : NaN };
+      s.plots[4][i] = { time, value: cfg.showMediumEMA ? mediumEMA : NaN };
+      s.plots[5][i] = { time, value: cfg.showSlowEMA ? slowEMA : NaN };
+    },
+    copyVars: (v) => ({ ...v, tops: v.tops.slice(), bottoms: v.bottoms.slice() }),
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(),
+          plot1: s.plots[1].slice(),
+          plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(),
+          plot4: s.plots[4].slice(),
+          plot5: s.plots[5].slice(),
+        },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: T(GRAY, 90), title: 'Fill HiLo PAC' } }],
+        markers: s.markers.slice(),
+        arrows: s.arrows.slice(),
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+        // alertcondition(Long, "Buy Condition") / alertcondition(Short, "Sell Condition")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ScalpingPullbackToolInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<ScalpingPullbackToolInputs> = {},
+): IndicatorResult & { arrows: ArrowData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -278,5 +360,5 @@ export const alertConditions: AlertConditionDecl[] = [
 ];
 
 export const ScalpingPullbackTool = {
-  calculate, metadata, defaultInputs, inputConfig, plotConfig, fillConfig, alertConditions,
+  calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, fillConfig, alertConditions,
 };

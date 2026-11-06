@@ -14,9 +14,11 @@
  * Original notice: © Uncle_the_shooter
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RegressionChannelOscillatorInputs {
   /** Regression length */
@@ -140,147 +142,197 @@ const ne = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) >
 
 type Point = { time: number; value: number; color?: string };
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface RcoRun extends BarRunState<Record<string, never>> {
+  cumW: ReturnType<typeof taStep.cum>;
+  cum2: ReturnType<typeof taStep.cum>;
+  smooth: { step(v: number): number; commit(): void } | null;
+  sig: ReturnType<typeof taStep.sma>;
+  longX: ReturnType<typeof taStep.crossover>;
+  shortX: ReturnType<typeof taStep.crossunder>;
+  src: number[];
+  cumWArr: number[];
+  cum2Arr: number[];
+  signal: number[];
+  plots: Point[][];
+  layers: string[][];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<RegressionChannelOscillatorInputs>): BarStudy<RcoRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const len = cfg.len;
+  const value = barSource(cfg.src);
+  const gradientTransparency = 85;
+  // Wma(_src, _len) => denom = _len * (_len + 1) / 2
+  const denom = (len * (len + 1)) / 2;
+  const gray = color.gray;
+  const showSig = cfg.showSignalLine;
+  const showSigGrad = cfg.showSignalLine && cfg.showMaGradient;
+  const layerAdd = [0, 4, 8, 12, 16];
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const cumW = taStep.cum();
+      const cum2 = taStep.cum();
+      let smooth: RcoRun['smooth'] = null;
+      if (cfg.smoothType === 'SMA') {
+        const m = taStep.sma();
+        smooth = { step: (v) => m.step(v, cfg.smoothLen), commit: () => m.commit() };
+      } else if (cfg.smoothType === 'EMA') {
+        smooth = taStep.ema(cfg.smoothLen);
+      }
+      const sig = taStep.sma();
+      const longX = taStep.crossover();
+      const shortX = taStep.crossunder();
+      const s: RcoRun = {
+        cumW, cum2, smooth, sig, longX, shortX, src: [], cumWArr: [], cum2Arr: [], signal: [],
+        plots: Array.from({ length: 13 }, () => []), layers: layerAdd.map(() => []),
+        flags: alertConditions.map(() => []), times: alertConditions.map(() => []), markers: [],
+        steps: [cumW, cum2, ...(smooth ? [smooth] : []), sig, longX, shortX], vars: {}, lists: [], series: [],
+      };
+      s.lists = [...s.times, s.markers];
+      s.series = [s.src, s.cumWArr, s.cum2Arr, s.signal, ...s.plots, ...s.layers, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      const ago = (x: number[], k: number) => (i - k >= 0 ? x[i - k] : NaN);
+      const src = value(bars[i]);
+      s.src[i] = src;
+      const src1 = ago(s.src, 1); // src[1]
+      // Sum(_src, _len) => a = ta.cum(_src); a - a[_len] (one ta.cum per call)
+      // Wma(_src, _len) => a = ta.cum(_src); (_len * a - Sum(a[1], _len)) / denom
+      const cumW = s.cumW.step(src1);
+      s.cumWArr[i] = cumW;
+      const c2 = s.cum2.step(ago(s.cumWArr, 1));
+      s.cum2Arr[i] = c2;
+      const sumW = c2 - ago(s.cum2Arr, len);
+      const a = (len * cumW - sumW) / denom;
+      // b = Sum(src[1], len) / len (its ta.cum of src[1] has the values of the Wma one)
+      const sumB = cumW - ago(s.cumWArr, len);
+      const b = sumB / len;
+
+      const A0 = 4 * b - 3 * a;
+      const B = 3 * a - 2 * b;
+      const m = (A0 - B) / (len - 1);
+      // for i = 0 to len - 1: l = B + m * i; d += math.pow(src[i + 1] - l, 2)
+      let d = 0.0;
+      for (let k = 0; k <= len - 1; k++) {
+        const l = B + m * k;
+        d += Math.pow(ago(s.src, k + 1) - l, 2);
+      }
+      const rmse = Math.sqrt(d / (len - 1)) * cfg.mult;
+      // rawOsc = rmse != 0 ? (src - mid) / rmse : 0.0 (na != 0 is false: 0.0 while rmse is na)
+      const rawOsc = ne(rmse, 0) ? (src - B) / rmse : 0.0;
+      const o = rawOsc * 50;
+      const osc0 = Math.max(Math.min(o, 150), -150);
+
+      const osc = s.smooth ? s.smooth.step(osc0) : osc0;
+      const signal = s.sig.step(osc, cfg.sigLen);
+      s.signal[i] = signal;
+      const prevSignal = ago(s.signal, 1);
+
+      // Signal colour
+      let sigColor = gray;
+      if (cfg.signalColorMode === 'Direction') {
+        sigColor = gt(signal, prevSignal) ? cfg.signalColorBull : lt(signal, prevSignal) ? cfg.signalColorBear : gray;
+      }
+      if (cfg.signalColorMode === 'Position vs Zero') {
+        sigColor = gt(signal, 0) ? cfg.signalColorBull : lt(signal, 0) ? cfg.signalColorBear : gray;
+      }
+      const lineColor = gt(osc, 0) ? cfg.bullColor : cfg.bearColor;
+
+      const p = s.plots;
+      // plot(showOverboughtGradient ? obLevel : na, color = color.new(signal >= maOverbought ? obColor : color.gray, bandTransparency), linewidth = 8)
+      p[0][i] = {
+        time, value: cfg.showOverboughtGradient ? cfg.obLevel : NaN,
+        color: String(color.new(ge(signal, cfg.maOverbought) ? cfg.obColor : gray, cfg.bandTransparency)),
+      };
+      p[1][i] = {
+        time, value: cfg.showOversoldGradient ? cfg.osLevel : NaN,
+        color: String(color.new(le(signal, cfg.maOversold) ? cfg.osColor : gray, cfg.bandTransparency)),
+      };
+      p[2][i] = { time, value: osc, color: lineColor };
+      p[3][i] = {
+        time, value: cfg.showOscillatorGradient ? osc : NaN,
+        color: String(color.new(lineColor, gradientTransparency)),
+      };
+      p[4][i] = { time, value: showSig ? signal : NaN, color: sigColor };
+      p[5][i] = { time, value: showSigGrad ? signal : NaN, color: String(color.new(sigColor, 60)) };
+      p[6][i] = { time, value: showSigGrad ? signal : NaN, color: String(color.new(sigColor, 35)) };
+      p[7][i] = { time, value: showSigGrad ? signal : NaN, color: String(color.new(sigColor, 0)) };
+      p[8][i] = { time, value: osc * 0.8 };
+      p[9][i] = { time, value: osc * 0.6 };
+      p[10][i] = { time, value: osc * 0.4 };
+      p[11][i] = { time, value: osc * 0.2 };
+      p[12][i] = { time, value: 0 };
+
+      // fill(pOsc, pMid1, color = fillEnabled ? color.new(lineColor, fillTransparency) : na) ... + 4, + 8, + 12, + 16
+      for (let k = 0; k < layerAdd.length; k++) {
+        s.layers[k][i] = cfg.fillEnabled ? String(color.new(lineColor, cfg.fillTransparency + layerAdd[k])) : 'transparent';
+      }
+
+      // longOBOS = ta.crossover(osc, osLevel); shortOBOS = ta.crossunder(osc, obLevel)
+      const longObos = s.longX.step(osc, cfg.osLevel);
+      const shortObos = s.shortX.step(osc, cfg.obLevel);
+      // plotshape(longOBOS ? osLevel - 3 : na, style = shape.triangleup, location = location.absolute, color = osColor, size = size.small)
+      if (longObos) {
+        s.markers.push({ time, position: 'atPriceMiddle', price: cfg.osLevel - 3, shape: 'triangleUp',
+          color: cfg.osColor, size: 'small' });
+      }
+      if (shortObos) {
+        s.markers.push({ time, position: 'atPriceMiddle', price: cfg.obLevel + 3, shape: 'triangleDown',
+          color: cfg.obColor, size: 'small' });
+      }
+
+      // the alerts: crosses of the signal compared with the bar before
+      const over = (w: number) => signal > w && prevSignal <= w;
+      const under = (w: number) => signal < w && prevSignal >= w;
+      const flags = [!!longObos, !!shortObos, over(0), under(0), over(cfg.maOversold), under(cfg.maOverbought)];
+      for (let k = 0; k < flags.length; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      const pairs = [['plot2', 'plot8'], ['plot8', 'plot9'], ['plot9', 'plot10'], ['plot10', 'plot11'], ['plot11', 'plot12']];
+      const fills = pairs.map(([plot1, plot2], k) => ({ plot1, plot2, colors: s.layers[k].slice() }));
+      const band = String(color.new(color.gray, 80));
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        hlines: [
+          { value: cfg.obLevel, options: { title: 'Overbought', color: cfg.obColor, linestyle: 'dashed' } },
+          { value: cfg.osLevel, options: { title: 'Oversold', color: cfg.osColor, linestyle: 'dashed' } },
+          { value: 0, options: { title: 'Midline 0', color: cfg.midLineColor, linestyle: 'dashed' } },
+          { value: -150, options: { title: 'Min', color: band, linestyle: 'dotted' } },
+          { value: 150, options: { title: 'Max', color: band, linestyle: 'dotted' } },
+        ],
+        fills,
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RegressionChannelOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<RegressionChannelOscillatorInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const len = cfg.len;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const gradientTransparency = 85;
-
-  const src = A(getSourceSeries(bars, cfg.src));
-  const ago = (x: number[], i: number, k: number) => (i - k >= 0 ? x[i - k] : NaN);
-  const src1 = src.map((_v, i) => ago(src, i, 1)); // src[1]
-
-  // Sum(_src, _len) => a = ta.cum(_src); a - a[_len] (one ta.cum per call)
-  const sum = (x: number[]) => {
-    const c = A(ta.cum(S(x)));
-    return c.map((v, i) => v - ago(c, i, len));
-  };
-  // Wma(_src, _len) => denom = _len * (_len + 1) / 2; a = ta.cum(_src); (_len * a - Sum(a[1], _len)) / denom
-  const denom = (len * (len + 1)) / 2;
-  const cumW = A(ta.cum(S(src1)));
-  const sumW = sum(cumW.map((_v, i) => ago(cumW, i, 1)));
-  const a = cumW.map((v, i) => (len * v - sumW[i]) / denom);
-  // b = Sum(src[1], len) / len
-  const sumB = sum(src1);
-  const b = sumB.map((v) => v / len);
-
-  const osc0: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const A0 = 4 * b[i] - 3 * a[i];
-    const B = 3 * a[i] - 2 * b[i];
-    const m = (A0 - B) / (len - 1);
-    // for i = 0 to len - 1: l = B + m * i; d += math.pow(src[i + 1] - l, 2)
-    let d = 0.0;
-    for (let k = 0; k <= len - 1; k++) {
-      const l = B + m * k;
-      d += Math.pow(ago(src, i, k + 1) - l, 2);
-    }
-    const rmse = Math.sqrt(d / (len - 1)) * cfg.mult;
-    // rawOsc = rmse != 0 ? (src - mid) / rmse : 0.0 (na != 0 is false: 0.0 while rmse is na)
-    const rawOsc = ne(rmse, 0) ? (src[i] - B) / rmse : 0.0;
-    const o = rawOsc * 50;
-    osc0[i] = Math.max(Math.min(o, 150), -150);
-  }
-
-  const osc = cfg.smoothType === 'SMA' ? A(ta.sma(S(osc0), cfg.smoothLen))
-    : cfg.smoothType === 'EMA' ? A(ta.ema(S(osc0), cfg.smoothLen)) : osc0;
-  const signal = A(ta.sma(S(osc), cfg.sigLen));
-
-  // Signal colour
-  const gray = color.gray;
-  const sigColor = signal.map((s, i) => {
-    let c = gray;
-    if (cfg.signalColorMode === 'Direction') {
-      const p = ago(signal, i, 1);
-      c = gt(s, p) ? cfg.signalColorBull : lt(s, p) ? cfg.signalColorBear : gray;
-    }
-    if (cfg.signalColorMode === 'Position vs Zero') {
-      c = gt(s, 0) ? cfg.signalColorBull : lt(s, 0) ? cfg.signalColorBear : gray;
-    }
-    return c;
-  });
-  const lineColor = osc.map((o) => (gt(o, 0) ? cfg.bullColor : cfg.bearColor));
-
-  const plots: Record<string, Point[]> = {};
-  const P = (f: (i: number) => Point): Point[] => bars.map((_b, i) => f(i));
-  const t = (i: number) => bars[i].time;
-  const showSig = cfg.showSignalLine;
-  const showSigGrad = cfg.showSignalLine && cfg.showMaGradient;
-  // plot(showOverboughtGradient ? obLevel : na, color = color.new(signal >= maOverbought ? obColor : color.gray, bandTransparency), linewidth = 8)
-  plots.plot0 = P((i) => ({
-    time: t(i), value: cfg.showOverboughtGradient ? cfg.obLevel : NaN,
-    color: String(color.new(ge(signal[i], cfg.maOverbought) ? cfg.obColor : gray, cfg.bandTransparency)),
-  }));
-  plots.plot1 = P((i) => ({
-    time: t(i), value: cfg.showOversoldGradient ? cfg.osLevel : NaN,
-    color: String(color.new(le(signal[i], cfg.maOversold) ? cfg.osColor : gray, cfg.bandTransparency)),
-  }));
-  plots.plot2 = P((i) => ({ time: t(i), value: osc[i], color: lineColor[i] }));
-  plots.plot3 = P((i) => ({
-    time: t(i), value: cfg.showOscillatorGradient ? osc[i] : NaN,
-    color: String(color.new(lineColor[i], gradientTransparency)),
-  }));
-  plots.plot4 = P((i) => ({ time: t(i), value: showSig ? signal[i] : NaN, color: sigColor[i] }));
-  plots.plot5 = P((i) => ({ time: t(i), value: showSigGrad ? signal[i] : NaN, color: String(color.new(sigColor[i], 60)) }));
-  plots.plot6 = P((i) => ({ time: t(i), value: showSigGrad ? signal[i] : NaN, color: String(color.new(sigColor[i], 35)) }));
-  plots.plot7 = P((i) => ({ time: t(i), value: showSigGrad ? signal[i] : NaN, color: String(color.new(sigColor[i], 0)) }));
-  plots.plot8 = P((i) => ({ time: t(i), value: osc[i] * 0.8 }));
-  plots.plot9 = P((i) => ({ time: t(i), value: osc[i] * 0.6 }));
-  plots.plot10 = P((i) => ({ time: t(i), value: osc[i] * 0.4 }));
-  plots.plot11 = P((i) => ({ time: t(i), value: osc[i] * 0.2 }));
-  plots.plot12 = P((i) => ({ time: t(i), value: 0 }));
-
-  // fill(pOsc, pMid1, color = fillEnabled ? color.new(lineColor, fillTransparency) : na) ... + 4, + 8, + 12, + 16
-  const layer = (k: number) => lineColor.map((c) => (cfg.fillEnabled
-    ? String(color.new(c, cfg.fillTransparency + k)) : 'transparent'));
-  const fills = [
-    { plot1: 'plot2', plot2: 'plot8', colors: layer(0) },
-    { plot1: 'plot8', plot2: 'plot9', colors: layer(4) },
-    { plot1: 'plot9', plot2: 'plot10', colors: layer(8) },
-    { plot1: 'plot10', plot2: 'plot11', colors: layer(12) },
-    { plot1: 'plot11', plot2: 'plot12', colors: layer(16) },
-  ];
-
-  // longOBOS = ta.crossover(osc, osLevel); shortOBOS = ta.crossunder(osc, obLevel)
-  const longObos = A(ta.crossover(S(osc), S(new Array(n).fill(cfg.osLevel))));
-  const shortObos = A(ta.crossunder(S(osc), S(new Array(n).fill(cfg.obLevel))));
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    // plotshape(longOBOS ? osLevel - 3 : na, style = shape.triangleup, location = location.absolute, color = osColor, size = size.small)
-    if (longObos[i]) {
-      markers.push({ time: t(i), position: 'atPriceMiddle', price: cfg.osLevel - 3, shape: 'triangleUp',
-        color: cfg.osColor, size: 'small' });
-    }
-    if (shortObos[i]) {
-      markers.push({ time: t(i), position: 'atPriceMiddle', price: cfg.obLevel + 3, shape: 'triangleDown',
-        color: cfg.obColor, size: 'small' });
-    }
-  }
-
-  const band = String(color.new(color.gray, 80));
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    hlines: [
-      { value: cfg.obLevel, options: { title: 'Overbought', color: cfg.obColor, linestyle: 'dashed' } },
-      { value: cfg.osLevel, options: { title: 'Oversold', color: cfg.osColor, linestyle: 'dashed' } },
-      { value: 0, options: { title: 'Midline 0', color: cfg.midLineColor, linestyle: 'dashed' } },
-      { value: -150, options: { title: 'Min', color: band, linestyle: 'dotted' } },
-      { value: 150, options: { title: 'Max', color: band, linestyle: 'dotted' } },
-    ],
-    fills,
-    markers,
-    alerts: alertStates(alertConditions, bars, [
-      longObos.map((v) => !!v), shortObos.map((v) => !!v),
-      crossedOver(signal, 0), crossedUnder(signal, 0),
-      crossedOver(signal, cfg.maOversold), crossedUnder(signal, cfg.maOverbought),
-    ]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -295,6 +347,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const RegressionChannelOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

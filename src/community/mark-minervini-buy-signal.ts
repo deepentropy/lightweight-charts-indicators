@@ -11,8 +11,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData, MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 // The Pine script has no inputs
 export interface MarkMinerviniBuySignalInputs {}
@@ -44,70 +46,113 @@ const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => ge(b, a);
 
-export function calculate(
-  bars: Bar[],
-  _inputs: Partial<MarkMinerviniBuySignalInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-  const closeS = S(close);
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] };
+type Sma = WindowSma;
 
-  const ma10 = A(ta.sma(closeS, 10));
-  const ma20 = A(ta.sma(closeS, 20));
-  const ma50 = A(ta.sma(closeS, 50));
-  const ma150 = A(ta.sma(closeS, 150));
-  const ma200 = A(ta.sma(closeS, 200));
-  const high52 = A(ta.highest(S(bars.map((b) => b.high)), 252));
-  const low52 = A(ta.lowest(S(bars.map((b) => b.low)), 252));
-  // priceChange = (close - close[100]) / close[100] * 100 (a plain division)
-  const priceChange = close.map((c, i) => (i >= 100 ? ((c - close[i - 100]) / close[i - 100]) * 100 : NaN));
-  const rsRanking = A(ta.percentrank(S(priceChange), 100));
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const volSma = A(ta.sma(S(volume), 50));
+interface MmRun extends BarRunState<Record<string, never>> {
+  ma10: Sma;
+  ma20: Sma;
+  ma50: Sma;
+  ma150: Sma;
+  ma200: Sma;
+  high52: WindowExtreme;
+  low52: WindowExtreme;
+  rank: ReturnType<typeof taStep.percentrank>;
+  volSma: Sma;
+  close: number[];
+  ma200Arr: number[];
+  p0: Point[];
+  p1: Point[];
+  p2: Point[];
+  p3: Point[];
+  p4: Point[];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+}
 
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  const bg = String(color.new(color.green, 90));
-  for (let i = 0; i < n; i++) {
-    const c = close[i];
-    const ma150AboveMa200 = gt(ma150[i], ma200[i]);
-    const ma200TrendingUp = gt(ma200[i], i >= 20 ? ma200[i - 20] : NaN);
-    const ma50AboveLongMAs = gt(ma50[i], ma150[i]) && gt(ma50[i], ma200[i]);
-    const priceAboveMa50 = gt(c, ma50[i]);
-    const priceAboveLongMAs = gt(c, ma150[i]) && gt(c, ma200[i]);
-    const price25PercentAboveLow = ge(c, low52[i] * 1.25);
-    const priceWithin25PercentOfHigh = ge(c, high52[i] * 0.75) && le(c, high52[i] * 0.95);
-    const rsRankingPass = ge(rsRanking[i], 70);
-    const volumeIncreasing = gt(volume[i], volSma[i]);
-    const minerviniCriteria = priceAboveLongMAs && ma150AboveMa200 && ma200TrendingUp && ma50AboveLongMAs
-      && priceAboveMa50 && price25PercentAboveLow && priceWithin25PercentOfHigh && rsRankingPass && volumeIncreasing;
-    if (minerviniCriteria) {
-      // plotshape(minerviniCriteria, "Minervini Buy", shape.triangleup, location.belowbar, color.green, size.large)
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'large' });
-      // bgcolor(minerviniCriteria ? color.new(color.green, 90) : na)
-      bgColors.push({ time: bars[i].time, color: bg });
-    }
-  }
+const BG = String(color.new(color.green, 90));
 
-  const line = (vals: number[], col: string) => bars.map((b, i) => ({ time: b.time, value: vals[i], color: col }));
+function study(_inputs: Partial<MarkMinerviniBuySignalInputs>): BarStudy<MmRun, Result> {
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(ma10, MA10_COL),
-      plot1: line(ma20, MA20_COL),
-      plot2: line(ma50, color.blue),
-      plot3: line(ma150, color.green),
-      plot4: line(ma200, color.red),
+    init() {
+      const s: MmRun = {
+        ma10: new WindowSma(10), ma20: new WindowSma(20), ma50: new WindowSma(50), ma150: new WindowSma(150),
+        ma200: new WindowSma(200),
+        high52: new WindowExtreme(false, 252), low52: new WindowExtreme(true, 252), rank: taStep.percentrank(100), volSma: new WindowSma(50),
+        close: [], ma200Arr: [], p0: [], p1: [], p2: [], p3: [], p4: [], markers: [], bgColors: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.ma10, s.ma20, s.ma50, s.ma150, s.ma200, s.high52, s.low52, s.rank, s.volSma];
+      s.lists = [s.markers, s.bgColors];
+      s.series = [s.close, s.ma200Arr, s.p0, s.p1, s.p2, s.p3, s.p4];
+      return s;
     },
-    markers,
-    bgColors,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const c = b.close;
+      s.close[i] = c;
+      const ma10 = s.ma10.step(c);
+      const ma20 = s.ma20.step(c);
+      const ma50 = s.ma50.step(c);
+      const ma150 = s.ma150.step(c);
+      const ma200 = s.ma200.step(c);
+      s.ma200Arr[i] = ma200;
+      const high52 = s.high52.step(b.high);
+      const low52 = s.low52.step(b.low);
+      // priceChange = (close - close[100]) / close[100] * 100 (a plain division)
+      const priceChange = i >= 100 ? ((c - s.close[i - 100]) / s.close[i - 100]) * 100 : NaN;
+      const rsRanking = s.rank.step(priceChange);
+      const volume = b.volume ?? NaN;
+      const volSma = s.volSma.step(volume);
+
+      const ma150AboveMa200 = gt(ma150, ma200);
+      const ma200TrendingUp = gt(ma200, i >= 20 ? s.ma200Arr[i - 20] : NaN);
+      const ma50AboveLongMAs = gt(ma50, ma150) && gt(ma50, ma200);
+      const priceAboveMa50 = gt(c, ma50);
+      const priceAboveLongMAs = gt(c, ma150) && gt(c, ma200);
+      const price25PercentAboveLow = ge(c, low52 * 1.25);
+      const priceWithin25PercentOfHigh = ge(c, high52 * 0.75) && le(c, high52 * 0.95);
+      const rsRankingPass = ge(rsRanking, 70);
+      const volumeIncreasing = gt(volume, volSma);
+      const minerviniCriteria = priceAboveLongMAs && ma150AboveMa200 && ma200TrendingUp && ma50AboveLongMAs
+        && priceAboveMa50 && price25PercentAboveLow && priceWithin25PercentOfHigh && rsRankingPass && volumeIncreasing;
+      if (minerviniCriteria) {
+        // plotshape(minerviniCriteria, "Minervini Buy", shape.triangleup, location.belowbar, color.green, size.large)
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'large' });
+        // bgcolor(minerviniCriteria ? color.new(color.green, 90) : na)
+        s.bgColors.push({ time: b.time, color: BG });
+      }
+      const t = b.time;
+      s.p0[i] = { time: t, value: ma10, color: MA10_COL };
+      s.p1[i] = { time: t, value: ma20, color: MA20_COL };
+      s.p2[i] = { time: t, value: ma50, color: color.blue };
+      s.p3[i] = { time: t, value: ma150, color: color.green };
+      s.p4[i] = { time: t, value: ma200, color: color.red };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.p0.slice(), plot1: s.p1.slice(), plot2: s.p2.slice(), plot3: s.p3.slice(), plot4: s.p4.slice() },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MarkMinerviniBuySignalInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MarkMinerviniBuySignalInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MarkMinerviniBuySignal = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

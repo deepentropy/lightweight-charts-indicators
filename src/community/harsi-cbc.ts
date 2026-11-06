@@ -16,9 +16,11 @@
  * nice :) HARSI Originally by @JayRogers. CBC Flip Originally by @friksa & @AsiaRoo
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, PlotCandleData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun, WindowSma } from '../live-run';
 
 export interface HarsiCbcInputs {
   /** RSI length of the HARSI candles */
@@ -172,138 +174,176 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<HarsiCbcInputs> = {},
-): Omit<IndicatorResult, 'markers'> & {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & {
   markers: MarkerData[];
   plotCandles: Record<string, PlotCandleData[]>;
   bgColors: BgColorData[];
-} & { alerts: AlertConditionState[] } {
+} & { alerts: AlertConditionState[] };
+
+interface HarsiVars {
+  /** var bool cbc */
+  state: boolean;
+  smoothed: number;
+  prevCloseRsi: number;
+}
+
+interface HarsiRun extends BarRunState<HarsiVars> {
+  rsiPlot: ReturnType<typeof taStep.rsi>;
+  stoch: ReturnType<typeof taStep.stoch>;
+  smaK: WindowSma;
+  smaD: WindowSma;
+  rsiClose: ReturnType<typeof taStep.rsi>;
+  rsiHigh: ReturnType<typeof taStep.rsi>;
+  rsiLow: ReturnType<typeof taStep.rsi>;
+  O: number[];
+  C: number[];
+  candles: PlotCandleData[];
+  bgColors: BgColorData[];
+  markers: MarkerData[];
+  stochFill: string[];
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<HarsiCbcInputs>): BarStudy<HarsiRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // var bool cbc = false: flips on a close below the previous low / above the previous high
-  const cbc: boolean[] = new Array(n);
-  let state = false;
-  for (let i = 0; i < n; i++) {
-    const c = bars[i].close;
-    const lowPrev = i > 0 ? bars[i - 1].low : NaN;
-    const highPrev = i > 0 ? bars[i - 1].high : NaN;
-    if (state && lt(c, lowPrev)) state = false;
-    else if (!state && gt(c, highPrev)) state = true;
-    cbc[i] = state;
-  }
-
-  // f_zrsi(src, len) = ta.rsi(src, len) - 50
-  const zrsi = (src: Series, len: number) => A(ta.rsi(src, len)).map((v) => v - 50.0);
-
-  // f_rsi(i_source, i_lenRSI, i_mode): _smoothed := na(_smoothed[1]) ? _zrsi : (_smoothed[1] + _zrsi) / 2
-  const zrsiPlot = zrsi(getSourceSeries(bars, cfg.source), cfg.lenRSI);
-  const smoothed: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const prev = i > 0 ? smoothed[i - 1] : NaN;
-    smoothed[i] = isNaN(prev) ? zrsiPlot[i] : (prev + zrsiPlot[i]) / 2.0;
-  }
-  const rsi = cfg.mode ? smoothed : zrsiPlot;
-
-  // f_zstoch(RSI, i_stochLen, i_smoothK, i_stochFit); StochD = ta.sma(StochK, i_smoothD)
-  const rsiS = S(rsi);
-  const zstoch = A(ta.stoch(rsiS, rsiS, rsiS, cfg.stochLen)).map((v) => v - 50.0);
-  const stochK = A(ta.sma(S(zstoch), cfg.smoothK)).map((v) => (v / 100.0) * cfg.stochFit);
-  const stochD = A(ta.sma(S(stochK), cfg.smoothD));
-
+  const srcOf = barSource(cfg.source);
   // f_rsiHeikinAshi(i_lenHARSI)
   const len = cfg.lenHARSI;
-  const s = cfg.smoothing;
-  const closeRSI = zrsi(new Series(bars, (b) => b.close), len);
-  const highRaw = zrsi(new Series(bars, (b) => b.high), len);
-  const lowRaw = zrsi(new Series(bars, (b) => b.low), len);
-  const O: number[] = new Array(n);
-  const H: number[] = new Array(n);
-  const L: number[] = new Array(n);
-  const C: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const prevClose = i > 0 ? closeRSI[i - 1] : NaN;
-    const openRSI = isNaN(prevClose) ? closeRSI[i] : prevClose; // nz(_closeRSI[1], _closeRSI)
-    const highRSI = Math.max(highRaw[i], lowRaw[i]);
-    const lowRSI = Math.min(highRaw[i], lowRaw[i]);
-    C[i] = (openRSI + highRSI + lowRSI + closeRSI[i]) / 4.0;
-    // _open := na(_open[i_smoothing]) ? (_openRSI + _closeRSI) / 2 : ((_open[1] * i_smoothing) + _close[1]) / (i_smoothing + 1)
-    const openBack = i - s >= 0 ? O[i - s] : NaN;
-    O[i] = isNaN(openBack) ? (openRSI + closeRSI[i]) / 2.0 : (O[i - 1] * s + C[i - 1]) / (s + 1);
-    H[i] = Math.max(highRSI, Math.max(O[i], C[i]));
-    L[i] = Math.min(lowRSI, Math.min(O[i], C[i]));
-  }
-
-  const candles: PlotCandleData[] = [];
-  const bgColors: BgColorData[] = [];
-  const markers: MarkerData[] = [];
-  const stochFill: string[] = new Array(n);
-  const bearFlags: boolean[] = [];
-  const bullFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // plotcandle(O, H, L, C, "HARSI", bodyColour, wickColour, bordercolor = bodyColour): no candle when a value is na
-    if ([O[i], H[i], L[i], C[i]].every((v) => !isNaN(v))) {
-      const body = gt(C[i], O[i]) ? cfg.colUp : cfg.colDown;
-      candles.push({ time: t, open: O[i], high: H[i], low: L[i], close: C[i], color: body, wickColor: cfg.colWick,
-        borderColor: body });
-    }
-    // cbc[1] of the first bar is false (bool history)
-    const prev = i > 0 ? cbc[i - 1] : false;
-    const bullFlip = cbc[i] && !prev;
-    const bearFlip = !cbc[i] && prev;
-    bearFlags.push(bearFlip);
-    bullFlags.push(bullFlip);
-    if (cfg.showCbcBg && bullFlip) bgColors.push({ time: t, color: COL_BULL_BG });
-    else if (cfg.showCbcBg && bearFlip) bgColors.push({ time: t, color: COL_BEAR_BG });
-    if (cfg.showCbcShapes && bearFlip) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: COL_BEARS, size: 'small' });
-    }
-    if (cfg.showCbcShapes && bullFlip) {
-      markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: COL_BULLS, size: 'small' });
-    }
-    // fill(plot_stochK, plot_stochD, i_ribbon ? colStochFill : na)
-    stochFill[i] = cfg.ribbon ? (ge(stochK[i], stochD[i]) ? COL_STOCH_K_FILL : COL_STOCH_D_FILL) : 'transparent';
-  }
-
-  const line = (f: (i: number) => number, c: string) => bars.map((b, i) => ({ time: b.time, value: f(i), color: c }));
+  const sm = cfg.smoothing;
   const stochShadow = !cfg.ribbon ? COL_SHADOW : COL_NONE;
-  const constant = <T>(v: T) => new Array<T>(n).fill(v);
-
+  const stochKCol = !cfg.ribbon ? COL_STOCH_K : COL_NONE;
+  const stochDCol = !cfg.ribbon ? COL_STOCH_D : COL_NONE;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line((i) => (cfg.showHist ? rsi[i] : NaN), COL_HIST),
-      plot1: line((i) => (cfg.showPlot ? rsi[i] : NaN), COL_SHADOW),
-      plot2: line((i) => (cfg.showPlot ? rsi[i] : NaN), COL_RSI),
-      plot3: line((i) => (cfg.showStoch ? stochK[i] : NaN), stochShadow),
-      plot4: line((i) => (cfg.showStoch ? stochD[i] : NaN), stochShadow),
-      plot5: line((i) => (cfg.showStoch ? stochK[i] : NaN), !cfg.ribbon ? COL_STOCH_K : COL_NONE),
-      plot6: line((i) => (cfg.showStoch ? stochD[i] : NaN), !cfg.ribbon ? COL_STOCH_D : COL_NONE),
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const s: HarsiRun = {
+        rsiPlot: taStep.rsi(cfg.lenRSI), stoch: taStep.stoch(cfg.stochLen), smaK: new WindowSma(cfg.smoothK), smaD: new WindowSma(cfg.smoothD),
+        rsiClose: taStep.rsi(len), rsiHigh: taStep.rsi(len), rsiLow: taStep.rsi(len),
+        O: [], C: [], candles: [], bgColors: [], markers: [], stochFill: [], plots: Array.from({ length: 7 }, () => []),
+        flags: [[], []], times: [[], []],
+        steps: [], vars: { state: false, smoothed: NaN, prevCloseRsi: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.rsiPlot, s.stoch, s.smaK, s.smaD, s.rsiClose, s.rsiHigh, s.rsiLow];
+      s.lists = [s.candles, s.bgColors, s.markers, ...s.times];
+      s.series = [s.O, s.C, s.stochFill, ...s.plots, ...s.flags];
+      return s;
     },
-    hlines: [
-      { value: cfg.upperx, options: { title: 'OB Extreme', color: COL_EXTREME, linestyle: 'dashed' } },
-      { value: cfg.upper, options: { title: 'OB', color: COL_BAND, linestyle: 'dashed' } },
-      { value: 0, options: { title: 'Median', color: color.orange, linestyle: 'dotted' } },
-      { value: cfg.lower, options: { title: 'OS', color: COL_BAND, linestyle: 'dashed' } },
-      { value: cfg.lowerx, options: { title: 'OS Extreme', color: COL_EXTREME, linestyle: 'dashed' } },
-    ],
-    fills: [
-      { plot1: 'hline_upper', plot2: 'hline_upperx', options: { title: 'Background Fill OB' }, colors: constant(FILL_OB) },
-      { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'Background Channel' }, colors: constant(FILL_CHANNEL) },
-      { plot1: 'hline_lower', plot2: 'hline_lowerx', options: { title: 'Background Fill OS' }, colors: constant(FILL_OS) },
-      { plot1: 'plot5', plot2: 'plot6', options: { title: 'Stoch Ribbon' }, colors: stochFill },
-    ],
-    markers,
-    plotCandles: { harsi: candles },
-    bgColors,
-    // alertcondition(not cbc and cbc[1], 'Bears') / alertcondition(cbc and not cbc[1], 'Bulls')
-    alerts: alertStates(alertConditions, bars, [bearFlags, bullFlags]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const t = b.time;
+      // var bool cbc = false: flips on a close below the previous low / above the previous high
+      // cbc[1] of the first bar is false (bool history)
+      const prev = v.state;
+      const c = b.close;
+      const lowPrev = i > 0 ? bars[i - 1].low : NaN;
+      const highPrev = i > 0 ? bars[i - 1].high : NaN;
+      if (v.state && lt(c, lowPrev)) v.state = false;
+      else if (!v.state && gt(c, highPrev)) v.state = true;
+      const cbc = v.state;
+
+      // f_zrsi(src, len) = ta.rsi(src, len) - 50
+      // f_rsi(i_source, i_lenRSI, i_mode): _smoothed := na(_smoothed[1]) ? _zrsi : (_smoothed[1] + _zrsi) / 2
+      const zrsiPlot = s.rsiPlot.step(srcOf(b)) - 50.0;
+      v.smoothed = isNaN(v.smoothed) ? zrsiPlot : (v.smoothed + zrsiPlot) / 2.0;
+      const rsi = cfg.mode ? v.smoothed : zrsiPlot;
+
+      // f_zstoch(RSI, i_stochLen, i_smoothK, i_stochFit); StochD = ta.sma(StochK, i_smoothD)
+      const zstoch = s.stoch.step(rsi, rsi, rsi) - 50.0;
+      const stochK = (s.smaK.step(zstoch) / 100.0) * cfg.stochFit;
+      const stochD = s.smaD.step(stochK);
+
+      const closeRSI = s.rsiClose.step(b.close) - 50.0;
+      const highRaw = s.rsiHigh.step(b.high) - 50.0;
+      const lowRaw = s.rsiLow.step(b.low) - 50.0;
+      const prevClose = v.prevCloseRsi;
+      v.prevCloseRsi = closeRSI;
+      const openRSI = isNaN(prevClose) ? closeRSI : prevClose; // nz(_closeRSI[1], _closeRSI)
+      const highRSI = Math.max(highRaw, lowRaw);
+      const lowRSI = Math.min(highRaw, lowRaw);
+      const C = (openRSI + highRSI + lowRSI + closeRSI) / 4.0;
+      s.C[i] = C;
+      // _open := na(_open[i_smoothing]) ? (_openRSI + _closeRSI) / 2 : ((_open[1] * i_smoothing) + _close[1]) / (i_smoothing + 1)
+      // (the open of this bar itself is not set yet: na)
+      const openBack = Number.isInteger(sm) && sm >= 1 && i - sm >= 0 ? s.O[i - sm] : NaN;
+      const O = isNaN(openBack) ? (openRSI + closeRSI) / 2.0 : (s.O[i - 1] * sm + s.C[i - 1]) / (sm + 1);
+      s.O[i] = O;
+      const H = Math.max(highRSI, Math.max(O, C));
+      const L = Math.min(lowRSI, Math.min(O, C));
+
+      // plotcandle(O, H, L, C, "HARSI", bodyColour, wickColour, bordercolor = bodyColour): no candle when a value is na
+      if (!isNaN(O) && !isNaN(H) && !isNaN(L) && !isNaN(C)) {
+        const body = gt(C, O) ? cfg.colUp : cfg.colDown;
+        s.candles.push({ time: t, open: O, high: H, low: L, close: C, color: body, wickColor: cfg.colWick,
+          borderColor: body });
+      }
+      const bullFlip = cbc && !prev;
+      const bearFlip = !cbc && prev;
+      s.flags[0][i] = bearFlip;
+      s.flags[1][i] = bullFlip;
+      if (bearFlip) s.times[0].push(t as number);
+      if (bullFlip) s.times[1].push(t as number);
+      if (cfg.showCbcBg && bullFlip) s.bgColors.push({ time: t, color: COL_BULL_BG });
+      else if (cfg.showCbcBg && bearFlip) s.bgColors.push({ time: t, color: COL_BEAR_BG });
+      if (cfg.showCbcShapes && bearFlip) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: COL_BEARS, size: 'small' });
+      }
+      if (cfg.showCbcShapes && bullFlip) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: COL_BULLS, size: 'small' });
+      }
+      // fill(plot_stochK, plot_stochD, i_ribbon ? colStochFill : na)
+      s.stochFill[i] = cfg.ribbon ? (ge(stochK, stochD) ? COL_STOCH_K_FILL : COL_STOCH_D_FILL) : 'transparent';
+
+      const p = s.plots;
+      p[0][i] = { time: t, value: cfg.showHist ? rsi : NaN, color: COL_HIST };
+      p[1][i] = { time: t, value: cfg.showPlot ? rsi : NaN, color: COL_SHADOW };
+      p[2][i] = { time: t, value: cfg.showPlot ? rsi : NaN, color: COL_RSI };
+      p[3][i] = { time: t, value: cfg.showStoch ? stochK : NaN, color: stochShadow };
+      p[4][i] = { time: t, value: cfg.showStoch ? stochD : NaN, color: stochShadow };
+      p[5][i] = { time: t, value: cfg.showStoch ? stochK : NaN, color: stochKCol };
+      p[6][i] = { time: t, value: cfg.showStoch ? stochD : NaN, color: stochDCol };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const constant = <T>(v: T) => new Array<T>(n).fill(v);
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        hlines: [
+          { value: cfg.upperx, options: { title: 'OB Extreme', color: COL_EXTREME, linestyle: 'dashed' } },
+          { value: cfg.upper, options: { title: 'OB', color: COL_BAND, linestyle: 'dashed' } },
+          { value: 0, options: { title: 'Median', color: color.orange, linestyle: 'dotted' } },
+          { value: cfg.lower, options: { title: 'OS', color: COL_BAND, linestyle: 'dashed' } },
+          { value: cfg.lowerx, options: { title: 'OS Extreme', color: COL_EXTREME, linestyle: 'dashed' } },
+        ],
+        fills: [
+          { plot1: 'hline_upper', plot2: 'hline_upperx', options: { title: 'Background Fill OB' }, colors: constant(FILL_OB) },
+          { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'Background Channel' }, colors: constant(FILL_CHANNEL) },
+          { plot1: 'hline_lower', plot2: 'hline_lowerx', options: { title: 'Background Fill OS' }, colors: constant(FILL_OS) },
+          { plot1: 'plot5', plot2: 'plot6', options: { title: 'Stoch Ribbon' }, colors: s.stochFill.slice() },
+        ],
+        markers: s.markers.slice(),
+        plotCandles: { harsi: s.candles.slice() },
+        bgColors: s.bgColors.slice(),
+        // alertcondition(not cbc and cbc[1], 'Bears') / alertcondition(cbc and not cbc[1], 'Bulls')
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HarsiCbcInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<HarsiCbcInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -314,6 +354,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const HarsiCbc = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -19,11 +19,12 @@
  * Original notice: (c) LonesomeTheBlue
  */
 
-import { ta, str, math, compare, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, str, math, compare, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, LabelData, LineDrawingData } from '../types';
 import { mintickOf, type ChartContext } from '../chart-context';
 import { barInterval, barTime } from '../bar-time';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SupportResistanceDynamicV2Inputs {
   /** Pivot Period */
@@ -99,164 +100,198 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<SupportResistanceDynamicV2Inputs> = {},
-  chart?: ChartContext,
-): IndicatorResult & { markers: MarkerData[]; labels: LabelData[]; lines: LineDrawingData[] } & { alerts: AlertConditionState[] } {
+type Result = IndicatorResult & { markers: MarkerData[]; labels: LabelData[]; lines: LineDrawingData[] } & { alerts: AlertConditionState[] };
+
+interface SrVars {
+  /** The last pivot values (newest first), changed in place: copyVars copies it */
+  pivotVals: number[];
+  /** Levels drawn on the last pivot bar (a new array on each pivot bar; the lines and labels of older pivot bars are deleted) */
+  levels: number[];
+  levelsBar: number;
+}
+
+interface SrRun extends BarRunState<SrVars> {
+  mintick: number;
+  ph: PivotStep;
+  pl: PivotStep;
+  highest: ReturnType<typeof taStep.highest>;
+  lowest: ReturnType<typeof taStep.lowest>;
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<SupportResistanceDynamicV2Inputs>): BarStudy<SrRun, Result> {
   const {
     prd, ppsrc, maxNumPP, channelW, maxNumSR, minStrength, labelLoc, lineStyle, lineWidth, resistanceColor, supportColor, showPP,
   } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  // syminfo.mintick
-  const mintick = mintickOf(chart);
-
-  const src1 = new Series(bars, (b) => (ppsrc === 'High/Low' ? b.high : Math.max(b.close, b.open)));
-  const src2 = new Series(bars, (b) => (ppsrc === 'High/Low' ? b.low : Math.min(b.close, b.open)));
-  const phArr = ta.pivothigh(src1, prd, prd).toArray();
-  const plArr = ta.pivotlow(src2, prd, prd).toArray();
-  // Maximum channel width: a share of the 300-bar range (na for the first 299 bars: no pivot fits a channel)
-  const highest = ta.highest(new Series(bars, (b) => b.high), 300).toArray();
-  const lowest = ta.lowest(new Series(bars, (b) => b.low), 300).toArray();
-
-  const markers: MarkerData[] = [];
-  const pivotVals: number[] = [];
-  let srUp: number[] = [];
-  let srDn: number[] = [];
-  // Levels drawn on the last pivot bar (the lines and labels of older pivot bars are deleted)
-  let levels: number[] = [];
-  let levelsBar = -1;
-  // f_crossed_over() / f_crossed_under() on every bar, with the levels of the last pivot bar
-  const crossedOver: boolean[] = new Array(n).fill(false);
-  const crossedUnder: boolean[] = new Array(n).fill(false);
-  const checkCrosses = (i: number) => {
-    const close = bars[i].close;
-    const close1 = i > 0 ? bars[i - 1].close : NaN;
-    for (const mid of levels) {
-      if (compare.le(close1, mid) && compare.gt(close, mid)) crossedOver[i] = true;
-      if (compare.ge(close1, mid) && compare.lt(close, mid)) crossedUnder[i] = true;
-    }
-  };
-
-  for (let i = 0; i < n; i++) {
-    const ph = phArr[i] ?? NaN;
-    const pl = plArr[i] ?? NaN;
-    // Pine bool(x): false for na and 0
-    const isPh = !Number.isNaN(ph) && ph !== 0;
-    const isPl = !Number.isNaN(pl) && pl !== 0;
-
-    // plotshape(ph and showpp, text = 'H', style = shape.labeldown, color = na, textcolor = color.red,
-    //   location = location.abovebar, offset = -prd) and the same with 'L' / labelup / color.lime / belowbar
-    if (showPP && i - prd >= 0) {
-      if (isPh) markers.push({ time: bars[i - prd].time, position: 'aboveBar', shape: 'labelDown', color: 'transparent', text: 'H', textColor: RED });
-      if (isPl) markers.push({ time: bars[i - prd].time, position: 'belowBar', shape: 'labelUp', color: 'transparent', text: 'L', textColor: LIME });
-    }
-
-    if (!isPh && !isPl) {
-      checkCrosses(i);
-      continue;
-    }
-
-    pivotVals.unshift(isPh ? ph : pl);
-    if (pivotVals.length > maxNumPP) pivotVals.pop();
-
-    const cwidth = ((highest[i] ?? NaN) - (lowest[i] ?? NaN)) * channelW / 100;
-    srUp = [];
-    srDn = [];
-    const srStrength: number[] = [];
-
-    for (let x = 0; x < pivotVals.length; x++) {
-      // get_sr_vals(x): the channel around pivot x and its number of pivots
-      let lo = pivotVals[x];
-      let hi = lo;
-      let strength = 0;
-      for (let y = 0; y < pivotVals.length; y++) {
-        const cpp = pivotVals[y];
-        const wdth = compare.le(cpp, lo) ? hi - cpp : cpp - lo;
-        if (compare.le(wdth, cwidth)) {
-          if (compare.le(cpp, hi)) lo = Math.min(lo, cpp);
-          else hi = Math.max(hi, cpp);
-          strength += 1;
-        }
-      }
-
-      // check_sr(hi, lo, strength): the first kept channel that overlaps is removed when it is not stronger,
-      // else the new channel is dropped
-      let keep = true;
-      for (let k = 0; k < srUp.length; k++) {
-        const inUp = compare.ge(srUp[k], lo) && compare.le(srUp[k], hi);
-        const inDn = compare.ge(srDn[k], lo) && compare.le(srDn[k], hi);
-        if (inUp || inDn) {
-          if (strength >= srStrength[k]) {
-            srStrength.splice(k, 1);
-            srUp.splice(k, 1);
-            srDn.splice(k, 1);
-          } else {
-            keep = false;
-          }
-          break;
-        }
-      }
-      if (!keep) continue;
-
-      // find_loc(strength): position in the list sorted by strength (strongest first)
-      let loc = srStrength.length;
-      for (let k = srStrength.length - 1; k >= 0; k--) {
-        if (strength <= srStrength[k]) break;
-        loc = k;
-      }
-      if (loc < maxNumSR && strength >= minStrength) {
-        srStrength.splice(loc, 0, strength);
-        srUp.splice(loc, 0, hi);
-        srDn.splice(loc, 0, lo);
-        if (srStrength.length > maxNumSR) {
-          srStrength.pop();
-          srUp.pop();
-          srDn.pop();
-        }
-      }
-    }
-
-    levels = srUp.map((up, x) => math.round_to_mintick((up + srDn[x]) / 2, mintick));
-    levelsBar = i;
-    checkCrosses(i);
-  }
-
-  // Lines and labels alive after the last bar. Every bar updates the label text, position and colours and the
-  // line colour with the close of that bar.
-  const labels: LabelData[] = [];
-  const lines: LineDrawingData[] = [];
-  if (n > 0 && levelsBar >= 0) {
-    const close = bars[n - 1].close;
-    const interval = barInterval(bars);
-    const style = lineStyle === 'Dashed' ? 'dashed' : lineStyle === 'Solid' ? 'solid' : 'dotted';
-    const labelTime = barTime(bars, n - 1 + labelLoc, interval);
-    for (const mid of levels) {
-      const above = compare.ge(mid, close);
-      const rate = 100 * (mid - close) / close;
-      if (Number.isFinite(labelTime) && Number.isFinite(mid)) {
-        labels.push({
-          time: labelTime, price: mid, text: str.tostring(mid) + '(' + str.tostring(rate, '#.##') + '%)',
-          color: above ? RED : LIME, textColor: above ? WHITE : BLACK, style: above ? 'label_down' : 'label_up',
-        });
-      }
-      if (Number.isFinite(mid)) {
-        lines.push({
-          time1: bars[levelsBar].time, price1: mid, time2: bars[levelsBar - 1].time, price2: mid,
-          extend: 'both', color: above ? resistanceColor : supportColor, style, width: lineWidth,
-        });
-      }
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    labels,
-    lines,
-    alerts: alertStates(alertConditions, bars, [crossedOver, crossedUnder, crossedOver.map((v, i) => v || crossedUnder[i])]),
+    init(_bars, chart) {
+      const ph = new PivotStep(prd, prd, true);
+      const pl = new PivotStep(prd, prd, false);
+      const highest = taStep.highest();
+      const lowest = taStep.lowest();
+      const s: SrRun = {
+        // syminfo.mintick
+        mintick: mintickOf(chart),
+        ph, pl, highest, lowest, markers: [], flags: [[], [], []], times: [[], [], []],
+        steps: [ph, pl, highest, lowest],
+        vars: { pivotVals: [], levels: [], levelsBar: -1 },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const ph = s.ph.step(i, ppsrc === 'High/Low' ? b.high : Math.max(b.close, b.open));
+      const pl = s.pl.step(i, ppsrc === 'High/Low' ? b.low : Math.min(b.close, b.open));
+      // Maximum channel width: a share of the 300-bar range (na for the first 299 bars: no pivot fits a channel)
+      const highest = s.highest.step(b.high, 300);
+      const lowest = s.lowest.step(b.low, 300);
+      // Pine bool(x): false for na and 0
+      const isPh = !Number.isNaN(ph) && ph !== 0;
+      const isPl = !Number.isNaN(pl) && pl !== 0;
+
+      // plotshape(ph and showpp, text = 'H', style = shape.labeldown, color = na, textcolor = color.red,
+      //   location = location.abovebar, offset = -prd) and the same with 'L' / labelup / color.lime / belowbar
+      if (showPP && i - prd >= 0) {
+        if (isPh) s.markers.push({ time: bars[i - prd].time, position: 'aboveBar', shape: 'labelDown', color: 'transparent', text: 'H', textColor: RED });
+        if (isPl) s.markers.push({ time: bars[i - prd].time, position: 'belowBar', shape: 'labelUp', color: 'transparent', text: 'L', textColor: LIME });
+      }
+
+      if (isPh || isPl) {
+        const pivotVals = v.pivotVals;
+        pivotVals.unshift(isPh ? ph : pl);
+        if (pivotVals.length > maxNumPP) pivotVals.pop();
+
+        const cwidth = (highest - lowest) * channelW / 100;
+        const srUp: number[] = [];
+        const srDn: number[] = [];
+        const srStrength: number[] = [];
+
+        for (let x = 0; x < pivotVals.length; x++) {
+          // get_sr_vals(x): the channel around pivot x and its number of pivots
+          let lo = pivotVals[x];
+          let hi = lo;
+          let strength = 0;
+          for (let y = 0; y < pivotVals.length; y++) {
+            const cpp = pivotVals[y];
+            const wdth = compare.le(cpp, lo) ? hi - cpp : cpp - lo;
+            if (compare.le(wdth, cwidth)) {
+              if (compare.le(cpp, hi)) lo = Math.min(lo, cpp);
+              else hi = Math.max(hi, cpp);
+              strength += 1;
+            }
+          }
+
+          // check_sr(hi, lo, strength): the first kept channel that overlaps is removed when it is not stronger,
+          // else the new channel is dropped
+          let keep = true;
+          for (let k = 0; k < srUp.length; k++) {
+            const inUp = compare.ge(srUp[k], lo) && compare.le(srUp[k], hi);
+            const inDn = compare.ge(srDn[k], lo) && compare.le(srDn[k], hi);
+            if (inUp || inDn) {
+              if (strength >= srStrength[k]) {
+                srStrength.splice(k, 1);
+                srUp.splice(k, 1);
+                srDn.splice(k, 1);
+              } else {
+                keep = false;
+              }
+              break;
+            }
+          }
+          if (!keep) continue;
+
+          // find_loc(strength): position in the list sorted by strength (strongest first)
+          let loc = srStrength.length;
+          for (let k = srStrength.length - 1; k >= 0; k--) {
+            if (strength <= srStrength[k]) break;
+            loc = k;
+          }
+          if (loc < maxNumSR && strength >= minStrength) {
+            srStrength.splice(loc, 0, strength);
+            srUp.splice(loc, 0, hi);
+            srDn.splice(loc, 0, lo);
+            if (srStrength.length > maxNumSR) {
+              srStrength.pop();
+              srUp.pop();
+              srDn.pop();
+            }
+          }
+        }
+
+        v.levels = srUp.map((up, x) => math.round_to_mintick((up + srDn[x]) / 2, s.mintick));
+        v.levelsBar = i;
+      }
+
+      // f_crossed_over() / f_crossed_under() on every bar, with the levels of the last pivot bar
+      const close = b.close;
+      const close1 = i > 0 ? bars[i - 1].close : NaN;
+      let over = false;
+      let under = false;
+      for (const mid of v.levels) {
+        if (compare.le(close1, mid) && compare.gt(close, mid)) over = true;
+        if (compare.ge(close1, mid) && compare.lt(close, mid)) under = true;
+      }
+      const flags = [over, under, over || under];
+      for (let k = 0; k < 3; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(b.time as number);
+      }
+    },
+    copyVars: (v) => ({ ...v, pivotVals: v.pivotVals.slice() }),
+    result(s, bars) {
+      const n = bars.length;
+      const { levels, levelsBar } = s.vars;
+      // Lines and labels alive after the last bar. Every bar updates the label text, position and colours and the
+      // line colour with the close of that bar.
+      const labels: LabelData[] = [];
+      const lines: LineDrawingData[] = [];
+      if (n > 0 && levelsBar >= 0) {
+        const close = bars[n - 1].close;
+        const interval = barInterval(bars);
+        const style = lineStyle === 'Dashed' ? 'dashed' : lineStyle === 'Solid' ? 'solid' : 'dotted';
+        const labelTime = barTime(bars, n - 1 + labelLoc, interval);
+        for (const mid of levels) {
+          const above = compare.ge(mid, close);
+          const rate = 100 * (mid - close) / close;
+          if (Number.isFinite(labelTime) && Number.isFinite(mid)) {
+            labels.push({
+              time: labelTime, price: mid, text: str.tostring(mid) + '(' + str.tostring(rate, '#.##') + '%)',
+              color: above ? RED : LIME, textColor: above ? WHITE : BLACK, style: above ? 'label_down' : 'label_up',
+            });
+          }
+          if (Number.isFinite(mid)) {
+            lines.push({
+              time1: bars[levelsBar].time, price1: mid, time2: bars[levelsBar - 1].time, price2: mid,
+              extend: 'both', color: above ? resistanceColor : supportColor, style, width: lineWidth,
+            });
+          }
+        }
+      }
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        labels,
+        lines,
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SupportResistanceDynamicV2Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SupportResistanceDynamicV2Inputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 /** The original's alertconditions */
@@ -266,4 +301,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert2', title: 'Support or Resistance Broken', message: 'Support or Resistance Broken' },
 ];
 
-export const SupportResistanceDynamicV2 = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const SupportResistanceDynamicV2 = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

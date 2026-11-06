@@ -14,9 +14,11 @@
  * Original notice: © LyroRS
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, PlotCandleData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type GravityWellSignalMode = 'Trend' | 'Midline' | 'Bands';
 export type GravityWellPalette = 'Classic' | 'Mystic' | 'Accented' | 'Royal';
@@ -108,15 +110,38 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<GravityWellTrendInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> }
-  & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> }
+  & { alerts: AlertConditionState[] };
+
+interface GravityVars {
+  /** var int trend = 0 */
+  trend: number;
+  /** Last bar where src and bandLo / bandHi were both not na (ta.crossover / ta.crossunder) */
+  pSrcLo: number;
+  pLo: number;
+  pSrcHi: number;
+  pHi: number;
+}
+
+interface GravityRun extends BarRunState<GravityVars> {
+  num: ReturnType<typeof taStep.sma>;
+  den: ReturnType<typeof taStep.sma>;
+  atr: ReturnType<typeof taStep.atr>;
+  centerArr: number[];
+  trendArr: number[];
+  plots: Point[][];
+  /** Gradient fill values: bandHi, bandHiM, center, bandLoM, bandLo (finite or NaN) */
+  levels: number[][];
+  markers: MarkerData[];
+  candles: PlotCandleData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<GravityWellTrendInputs>): BarStudy<GravityRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
+  const value = barSource(cfg.src);
 
   // Palette
   let upC = cfg.colMode === 'Classic' ? '#00E676' : cfg.colMode === 'Mystic' ? '#30FDCF'
@@ -127,129 +152,158 @@ export function calculate(
     upC = cfg.customUp;
     dnC = cfg.customDown;
   }
-
-  // Gravity engine
-  const src = A(getSourceSeries(bars, cfg.src));
-  const vol = bars.map((b) => b.volume ?? NaN);
-  const num = A(ta.sma(S(src.map((s, i) => s * vol[i])), cfg.length));
-  const den = A(ta.sma(S(vol), cfg.length));
-  // center = ta.sma(src * volume, length) / ta.sma(volume, length): a plain division (x / 0 is +-infinity)
-  const center = num.map((v, i) => v / den[i]);
-  const atr = A(ta.atr(bars, cfg.atrLen));
-  const dist = src.map((s, i) => (s - center[i]) / atr[i]);
-  const bandHi = center.map((c, i) => c + cfg.bandMult * atr[i]);
-  const bandHiM = center.map((c, i) => c + cfg.bandMult * 0.5 * atr[i]);
-  const bandLoM = center.map((c, i) => c - cfg.bandMult * 0.5 * atr[i]);
-  const bandLo = center.map((c, i) => c - cfg.bandMult * atr[i]);
-
-  // Trend engine
-  const trendArr: number[] = new Array(n);
-  let trend = 0; // var int trend = 0
-  // ta.crossover(src, bandLo) / ta.crossunder(src, bandHi) run on every bar: compared with the last bar where both
-  // values were not na (a tie there counts); exact comparisons (no tolerance)
-  let pSrcLo = NaN;
-  let pLo = NaN;
-  let pSrcHi = NaN;
-  let pHi = NaN;
-  for (let i = 0; i < n; i++) {
-    const s = src[i];
-    const reclaimUp = s > bandLo[i] && pSrcLo <= pLo;
-    const reclaimDn = s < bandHi[i] && pSrcHi >= pHi;
-    if (!isNaN(s) && !isNaN(bandLo[i])) {
-      pSrcLo = s;
-      pLo = bandLo[i];
-    }
-    if (!isNaN(s) && !isNaN(bandHi[i])) {
-      pSrcHi = s;
-      pHi = bandHi[i];
-    }
-    const prevCenter = i > 0 ? center[i - 1] : NaN;
-    if (cfg.sigMode === 'Trend') {
-      if (gt(dist[i], cfg.mult) && gt(center[i], prevCenter)) trend = 1;
-      else if (lt(dist[i], -cfg.mult) && lt(center[i], prevCenter)) trend = -1;
-    } else if (cfg.sigMode === 'Midline') {
-      trend = gt(s, center[i]) ? 1 : lt(s, center[i]) ? -1 : trend;
-    } else if (reclaimUp) {
-      trend = 1;
-    } else if (reclaimDn) {
-      trend = -1;
-    }
-    trendArr[i] = trend;
-  }
-
-  // Visuals
-  const trendCol = trendArr.map((tr) => (tr === 1 ? upC : tr === -1 ? dnC : color.gray));
-  const gradCol = trendCol.map((c, i) => {
-    // strength = math.min(math.abs(dist) / bandMult, 1.0); color.from_gradient(strength, 0, 1, color.new(trendCol, 65), trendCol)
-    const strength = Math.min(Math.abs(dist[i]) / cfg.bandMult, 1.0);
-    return String(color.from_gradient(strength, 0, 1, color.new(c, 65), c));
-  });
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const t = (i: number) => bars[i].time;
-  const band = (arr: number[], col: string) => bars.map((_b, i) => ({
-    time: t(i), value: cfg.showBands ? fin(arr[i]) : NaN, color: col,
-  }));
-  const plots = {
-    // plot(center, 'Center [Outer Glow]', color.new(trendCol, 90), linewidth = 10, editable = false)
-    plot0: bars.map((_b, i) => ({ time: t(i), value: fin(center[i]), color: String(color.new(trendCol[i], 90)) })),
-    // plot(center, 'Center [Glow]', color.new(trendCol, 78), linewidth = 5, editable = false)
-    plot1: bars.map((_b, i) => ({ time: t(i), value: fin(center[i]), color: String(color.new(trendCol[i], 78)) })),
-    // plot(center, 'Gravity Center', gradCol, linewidth = 2)
-    plot2: bars.map((_b, i) => ({ time: t(i), value: fin(center[i]), color: gradCol[i] })),
-    plot3: band(bandHi, String(color.new(dnC, 35))),
-    plot4: band(bandHiM, String(color.new(dnC, 65))),
-    plot5: band(bandLoM, String(color.new(upC, 65))),
-    plot6: band(bandLo, String(color.new(upC, 35))),
-  };
-
-  // fill(p1, p2, top_value, bottom_value, top_color, bottom_color)
-  const grad = (p1: string, p2: string, top: number[], bottom: number[], topCol: string, bottomCol: string, title: string) => ({
-    plot1: p1, plot2: p2, options: { title },
-    gradient: {
-      topValue: top.map(fin), bottomValue: bottom.map(fin),
-      topColor: new Array<string | null>(n).fill(topCol), bottomColor: new Array<string | null>(n).fill(bottomCol),
-    },
-  });
-  const fills = [
-    grad('plot3', 'plot4', bandHi, bandHiM, String(color.new(dnC, 58)), String(color.new(dnC, 91)), 'Upper Outer Zone'),
-    grad('plot4', 'plot2', bandHiM, center, String(color.new(dnC, 91)), String(color.new(dnC, 99)), 'Upper Inner Zone'),
-    grad('plot2', 'plot5', center, bandLoM, String(color.new(upC, 99)), String(color.new(upC, 91)), 'Lower Inner Zone'),
-    grad('plot5', 'plot6', bandLoM, bandLo, String(color.new(upC, 91)), String(color.new(upC, 58)), 'Lower Outer Zone'),
-  ];
-
-  const markers: MarkerData[] = [];
-  const candles: PlotCandleData[] = [];
-  const upFlags: boolean[] = [];
-  const downFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    // flipUp = trend == 1 and trend[1] != 1 (trend[1] is na on the first bar: na != 1 is false)
-    const flipUp = i > 0 && trendArr[i] === 1 && trendArr[i - 1] !== 1;
-    const flipDown = i > 0 && trendArr[i] === -1 && trendArr[i - 1] !== -1;
-    upFlags.push(flipUp);
-    downFlags.push(flipDown);
-    if (cfg.showSignals && flipUp) {
-      markers.push({ time: t(i), position: 'belowBar', shape: 'labelUp', color: upC, text: '𝓛𝓸𝓷𝓰', textColor: '#000000', size: 'small' });
-    }
-    if (cfg.showSignals && flipDown) {
-      markers.push({ time: t(i), position: 'aboveBar', shape: 'labelDown', color: dnC, text: '𝓢𝓱𝓸𝓻𝓽', textColor: '#000000', size: 'small' });
-    }
-    // plotcandle(open, high, low, close, 'Candle Plot', candleColor ? gradCol : na, candleColor ? gradCol : na,
-    //   bordercolor = candleColor ? gradCol : na, display = display.pane, force_overlay = true)
-    const c = cfg.candleColor ? gradCol[i] : 'transparent';
-    const b = bars[i];
-    candles.push({ time: t(i), open: b.open, high: b.high, low: b.low, close: b.close,
-      color: c, wickColor: c, borderColor: c, forceOverlay: true });
-  }
+  const bandCols = [String(color.new(dnC, 35)), String(color.new(dnC, 65)), String(color.new(upC, 65)), String(color.new(upC, 35))];
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    markers,
-    plotCandles: { candlePlot: candles },
-    // alertcondition(flipUp) / alertcondition(flipDown) / alertcondition(flipUp or flipDown)
-    alerts: alertStates(alertConditions, bars, [upFlags, downFlags, upFlags.map((f, i) => f || downFlags[i])]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const num = taStep.sma();
+      const den = taStep.sma();
+      const atr = taStep.atr(cfg.atrLen);
+      const s: GravityRun = {
+        num, den, atr, centerArr: [], trendArr: [], plots: Array.from({ length: 7 }, () => []),
+        levels: Array.from({ length: 5 }, () => []), markers: [], candles: [], flags: [[], [], []], times: [[], [], []],
+        steps: [num, den, atr], vars: { trend: 0, pSrcLo: NaN, pLo: NaN, pSrcHi: NaN, pHi: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.centerArr, s.trendArr, ...s.plots, ...s.levels, s.candles, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const v = s.vars;
+      // Gravity engine
+      const src = value(b);
+      const vol = b.volume ?? NaN;
+      // center = ta.sma(src * volume, length) / ta.sma(volume, length): a plain division (x / 0 is +-infinity)
+      const center = s.num.step(src * vol, cfg.length) / s.den.step(vol, cfg.length);
+      s.centerArr[i] = center;
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const dist = (src - center) / atr;
+      const bandHi = center + cfg.bandMult * atr;
+      const bandHiM = center + cfg.bandMult * 0.5 * atr;
+      const bandLoM = center - cfg.bandMult * 0.5 * atr;
+      const bandLo = center - cfg.bandMult * atr;
+
+      // Trend engine
+      // ta.crossover(src, bandLo) / ta.crossunder(src, bandHi) run on every bar: compared with the last bar where both
+      // values were not na (a tie there counts); exact comparisons (no tolerance)
+      const reclaimUp = src > bandLo && v.pSrcLo <= v.pLo;
+      const reclaimDn = src < bandHi && v.pSrcHi >= v.pHi;
+      if (!isNaN(src) && !isNaN(bandLo)) {
+        v.pSrcLo = src;
+        v.pLo = bandLo;
+      }
+      if (!isNaN(src) && !isNaN(bandHi)) {
+        v.pSrcHi = src;
+        v.pHi = bandHi;
+      }
+      const prevCenter = i > 0 ? s.centerArr[i - 1] : NaN;
+      let trend = v.trend;
+      if (cfg.sigMode === 'Trend') {
+        if (gt(dist, cfg.mult) && gt(center, prevCenter)) trend = 1;
+        else if (lt(dist, -cfg.mult) && lt(center, prevCenter)) trend = -1;
+      } else if (cfg.sigMode === 'Midline') {
+        trend = gt(src, center) ? 1 : lt(src, center) ? -1 : trend;
+      } else if (reclaimUp) {
+        trend = 1;
+      } else if (reclaimDn) {
+        trend = -1;
+      }
+      v.trend = trend;
+      s.trendArr[i] = trend;
+
+      // Visuals
+      const trendCol = trend === 1 ? upC : trend === -1 ? dnC : color.gray;
+      // strength = math.min(math.abs(dist) / bandMult, 1.0); color.from_gradient(strength, 0, 1, color.new(trendCol, 65), trendCol)
+      const strength = Math.min(Math.abs(dist) / cfg.bandMult, 1.0);
+      const gradCol = String(color.from_gradient(strength, 0, 1, color.new(trendCol, 65), trendCol));
+      const c = fin(center);
+      const p = s.plots;
+      // plot(center, 'Center [Outer Glow]', color.new(trendCol, 90), linewidth = 10, editable = false)
+      p[0][i] = { time, value: c, color: String(color.new(trendCol, 90)) };
+      // plot(center, 'Center [Glow]', color.new(trendCol, 78), linewidth = 5, editable = false)
+      p[1][i] = { time, value: c, color: String(color.new(trendCol, 78)) };
+      // plot(center, 'Gravity Center', gradCol, linewidth = 2)
+      p[2][i] = { time, value: c, color: gradCol };
+      const hi = fin(bandHi);
+      const hiM = fin(bandHiM);
+      const loM = fin(bandLoM);
+      const lo = fin(bandLo);
+      p[3][i] = { time, value: cfg.showBands ? hi : NaN, color: bandCols[0] };
+      p[4][i] = { time, value: cfg.showBands ? hiM : NaN, color: bandCols[1] };
+      p[5][i] = { time, value: cfg.showBands ? loM : NaN, color: bandCols[2] };
+      p[6][i] = { time, value: cfg.showBands ? lo : NaN, color: bandCols[3] };
+      s.levels[0][i] = hi;
+      s.levels[1][i] = hiM;
+      s.levels[2][i] = c;
+      s.levels[3][i] = loM;
+      s.levels[4][i] = lo;
+
+      // flipUp = trend == 1 and trend[1] != 1 (trend[1] is na on the first bar: na != 1 is false)
+      const flipUp = i > 0 && trend === 1 && s.trendArr[i - 1] !== 1;
+      const flipDown = i > 0 && trend === -1 && s.trendArr[i - 1] !== -1;
+      if (cfg.showSignals && flipUp) {
+        s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: upC, text: '𝓛𝓸𝓷𝓰', textColor: '#000000', size: 'small' });
+      }
+      if (cfg.showSignals && flipDown) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: dnC, text: '𝓢𝓱𝓸𝓻𝓽', textColor: '#000000', size: 'small' });
+      }
+      // plotcandle(open, high, low, close, 'Candle Plot', candleColor ? gradCol : na, candleColor ? gradCol : na,
+      //   bordercolor = candleColor ? gradCol : na, display = display.pane, force_overlay = true)
+      const cc = cfg.candleColor ? gradCol : 'transparent';
+      s.candles[i] = { time, open: b.open, high: b.high, low: b.low, close: b.close,
+        color: cc, wickColor: cc, borderColor: cc, forceOverlay: true };
+      // alertcondition(flipUp) / alertcondition(flipDown) / alertcondition(flipUp or flipDown)
+      const flags = [flipUp, flipDown, flipUp || flipDown];
+      for (let k = 0; k < 3; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      // fill(p1, p2, top_value, bottom_value, top_color, bottom_color)
+      const grad = (p1: string, p2: string, top: number[], bottom: number[], topCol: string, bottomCol: string, title: string) => ({
+        plot1: p1, plot2: p2, options: { title },
+        gradient: {
+          topValue: top.slice(), bottomValue: bottom.slice(),
+          topColor: new Array<string | null>(n).fill(topCol), bottomColor: new Array<string | null>(n).fill(bottomCol),
+        },
+      });
+      const [bandHi, bandHiM, center, bandLoM, bandLo] = s.levels;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: [
+          grad('plot3', 'plot4', bandHi, bandHiM, String(color.new(dnC, 58)), String(color.new(dnC, 91)), 'Upper Outer Zone'),
+          grad('plot4', 'plot2', bandHiM, center, String(color.new(dnC, 91)), String(color.new(dnC, 99)), 'Upper Inner Zone'),
+          grad('plot2', 'plot5', center, bandLoM, String(color.new(upC, 99)), String(color.new(upC, 91)), 'Lower Inner Zone'),
+          grad('plot5', 'plot6', bandLoM, bandLo, String(color.new(upC, 91)), String(color.new(upC, 58)), 'Lower Outer Zone'),
+        ],
+        markers: s.markers.slice(),
+        plotCandles: { candlePlot: s.candles.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GravityWellTrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<GravityWellTrendInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> }
+  & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -261,6 +315,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const GravityWellTrend = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

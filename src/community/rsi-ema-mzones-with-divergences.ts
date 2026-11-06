@@ -15,12 +15,13 @@
  */
 
 import {
-  ta, Series, color, getSourceSeries,
+  taStep, color,
   type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { barInterval, barTime } from '../bar-time';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RsiEmaMzonesWithDivergencesInputs {
   /** RSI period */
@@ -123,125 +124,186 @@ const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS) &&
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RsiEmaMzonesWithDivergencesInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface RsiMzVars {
+  /** _inRange(found[1]): ta.barssince(found[1] == true), on every bar */
+  plBars: number;
+  phBars: number;
+  /** ta.valuewhen(found, x[lbR], 1): the last two values of x at the found bars (older first) */
+  plRsi: readonly number[];
+  plLow: readonly number[];
+  phRsi: readonly number[];
+  phHigh: readonly number[];
+}
+
+interface RsiMzRun extends BarRunState<RsiMzVars> {
+  up: ReturnType<typeof taStep.rma>;
+  down: ReturnType<typeof taStep.rma>;
+  ema: ReturnType<typeof taStep.ema>;
+  pl: PivotStep;
+  ph: PivotStep;
+  src: number[];
+  rsi: number[];
+  out: number[];
+  plFound: boolean[];
+  phFound: boolean[];
+  plot0: Point[];
+  plot1: Point[];
+  plotRegBull: Point[];
+  plotHidBull: Point[];
+  plotRegBear: Point[];
+  plotHidBear: Point[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+/** The history of a ta.valuewhen with one more value (the last two kept) */
+const pushed = (h: readonly number[], v: number): readonly number[] => (h.length < 2 ? [...h, v] : [h[1]!, v]);
+const prev = (a: readonly number[]) => (a.length >= 2 ? a[a.length - 2]! : NaN);
+
+function study(inputs: Partial<RsiEmaMzonesWithDivergencesInputs>): BarStudy<RsiMzRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const { lbL, lbR, rangeLower, rangeUpper } = cfg;
-
-  // up = ta.rma(math.max(ta.change(src), 0), len); down = ta.rma(-math.min(ta.change(src), 0), len)
-  const src = A(getSourceSeries(bars, cfg.src));
-  const ch = src.map((v, i) => (i > 0 ? v - src[i - 1] : NaN));
-  const up = A(ta.rma(S(ch.map((c) => (isNaN(c) ? NaN : Math.max(c, 0)))), cfg.len));
-  const down = A(ta.rma(S(ch.map((c) => (isNaN(c) ? NaN : -Math.min(c, 0)))), cfg.len));
-  // rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
-  const rsi = up.map((u, i) => (eq(down[i], 0) ? 100 : eq(u, 0) ? 0 : 100 - 100 / (1 + u / down[i])));
-  const out = A(ta.ema(S(rsi), cfg.lenema));
-
-  const rsiS = S(rsi);
-  const plFound = A(ta.pivotlow(rsiS, lbL, lbR)).map((v) => !isNaN(v));
-  const phFound = A(ta.pivothigh(rsiS, lbL, lbR)).map((v) => !isNaN(v));
-
-  const interval = barInterval(bars);
-  const plotRegBull: Point[] = [];
-  const plotHidBull: Point[] = [];
-  const plotRegBear: Point[] = [];
-  const plotHidBear: Point[] = [];
-  const markers: MarkerData[] = [];
-
-  // _inRange(plFound[1]): ta.barssince(plFound[1] == true), on every bar
-  let plBars = NaN;
-  let phBars = NaN;
-  // ta.valuewhen(found, x[lbR], 1): x at the previous found bar (the latest found bar can be the current one)
-  const plRsi: number[] = [];
-  const plLow: number[] = [];
-  const phRsi: number[] = [];
-  const phHigh: number[] = [];
-  const prev = (a: number[]) => (a.length >= 2 ? a[a.length - 2] : NaN);
-  // bullCondAlert, hiddenBullCondAlert, bearCondAlert, hiddenBearCondAlert (without the "Plot ..." options)
-  const alertFlags: boolean[][] = [[], [], [], []];
-
-  for (let i = 0; i < n; i++) {
-    if (i > 0 && plFound[i - 1]) plBars = 0;
-    else if (!isNaN(plBars)) plBars++;
-    if (i > 0 && phFound[i - 1]) phBars = 0;
-    else if (!isNaN(phBars)) phBars++;
-    const inRangePl = rangeLower <= plBars && plBars <= rangeUpper;
-    const inRangePh = rangeLower <= phBars && phBars <= rangeUpper;
-
-    const r = i - lbR >= 0 ? rsi[i - lbR] : NaN; // rsi[lbR]
-    const lowR = i - lbR >= 0 ? bars[i - lbR].low : NaN;
-    const highR = i - lbR >= 0 ? bars[i - lbR].high : NaN;
-    if (plFound[i]) {
-      plRsi.push(r);
-      plLow.push(lowR);
-    }
-    if (phFound[i]) {
-      phRsi.push(r);
-      phHigh.push(highR);
-    }
-    const vwPlRsi = prev(plRsi);
-    const vwPlLow = prev(plLow);
-    const vwPhRsi = prev(phRsi);
-    const vwPhHigh = prev(phHigh);
-
-    const bullCondAlert = lt(lowR, vwPlLow) && gt(r, vwPlRsi) && inRangePl && plFound[i];
-    const hiddenBullCondAlert = gt(lowR, vwPlLow) && lt(r, vwPlRsi) && inRangePl && plFound[i];
-    const bearCondAlert = gt(highR, vwPhHigh) && lt(r, vwPhRsi) && inRangePh && phFound[i];
-    const hiddenBearCondAlert = lt(highR, vwPhHigh) && gt(r, vwPhRsi) && inRangePh && phFound[i];
-    alertFlags[0].push(bullCondAlert);
-    alertFlags[1].push(hiddenBullCondAlert);
-    alertFlags[2].push(bearCondAlert);
-    alertFlags[3].push(hiddenBearCondAlert);
-    const bullCond = cfg.plotBull && bullCondAlert;
-    const hiddenBullCond = cfg.plotHiddenBull && hiddenBullCondAlert;
-    const bearCond = cfg.plotBear && bearCondAlert;
-    const hiddenBearCond = cfg.plotHiddenBear && hiddenBearCondAlert;
-
-    // plot(..., offset = -lbR): the value of bar i is drawn on bar i - lbR
-    if (i - lbR < 0) continue;
-    const t = barTime(bars, i - lbR, interval);
-    const plV = plFound[i] ? r : NaN;
-    const phV = phFound[i] ? r : NaN;
-    plotRegBull.push({ time: t, value: plV, color: bullCond ? BULL : NONE });
-    plotHidBull.push({ time: t, value: plV, color: hiddenBullCond ? HIDDEN_BULL : NONE });
-    plotRegBear.push({ time: t, value: phV, color: bearCond ? BEAR : NONE });
-    plotHidBear.push({ time: t, value: phV, color: hiddenBearCond ? HIDDEN_BEAR : NONE });
-
-    // plotshape(cond and showLabels ? rsi[lbR] : na, offset = -lbR, location.absolute, textcolor = color.white)
-    if (cfg.showLabels && !isNaN(r)) {
-      if (bullCond) markers.push({ id: 'shape0', time: t, position: 'atPriceBottom', price: r, shape: 'labelUp', color: BULL, text: 'Bull', textColor: TEXT });
-      if (hiddenBullCond) markers.push({ id: 'shape1', time: t, position: 'atPriceBottom', price: r, shape: 'labelUp', color: HIDDEN_BULL, text: 'H Bull', textColor: TEXT });
-      if (bearCond) markers.push({ id: 'shape2', time: t, position: 'atPriceTop', price: r, shape: 'labelDown', color: BEAR, text: 'Bear', textColor: TEXT });
-      if (hiddenBearCond) markers.push({ id: 'shape3', time: t, position: 'atPriceTop', price: r, shape: 'labelDown', color: HIDDEN_BEAR, text: 'H Bear', textColor: TEXT });
-    }
-  }
-
+  const value = barSource(cfg.src);
   const val = (v: number) => (Number.isFinite(v) ? v : NaN);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: val(rsi[i]), color: RSI_COL })),
-      // col = out >= out[1] ? #95effb : color.orange
-      plot1: bars.map((b, i) => ({
-        time: b.time, value: val(out[i]), color: i > 0 && ge(out[i], out[i - 1]) ? EMA_UP : EMA_DOWN,
-      })),
-      plot2: plotRegBull,
-      plot3: plotHidBull,
-      plot4: plotRegBear,
-      plot5: plotHidBear,
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const up = taStep.rma(cfg.len);
+      const down = taStep.rma(cfg.len);
+      const ema = taStep.ema(cfg.lenema);
+      const pl = new PivotStep(lbL, lbR, false);
+      const ph = new PivotStep(lbL, lbR, true);
+      const s: RsiMzRun = {
+        up, down, ema, pl, ph, src: [], rsi: [], out: [], plFound: [], phFound: [], plot0: [], plot1: [],
+        plotRegBull: [], plotHidBull: [], plotRegBear: [], plotHidBear: [], markers: [],
+        flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [up, down, ema, pl, ph],
+        vars: { plBars: NaN, phBars: NaN, plRsi: [], plLow: [], phRsi: [], phHigh: [] },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [
+        s.src, s.rsi, s.out, s.plFound, s.phFound, s.plot0, s.plot1, s.plotRegBull, s.plotHidBull, s.plotRegBear,
+        s.plotHidBear, ...s.flags,
+      ];
+      return s;
     },
-    hlines: hlineConfig.map((h) => ({ value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle } })),
-    fills: fillConfig.map((f) => ({ plot1: f.plot1, plot2: f.plot2, options: { title: f.title, color: f.color } })),
-    markers,
-    alerts: alertStates(alertConditions, bars, alertFlags),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      // up = ta.rma(math.max(ta.change(src), 0), len); down = ta.rma(-math.min(ta.change(src), 0), len)
+      const src = value(b);
+      s.src[i] = src;
+      const c = i > 0 ? src - s.src[i - 1] : NaN;
+      const up = s.up.step(isNaN(c) ? NaN : Math.max(c, 0));
+      const down = s.down.step(isNaN(c) ? NaN : -Math.min(c, 0));
+      // rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+      const rsi = eq(down, 0) ? 100 : eq(up, 0) ? 0 : 100 - 100 / (1 + up / down);
+      s.rsi[i] = rsi;
+      const out = s.ema.step(rsi);
+      s.out[i] = out;
+      const plFound = !isNaN(s.pl.step(i, rsi));
+      const phFound = !isNaN(s.ph.step(i, rsi));
+      s.plFound[i] = plFound;
+      s.phFound[i] = phFound;
+
+      s.plot0[i] = { time: b.time, value: val(rsi), color: RSI_COL };
+      // col = out >= out[1] ? #95effb : color.orange
+      s.plot1[i] = { time: b.time, value: val(out), color: i > 0 && ge(out, s.out[i - 1]) ? EMA_UP : EMA_DOWN };
+
+      if (i > 0 && s.plFound[i - 1]) v.plBars = 0;
+      else if (!isNaN(v.plBars)) v.plBars++;
+      if (i > 0 && s.phFound[i - 1]) v.phBars = 0;
+      else if (!isNaN(v.phBars)) v.phBars++;
+      const inRangePl = rangeLower <= v.plBars && v.plBars <= rangeUpper;
+      const inRangePh = rangeLower <= v.phBars && v.phBars <= rangeUpper;
+
+      const r = i - lbR >= 0 ? s.rsi[i - lbR] : NaN; // rsi[lbR]
+      const lowR = i - lbR >= 0 ? bars[i - lbR].low : NaN;
+      const highR = i - lbR >= 0 ? bars[i - lbR].high : NaN;
+      if (plFound) {
+        v.plRsi = pushed(v.plRsi, r);
+        v.plLow = pushed(v.plLow, lowR);
+      }
+      if (phFound) {
+        v.phRsi = pushed(v.phRsi, r);
+        v.phHigh = pushed(v.phHigh, highR);
+      }
+      const vwPlRsi = prev(v.plRsi);
+      const vwPlLow = prev(v.plLow);
+      const vwPhRsi = prev(v.phRsi);
+      const vwPhHigh = prev(v.phHigh);
+
+      // bullCondAlert, hiddenBullCondAlert, bearCondAlert, hiddenBearCondAlert (without the "Plot ..." options)
+      const bullCondAlert = lt(lowR, vwPlLow) && gt(r, vwPlRsi) && inRangePl && plFound;
+      const hiddenBullCondAlert = gt(lowR, vwPlLow) && lt(r, vwPlRsi) && inRangePl && plFound;
+      const bearCondAlert = gt(highR, vwPhHigh) && lt(r, vwPhRsi) && inRangePh && phFound;
+      const hiddenBearCondAlert = lt(highR, vwPhHigh) && gt(r, vwPhRsi) && inRangePh && phFound;
+      s.flags[0][i] = bullCondAlert;
+      s.flags[1][i] = hiddenBullCondAlert;
+      s.flags[2][i] = bearCondAlert;
+      s.flags[3][i] = hiddenBearCondAlert;
+      if (bullCondAlert) s.times[0].push(b.time as number);
+      if (hiddenBullCondAlert) s.times[1].push(b.time as number);
+      if (bearCondAlert) s.times[2].push(b.time as number);
+      if (hiddenBearCondAlert) s.times[3].push(b.time as number);
+      const bullCond = cfg.plotBull && bullCondAlert;
+      const hiddenBullCond = cfg.plotHiddenBull && hiddenBullCondAlert;
+      const bearCond = cfg.plotBear && bearCondAlert;
+      const hiddenBearCond = cfg.plotHiddenBear && hiddenBearCondAlert;
+
+      // plot(..., offset = -lbR): the value of bar i is drawn on bar i - lbR (bar i is the only writer of that slot)
+      if (i - lbR < 0) return;
+      const at = i - lbR;
+      const t = bars[at].time;
+      const plV = plFound ? r : NaN;
+      const phV = phFound ? r : NaN;
+      s.plotRegBull[at] = { time: t, value: plV, color: bullCond ? BULL : NONE };
+      s.plotHidBull[at] = { time: t, value: plV, color: hiddenBullCond ? HIDDEN_BULL : NONE };
+      s.plotRegBear[at] = { time: t, value: phV, color: bearCond ? BEAR : NONE };
+      s.plotHidBear[at] = { time: t, value: phV, color: hiddenBearCond ? HIDDEN_BEAR : NONE };
+
+      // plotshape(cond and showLabels ? rsi[lbR] : na, offset = -lbR, location.absolute, textcolor = color.white)
+      if (cfg.showLabels && !isNaN(r)) {
+        if (bullCond) s.markers.push({ id: 'shape0', time: t, position: 'atPriceBottom', price: r, shape: 'labelUp', color: BULL, text: 'Bull', textColor: TEXT });
+        if (hiddenBullCond) s.markers.push({ id: 'shape1', time: t, position: 'atPriceBottom', price: r, shape: 'labelUp', color: HIDDEN_BULL, text: 'H Bull', textColor: TEXT });
+        if (bearCond) s.markers.push({ id: 'shape2', time: t, position: 'atPriceTop', price: r, shape: 'labelDown', color: BEAR, text: 'Bear', textColor: TEXT });
+        if (hiddenBearCond) s.markers.push({ id: 'shape3', time: t, position: 'atPriceTop', price: r, shape: 'labelDown', color: HIDDEN_BEAR, text: 'H Bear', textColor: TEXT });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const shifted = Math.max(0, n - lbR);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plot0.slice(),
+          plot1: s.plot1.slice(),
+          plot2: s.plotRegBull.slice(0, shifted),
+          plot3: s.plotHidBull.slice(0, shifted),
+          plot4: s.plotRegBear.slice(0, shifted),
+          plot5: s.plotHidBear.slice(0, shifted),
+        },
+        hlines: hlineConfig.map((h) => ({ value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle } })),
+        fills: fillConfig.map((f) => ({ plot1: f.plot1, plot2: f.plot2, options: { title: f.title, color: f.color } })),
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RsiEmaMzonesWithDivergencesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RsiEmaMzonesWithDivergencesInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert0', title: 'Regular Bullish Divergence', message: 'Found a new Regular Bullish Divergence!' },
@@ -252,6 +314,8 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const RsiEmaMzonesWithDivergences = {
   calculate,
+  createRun,
+
   metadata,
   defaultInputs,
   inputConfig,

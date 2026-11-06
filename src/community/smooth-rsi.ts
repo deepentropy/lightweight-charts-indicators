@@ -14,9 +14,11 @@
  */
 
 import {
-  ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar,
+  taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar,
 } from 'oakscriptjs';
 import type { BarColorData, MarkerData, PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SmoothRSIInputs {
   /** RSI length */
@@ -68,84 +70,107 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<SmoothRSIInputs> = {},
-): Omit<IndicatorResult, 'markers'> & {
+type Result = Omit<IndicatorResult, 'markers'> & {
   markers: MarkerData[]; barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]>;
-} {
+};
+
+interface SmoothRsiRun extends BarRunState<{ colss: string }> {
+  rsi: ReturnType<typeof taStep.rsi>[];
+  roc: ReturnType<typeof taStep.roc>[];
+  rsiCandles: PlotCandleData[];
+  chartCandles: PlotCandleData[];
+  barColors: BarColorData[];
+  rocPlot: { time: number; value: number; color: string }[];
+  midPlot: { time: number; value: number }[];
+  fillColors: string[];
+}
+
+function study(inputs: Partial<SmoothRSIInputs>): BarStudy<SmoothRsiRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const high = bars.map((b) => b.high);
-  const open = bars.map((b) => b.open);
-  const low = bars.map((b) => b.low);
-  const close = bars.map((b) => b.close);
-
-  const c1 = A(ta.rsi(S(high), cfg.length));
-  const c2 = A(ta.rsi(S(open), cfg.length));
-  const c3 = A(ta.rsi(S(low), cfg.length));
-  const c4 = A(ta.rsi(S(close), cfg.length));
-  const c1c = A(ta.roc(S(high), cfg.lengthc));
-  const c2c = A(ta.roc(S(open), cfg.lengthc));
-  const c3c = A(ta.roc(S(low), cfg.lengthc));
-  const c4c = A(ta.roc(S(close), cfg.lengthc));
-
-  const rsiCandles: PlotCandleData[] = [];
-  const chartCandles: PlotCandleData[] = [];
-  const barColors: BarColorData[] = [];
-  const rocPlot: { time: number; value: number; color: string }[] = [];
-  const midPlot: { time: number; value: number }[] = [];
-  const fillColors: string[] = [];
-  let colss: string = color.white; // var color colss = color.white
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const sum = (c1[i] + c2[i] + c3[i] + c4[i]) / 4;
-    const sumc = (c1c[i] + c2c[i] + c3c[i] + c4c[i]) / 4;
-    const rocc = gt(sumc, 0) ? ROC_UP : lt(sumc, 0) ? ROC_DOWN : null;
-    const bul = gt(sum, 50) && gt(sumc, 0);
-    const ber = lt(sum, 50) && lt(sumc, 0);
-    if (bul) colss = color.rgb(0, 197, 89);
-    if (ber) colss = color.rgb(225, 15, 0);
-
-    barColors.push({ time: t, color: colss });
-    // plotcandle(c2, c1, c3, c4, ...): no candle when a value is na; display = d1 ? display.all : display.none
-    if (cfg.showRsi && !isNaN(c1[i]) && !isNaN(c2[i]) && !isNaN(c3[i]) && !isNaN(c4[i])) {
-      rsiCandles.push({ time: t, open: c2[i], high: c1[i], low: c3[i], close: c4[i], color: colss, wickColor: colss,
-        borderColor: colss });
-    }
-    // plotcandle(open, high, low, close, ..., force_overlay = true)
-    chartCandles.push({ time: t, open: open[i], high: high[i], low: low[i], close: close[i], color: colss,
-      wickColor: colss, borderColor: colss, forceOverlay: true });
-    rocPlot.push({ time: t, value: sumc + 50, color: rocc ?? 'transparent' });
-    midPlot.push({ time: t, value: 50 });
-    // color.new(rocc, 90): color.new(na, 90) is black with transparency 90
-    fillColors.push(String(color.new(rocc ?? '#000000', 90)));
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: rocPlot, plot1: midPlot },
-    hlines: [
-      { value: 30, options: { title: 'Low Threshold', color: '#08b60e67', linestyle: 'dashed' } },
-      { value: 70, options: { title: 'High Threshold', color: '#ea00006d', linestyle: 'dashed' } },
-      { value: 50, options: { title: 'Mid Threshold', color: '#eb61048b', linestyle: 'dashed' } },
-    ],
-    // fill(l1, mid, color.new(rocc, 90), display = d3 ? display.all : display.none), untitled ("Plots Background"):
-    // FillData has no display option, so the hidden fill is given with transparent colours (listed, draws nothing)
-    fills: [{
-      plot1: 'plot0', plot2: 'plot1', options: { title: 'Plots Background' },
-      colors: cfg.showRoc ? fillColors : fillColors.map(() => 'transparent'),
-    }],
-    markers: [],
-    barColors,
-    plotCandles: { rsiCandles, chartCandles },
+    init() {
+      // high, open, low, close
+      const rsi = [0, 1, 2, 3].map(() => taStep.rsi(cfg.length));
+      const roc = [0, 1, 2, 3].map(() => taStep.roc(cfg.lengthc));
+      // var color colss = color.white
+      const s: SmoothRsiRun = {
+        rsi, roc, rsiCandles: [], chartCandles: [], barColors: [], rocPlot: [], midPlot: [], fillColors: [],
+        steps: [...rsi, ...roc], vars: { colss: color.white }, lists: [], series: [],
+      };
+      s.lists = [s.rsiCandles];
+      s.series = [s.chartCandles, s.barColors, s.rocPlot, s.midPlot, s.fillColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const c1 = s.rsi[0].step(b.high);
+      const c2 = s.rsi[1].step(b.open);
+      const c3 = s.rsi[2].step(b.low);
+      const c4 = s.rsi[3].step(b.close);
+      const c1c = s.roc[0].step(b.high);
+      const c2c = s.roc[1].step(b.open);
+      const c3c = s.roc[2].step(b.low);
+      const c4c = s.roc[3].step(b.close);
+
+      const sum = (c1 + c2 + c3 + c4) / 4;
+      const sumc = (c1c + c2c + c3c + c4c) / 4;
+      const rocc = gt(sumc, 0) ? ROC_UP : lt(sumc, 0) ? ROC_DOWN : null;
+      const bul = gt(sum, 50) && gt(sumc, 0);
+      const ber = lt(sum, 50) && lt(sumc, 0);
+      if (bul) s.vars.colss = color.rgb(0, 197, 89);
+      if (ber) s.vars.colss = color.rgb(225, 15, 0);
+      const colss = s.vars.colss;
+
+      s.barColors[i] = { time: t, color: colss };
+      // plotcandle(c2, c1, c3, c4, ...): no candle when a value is na; display = d1 ? display.all : display.none
+      if (cfg.showRsi && !isNaN(c1) && !isNaN(c2) && !isNaN(c3) && !isNaN(c4)) {
+        s.rsiCandles.push({ time: t, open: c2, high: c1, low: c3, close: c4, color: colss, wickColor: colss,
+          borderColor: colss });
+      }
+      // plotcandle(open, high, low, close, ..., force_overlay = true)
+      s.chartCandles[i] = { time: t, open: b.open, high: b.high, low: b.low, close: b.close, color: colss,
+        wickColor: colss, borderColor: colss, forceOverlay: true };
+      s.rocPlot[i] = { time: t, value: sumc + 50, color: rocc ?? 'transparent' };
+      s.midPlot[i] = { time: t, value: 50 };
+      // color.new(rocc, 90): color.new(na, 90) is black with transparency 90
+      s.fillColors[i] = String(color.new(rocc ?? '#000000', 90));
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.rocPlot.slice(), plot1: s.midPlot.slice() },
+        hlines: [
+          { value: 30, options: { title: 'Low Threshold', color: '#08b60e67', linestyle: 'dashed' } },
+          { value: 70, options: { title: 'High Threshold', color: '#ea00006d', linestyle: 'dashed' } },
+          { value: 50, options: { title: 'Mid Threshold', color: '#eb61048b', linestyle: 'dashed' } },
+        ],
+        // fill(l1, mid, color.new(rocc, 90), display = d3 ? display.all : display.none), untitled ("Plots Background"):
+        // FillData has no display option, so the hidden fill is given with transparent colours (listed, draws nothing)
+        fills: [{
+          plot1: 'plot0', plot2: 'plot1', options: { title: 'Plots Background' },
+          colors: cfg.showRoc ? s.fillColors.slice() : s.fillColors.map(() => 'transparent'),
+        }],
+        markers: [],
+        barColors: s.barColors.slice(),
+        plotCandles: { rsiCandles: s.rsiCandles.slice(), chartCandles: s.chartCandles.slice() },
+      };
+    },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SmoothRSIInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SmoothRSIInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
 export const SmoothRSI = {
   calculate,
+  createRun,
+
   metadata,
   defaultInputs,
   inputConfig,

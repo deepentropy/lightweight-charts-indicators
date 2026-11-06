@@ -13,8 +13,10 @@
  * Original notice: © BOSWaves
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData, MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export interface FlowshiftOscillatorInputs {
   /** Baseline moving average type */
@@ -92,112 +94,213 @@ const lt = (a: number, b: number) => b - a > EPS;
 const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<FlowshiftOscillatorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
+/**
+ * `ta.percentile_linear_interpolation(source, length, percentage)` one bar at a time: the window kept sorted as the
+ * oakscriptjs array function keeps it (the new value inserted before the first value `>=` it, then the value of the
+ * bar leaving the window removed), read with the value of the current bar without changing the kept window.
+ */
+class PercentileLinear implements Committable {
+  private readonly values: number[] = [];
+  private readonly bars: number[] = [];
+  private count = 0;
+  private v = NaN;
+  private k = 0;
+  private out = -1;
+  private stepped = false;
 
-  // baseMA = f_ma(hl2, maLen, maType)
-  const maSrc = bars.map((b) => (b.high + b.low) / 2);
-  const srcS = S(maSrc);
-  let baseMA: number[];
-  switch (cfg.maType) {
-    case 'EMA': baseMA = A(ta.ema(srcS, cfg.maLen)); break;
-    case 'SMMA (RMA)': baseMA = A(ta.rma(srcS, cfg.maLen)); break;
-    case 'WMA': baseMA = A(ta.wma(srcS, cfg.maLen)); break;
-    case 'VWMA': baseMA = A(ta.vwma(srcS, cfg.maLen, S(bars.map((b) => b.volume ?? NaN)))); break;
-    default: baseMA = A(ta.sma(srcS, cfg.maLen));
+  constructor(private readonly length: number, private readonly percentage: number) {}
+
+  step(v: number): number {
+    const values = this.values;
+    let k = 0;
+    while (k < values.length && !(values[k] >= v)) k++;
+    this.v = v;
+    this.k = k;
+    const i = this.count;
+    if (i >= this.length) {
+      const o = this.bars.indexOf(i - this.length);
+      this.out = o < k ? o : o + 1;
+    } else {
+      this.out = -1;
+    }
+    this.stepped = true;
+    if (i < this.length - 1) return NaN;
+    const length = this.length;
+    const pos = (this.percentage / 100) * length - 0.5;
+    if (pos <= 0) return this.at(0);
+    if (pos >= length - 1) return this.at(length - 1);
+    const lo = Math.floor(pos);
+    const a = this.at(lo);
+    return a + (pos - lo) * (this.at(lo + 1) - a);
   }
-  const disloc = maSrc.map((v, i) => v - baseMA[i]);
 
+  /** The value at index `r` of the sorted window with the value of the current bar */
+  private at(r: number): number {
+    const p = this.out >= 0 && r >= this.out ? r + 1 : r;
+    if (p < this.k) return this.values[p]!;
+    if (p === this.k) return this.v;
+    return this.values[p - 1]!;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    const i = this.count;
+    this.values.splice(this.k, 0, this.v);
+    this.bars.splice(this.k, 0, i);
+    if (this.out >= 0) {
+      this.values.splice(this.out, 1);
+      this.bars.splice(this.out, 1);
+    }
+    this.count++;
+  }
+}
+
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
+
+interface FlowshiftRun extends BarRunState<Record<string, never>> {
+  ma: { step(v: number, volume: number): number; commit(): void };
+  dev: ReturnType<typeof taStep.stdev>;
+  volEwma: ReturnType<typeof taStep.ema>;
+  drift: ReturnType<typeof taStep.ema>;
+  lev1: ReturnType<typeof taStep.ema>;
+  lev2: ReturnType<typeof taStep.ema>;
+  pct: PercentileLinear;
+  crossUp: ReturnType<typeof taStep.crossover>;
+  crossDn: ReturnType<typeof taStep.crossunder>;
+  disloc: number[];
+  flowOsc: number[];
+  plots: Point[][];
+  barColors: BarColorData[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<FlowshiftOscillatorInputs>): BarStudy<FlowshiftRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   // Fixed parameters
   const winLen = 14;
   const scaleLen = 24;
   const smoothA = 5;
   const smoothB = 5;
   const thrPct = 88;
-
-  // momWin = disloc - nz(disloc[winLen])
   const nz = (v: number) => (Number.isFinite(v) ? v : 0);
-  const momWin = disloc.map((d, i) => d - (i >= winLen ? nz(disloc[i - winLen]) : 0));
-  const volEWMA = A(ta.ema(ta.stdev(S(disloc), scaleLen), scaleLen));
-  const normRaw = momWin.map((m, i) => m / (volEWMA[i] + 1e-10));
-  const drift = A(ta.ema(S(normRaw), Math.max(2, scaleLen)));
-  // f_squash(x) = x / (1 + |x|)
-  const squ = normRaw.map((x, i) => {
-    const d = x - drift[i];
-    return d / (1.0 + Math.abs(d));
-  });
-  const lev1 = ta.ema(S(squ), smoothA);
-  const flowOsc = A(ta.ema(lev1, smoothB));
-  const flowS = S(flowOsc);
-
-  const thrDyn = A(ta.percentile_linear_interpolation(S(flowOsc.map((v) => Math.abs(v))), 500, thrPct));
-  const top = thrDyn;
-  const bot = thrDyn.map((v) => -v);
-
-  const isUp = flowOsc.map((v) => ge(v, 0));
   const oscFillUp = String(color.new(cfg.upFill, 35));
   const oscFillDn = String(color.new(cfg.dnFill, 35));
   const oscLineUp = String(color.new(cfg.upLine, 0));
   const oscLineDn = String(color.new(cfg.dnLine, 0));
-
-  // sigUp = showSig and ta.crossover(flowOsc, nz(flowOsc[2])) and flowOsc < bot (lazy `and`: the crossings only
-  // run when showSig is true, an input constant, so on every bar or on none)
-  const prev2 = S(flowOsc.map((_v, i) => (i >= 2 ? nz(flowOsc[i - 2]) : 0)));
-  const crossUp = cfg.showSig ? A(ta.crossover(flowS, prev2)) : [];
-  const crossDn = cfg.showSig ? A(ta.crossunder(flowS, prev2)) : [];
-  const markers: MarkerData[] = [];
-  if (cfg.showSig) {
-    for (let i = 0; i < n; i++) {
-      const sigUp = Boolean(crossUp[i]) && lt(flowOsc[i], bot[i]);
-      const sigDn = Boolean(crossDn[i]) && gt(flowOsc[i], top[i]);
-      // plotshape(sigUp, "FS Up", shape.triangleup, size.tiny, upLine, location.belowbar, text = "BUY",
-      //   textcolor = color.white, force_overlay = true)
-      if (sigUp) {
-        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: cfg.upLine, size: 'tiny',
-          text: 'BUY', textColor: color.white, forceOverlay: true });
-      }
-      if (sigDn) {
-        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: cfg.dnLine, size: 'tiny',
-          text: 'SELL', textColor: color.white, forceOverlay: true });
-      }
-    }
-  }
-
   const glow = String(color.new(cfg.maGlow, 75));
   const biasUp = String(color.new(cfg.upLine, 65));
   const biasDn = String(color.new(cfg.dnLine, 65));
   const zeroCol = String(color.new(color.gray, 0));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: baseMA[i], color: glow })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: baseMA[i], color: cfg.maCore })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: flowOsc[i], color: isUp[i] ? oscFillUp : oscFillDn })),
-      plot3: bars.map((b, i) => ({ time: b.time, value: flowOsc[i], color: isUp[i] ? oscLineUp : oscLineDn })),
-      plot4: bars.map((b) => ({ time: b.time, value: 0, color: zeroCol })),
-      plot5: bars.map((b, i) => ({ time: b.time, value: top[i], color: GUIDE })),
-      plot6: bars.map((b, i) => ({ time: b.time, value: bot[i], color: GUIDE })),
-    },
-    fills: [
-      // fill(tL, mid, color = color.new(color.gray, 88)); fill(bL, mid, ...)
-      { plot1: 'plot5', plot2: 'plot4', colors: new Array<string>(n).fill(GUIDE_FILL) },
-      { plot1: 'plot6', plot2: 'plot4', colors: new Array<string>(n).fill(GUIDE_FILL) },
-    ],
-    // barcolor(paintBars ? (isUp ? color.new(upLine, 65) : color.new(dnLine, 65)) : na)
-    barColors: cfg.paintBars ? bars.map((b, i) => ({ time: b.time, color: isUp[i] ? biasUp : biasDn })) : [],
-    markers,
+  const maStep = (): FlowshiftRun['ma'] => {
+    switch (cfg.maType) {
+      case 'EMA': { const m = taStep.ema(cfg.maLen); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'SMMA (RMA)': { const m = taStep.rma(cfg.maLen); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, cfg.maLen), commit: () => m.commit() }; }
+      case 'VWMA': { const m = taStep.vwma(cfg.maLen); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+      default: { const m = taStep.sma(); return { step: (v) => m.step(v, cfg.maLen), commit: () => m.commit() }; }
+    }
   };
+  return {
+    init() {
+      const s: FlowshiftRun = {
+        ma: maStep(), dev: taStep.stdev(), volEwma: taStep.ema(scaleLen), drift: taStep.ema(Math.max(2, scaleLen)),
+        lev1: taStep.ema(smoothA), lev2: taStep.ema(smoothB), pct: new PercentileLinear(500, thrPct),
+        crossUp: taStep.crossover(), crossDn: taStep.crossunder(),
+        disloc: [], flowOsc: [], plots: [[], [], [], [], [], [], []], barColors: [], markers: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.ma, s.dev, s.volEwma, s.drift, s.lev1, s.lev2, s.pct, s.crossUp, s.crossDn];
+      s.lists = [s.markers];
+      s.series = [s.disloc, s.flowOsc, ...s.plots, s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // baseMA = f_ma(hl2, maLen, maType)
+      const maSrc = (b.high + b.low) / 2;
+      const baseMA = s.ma.step(maSrc, b.volume ?? NaN);
+      const d = maSrc - baseMA;
+      s.disloc[i] = d;
+      // momWin = disloc - nz(disloc[winLen])
+      const momWin = d - (i >= winLen ? nz(s.disloc[i - winLen]) : 0);
+      const volEWMA = s.volEwma.step(s.dev.step(d, scaleLen));
+      const normRaw = momWin / (volEWMA + 1e-10);
+      const drift = s.drift.step(normRaw);
+      // f_squash(x) = x / (1 + |x|)
+      const dd = normRaw - drift;
+      const squ = dd / (1.0 + Math.abs(dd));
+      const flowOsc = s.lev2.step(s.lev1.step(squ));
+      s.flowOsc[i] = flowOsc;
+      // thrDyn = ta.percentile_linear_interpolation(math.abs(flowOsc), 500, thrPct); top = thrDyn, bot = -thrDyn
+      const top = s.pct.step(Math.abs(flowOsc));
+      const bot = -top;
+      const isUp = ge(flowOsc, 0);
+
+      // sigUp = showSig and ta.crossover(flowOsc, nz(flowOsc[2])) and flowOsc < bot (lazy `and`: the crossings only
+      // run when showSig is true, an input constant, so on every bar or on none)
+      if (cfg.showSig) {
+        const prev2 = i >= 2 ? nz(s.flowOsc[i - 2]) : 0;
+        const sigUp = s.crossUp.step(flowOsc, prev2) && lt(flowOsc, bot);
+        const sigDn = s.crossDn.step(flowOsc, prev2) && gt(flowOsc, top);
+        // plotshape(sigUp, "FS Up", shape.triangleup, size.tiny, upLine, location.belowbar, text = "BUY",
+        //   textcolor = color.white, force_overlay = true)
+        if (sigUp) {
+          s.markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: cfg.upLine, size: 'tiny',
+            text: 'BUY', textColor: color.white, forceOverlay: true });
+        }
+        if (sigDn) {
+          s.markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: cfg.dnLine, size: 'tiny',
+            text: 'SELL', textColor: color.white, forceOverlay: true });
+        }
+      }
+
+      const p = s.plots;
+      p[0][i] = { time, value: baseMA, color: glow };
+      p[1][i] = { time, value: baseMA, color: cfg.maCore };
+      p[2][i] = { time, value: flowOsc, color: isUp ? oscFillUp : oscFillDn };
+      p[3][i] = { time, value: flowOsc, color: isUp ? oscLineUp : oscLineDn };
+      p[4][i] = { time, value: 0, color: zeroCol };
+      p[5][i] = { time, value: top, color: GUIDE };
+      p[6][i] = { time, value: bot, color: GUIDE };
+      // barcolor(paintBars ? (isUp ? color.new(upLine, 65) : color.new(dnLine, 65)) : na)
+      if (cfg.paintBars) s.barColors[i] = { time, color: isUp ? biasUp : biasDn };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(), plot6: p[6].slice(),
+        },
+        fills: [
+          // fill(tL, mid, color = color.new(color.gray, 88)); fill(bL, mid, ...)
+          { plot1: 'plot5', plot2: 'plot4', colors: new Array<string>(n).fill(GUIDE_FILL) },
+          { plot1: 'plot6', plot2: 'plot4', colors: new Array<string>(n).fill(GUIDE_FILL) },
+        ],
+        barColors: cfg.paintBars ? s.barColors.slice() : [],
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FlowshiftOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<FlowshiftOscillatorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const FlowshiftOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -17,8 +17,10 @@
  * Original notice: © Teyo69
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export interface T1WyckoffAggressiveADSetupInputs {
   volLen: number;
@@ -68,108 +70,191 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<T1WyckoffAggressiveADSetupInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
-  const high = S(bars.map((b) => b.high));
-  const low = S(bars.map((b) => b.low));
-  const vol = bars.map((b) => (b.volume === undefined || b.volume === null ? NaN : b.volume));
-  const range = bars.map((b) => b.high - b.low);
+/**
+ * `ta.linreg(source, length, 0)` and `ta.linreg(source, length, 1)` of one source, one bar at a time: the least
+ * squares sums of the oakscriptjs array function (x = 1 oldest .. length newest, summed from the oldest value) taken
+ * once for both offsets (the same doubles); na while fewer than `length` bars or when a value of the window is na.
+ */
+class LinregPair implements Committable {
+  private readonly len: number;
+  private values: number[] = [];
+  private pending = NaN;
+  private stepped = false;
+  /** The offset 1 value of the last step */
+  offset1 = NaN;
 
-  const volSMA = A(ta.sma(S(vol), cfg.volLen));
-  const rangeSMA = A(ta.sma(S(range), cfg.rangeLen));
-  const lin0 = A(ta.linreg(close, cfg.slopeLen, 0));
-  const lin1 = A(ta.linreg(close, cfg.slopeLen, 1));
-  const lowest10 = A(ta.lowest(low, 10));
-  const highest10 = A(ta.highest(high, 10));
-  const highestClose = A(ta.highest(close, cfg.breakoutLookback));
-  const lowestClose = A(ta.lowest(close, cfg.breakoutLookback));
-  const prev = (a: number[], i: number) => (i > 0 ? a[i - 1] : NaN);
-
-  const fallingSlope: boolean[] = new Array(n);
-  const risingSlope: boolean[] = new Array(n);
-  const sellingClimax: boolean[] = new Array(n);
-  const buyingClimax: boolean[] = new Array(n);
-  const bullishAr: boolean[] = new Array(n);
-  const bearishAr: boolean[] = new Array(n);
-  const sos: boolean[] = new Array(n);
-  const sow: boolean[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const candleRange = range[i];
-    fallingSlope[i] = lt(lin0[i], lin1[i]);
-    risingSlope[i] = gt(lin0[i], lin1[i]);
-    const volSpike = gt(vol[i], volSMA[i]);
-    const makesNewLow = lt(b.low, prev(lowest10, i));
-    const makesNewHigh = gt(b.high, prev(highest10, i));
-    // Plain divisions: a zero range gives 0 / 0 = na (false)
-    const closeNearLow = lt((b.close - b.low) / candleRange, cfg.closeThresh);
-    const closeNearHigh = lt((b.high - b.close) / candleRange, cfg.closeThresh);
-    const hasLowerWick = gt(b.open - b.low, candleRange * cfg.wickThresh);
-    const hasUpperWick = gt(b.high - b.open, candleRange * cfg.wickThresh);
-    const isWideRange = gt(candleRange, rangeSMA[i] * 1.3);
-    const breaksStructure = gt(b.close, prev(highestClose, i));
-    const breaksStructureLow = lt(b.close, prev(lowestClose, i));
-    sellingClimax[i] = makesNewLow && volSpike && closeNearLow && isWideRange && hasLowerWick && fallingSlope[i];
-    buyingClimax[i] = makesNewHigh && volSpike && closeNearHigh && isWideRange && hasUpperWick && risingSlope[i];
-    bullishAr[i] = isWideRange && closeNearHigh && volSpike && fallingSlope[i];
-    bearishAr[i] = isWideRange && closeNearLow && volSpike && risingSlope[i];
-    sos[i] = isWideRange && closeNearHigh && volSpike && breaksStructure;
-    sow[i] = isWideRange && closeNearLow && volSpike && breaksStructureLow;
+  constructor(length: number) {
+    // the length checks of ta.linreg (the same errors)
+    taStep.linreg(length, 0);
+    this.len = Math.floor(length);
   }
 
+  /** The offset 0 value of the current bar (the offset 1 value in `offset1`) */
+  step(value: number): number {
+    this.stepped = true;
+    this.pending = value;
+    this.offset1 = NaN;
+    const len = this.len;
+    const values = this.values;
+    const base = values.length - (len - 1);
+    if (base < 0) return NaN;
+    for (let j = 0; j < len - 1; j++) if (isNaN(values[base + j])) return NaN;
+    if (isNaN(value)) return NaN;
+    let sumX = 0;
+    let sumY = 0;
+    let sumXY = 0;
+    let sumX2 = 0;
+    for (let j = 0; j < len; j++) {
+      const x = j + 1;
+      const y = j === len - 1 ? value : values[base + j];
+      sumX += x;
+      sumY += y;
+      sumXY += x * y;
+      sumX2 += x * x;
+    }
+    const slope = (len * sumXY - sumX * sumY) / (len * sumX2 - sumX * sumX);
+    const intercept = sumY / len - (slope * sumX) / len + slope;
+    this.offset1 = intercept + slope * (len - 1 - 1);
+    return intercept + slope * (len - 1 - 0);
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.values.push(this.pending);
+    if (this.values.length > this.len * 2 + 1024) this.values = this.values.slice(-this.len);
+  }
+}
+
+const prev = (a: number[], i: number) => (i > 0 ? a[i - 1] : NaN);
+
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] };
+
+interface WyckoffRun extends BarRunState<Record<string, never>> {
+  volSma: ReturnType<typeof taStep.sma>;
+  rangeSma: ReturnType<typeof taStep.sma>;
+  lin: LinregPair;
+  lo10: WindowExtreme;
+  hi10: WindowExtreme;
+  hiClose: WindowExtreme;
+  loClose: WindowExtreme;
+  sinceSc: ReturnType<typeof taStep.barssince>;
+  sinceBullAr: ReturnType<typeof taStep.barssince>;
+  sinceBc: ReturnType<typeof taStep.barssince>;
+  sinceBearAr: ReturnType<typeof taStep.barssince>;
+  lowest10: number[];
+  highest10: number[];
+  highestClose: number[];
+  lowestClose: number[];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<T1WyckoffAggressiveADSetupInputs>): BarStudy<WyckoffRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const trend = cfg.signalOption === 'Trend Following';
   const reversal = cfg.signalOption === 'Reversal';
   const sbp1Mult = trend ? cfg.structureLookback * 1.5 : cfg.structureLookback * 1;
-  const since = (c: boolean[]) => A(ta.barssince(S(c.map((x) => (x ? 1 : 0)))));
-  const sinceSellingClimax = since(sellingClimax);
-  const sinceBullishAr = since(bullishAr);
-  const sinceBuyingClimax = since(buyingClimax);
-  const sinceBearishAr = since(bearishAr);
-
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
   const bgRising = String(color.new(color.green, 85));
   const bgFalling = String(color.new(color.red, 85));
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const bullP1 = le(sinceSellingClimax[i], sbp1Mult);
-    const bullP2 = le(sinceBullishAr[i], cfg.structureLookback);
-    const bearP1 = le(sinceBuyingClimax[i], sbp1Mult);
-    const bearP2 = le(sinceBearishAr[i], cfg.structureLookback);
-    const agWsBull = reversal ? bullP1 && bullishAr[i] : trend ? bullP1 && bullP2 && sos[i] : false;
-    const agWsBear = reversal ? bearP1 && bearishAr[i] : trend ? bearP1 && bearP2 && sow[i] : false;
-
-    // Two bgcolor calls (layers): rising slope green, falling slope red
-    if (risingSlope[i]) bgColors.push({ time: t, color: bgRising });
-    if (fallingSlope[i]) bgColors.push({ time: t, color: bgFalling });
-    // Both plotshape calls use location.belowbar and shape.labelup
-    if (agWsBull) {
-      markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'Long',
-        textColor: color.white, id: 'shape0' });
-    }
-    if (agWsBear) {
-      markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.red, text: 'Short',
-        textColor: color.white, id: 'shape1' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    bgColors,
+    init() {
+      const s: WyckoffRun = {
+        volSma: taStep.sma(), rangeSma: taStep.sma(),
+        lin: new LinregPair(cfg.slopeLen),
+        lo10: new WindowExtreme(true, 10), hi10: new WindowExtreme(false, 10),
+        hiClose: new WindowExtreme(false, cfg.breakoutLookback), loClose: new WindowExtreme(true, cfg.breakoutLookback),
+        sinceSc: taStep.barssince(), sinceBullAr: taStep.barssince(), sinceBc: taStep.barssince(),
+        sinceBearAr: taStep.barssince(),
+        lowest10: [], highest10: [], highestClose: [], lowestClose: [], markers: [], bgColors: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [
+        s.volSma, s.rangeSma, s.lin, s.lo10, s.hi10, s.hiClose, s.loClose, s.sinceSc, s.sinceBullAr,
+        s.sinceBc, s.sinceBearAr,
+      ];
+      s.lists = [s.markers, s.bgColors];
+      s.series = [s.lowest10, s.highest10, s.highestClose, s.lowestClose];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const vol = b.volume === undefined || b.volume === null ? NaN : b.volume;
+      const candleRange = b.high - b.low;
+      const volSMA = s.volSma.step(vol, cfg.volLen);
+      const rangeSMA = s.rangeSma.step(candleRange, cfg.rangeLen);
+      // ta.linreg(close, slopeLen, 0) and ta.linreg(close, slopeLen, 1)
+      const lin0 = s.lin.step(b.close);
+      const lin1 = s.lin.offset1;
+      s.lowest10[i] = s.lo10.step(b.low);
+      s.highest10[i] = s.hi10.step(b.high);
+      s.highestClose[i] = s.hiClose.step(b.close);
+      s.lowestClose[i] = s.loClose.step(b.close);
+
+      const fallingSlope = lt(lin0, lin1);
+      const risingSlope = gt(lin0, lin1);
+      const volSpike = gt(vol, volSMA);
+      const makesNewLow = lt(b.low, prev(s.lowest10, i));
+      const makesNewHigh = gt(b.high, prev(s.highest10, i));
+      // Plain divisions: a zero range gives 0 / 0 = na (false)
+      const closeNearLow = lt((b.close - b.low) / candleRange, cfg.closeThresh);
+      const closeNearHigh = lt((b.high - b.close) / candleRange, cfg.closeThresh);
+      const hasLowerWick = gt(b.open - b.low, candleRange * cfg.wickThresh);
+      const hasUpperWick = gt(b.high - b.open, candleRange * cfg.wickThresh);
+      const isWideRange = gt(candleRange, rangeSMA * 1.3);
+      const breaksStructure = gt(b.close, prev(s.highestClose, i));
+      const breaksStructureLow = lt(b.close, prev(s.lowestClose, i));
+      const sellingClimax = makesNewLow && volSpike && closeNearLow && isWideRange && hasLowerWick && fallingSlope;
+      const buyingClimax = makesNewHigh && volSpike && closeNearHigh && isWideRange && hasUpperWick && risingSlope;
+      const bullishAr = isWideRange && closeNearHigh && volSpike && fallingSlope;
+      const bearishAr = isWideRange && closeNearLow && volSpike && risingSlope;
+      const sos = isWideRange && closeNearHigh && volSpike && breaksStructure;
+      const sow = isWideRange && closeNearLow && volSpike && breaksStructureLow;
+
+      const bullP1 = le(s.sinceSc.step(sellingClimax ? 1 : 0), sbp1Mult);
+      const bullP2 = le(s.sinceBullAr.step(bullishAr ? 1 : 0), cfg.structureLookback);
+      const bearP1 = le(s.sinceBc.step(buyingClimax ? 1 : 0), sbp1Mult);
+      const bearP2 = le(s.sinceBearAr.step(bearishAr ? 1 : 0), cfg.structureLookback);
+      const agWsBull = reversal ? bullP1 && bullishAr : trend ? bullP1 && bullP2 && sos : false;
+      const agWsBear = reversal ? bearP1 && bearishAr : trend ? bearP1 && bearP2 && sow : false;
+
+      // Two bgcolor calls (layers): rising slope green, falling slope red
+      if (risingSlope) s.bgColors.push({ time: t, color: bgRising });
+      if (fallingSlope) s.bgColors.push({ time: t, color: bgFalling });
+      // Both plotshape calls use location.belowbar and shape.labelup
+      if (agWsBull) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'Long',
+          textColor: color.white, id: 'shape0' });
+      }
+      if (agWsBear) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.red, text: 'Short',
+          textColor: color.white, id: 'shape1' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<T1WyckoffAggressiveADSetupInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<T1WyckoffAggressiveADSetupInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const T1WyckoffAggressiveADSetup = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

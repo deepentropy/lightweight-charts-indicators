@@ -12,7 +12,9 @@
  * Original notice: © radixalgo
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export interface PriceActionBandsTrendVolatilityInputs {
   /** Moving average type of the trend baseline */
@@ -80,87 +82,145 @@ export const metadata = {
 /** Pine a >= b: not (b - a > 1e-10); na compares false */
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > 1e-10);
 
+type Point = { time: number; value: number; color: string };
+type Step = { step(v: number, volume: number): number; commit(): void };
+
+interface PabRun extends BarRunState<Record<string, never>> {
+  baseMa: Step | null;
+  sd: ReturnType<typeof taStep.stdev> | null;
+  atr: ReturnType<typeof taStep.atr> | null;
+  emaBase: ReturnType<typeof taStep.ema>;
+  bands: ReturnType<typeof taStep.ema>[];
+  signalMa: ReturnType<typeof taStep.ema>;
+  signal21Ma: ReturnType<typeof taStep.ema>;
+  /** highUp, lowUp, highDown, lowDown, upAvg, downAvg */
+  vals: number[][];
+  lines: Point[][];
+  trendFill: string[];
+}
+
+function study(inputs: Partial<PriceActionBandsTrendVolatilityInputs>): BarStudy<PabRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const MAP = cfg.maPeriod;
+  // float Base = switch MAT (a constant input: the selected branch runs on every bar)
+  const baseStep = (): Step | null => {
+    switch (cfg.maType) {
+      case 'SMA': { const m = taStep.sma(); return { step: (v) => m.step(v, MAP), commit: () => m.commit() }; }
+      case 'EMA': return taStep.ema(MAP);
+      case 'HMA': return taStep.hma(MAP);
+      case 'RMA': return taStep.rma(MAP);
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, MAP), commit: () => m.commit() }; }
+      case 'VWMA': return taStep.vwma(MAP);
+      // SWMA: ta.swma(close) from the closes of the bars; no case matched: na
+      default: return null;
+    }
+  };
+  const isSwma = cfg.maType === 'SWMA';
+  const isSd = cfg.bandMethod === 'Standard Deviation';
+  const outer = cfg.outerMult;
+  const inner = cfg.innerMult;
+  return {
+    init() {
+      const baseMa = baseStep();
+      const sd = isSd ? taStep.stdev() : null;
+      const atr = isSd ? null : taStep.atr(cfg.atrPeriod);
+      const emaBase = taStep.ema(MAP);
+      const bands = [0, 1, 2, 3].map(() => taStep.ema(cfg.bandSmoothing));
+      const signalMa = taStep.ema(cfg.trendSmoothing);
+      const signal21Ma = taStep.ema(21);
+      const steps: Committable[] = [...(baseMa ? [baseMa] : []), ...(sd ? [sd] : []), ...(atr ? [atr] : []), emaBase, ...bands, signalMa, signal21Ma];
+      const s: PabRun = {
+        baseMa, sd, atr, emaBase, bands, signalMa, signal21Ma,
+        vals: Array.from({ length: 6 }, () => []), lines: Array.from({ length: 8 }, () => []), trendFill: [],
+        steps, vars: {}, lists: [], series: [],
+      };
+      s.series = [...s.vals, ...s.lines, s.trendFill];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      let base: number;
+      if (s.baseMa) base = s.baseMa.step(b.close, b.volume ?? NaN);
+      else if (isSwma) base = i < 3 ? NaN : (b.close + 2 * bars[i - 1].close + 2 * bars[i - 2].close + bars[i - 3].close) / 6;
+      else base = NaN;
+      const width = s.sd ? s.sd.step(base, cfg.sdPeriod) : s.atr!.step(b.high, b.low, b.close);
+      const emaBase = s.emaBase.step(base);
+      const highUp = s.bands[0].step(emaBase + 1 * width * outer);
+      const lowUp = s.bands[1].step(emaBase + 1 * width * inner);
+      const highDown = s.bands[2].step(emaBase + -1 * width * outer);
+      const lowDown = s.bands[3].step(emaBase + -1 * width * inner);
+      const upAvg = (lowUp + highUp) / 2;
+      const downAvg = (lowDown + highDown) / 2;
+      const v = s.vals;
+      v[0][i] = highUp;
+      v[1][i] = lowUp;
+      v[2][i] = highDown;
+      v[3][i] = lowDown;
+      v[4][i] = upAvg;
+      v[5][i] = downAvg;
+      const signal = s.signalMa.step(base);
+      // The Trend State fill compares with ta.ema(Base, 21) (a fixed length in the Pine script)
+      const signal21 = s.signal21Ma.step(base);
+      const trendColor = ge(base, signal) ? BULL : BEAR;
+      const l = s.lines;
+      l[0][i] = { time, value: base, color: trendColor };
+      l[1][i] = { time, value: signal, color: trendColor };
+      l[2][i] = { time, value: lowDown, color: GREEN };
+      l[3][i] = { time, value: highDown, color: GREEN };
+      l[4][i] = { time, value: lowUp, color: RED };
+      l[5][i] = { time, value: highUp, color: RED };
+      l[6][i] = { time, value: upAvg, color: 'transparent' }; // color = na
+      l[7][i] = { time, value: downAvg, color: 'transparent' };
+      // fill(BaseLine, BaseLine_MA, color = Base >= ta.ema(Base, 21) ? #00e5ff4f : #ffae0052)
+      s.trendFill[i] = ge(base, signal21) ? '#00e5ff4f' : '#ffae0052';
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const [highUp, lowUp, highDown, lowDown, upAvg, downAvg] = s.vals;
+      const gradient = (top: number[], bottom: number[], topColor: string, bottomColor: string) => ({
+        topValue: top.slice(), bottomValue: bottom.slice(), topColor: new Array(n).fill(topColor), bottomColor: new Array(n).fill(bottomColor),
+      });
+      const plots: Record<string, Point[]> = {};
+      s.lines.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: [
+          // fill(Lvl_High_Down, Lvl_Down_Avg, High_Down, math.avg(Low_Down, High_Down), #37ff1449, #37ff141a)
+          { plot1: 'plot3', plot2: 'plot7', options: { title: 'Lower Outer Zone' },
+            gradient: gradient(highDown, downAvg, '#37ff1449', '#37ff141a') },
+          { plot1: 'plot2', plot2: 'plot7', options: { title: 'Lower Inner Zone' },
+            gradient: gradient(lowDown, downAvg, '#37ff1449', '#37ff141a') },
+          { plot1: 'plot5', plot2: 'plot6', options: { title: 'Upper Outer Zone' },
+            gradient: gradient(highUp, upAvg, '#ff005565', '#ff005518') },
+          { plot1: 'plot4', plot2: 'plot6', options: { title: 'Upper Inner Zone' },
+            gradient: gradient(lowUp, upAvg, '#ff005565', '#ff005518') },
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Trend State' }, colors: s.trendFill.slice() },
+        ],
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(
+  inputs: Partial<PriceActionBandsTrendVolatilityInputs> = {},
+  chart: ChartContext = {},
+): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<PriceActionBandsTrendVolatilityInputs> = {},
 ): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
-  const MAP = cfg.maPeriod;
-
-  // float Base = switch MAT (a constant input: the selected branch runs on every bar)
-  let baseS: Series;
-  switch (cfg.maType) {
-    case 'SMA': baseS = ta.sma(close, MAP); break;
-    case 'EMA': baseS = ta.ema(close, MAP); break;
-    case 'HMA': baseS = ta.hma(close, MAP); break;
-    case 'RMA': baseS = ta.rma(close, MAP); break;
-    case 'WMA': baseS = ta.wma(close, MAP); break;
-    case 'SWMA': baseS = ta.swma(close); break;
-    case 'VWMA': baseS = ta.vwma(close, MAP, S(bars.map((b) => b.volume ?? NaN))); break;
-    default: baseS = S(new Array(n).fill(NaN)); // no case matched: na
-  }
-  const base = A(baseS);
-  const baseSeries = S(base);
-
-  const atr = A(ta.atr(bars, cfg.atrPeriod));
-  const sd = A(ta.stdev(baseSeries, cfg.sdPeriod));
-  const width = cfg.bandMethod === 'Standard Deviation' ? sd : atr;
-  const emaBase = A(ta.ema(baseSeries, MAP));
-  const band = (sign: number, mult: number) =>
-    A(ta.ema(S(emaBase.map((e, i) => e + sign * width[i] * mult)), cfg.bandSmoothing));
-  const highUp = band(1, cfg.outerMult);
-  const lowUp = band(1, cfg.innerMult);
-  const highDown = band(-1, cfg.outerMult);
-  const lowDown = band(-1, cfg.innerMult);
-  const upAvg = lowUp.map((v, i) => (v + highUp[i]) / 2);
-  const downAvg = lowDown.map((v, i) => (v + highDown[i]) / 2);
-
-  const signal = A(ta.ema(baseSeries, cfg.trendSmoothing));
-  // The Trend State fill compares with ta.ema(Base, 21) (a fixed length in the Pine script)
-  const signal21 = A(ta.ema(baseSeries, 21));
-  const trendColor = (i: number) => (ge(base[i], signal[i]) ? BULL : BEAR);
-
-  const line = (vals: number[], c: string | ((i: number) => string)) =>
-    bars.map((b, i) => ({ time: b.time, value: vals[i], color: typeof c === 'string' ? c : c(i) }));
-  const gradient = (top: number[], bottom: number[], topColor: string, bottomColor: string) => ({
-    topValue: top, bottomValue: bottom, topColor: new Array(n).fill(topColor), bottomColor: new Array(n).fill(bottomColor),
-  });
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(base, trendColor),
-      plot1: line(signal, trendColor),
-      plot2: line(lowDown, GREEN),
-      plot3: line(highDown, GREEN),
-      plot4: line(lowUp, RED),
-      plot5: line(highUp, RED),
-      plot6: line(upAvg, 'transparent'), // color = na
-      plot7: line(downAvg, 'transparent'),
-    },
-    fills: [
-      // fill(Lvl_High_Down, Lvl_Down_Avg, High_Down, math.avg(Low_Down, High_Down), #37ff1449, #37ff141a)
-      { plot1: 'plot3', plot2: 'plot7', options: { title: 'Lower Outer Zone' },
-        gradient: gradient(highDown, downAvg, '#37ff1449', '#37ff141a') },
-      { plot1: 'plot2', plot2: 'plot7', options: { title: 'Lower Inner Zone' },
-        gradient: gradient(lowDown, downAvg, '#37ff1449', '#37ff141a') },
-      { plot1: 'plot5', plot2: 'plot6', options: { title: 'Upper Outer Zone' },
-        gradient: gradient(highUp, upAvg, '#ff005565', '#ff005518') },
-      { plot1: 'plot4', plot2: 'plot6', options: { title: 'Upper Inner Zone' },
-        gradient: gradient(lowUp, upAvg, '#ff005565', '#ff005518') },
-      // fill(BaseLine, BaseLine_MA, color = Base >= ta.ema(Base, 21) ? #00e5ff4f : #ffae0052)
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Trend State' },
-        colors: bars.map((_b, i) => (ge(base[i], signal21[i]) ? '#00e5ff4f' : '#ffae0052')) },
-    ],
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PriceActionBandsTrendVolatility = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

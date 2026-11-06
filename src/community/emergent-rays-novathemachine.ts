@@ -12,7 +12,9 @@
  * Original notice: © NovaTheMachine
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type EmergentRaysColorScheme = 'Rainbow' | 'Gainbow' | 'Painbow';
 
@@ -64,45 +66,77 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<EmergentRaysNovathemachineInputs> = {},
-): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const high = Series.fromArray(bars, bars.map((b) => b.high));
-  const low = Series.fromArray(bars, bars.map((b) => b.low));
-  const op = cfg.opacity;
+type Point = { time: number; value: number };
 
+interface RaysRun extends BarRunState<Record<string, never>> {
+  /** ta.ema(high, len) and ta.ema(low, len) of each length */
+  emas: ReturnType<typeof taStep.ema>[];
+  plots: Point[][];
+  colors: string[][];
+}
+
+function study(inputs: Partial<EmergentRaysNovathemachineInputs>): BarStudy<RaysRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const op = cfg.opacity;
   // r1..r10 = color.new(rainbow[k], opacity + k); g1..g10 and p1..p10 = color.new(c, opacity)
   const r = RAINBOW.map((c, k) => String(color.new(c, op + k)));
   const g = GAINBOW.map((c) => String(color.new(c, op)));
   const p = PAINBOW.map((c) => String(color.new(c, op)));
   const scheme = cfg.trendcolor === 'Rainbow' ? r : cfg.trendcolor === 'Gainbow' ? g : p;
-
-  const plots: Record<string, { time: number; value: number }[]> = {};
-  const fills: NonNullable<IndicatorResult['fills']> = [];
-  LENGTHS.forEach((len, k) => {
-    const eHigh = A(ta.ema(high, len));
-    const eLow = A(ta.ema(low, len));
-    plots[`plot${2 * k}`] = bars.map((b, i) => ({ time: b.time, value: eHigh[i] }));
-    plots[`plot${2 * k + 1}`] = bars.map((b, i) => ({ time: b.time, value: eLow[i] }));
-    // fill(h, l, getColor(k + 1, emaHigh, emaLow), "Range ...")
-    const colors = bars.map((b, i) => (cfg.autoTrend
-      ? gt(b.close, eHigh[i]) ? g[0] : lt(b.close, eLow[i]) ? p[0] : r[0]
-      : scheme[k]));
-    fills.push({ plot1: `plot${2 * k}`, plot2: `plot${2 * k + 1}`, options: { title: FILL_TITLES[k] }, colors });
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
+    init() {
+      const s: RaysRun = {
+        emas: LENGTHS.flatMap((len) => [taStep.ema(len), taStep.ema(len)]),
+        plots: LENGTHS.flatMap(() => [[], []]), colors: LENGTHS.map(() => []),
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = s.emas;
+      s.series = [...s.plots, ...s.colors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      for (let k = 0; k < LENGTHS.length; k++) {
+        const eHigh = s.emas[2 * k].step(b.high);
+        const eLow = s.emas[2 * k + 1].step(b.low);
+        s.plots[2 * k][i] = { time, value: eHigh };
+        s.plots[2 * k + 1][i] = { time, value: eLow };
+        // fill(h, l, getColor(k + 1, emaHigh, emaLow), "Range ...")
+        s.colors[k][i] = cfg.autoTrend
+          ? gt(b.close, eHigh) ? g[0] : lt(b.close, eLow) ? p[0] : r[0]
+          : scheme[k];
+      }
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      const fills: NonNullable<IndicatorResult['fills']> = [];
+      LENGTHS.forEach((_len, k) => {
+        plots[`plot${2 * k}`] = s.plots[2 * k].slice();
+        plots[`plot${2 * k + 1}`] = s.plots[2 * k + 1].slice();
+        fills.push({ plot1: `plot${2 * k}`, plot2: `plot${2 * k + 1}`, options: { title: FILL_TITLES[k] }, colors: s.colors[k].slice() });
+      });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EmergentRaysNovathemachineInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EmergentRaysNovathemachineInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const EmergentRaysNovathemachine = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

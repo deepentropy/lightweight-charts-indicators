@@ -13,9 +13,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EMAOscillatorInputs {
   /** EMA period (also the stdev length) */
@@ -97,107 +99,151 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<EMAOscillatorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface EmaOscRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  dev: ReturnType<typeof taStep.stdev>;
+  high: ReturnType<typeof taStep.highest>;
+  crosses: Array<{ step(a: number, b: number): boolean; commit(): void }>;
+  lines: Point[][];
+  zData: Point[];
+  bgColors: BgColorData[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<EMAOscillatorInputs>): BarStudy<EmaOscRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // oscillator_values = close - ta.ema(close, ema_period); z_score = oscillator_values / ta.stdev(oscillator_values, ema_period)
-  const ema = A(ta.ema(S(bars.map((b) => b.close)), cfg.emaPeriod));
-  const osc = bars.map((b, i) => b.close - ema[i]);
-  const sd = A(ta.stdev(S(osc), cfg.emaPeriod));
-  // A plain division: x / 0 is +-infinity (0 / 0 NaN); the comparisons use the infinite value, the plot shows na
-  const z = osc.map((o, i) => o / sd[i]);
-
-  // osc_high = ta.highest(math.abs(z_score), lookback_period)
-  const oscHigh = A(ta.highest(S(z.map((v) => Math.abs(v))), cfg.lookbackPeriod));
-  const mild = oscHigh.map((h) => (cfg.usePercentage ? h * (cfg.mildPct / 100.0) : cfg.mildThreshold));
-  const moderate = oscHigh.map((h) => (cfg.usePercentage ? h * (cfg.moderatePct / 100.0) : cfg.moderateThreshold));
-  const extreme = oscHigh.map((h) => (cfg.usePercentage ? h * (cfg.extremePct / 100.0) : cfg.extremeThreshold));
-
-  // signal_color: zone colour of the histogram
-  const signalColor = (i: number) => {
-    const v = z[i];
-    if (ge(v, extreme[i])) return '#ff0303';
-    if (ge(v, moderate[i])) return '#ff6a6a';
-    if (ge(v, mild[i])) return '#b86456';
-    if (gt(v, -mild[i])) return '#a1a1a1';
-    if (gt(v, -moderate[i])) return '#01b844';
-    if (gt(v, -extreme[i])) return '#00ff66';
-    return '#00ff66';
-  };
-
-  // bgcolor: same zones (neutral #005720), color.new(c, bgcolor_transparency); an na z-score takes the last branch
-  const bgColors: BgColorData[] = [];
-  if (cfg.showBackground) {
-    const t = cfg.bgcolorTransparency;
-    for (let i = 0; i < n; i++) {
-      const v = z[i];
-      let c: string;
-      if (ge(v, extreme[i])) c = '#ff0303';
-      else if (ge(v, moderate[i])) c = '#ff6a6a';
-      else if (ge(v, mild[i])) c = '#b86456';
-      else if (gt(v, -mild[i])) c = '#005720';
-      else if (gt(v, -moderate[i])) c = '#01b844';
-      else c = '#00ff66';
-      bgColors.push({ time: bars[i].time, color: String(color.new(c, t)) });
-    }
-  }
-
+  const t = cfg.bgcolorTransparency;
+  const bg = (c: string) => String(color.new(c, t));
+  const bgExtremeOb = bg('#ff0303');
+  const bgModerateOb = bg('#ff6a6a');
+  const bgMildOb = bg('#b86456');
+  const bgNeutral = bg('#005720');
+  const bgMildOs = bg('#01b844');
+  const bgOs = bg('#00ff66');
+  const sellColor = String(color.rgb(255, 3, 3, 37));
+  const buyColor = String(color.rgb(0, 255, 102, 43));
   const finite = (v: number) => (Number.isFinite(v) ? v : NaN);
-  // plot(..., display = show_threshold_lines ? display.all : display.none): a hidden plot draws nothing
-  const line = (vals: number[], sign: number, c: string) =>
-    bars.map((b, i) => ({ time: b.time, value: cfg.showThresholdLines ? finite(sign * vals[i]) : NaN, color: c }));
-
-  // sell_signal = show_signals and ta.crossover(z_score, selected_extreme)
-  // buy_signal = show_signals and ta.crossunder(z_score, -selected_extreme) (exact comparisons)
-  const markers: MarkerData[] = [];
-  const zS = S(z);
-  const sell = A(ta.crossover(zS, S(extreme)));
-  const buy = A(ta.crossunder(zS, S(extreme.map((v) => -v))));
-  if (cfg.showSignals) {
-    const sellColor = String(color.rgb(255, 3, 3, 37));
-    const buyColor = String(color.rgb(0, 255, 102, 43));
-    for (let i = 0; i < n; i++) {
-      // plotshape(sell_signal, "Sell", shape.circle, location.abovebar, size.tiny, force_overlay = true)
-      if (sell[i] === 1) {
-        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'circle', color: sellColor, size: 'tiny', forceOverlay: true });
-      }
-      // plotshape(buy_signal, "Buy", shape.circle, location.belowbar, size.tiny, force_overlay = true)
-      if (buy[i] === 1) {
-        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'circle', color: buyColor, size: 'tiny', forceOverlay: true });
-      }
-    }
-  }
-
+  const lineColors = ['#ff0303', 'rgb(255, 106, 106)', 'rgb(184, 100, 86)', '#01b844', '#00ff66', '#00ff66'];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(extreme, 1, '#ff0303'),
-      plot1: line(moderate, 1, 'rgb(255, 106, 106)'),
-      plot2: line(mild, 1, 'rgb(184, 100, 86)'),
-      plot3: line(mild, -1, '#01b844'),
-      plot4: line(moderate, -1, '#00ff66'),
-      plot5: line(extreme, -1, '#00ff66'),
-      // plot(z_score, "EMA Oscillator Z-Score", style = plot.style_histogram, color = signal_color, linewidth = 2)
-      plot6: bars.map((b, i) => ({ time: b.time, value: finite(z[i]), color: signalColor(i) })),
+    init() {
+      const ema = taStep.ema(cfg.emaPeriod);
+      const dev = taStep.stdev();
+      const high = taStep.highest();
+      const crosses = [taStep.crossover(), taStep.crossunder(), taStep.crossover(), taStep.crossunder()];
+      const s: EmaOscRun = {
+        ema, dev, high, crosses, lines: [[], [], [], [], [], []], zData: [], bgColors: [], markers: [],
+        flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [ema, dev, high, ...crosses], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.bgColors, s.markers, ...s.times];
+      s.series = [...s.lines, s.zData, ...s.flags];
+      return s;
     },
-    hlines: [{ value: 0, options: { title: 'Zero Line', color: '#005720', linestyle: 'solid', linewidth: 2 } }],
-    bgColors,
-    markers,
-    // alertcondition(ta.crossover(z_score, selected_extreme) / ta.crossunder(z_score, -selected_extreme) /
-    // ta.crossover(z_score, selected_moderate) / ta.crossunder(z_score, -selected_moderate)) (show_signals not used)
-    alerts: alertStates(alertConditions, bars, [
-      sell.map((v) => v === 1),
-      buy.map((v) => v === 1),
-      A(ta.crossover(zS, S(moderate))).map((v) => v === 1),
-      A(ta.crossunder(zS, S(moderate.map((v) => -v)))).map((v) => v === 1),
-    ]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // oscillator_values = close - ta.ema(close, ema_period); z_score = oscillator_values / ta.stdev(oscillator_values, ema_period)
+      const osc = b.close - s.ema.step(b.close);
+      const sd = s.dev.step(osc, cfg.emaPeriod);
+      // A plain division: x / 0 is +-infinity (0 / 0 NaN); the comparisons use the infinite value, the plot shows na
+      const z = osc / sd;
+
+      // osc_high = ta.highest(math.abs(z_score), lookback_period)
+      const h = s.high.step(Math.abs(z), cfg.lookbackPeriod);
+      const mild = cfg.usePercentage ? h * (cfg.mildPct / 100.0) : cfg.mildThreshold;
+      const moderate = cfg.usePercentage ? h * (cfg.moderatePct / 100.0) : cfg.moderateThreshold;
+      const extreme = cfg.usePercentage ? h * (cfg.extremePct / 100.0) : cfg.extremeThreshold;
+
+      // signal_color: zone colour of the histogram
+      let signalColor: string;
+      if (ge(z, extreme)) signalColor = '#ff0303';
+      else if (ge(z, moderate)) signalColor = '#ff6a6a';
+      else if (ge(z, mild)) signalColor = '#b86456';
+      else if (gt(z, -mild)) signalColor = '#a1a1a1';
+      else if (gt(z, -moderate)) signalColor = '#01b844';
+      else if (gt(z, -extreme)) signalColor = '#00ff66';
+      else signalColor = '#00ff66';
+
+      // bgcolor: same zones (neutral #005720), color.new(c, bgcolor_transparency); an na z-score takes the last branch
+      if (cfg.showBackground) {
+        let c: string;
+        if (ge(z, extreme)) c = bgExtremeOb;
+        else if (ge(z, moderate)) c = bgModerateOb;
+        else if (ge(z, mild)) c = bgMildOb;
+        else if (gt(z, -mild)) c = bgNeutral;
+        else if (gt(z, -moderate)) c = bgMildOs;
+        else c = bgOs;
+        s.bgColors.push({ time, color: c });
+      }
+
+      // plot(..., display = show_threshold_lines ? display.all : display.none): a hidden plot draws nothing
+      const show = cfg.showThresholdLines;
+      s.lines[0][i] = { time, value: show ? finite(extreme) : NaN, color: lineColors[0] };
+      s.lines[1][i] = { time, value: show ? finite(moderate) : NaN, color: lineColors[1] };
+      s.lines[2][i] = { time, value: show ? finite(mild) : NaN, color: lineColors[2] };
+      s.lines[3][i] = { time, value: show ? finite(-1 * mild) : NaN, color: lineColors[3] };
+      s.lines[4][i] = { time, value: show ? finite(-1 * moderate) : NaN, color: lineColors[4] };
+      s.lines[5][i] = { time, value: show ? finite(-1 * extreme) : NaN, color: lineColors[5] };
+      // plot(z_score, "EMA Oscillator Z-Score", style = plot.style_histogram, color = signal_color, linewidth = 2)
+      s.zData[i] = { time, value: finite(z), color: signalColor };
+
+      // sell_signal = show_signals and ta.crossover(z_score, selected_extreme)
+      // buy_signal = show_signals and ta.crossunder(z_score, -selected_extreme) (exact comparisons)
+      const sell = s.crosses[0].step(z, extreme);
+      const buy = s.crosses[1].step(z, -extreme);
+      if (cfg.showSignals) {
+        // plotshape(sell_signal, "Sell", shape.circle, location.abovebar, size.tiny, force_overlay = true)
+        if (sell) s.markers.push({ time, position: 'aboveBar', shape: 'circle', color: sellColor, size: 'tiny', forceOverlay: true });
+        // plotshape(buy_signal, "Buy", shape.circle, location.belowbar, size.tiny, force_overlay = true)
+        if (buy) s.markers.push({ time, position: 'belowBar', shape: 'circle', color: buyColor, size: 'tiny', forceOverlay: true });
+      }
+      // alertcondition(ta.crossover(z_score, selected_extreme) / ta.crossunder(z_score, -selected_extreme) /
+      // ta.crossover(z_score, selected_moderate) / ta.crossunder(z_score, -selected_moderate)) (show_signals not used)
+      const over = s.crosses[2].step(z, moderate);
+      const under = s.crosses[3].step(z, -moderate);
+      s.flags[0][i] = sell;
+      s.flags[1][i] = buy;
+      s.flags[2][i] = over;
+      s.flags[3][i] = under;
+      if (sell) s.times[0].push(time as number);
+      if (buy) s.times[1].push(time as number);
+      if (over) s.times[2].push(time as number);
+      if (under) s.times[3].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.lines[0].slice(),
+          plot1: s.lines[1].slice(),
+          plot2: s.lines[2].slice(),
+          plot3: s.lines[3].slice(),
+          plot4: s.lines[4].slice(),
+          plot5: s.lines[5].slice(),
+          plot6: s.zData.slice(),
+        },
+        hlines: [{ value: 0, options: { title: 'Zero Line', color: '#005720', linestyle: 'solid', linewidth: 2 } }],
+        bgColors: s.bgColors.slice(),
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EMAOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EMAOscillatorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -210,6 +256,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const EMAOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

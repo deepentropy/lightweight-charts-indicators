@@ -13,9 +13,11 @@
  * Reference: "Heatmap Volume [xdecow]" by xdecow
  */
 
-import { ta, Series, color as pineColor, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color as pineColor, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface HeatmapVolumeInputs {
   maLength: number;
@@ -94,21 +96,24 @@ const DN_MEDIUM = '#FF6060';
 const DN_NORMAL = '#FF8F8F';
 const DN_LOW = '#FFBFBF';
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<HeatmapVolumeInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color?: string };
+
+interface HeatmapRun extends BarRunState<Record<string, never>> {
+  mean: ReturnType<typeof taStep.sma>;
+  std: ReturnType<typeof taStep.stdev>;
+  volumePlot: Point[];
+  maPlot: Point[];
+  tsPlots: Point[][];
+  /** top, 0, ts1 .. ts4 */
+  zones: Point[][];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<HeatmapVolumeInputs>): BarStudy<HeatmapRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const volSeries = new Series(bars, (b) => b.volume ?? 0);
-
-  // Pine: length := length > bar_index + 1 ? bar_index + 1 : length (same for slength): the windows grow on the first
-  // bars, so mean and std exist from bar 0
-  const lenSeries = Series.fromArray(bars, bars.map((_b, i) => Math.min(cfg.maLength, i + 1)));
-  const slenSeries = Series.fromArray(bars, bars.map((_b, i) => Math.min(cfg.stdLength, i + 1)));
-  const meanArr = ta.sma(volSeries, lenSeries).toArray();
-  const stdArr = ta.stdev(volSeries, slenSeries).toArray();
 
   // Determine per-bar color based on stdbar thresholds
   function getBarColor(stdbar: number, isUp: boolean): string {
@@ -130,95 +135,126 @@ export function calculate(
   const showLines = cfg.displayZones === 'Lines' || cfg.displayZones === 'Both';
   const showBgs = cfg.displayZones === 'Backgrounds' || cfg.displayZones === 'Both';
 
-  const volumePlot: { time: number; value: number; color?: string }[] = [];
-  const maPlot: { time: number; value: number }[] = [];
-  const tsExtraHighPlot: { time: number; value: number }[] = [];
-  const tsHighPlot: { time: number; value: number }[] = [];
-  const tsMediumPlot: { time: number; value: number }[] = [];
-  const tsNormalPlot: { time: number; value: number }[] = [];
-  const barColors: BarColorData[] = [];
-  const zones: { time: number; value: number }[][] = [[], [], [], [], [], []]; // top, 0, ts1 .. ts4
-  const flags: boolean[][] = [[], [], [], [], [], [], [], [], []];
-
-  for (let i = 0; i < n; i++) {
-    const vol = bars[i].volume ?? 0;
-    const mean = meanArr[i] ?? NaN;
-    const std = stdArr[i] ?? NaN;
-    const isUp = bars[i].close > bars[i].open;
-
-    // stdbar = (volume - mean) / std: na when std is 0 (the comparisons are false: the Low colour)
-    const stdbar = std !== 0 ? (vol - mean) / std : NaN;
-    const color = getBarColor(stdbar, isUp);
-
-    volumePlot.push({ time: bars[i].time, value: vol, color });
-    maPlot.push({ time: bars[i].time, value: mean });
-
-    // Threshold lines: ts1 = std * thresholdExtraHigh + mean, etc.
-    const ts1 = std * cfg.thresholdExtraHigh + mean;
-    const ts2 = std * cfg.thresholdHigh + mean;
-    const ts3 = std * cfg.thresholdMedium + mean;
-    const ts4 = std * cfg.thresholdNormal + mean;
-
-    tsExtraHighPlot.push({ time: bars[i].time, value: showLines ? ts1 : NaN });
-    tsHighPlot.push({ time: bars[i].time, value: showLines ? ts2 : NaN });
-    tsMediumPlot.push({ time: bars[i].time, value: showLines ? ts3 : NaN });
-    tsNormalPlot.push({ time: bars[i].time, value: showLines ? ts4 : NaN });
-    // pt = plot(zshow_backgrounds ? tst : na) with tst = ts1 + (ts1 - ts2); p0 = 0; p1 .. p4 = ts1 .. ts4
-    [ts1 + (ts1 - ts2), 0, ts1, ts2, ts3, ts4].forEach((v, k) => {
-      zones[k].push({ time: bars[i].time, value: !showBgs ? NaN : v });
-    });
-
-    // conditionExtraHigh = stdbar > thresholdExtraHigh, conditionHigh / conditionMedium: the tiers below (na: false)
-    const sb = stdbar;
-    const extraHigh = sb > cfg.thresholdExtraHigh;
-    const high = sb <= cfg.thresholdExtraHigh && sb > cfg.thresholdHigh;
-    const medium = sb <= cfg.thresholdHigh && sb > cfg.thresholdMedium;
-    const up = bars[i].open < bars[i].close;
-    const down = bars[i].open > bars[i].close;
-    [extraHigh, high, medium].forEach((c, k) => {
-      flags[3 * k].push(c);
-      flags[3 * k + 1].push(c && up);
-      flags[3 * k + 2].push(c && down);
-    });
-
-    if (cfg.coloredBars) {
-      barColors.push({ id: 'barcolor0', time: bars[i].time, color });
-    }
-  }
-
-  // Heatmap fills between the hidden zone plots: fill(pt, p1, color.new(chm1, 85), title = 'Extra High heatmap zone') ...
-  const tpf = 85;
-  const fills: any[] = [];
-  if (showBgs) {
-    fills.push(
-      { plot1: 'zoneTop', plot2: 'zone1', options: { title: 'Extra High heatmap zone', color: String(pineColor.new(HM_EXTRA_HIGH, tpf)) } },
-      { plot1: 'zone1', plot2: 'zone2', options: { title: 'High heatmap zone', color: String(pineColor.new(HM_HIGH, tpf)) } },
-      { plot1: 'zone2', plot2: 'zone3', options: { title: 'Medium heatmap zone', color: String(pineColor.new(HM_MEDIUM, tpf)) } },
-      { plot1: 'zone3', plot2: 'zone4', options: { title: 'Normal heatmap zone', color: String(pineColor.new(HM_NORMAL, tpf)) } },
-      { plot1: 'zone4', plot2: 'zone0', options: { title: 'Low heatmap zone', color: String(pineColor.new(HM_LOW, tpf)) } },
-    );
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      volume: volumePlot,
-      ma: maPlot,
-      tsExtraHigh: tsExtraHighPlot,
-      tsHigh: tsHighPlot,
-      tsMedium: tsMediumPlot,
-      tsNormal: tsNormalPlot,
-      zoneTop: zones[0],
-      zone0: zones[1],
-      zone1: zones[2],
-      zone2: zones[3],
-      zone3: zones[4],
-      zone4: zones[5],
+    init() {
+      const mean = taStep.sma();
+      const std = taStep.stdev();
+      const s: HeatmapRun = {
+        mean, std, volumePlot: [], maPlot: [], tsPlots: [[], [], [], []], zones: [[], [], [], [], [], []], barColors: [],
+        flags: Array.from({ length: 9 }, () => []), times: Array.from({ length: 9 }, () => []),
+        steps: [mean, std], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.barColors, ...s.times];
+      s.series = [s.volumePlot, s.maPlot, ...s.tsPlots, ...s.zones, ...s.flags];
+      return s;
     },
-    fills,
-    barColors,
-    alerts: alertStates(alertConditions, bars, flags),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const vol = b.volume ?? 0;
+      // Pine: length := length > bar_index + 1 ? bar_index + 1 : length (same for slength): the windows grow on the first
+      // bars, so mean and std exist from bar 0
+      const mean = s.mean.step(vol, Math.min(cfg.maLength, i + 1));
+      const std = s.std.step(vol, Math.min(cfg.stdLength, i + 1));
+      const isUp = b.close > b.open;
+
+      // stdbar = (volume - mean) / std: na when std is 0 (the comparisons are false: the Low colour)
+      const stdbar = std !== 0 ? (vol - mean) / std : NaN;
+      const color = getBarColor(stdbar, isUp);
+
+      s.volumePlot[i] = { time, value: vol, color };
+      s.maPlot[i] = { time, value: mean };
+
+      // Threshold lines: ts1 = std * thresholdExtraHigh + mean, etc.
+      const ts1 = std * cfg.thresholdExtraHigh + mean;
+      const ts2 = std * cfg.thresholdHigh + mean;
+      const ts3 = std * cfg.thresholdMedium + mean;
+      const ts4 = std * cfg.thresholdNormal + mean;
+
+      s.tsPlots[0][i] = { time, value: showLines ? ts1 : NaN };
+      s.tsPlots[1][i] = { time, value: showLines ? ts2 : NaN };
+      s.tsPlots[2][i] = { time, value: showLines ? ts3 : NaN };
+      s.tsPlots[3][i] = { time, value: showLines ? ts4 : NaN };
+      // pt = plot(zshow_backgrounds ? tst : na) with tst = ts1 + (ts1 - ts2); p0 = 0; p1 .. p4 = ts1 .. ts4
+      const z = s.zones;
+      z[0][i] = { time, value: !showBgs ? NaN : ts1 + (ts1 - ts2) };
+      z[1][i] = { time, value: !showBgs ? NaN : 0 };
+      z[2][i] = { time, value: !showBgs ? NaN : ts1 };
+      z[3][i] = { time, value: !showBgs ? NaN : ts2 };
+      z[4][i] = { time, value: !showBgs ? NaN : ts3 };
+      z[5][i] = { time, value: !showBgs ? NaN : ts4 };
+
+      // conditionExtraHigh = stdbar > thresholdExtraHigh, conditionHigh / conditionMedium: the tiers below (na: false)
+      const sb = stdbar;
+      const extraHigh = sb > cfg.thresholdExtraHigh;
+      const high = sb <= cfg.thresholdExtraHigh && sb > cfg.thresholdHigh;
+      const medium = sb <= cfg.thresholdHigh && sb > cfg.thresholdMedium;
+      const up = b.open < b.close;
+      const down = b.open > b.close;
+      const f = s.flags;
+      for (let k = 0; k < 3; k++) {
+        const c = k === 0 ? extraHigh : k === 1 ? high : medium;
+        f[3 * k][i] = c;
+        f[3 * k + 1][i] = c && up;
+        f[3 * k + 2][i] = c && down;
+        if (c) s.times[3 * k].push(time as number);
+        if (c && up) s.times[3 * k + 1].push(time as number);
+        if (c && down) s.times[3 * k + 2].push(time as number);
+      }
+
+      if (cfg.coloredBars) {
+        s.barColors.push({ id: 'barcolor0', time, color });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // Heatmap fills between the hidden zone plots: fill(pt, p1, color.new(chm1, 85), title = 'Extra High heatmap zone') ...
+      const tpf = 85;
+      const fills: any[] = [];
+      if (showBgs) {
+        fills.push(
+          { plot1: 'zoneTop', plot2: 'zone1', options: { title: 'Extra High heatmap zone', color: String(pineColor.new(HM_EXTRA_HIGH, tpf)) } },
+          { plot1: 'zone1', plot2: 'zone2', options: { title: 'High heatmap zone', color: String(pineColor.new(HM_HIGH, tpf)) } },
+          { plot1: 'zone2', plot2: 'zone3', options: { title: 'Medium heatmap zone', color: String(pineColor.new(HM_MEDIUM, tpf)) } },
+          { plot1: 'zone3', plot2: 'zone4', options: { title: 'Normal heatmap zone', color: String(pineColor.new(HM_NORMAL, tpf)) } },
+          { plot1: 'zone4', plot2: 'zone0', options: { title: 'Low heatmap zone', color: String(pineColor.new(HM_LOW, tpf)) } },
+        );
+      }
+      const z = s.zones;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          volume: s.volumePlot.slice(),
+          ma: s.maPlot.slice(),
+          tsExtraHigh: s.tsPlots[0].slice(),
+          tsHigh: s.tsPlots[1].slice(),
+          tsMedium: s.tsPlots[2].slice(),
+          tsNormal: s.tsPlots[3].slice(),
+          zoneTop: z[0].slice(),
+          zone0: z[1].slice(),
+          zone1: z[2].slice(),
+          zone2: z[3].slice(),
+          zone3: z[4].slice(),
+          zone4: z[5].slice(),
+        },
+        fills,
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HeatmapVolumeInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<HeatmapVolumeInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -234,4 +270,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert8', title: 'Down Medium Vol', message: 'Down Bar Medium Volume Threshold' },
 ];
 
-export const HeatmapVolume = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const HeatmapVolume = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

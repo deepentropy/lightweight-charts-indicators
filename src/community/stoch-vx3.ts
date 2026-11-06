@@ -10,8 +10,10 @@
  * Reference: "Stoch VX3"
  */
 
-import { taCore, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, compare, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun, WindowSma } from '../live-run';
 
 export interface StochVX3Inputs {
   len: number;
@@ -71,66 +73,121 @@ export const metadata = {
   overlay: false,
 };
 
-/** lag(g, p) of the original: the Laguerre filter (L0 + 2 L1 + 2 L2 + L3) / 6 */
-function laguerre(g: number, p: number[]): number[] {
-  let l0 = NaN, l1 = NaN, l2 = NaN, l3 = NaN;
-  const nz = (v: number) => (Number.isFinite(v) ? v : 0);
-  return p.map((v) => {
-    const n0 = (1 - g) * v + g * nz(l0);
-    const n1 = -g * n0 + nz(l0) + g * nz(l1);
-    const n2 = -g * n1 + nz(l1) + g * nz(l2);
-    const n3 = -g * n2 + nz(l2) + g * nz(l3);
-    l0 = n0; l1 = n1; l2 = n2; l3 = n3;
-    return (n0 + 2 * n1 + 2 * n2 + n3) / 6;
-  });
+/** ta.percentrank(source, length) of bar i from the values of every bar (the array rules of oakscriptjs) */
+function percentrankAt(source: number[], i: number, length: number): number {
+  if (i < length) return NaN;
+  const currentValue = source[i];
+  // le() is false for an na value in the window, and for all of them when the current value is na (0)
+  let countLessOrEqual = 0;
+  for (let j = 1; j <= length; j++) if (compare.le(source[i - j], currentValue)) countLessOrEqual++;
+  return (countLessOrEqual * 100) / length;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<StochVX3Inputs> = {}): Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] };
+
+/** lag(g, p) of the original: the Laguerre filter state L0..L3 (na before the first bar) */
+type LaguerreState = [number, number, number, number];
+
+interface StochVx3Vars {
+  lmas: LaguerreState;
+  lmal: LaguerreState;
+  prevK: number;
+  prevD: number;
+}
+
+interface StochVx3Run extends BarRunState<StochVx3Vars> {
+  stoch: ReturnType<typeof taStep.stoch>;
+  smaK: WindowSma;
+  smaD: WindowSma;
+  ppo: number[];
+  plots: Point[][];
+  bgColors: BgColorData[];
+}
+
+const nzF = (v: number) => (Number.isFinite(v) ? v : 0);
+
+/** One bar of the Laguerre filter (L0 + 2 L1 + 2 L2 + L3) / 6; the state is changed in place */
+function laguerreStep(g: number, l: LaguerreState, v: number): number {
+  const n0 = (1 - g) * v + g * nzF(l[0]);
+  const n1 = -g * n0 + nzF(l[0]) + g * nzF(l[1]);
+  const n2 = -g * n1 + nzF(l[1]) + g * nzF(l[2]);
+  const n3 = -g * n2 + nzF(l[2]) + g * nzF(l[3]);
+  l[0] = n0; l[1] = n1; l[2] = n2; l[3] = n3;
+  return (n0 + 2 * n1 + 2 * n2 + n3) / 6;
+}
+
+function study(inputs: Partial<StochVX3Inputs>): BarStudy<StochVx3Run, Result> {
   const { len, smoothK, smoothD, shortGamma, longGamma, lkbT } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const high = bars.map((b) => b.high), low = bars.map((b) => b.low), close = bars.map((b) => b.close);
-
-  const k = taCore.sma(taCore.stoch(close, high, low, len), smoothK);
-  const d = taCore.sma(k, smoothD);
-
-  const hl2 = bars.map((b) => (b.high + b.low) / 2);
-  const lmas = laguerre(shortGamma, hl2);
-  const lmal = laguerre(longGamma, hl2);
-  const ppoT = lmas.map((v, i) => (v - lmal[i]) / lmal[i] * 100);
-  const pctRankT = taCore.percentrank(ppoT, lkbT);
-
   const num = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const plot0 = k.map((v, i) => ({ time: bars[i].time, value: num(v) }));
-  const plot1 = d.map((v, i) => ({ time: bars[i].time, value: num(v) }));
-  const plot2 = pctRankT.map((v, i) => ({ time: bars[i].time, value: num(v), color: GRAY }));
-  // plot(cross(d, k) ? d : na, color=black, style=circles, linewidth=4)
-  const plot3 = bars.map((b, i) => {
-    const d1 = i > 0 ? d[i - 1] : NaN, k1 = i > 0 ? k[i - 1] : NaN;
-    const cross = (d[i] > k[i] && d1 <= k1) || (d[i] < k[i] && d1 >= k1);
-    return { time: b.time, value: cross ? d[i] : NaN, color: BLACK };
-  });
-
-  // OutputSignal = k >= d ? 0 : 1 (na compares false: 1); bgcolor(OutputSignal > 0 ? #000000 : #128E89, transp=80)
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const black = !(k[i] >= d[i]);
-    bgColors.push({ id: 'bgcolor0', time: bars[i].time, color: black ? 'rgba(0, 0, 0, 0.20)' : 'rgba(18, 142, 137, 0.20)' });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
-    // hline(80 / 20, color=red, linewidth=2): Pine v1 red, Pine default line style (dashed)
-    hlines: [
-      { value: 80, options: { color: RED, linestyle: 'dashed' as const, linewidth: 2, title: 'Overbought' } },
-      { value: 20, options: { color: RED, linestyle: 'dashed' as const, linewidth: 2, title: 'Oversold' } },
-    ],
-    // fill between ob/os hlines (Pine: fill(h0, h1, color=purple, transp=100) - fully transparent, decorative)
-    fills: [
-      { plot1: 'overbought', plot2: 'oversold', options: { color: 'rgba(156, 39, 176, 0.0)' } },
-    ],
-    bgColors,
-  } as Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] };
+    init() {
+      const s: StochVx3Run = {
+        stoch: taStep.stoch(len), smaK: new WindowSma(smoothK), smaD: new WindowSma(smoothD), ppo: [],
+        plots: [[], [], [], []], bgColors: [],
+        steps: [],
+        vars: { lmas: [NaN, NaN, NaN, NaN], lmal: [NaN, NaN, NaN, NaN], prevK: NaN, prevD: NaN },
+        lists: [], series: [],
+      };
+      s.steps = [s.stoch, s.smaK, s.smaD];
+      s.series = [s.ppo, ...s.plots, s.bgColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const time = b.time;
+      const k = s.smaK.step(s.stoch.step(b.close, b.high, b.low));
+      const d = s.smaD.step(k);
+
+      const hl2 = (b.high + b.low) / 2;
+      const lmas = laguerreStep(shortGamma, v.lmas, hl2);
+      const lmal = laguerreStep(longGamma, v.lmal, hl2);
+      const ppoT = (lmas - lmal) / lmal * 100;
+      s.ppo[i] = ppoT;
+      const pctRankT = percentrankAt(s.ppo, i, lkbT);
+
+      s.plots[0][i] = { time, value: num(k) };
+      s.plots[1][i] = { time, value: num(d) };
+      s.plots[2][i] = { time, value: num(pctRankT), color: GRAY };
+      // plot(cross(d, k) ? d : na, color=black, style=circles, linewidth=4)
+      const d1 = v.prevD, k1 = v.prevK;
+      v.prevD = d;
+      v.prevK = k;
+      const cross = (d > k && d1 <= k1) || (d < k && d1 >= k1);
+      s.plots[3][i] = { time, value: cross ? d : NaN, color: BLACK };
+
+      // OutputSignal = k >= d ? 0 : 1 (na compares false: 1); bgcolor(OutputSignal > 0 ? #000000 : #128E89, transp=80)
+      const black = !(k >= d);
+      s.bgColors[i] = { id: 'bgcolor0', time, color: black ? 'rgba(0, 0, 0, 0.20)' : 'rgba(18, 142, 137, 0.20)' };
+    },
+    copyVars: (v) => ({ ...v, lmas: [...v.lmas], lmal: [...v.lmal] }),
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plots[0].slice(), 'plot1': s.plots[1].slice(), 'plot2': s.plots[2].slice(), 'plot3': s.plots[3].slice() },
+        // hline(80 / 20, color=red, linewidth=2): Pine v1 red, Pine default line style (dashed)
+        hlines: [
+          { value: 80, options: { color: RED, linestyle: 'dashed' as const, linewidth: 2, title: 'Overbought' } },
+          { value: 20, options: { color: RED, linestyle: 'dashed' as const, linewidth: 2, title: 'Oversold' } },
+        ],
+        // fill between ob/os hlines (Pine: fill(h0, h1, color=purple, transp=100) - fully transparent, decorative)
+        fills: [
+          { plot1: 'overbought', plot2: 'oversold', options: { color: 'rgba(156, 39, 176, 0.0)' } },
+        ],
+        bgColors: s.bgColors.slice(),
+      } as Result;
+    },
+  };
 }
 
-export const StochVX3 = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<StochVX3Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<StochVX3Inputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const StochVX3 = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

@@ -13,9 +13,10 @@
  * Original notice: M.Khoa
  */
 
-import { ta, Series, color, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { barTime, barInterval } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, PivotStep, type BarRunState, type BarStudy, type IndicatorRun, WindowExtreme, WindowSma } from '../live-run';
 
 export interface RsiMacdV32Inputs {
   src: SourceType;
@@ -118,132 +119,184 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RsiMacdV32Inputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+type MaStep = { step(v: number): number; commit(): void };
+
+interface RsiMacdVars {
+  /** ta.barssince(plFound[1]) / ta.barssince(phFound[1]) */
+  barsSinceLow: number;
+  barsSinceHigh: number;
+  /** ta.valuewhen(found, x[lbR], 1) */
+  plPrevOsc: number;
+  plPrevLow: number;
+  phPrevOsc: number;
+  phPrevHigh: number;
+  prevPlFound: boolean;
+  prevPhFound: boolean;
+  prevHist: number;
+}
+
+interface RsiMacdRun extends BarRunState<RsiMacdVars> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  pl: PivotStep;
+  ph: PivotStep;
+  fast: MaStep;
+  slow: MaStep;
+  signal: MaStep;
+  hi: WindowExtreme[];
+  lo: WindowExtreme[];
+  osc: number[];
+  markers: MarkerData[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+}
+
+function study(inputs: Partial<RsiMacdV32Inputs>): BarStudy<RsiMacdRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const { lbL, lbR, rangeLower, rangeUpper } = cfg;
-
-  // RSI centred on 0
-  const rsiRaw = A(ta.rsi(getSourceSeries(bars, cfg.src), cfg.len));
-  const osc = rsiRaw.map((v) => v - 50);
-  const oscLbr = (i: number) => (i - lbR >= 0 ? osc[i - lbR] : NaN);
-
-  // Divergences
-  const plFound = A(ta.pivotlow(S(osc), lbL, lbR)).map((v) => !isNaN(v));
-  const phFound = A(ta.pivothigh(S(osc), lbL, lbR)).map((v) => !isNaN(v));
-  const markers: MarkerData[] = [];
-  const interval = barInterval(bars);
-  // ta.barssince(plFound[1]) / ta.barssince(phFound[1]): run on every bar (assigned before the conditions)
-  let barsSinceLow = NaN;
-  let barsSinceHigh = NaN;
-  // ta.valuewhen(found, x[lbR], 1): the value on the previous found bar, read on a found bar
-  let plPrevOsc = NaN, plPrevLow = NaN;
-  let phPrevOsc = NaN, phPrevHigh = NaN;
-  for (let i = 0; i < n; i++) {
-    if (i > 0 && plFound[i - 1]) barsSinceLow = 0;
-    else if (!isNaN(barsSinceLow)) barsSinceLow++;
-    if (i > 0 && phFound[i - 1]) barsSinceHigh = 0;
-    else if (!isNaN(barsSinceHigh)) barsSinceHigh++;
-    const inRangeLow = barsSinceLow >= rangeLower && barsSinceLow <= rangeUpper;
-    const inRangeHigh = barsSinceHigh >= rangeLower && barsSinceHigh <= rangeUpper;
-    const o = oscLbr(i);
-    const low = i - lbR >= 0 ? bars[i - lbR].low : NaN;
-    const high = i - lbR >= 0 ? bars[i - lbR].high : NaN;
-    const t = i - lbR >= 0 ? barTime(bars, i - lbR, interval) : NaN;
-
-    if (plFound[i]) {
-      const bullCond = cfg.plotBull && lt(low, plPrevLow) && gt(o, plPrevOsc) && inRangeLow;
-      const hiddenBullCond = cfg.plotHiddenBull && gt(low, plPrevLow) && lt(o, plPrevOsc) && inRangeLow;
-      // plotshape(cond ? osc[lbR] : na, offset = -lbR, style = shape.labelup, location = location.absolute)
-      if (bullCond && !isNaN(o)) {
-        markers.push({ id: 'shape0', time: t, position: 'atPriceBottom', price: o, shape: 'labelUp', color: BULL_COLOR, text: ' Bull ', textColor: TEXT_COLOR });
-      }
-      if (hiddenBullCond && !isNaN(o)) {
-        markers.push({ id: 'shape1', time: t, position: 'atPriceBottom', price: o, shape: 'labelUp', color: BULL_COLOR, text: ' Hidden Bull ', textColor: TEXT_COLOR });
-      }
-      plPrevOsc = o;
-      plPrevLow = low;
-    }
-    if (phFound[i]) {
-      const bearCond = cfg.plotBear && gt(high, phPrevHigh) && lt(o, phPrevOsc) && inRangeHigh;
-      const hiddenBearCond = cfg.plotHiddenBear && lt(high, phPrevHigh) && gt(o, phPrevOsc) && inRangeHigh;
-      if (bearCond && !isNaN(o)) {
-        markers.push({ id: 'shape2', time: t, position: 'atPriceTop', price: o, shape: 'labelDown', color: BEAR_COLOR, text: ' Bear ', textColor: TEXT_COLOR });
-      }
-      if (hiddenBearCond && !isNaN(o)) {
-        markers.push({ id: 'shape3', time: t, position: 'atPriceTop', price: o, shape: 'labelDown', color: BEAR_COLOR, text: ' Hidden Bear ', textColor: TEXT_COLOR });
-      }
-      phPrevOsc = o;
-      phPrevHigh = high;
-    }
-  }
-
-  // MACD scaled into the RSI pane
-  const srcd = getSourceSeries(bars, cfg.srcd);
-  const fastMa = A(cfg.smaSource ? ta.sma(srcd, cfg.fastLength) : ta.ema(srcd, cfg.fastLength));
-  const slowMa = A(cfg.smaSource ? ta.sma(srcd, cfg.slowLength) : ta.ema(srcd, cfg.slowLength));
-  const macd = fastMa.map((v, i) => v - slowMa[i]);
-  const signal = A(cfg.smaSignal ? ta.sma(S(macd), cfg.signalLength) : ta.ema(S(macd), cfg.signalLength));
-  const hist = macd.map((v, i) => v - signal[i]);
-  const range = (x: number[]) => {
-    const hi = A(ta.highest(S(x), cfg.scaleLb));
-    const lo = A(ta.lowest(S(x), cfg.scaleLb));
-    return hi.map((v, i) => v - lo[i]);
+  const src = barSource(cfg.src);
+  const srcd = barSource(cfg.srcd);
+  const ma = (sma: boolean, length: number): MaStep => {
+    return sma ? new WindowSma(length) : taStep.ema(length);
   };
-  const rsiRange = range(osc);
-  const histRange = range(hist);
-  const macdRange = range(macd);
-  const signalRange = range(signal);
   // math.max with an na argument is na
   const pineMax = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.max(a, b));
-  const scaledHist: number[] = new Array(n);
-  const scaledMacd: number[] = new Array(n);
-  const scaledSignal: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const rr = eq(rsiRange[i], 0) ? 0.0001 : rsiRange[i];
-    let overall = pineMax(histRange[i], pineMax(macdRange[i], signalRange[i]));
-    overall = eq(overall, 0) ? 0.0001 : overall;
-    const scaleFactor = rr / overall;
-    scaledHist[i] = hist[i] * scaleFactor;
-    scaledMacd[i] = macd[i] * scaleFactor;
-    scaledSignal[i] = signal[i] * scaleFactor;
-  }
-
   const finite = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const plot0 = bars.map((b, i) => ({
-    time: b.time,
-    value: finite(osc[i]),
-    color: ge(rsiRaw[i], cfg.overbought) ? RSI_ZONE_COLOR : le(rsiRaw[i], cfg.oversold) ? RSI_ZONE_COLOR : RSI_NORMAL_COLOR,
-  }));
-  const plot1 = bars.map((b, i) => {
-    const h = scaledHist[i];
-    const rising = i > 0 && lt(scaledHist[i - 1], h);
-    const c = ge(h, 0) ? (rising ? COL_GROW_ABOVE : COL_FALL_ABOVE) : rising ? COL_GROW_BELOW : COL_FALL_BELOW;
-    return { time: b.time, value: finite(h), color: c };
-  });
-  const plot2 = bars.map((b, i) => ({ time: b.time, value: finite(scaledMacd[i]) }));
-  const plot3 = bars.map((b, i) => ({ time: b.time, value: finite(scaledSignal[i]) }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
-    hlines: [
-      { value: cfg.overbought - 45, options: { title: 'Overbought', color: color.gray, linestyle: 'dashed' } },
-      { value: cfg.oversold - 55, options: { title: 'Oversold', color: color.gray, linestyle: 'dashed' } },
-      // hline(0, 'Middle Line', linestyle = hline.style_dotted): Pine default colour #787B86
-      { value: 0, options: { title: 'Middle Line', color: '#787B86', linestyle: 'dotted' } },
-    ],
-    markers,
+    fullRunReason: () => (isBarSource(cfg.src) && isBarSource(cfg.srcd) ? null : 'source of another study'),
+    init() {
+      const s: RsiMacdRun = {
+        rsi: taStep.rsi(cfg.len), pl: new PivotStep(lbL, lbR, false), ph: new PivotStep(lbL, lbR, true),
+        fast: ma(cfg.smaSource, cfg.fastLength), slow: ma(cfg.smaSource, cfg.slowLength),
+        signal: ma(cfg.smaSignal, cfg.signalLength),
+        hi: [0, 1, 2, 3].map(() => new WindowExtreme(false, cfg.scaleLb)),
+        lo: [0, 1, 2, 3].map(() => new WindowExtreme(true, cfg.scaleLb)),
+        osc: [], markers: [], plot0: [], plot1: [], plot2: [], plot3: [],
+        steps: [],
+        vars: {
+          barsSinceLow: NaN, barsSinceHigh: NaN, plPrevOsc: NaN, plPrevLow: NaN, phPrevOsc: NaN, phPrevHigh: NaN,
+          prevPlFound: false, prevPhFound: false, prevHist: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.rsi, s.pl, s.ph, s.fast, s.slow, s.signal, ...s.hi, ...s.lo];
+      s.lists = [s.markers];
+      s.series = [s.osc, s.plot0, s.plot1, s.plot2, s.plot3];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      // RSI centred on 0
+      const rsiRaw = s.rsi.step(src(b));
+      const osc = rsiRaw - 50;
+      s.osc[i] = osc;
+
+      // Divergences
+      const plFound = !isNaN(s.pl.step(i, osc));
+      const phFound = !isNaN(s.ph.step(i, osc));
+      // ta.barssince(plFound[1]) / ta.barssince(phFound[1]): run on every bar (assigned before the conditions)
+      if (i > 0 && v.prevPlFound) v.barsSinceLow = 0;
+      else if (!isNaN(v.barsSinceLow)) v.barsSinceLow++;
+      if (i > 0 && v.prevPhFound) v.barsSinceHigh = 0;
+      else if (!isNaN(v.barsSinceHigh)) v.barsSinceHigh++;
+      v.prevPlFound = plFound;
+      v.prevPhFound = phFound;
+      const { barsSinceLow, barsSinceHigh } = v;
+      const inRangeLow = barsSinceLow >= rangeLower && barsSinceLow <= rangeUpper;
+      const inRangeHigh = barsSinceHigh >= rangeLower && barsSinceHigh <= rangeUpper;
+      const back = i - lbR >= 0 ? bars[i - lbR] : undefined;
+      const o = back ? s.osc[i - lbR] : NaN;
+      const low = back ? back.low : NaN;
+      const high = back ? back.high : NaN;
+      const t = back ? back.time : NaN;
+
+      if (plFound) {
+        const bullCond = cfg.plotBull && lt(low, v.plPrevLow) && gt(o, v.plPrevOsc) && inRangeLow;
+        const hiddenBullCond = cfg.plotHiddenBull && gt(low, v.plPrevLow) && lt(o, v.plPrevOsc) && inRangeLow;
+        // plotshape(cond ? osc[lbR] : na, offset = -lbR, style = shape.labelup, location = location.absolute)
+        if (bullCond && !isNaN(o)) {
+          s.markers.push({ id: 'shape0', time: t, position: 'atPriceBottom', price: o, shape: 'labelUp', color: BULL_COLOR, text: ' Bull ', textColor: TEXT_COLOR });
+        }
+        if (hiddenBullCond && !isNaN(o)) {
+          s.markers.push({ id: 'shape1', time: t, position: 'atPriceBottom', price: o, shape: 'labelUp', color: BULL_COLOR, text: ' Hidden Bull ', textColor: TEXT_COLOR });
+        }
+        v.plPrevOsc = o;
+        v.plPrevLow = low;
+      }
+      if (phFound) {
+        const bearCond = cfg.plotBear && gt(high, v.phPrevHigh) && lt(o, v.phPrevOsc) && inRangeHigh;
+        const hiddenBearCond = cfg.plotHiddenBear && lt(high, v.phPrevHigh) && gt(o, v.phPrevOsc) && inRangeHigh;
+        if (bearCond && !isNaN(o)) {
+          s.markers.push({ id: 'shape2', time: t, position: 'atPriceTop', price: o, shape: 'labelDown', color: BEAR_COLOR, text: ' Bear ', textColor: TEXT_COLOR });
+        }
+        if (hiddenBearCond && !isNaN(o)) {
+          s.markers.push({ id: 'shape3', time: t, position: 'atPriceTop', price: o, shape: 'labelDown', color: BEAR_COLOR, text: ' Hidden Bear ', textColor: TEXT_COLOR });
+        }
+        v.phPrevOsc = o;
+        v.phPrevHigh = high;
+      }
+
+      // MACD scaled into the RSI pane
+      const sd = srcd(b);
+      const macd = s.fast.step(sd) - s.slow.step(sd);
+      const signal = s.signal.step(macd);
+      const hist = macd - signal;
+      const range = (k: number, x: number) => s.hi[k].step(x) - s.lo[k].step(x);
+      const rsiRange = range(0, osc);
+      const histRange = range(1, hist);
+      const macdRange = range(2, macd);
+      const signalRange = range(3, signal);
+      const rr = eq(rsiRange, 0) ? 0.0001 : rsiRange;
+      let overall = pineMax(histRange, pineMax(macdRange, signalRange));
+      overall = eq(overall, 0) ? 0.0001 : overall;
+      const scaleFactor = rr / overall;
+      const scaledHist = hist * scaleFactor;
+
+      const time = b.time;
+      s.plot0[i] = {
+        time,
+        value: finite(osc),
+        color: ge(rsiRaw, cfg.overbought) ? RSI_ZONE_COLOR : le(rsiRaw, cfg.oversold) ? RSI_ZONE_COLOR : RSI_NORMAL_COLOR,
+      };
+      const rising = i > 0 && lt(v.prevHist, scaledHist);
+      v.prevHist = scaledHist;
+      const c = ge(scaledHist, 0) ? (rising ? COL_GROW_ABOVE : COL_FALL_ABOVE) : rising ? COL_GROW_BELOW : COL_FALL_BELOW;
+      s.plot1[i] = { time, value: finite(scaledHist), color: c };
+      s.plot2[i] = { time, value: finite(macd * scaleFactor) };
+      s.plot3[i] = { time, value: finite(signal * scaleFactor) };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+        hlines: [
+          { value: cfg.overbought - 45, options: { title: 'Overbought', color: color.gray, linestyle: 'dashed' } },
+          { value: cfg.oversold - 55, options: { title: 'Oversold', color: color.gray, linestyle: 'dashed' } },
+          // hline(0, 'Middle Line', linestyle = hline.style_dotted): Pine default colour #787B86
+          { value: 0, options: { title: 'Middle Line', color: '#787B86', linestyle: 'dotted' } },
+        ],
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RsiMacdV32Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RsiMacdV32Inputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RsiMacdV32 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -11,8 +11,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun, WindowSma } from '../live-run';
 
 export interface MacdWithCrossingsAndAboveBelowZeroInputs {
   fastLength: number;
@@ -113,126 +115,174 @@ const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 /** Plots show na for na and +-infinity */
 const fin = (x: number) => (Number.isFinite(x) ? x : NaN);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MacdWithCrossingsAndAboveBelowZeroInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] };
+type MaStep = { step(v: number): number; commit(): void };
+
+interface MacdXVars {
+  prevHigh: number;
+  prevLow: number;
+  prevMacd: number;
+  prevHist: number;
+  prevRsiSrc: number;
+  /** fixnan(...) of +DI / -DI */
+  plus: number;
+  minus: number;
+}
+
+interface MacdXRun extends BarRunState<MacdXVars> {
+  fast: MaStep;
+  slow: MaStep;
+  signal: MaStep;
+  tr: ReturnType<typeof taStep.tr>;
+  truerange: ReturnType<typeof taStep.rma>;
+  rmaPlus: ReturnType<typeof taStep.rma>;
+  rmaMinus: ReturnType<typeof taStep.rma>;
+  rmaDx: ReturnType<typeof taStep.rma>;
+  rsiUp: ReturnType<typeof taStep.rma>;
+  rsiDown: ReturnType<typeof taStep.rma>;
+  xover: ReturnType<typeof taStep.crossover>;
+  xunder: ReturnType<typeof taStep.crossunder>;
+  plots: Point[][];
+  bgColors: BgColorData[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<MacdWithCrossingsAndAboveBelowZeroInputs>): BarStudy<MacdXRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const t = (i: number) => bars[i].time;
-
+  const srcOf = barSource(cfg.src);
+  const rsiSrcOf = barSource(cfg.rsiSrc);
   // MACD (the inputs choose the MA on every bar, so each ta call runs on all bars or on none)
-  const src = getSourceSeries(bars, cfg.src);
-  const fastMa = A(cfg.smaSource ? ta.sma(src, cfg.fastLength) : ta.ema(src, cfg.fastLength));
-  const slowMa = A(cfg.smaSource ? ta.sma(src, cfg.slowLength) : ta.ema(src, cfg.slowLength));
-  const macd = bars.map((_b, i) => fastMa[i] - slowMa[i]);
-  const signal = A(cfg.smaSignal ? ta.sma(S(macd), cfg.signalLength) : ta.ema(S(macd), cfg.signalLength));
-  const hist = bars.map((_b, i) => macd[i] - signal[i]);
-
+  const ma = (sma: boolean, length: number): MaStep => {
+    return sma ? new WindowSma(length) : taStep.ema(length);
+  };
   // dirmov(len): the original uses adxlen for every rma (len is not used)
   const adxLen = cfg.adxLen;
-  const high = bars.map((b) => b.high);
-  const low = bars.map((b) => b.low);
-  const plusDM = bars.map((_b, i) => {
-    const up = i > 0 ? high[i] - high[i - 1] : NaN; // ta.change(high)
-    const down = i > 0 ? -(low[i] - low[i - 1]) : NaN; // -ta.change(low)
-    return isNaN(up) ? NaN : gt(up, down) && gt(up, 0) ? up : 0;
-  });
-  const minusDM = bars.map((_b, i) => {
-    const up = i > 0 ? high[i] - high[i - 1] : NaN;
-    const down = i > 0 ? -(low[i] - low[i - 1]) : NaN;
-    return isNaN(down) ? NaN : gt(down, up) && gt(down, 0) ? down : 0;
-  });
-  const truerange = A(ta.rma(ta.tr(bars), adxLen));
-  const rmaPlus = A(ta.rma(S(plusDM), adxLen));
-  const rmaMinus = A(ta.rma(S(minusDM), adxLen));
-  // fixnan(100 * ta.rma(dm, adxlen) / truerange): a plain division (x / 0 is +-infinity, kept by fixnan; 0 / 0 is na)
-  const fixnan = (x: number[]) => {
-    let last = NaN;
-    return x.map((v) => (isNaN(v) ? last : (last = v)));
-  };
-  const plus = fixnan(bars.map((_b, i) => (100 * rmaPlus[i]) / truerange[i]));
-  const minus = fixnan(bars.map((_b, i) => (100 * rmaMinus[i]) / truerange[i]));
-  // adx = 100 * ta.rma(math.abs(plus - minus) / (sum == 0 ? 1 : sum), adxlen)
-  const dx = bars.map((_b, i) => {
-    const sum = plus[i] + minus[i];
-    return Math.abs(plus[i] - minus[i]) / (eq(sum, 0) ? 1 : sum);
-  });
-  const rmaDx = A(ta.rma(S(dx), adxLen));
-  const sig = rmaDx.map((v) => 100 * v);
-
-  // RSI scaled to 0..1
-  const rsiSrc = getSourceSeries(bars, cfg.rsiSrc).toArray().map((v) => v ?? NaN);
-  const chg = rsiSrc.map((v, i) => (i > 0 ? v - rsiSrc[i - 1] : NaN));
-  const rsiUp = A(ta.rma(S(chg.map((c) => Math.max(c, 0))), cfg.rsiLen));
-  const rsiDown = A(ta.rma(S(chg.map((c) => -Math.min(c, 0))), cfg.rsiLen));
-  const rsi = bars.map((_b, i) => {
-    const d = rsiDown[i];
-    const u = rsiUp[i];
-    return (eq(d, 0) ? 100 : eq(u, 0) ? 0 : 100 - 100 / (1 + u / d)) / 100;
-  });
-
-  // Crossings: ta.crossover / ta.crossunder(signal, macd) (exact comparisons)
-  const xover = A(ta.crossover(S(signal), S(macd)));
-  const xunder = A(ta.crossunder(S(signal), S(macd)));
-
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: fin(sig[i]) }));
-  const plot1 = bars.map((b, i) => {
-    const h = hist[i];
-    const grow = i > 0 && lt(hist[i - 1], h); // hist[1] < hist
-    const c = ge(h, 0) ? (grow ? COL_GROW_ABOVE : COL_FALL_ABOVE) : grow ? COL_GROW_BELOW : COL_FALL_BELOW;
-    return { time: b.time, value: fin(h), color: c };
-  });
-  const plot2 = bars.map((b, i) => ({ time: b.time, value: fin(macd[i]), color: le(macd[i], 0) ? '#00477d' : '#00f0ff' }));
-  const plot3 = bars.map((b, i) => ({ time: b.time, value: fin(signal[i]), color: le(signal[i], 0) ? '#ff2600' : '#ff6a00' }));
-  // plot(ta.change(macd))
-  const plot4 = bars.map((b, i) => ({ time: b.time, value: fin(i > 0 ? macd[i] - macd[i - 1] : NaN), color: DERIV_COLOR }));
-  const plot5 = bars.map((b, i) => ({ time: b.time, value: fin(rsi[i]), color: RSI_COLOR }));
-
-  // bgcolor(bcol): ADX levels
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const s = sig[i];
-    const c = ge(s, 75) ? BG_75 : ge(s, 50) ? BG_50 : ge(s, 25) ? BG_25 : ge(s, 12.5) ? BG_12 : lt(s, 12.5) ? BG_LOW : null;
-    if (c) bgColors.push({ time: t(i), color: c });
-  }
-
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const over = xover[i] === 1;
-    const under = xunder[i] === 1;
-    // xUp = macd > 0 ? crossover : false -> 'MACD X Up': triangle down, top, tiny, red
-    if (gt(macd[i], 0) && over) markers.push({ time: t(i), id: 'shape0', position: 'top', shape: 'triangleDown', color: RED, size: 'tiny' });
-    // xDn = macd < 0 ? crossunder : false -> 'MACD X Dn': triangle up, bottom, tiny, green
-    if (lt(macd[i], 0) && under) markers.push({ time: t(i), id: 'shape1', position: 'bottom', shape: 'triangleUp', color: GREEN, size: 'tiny' });
-    // xDnHigh = macd >= 0 ? crossunder : false -> 'Big MACD X Up': triangle up, bottom, small, green
-    if (ge(macd[i], 0) && under) markers.push({ time: t(i), id: 'shape2', position: 'bottom', shape: 'triangleUp', color: GREEN, size: 'small' });
-    // xUpLow = macd <= 0 ? crossover : false -> 'Big MACD X Dn': triangle down, top, small, red
-    if (le(macd[i], 0) && over) markers.push({ time: t(i), id: 'shape3', position: 'top', shape: 'triangleDown', color: RED, size: 'small' });
-    // 'DMI+': plusDM > minusDM, arrow up, bottom, size.auto, green; 'DMI-': plusDM < minusDM, arrow down, top, red
-    if (gt(plus[i], minus[i])) markers.push({ time: t(i), id: 'shape4', position: 'bottom', shape: 'arrowUp', color: GREEN, size: 'auto' });
-    if (lt(plus[i], minus[i])) markers.push({ time: t(i), id: 'shape5', position: 'top', shape: 'arrowDown', color: RED, size: 'auto' });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3, plot4, plot5 },
-    hlines: [
-      { value: 0.7, options: { title: 'Upper Band', color: BAND_COLOR, linestyle: 'dashed' } },
-      { value: 0.3, options: { title: 'Lower Band', color: BAND_COLOR, linestyle: 'dashed' } },
-    ],
-    fills: [
-      { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'Background' }, colors: new Array<string>(n).fill(BAND_FILL) },
-    ],
-    markers,
-    bgColors,
+    fullRunReason: () => (isBarSource(cfg.src) && isBarSource(cfg.rsiSrc) ? null : 'source of another study'),
+    init() {
+      const s: MacdXRun = {
+        fast: ma(cfg.smaSource, cfg.fastLength), slow: ma(cfg.smaSource, cfg.slowLength),
+        signal: ma(cfg.smaSignal, cfg.signalLength),
+        tr: taStep.tr(), truerange: taStep.rma(adxLen), rmaPlus: taStep.rma(adxLen), rmaMinus: taStep.rma(adxLen),
+        rmaDx: taStep.rma(adxLen), rsiUp: taStep.rma(cfg.rsiLen), rsiDown: taStep.rma(cfg.rsiLen),
+        xover: taStep.crossover(), xunder: taStep.crossunder(),
+        plots: Array.from({ length: 6 }, () => []), bgColors: [], markers: [],
+        steps: [],
+        vars: { prevHigh: NaN, prevLow: NaN, prevMacd: NaN, prevHist: NaN, prevRsiSrc: NaN, plus: NaN, minus: NaN },
+        lists: [], series: [],
+      };
+      s.steps = [
+        s.fast, s.slow, s.signal, s.tr, s.truerange, s.rmaPlus, s.rmaMinus, s.rmaDx, s.rsiUp, s.rsiDown, s.xover, s.xunder,
+      ];
+      s.lists = [s.bgColors, s.markers];
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const time = b.time;
+      const sv = srcOf(b);
+      const macd = s.fast.step(sv) - s.slow.step(sv);
+      const signal = s.signal.step(macd);
+      const hist = macd - signal;
+
+      const up = i > 0 ? b.high - v.prevHigh : NaN; // ta.change(high)
+      const down = i > 0 ? -(b.low - v.prevLow) : NaN; // -ta.change(low)
+      v.prevHigh = b.high;
+      v.prevLow = b.low;
+      const plusDM = isNaN(up) ? NaN : gt(up, down) && gt(up, 0) ? up : 0;
+      const minusDM = isNaN(down) ? NaN : gt(down, up) && gt(down, 0) ? down : 0;
+      const truerange = s.truerange.step(s.tr.step(b.high, b.low, b.close));
+      const rmaPlus = s.rmaPlus.step(plusDM);
+      const rmaMinus = s.rmaMinus.step(minusDM);
+      // fixnan(100 * ta.rma(dm, adxlen) / truerange): a plain division (x / 0 is +-infinity, kept by fixnan; 0 / 0 is na)
+      const p = (100 * rmaPlus) / truerange;
+      const m = (100 * rmaMinus) / truerange;
+      if (!isNaN(p)) v.plus = p;
+      if (!isNaN(m)) v.minus = m;
+      const plus = v.plus;
+      const minus = v.minus;
+      // adx = 100 * ta.rma(math.abs(plus - minus) / (sum == 0 ? 1 : sum), adxlen)
+      const sum = plus + minus;
+      const dx = Math.abs(plus - minus) / (eq(sum, 0) ? 1 : sum);
+      const sig = 100 * s.rmaDx.step(dx);
+
+      // RSI scaled to 0..1
+      const rs = rsiSrcOf(b);
+      const chg = i > 0 ? rs - v.prevRsiSrc : NaN;
+      v.prevRsiSrc = rs;
+      const u = s.rsiUp.step(Math.max(chg, 0));
+      const d = s.rsiDown.step(-Math.min(chg, 0));
+      const rsi = (eq(d, 0) ? 100 : eq(u, 0) ? 0 : 100 - 100 / (1 + u / d)) / 100;
+
+      // Crossings: ta.crossover / ta.crossunder(signal, macd) (exact comparisons)
+      const over = s.xover.step(signal, macd);
+      const under = s.xunder.step(signal, macd);
+
+      const plots = s.plots;
+      plots[0][i] = { time, value: fin(sig) };
+      const grow = i > 0 && lt(v.prevHist, hist); // hist[1] < hist
+      v.prevHist = hist;
+      const c = ge(hist, 0) ? (grow ? COL_GROW_ABOVE : COL_FALL_ABOVE) : grow ? COL_GROW_BELOW : COL_FALL_BELOW;
+      plots[1][i] = { time, value: fin(hist), color: c };
+      plots[2][i] = { time, value: fin(macd), color: le(macd, 0) ? '#00477d' : '#00f0ff' };
+      plots[3][i] = { time, value: fin(signal), color: le(signal, 0) ? '#ff2600' : '#ff6a00' };
+      // plot(ta.change(macd))
+      plots[4][i] = { time, value: fin(i > 0 ? macd - v.prevMacd : NaN), color: DERIV_COLOR };
+      v.prevMacd = macd;
+      plots[5][i] = { time, value: fin(rsi), color: RSI_COLOR };
+
+      // bgcolor(bcol): ADX levels
+      const bg = ge(sig, 75) ? BG_75 : ge(sig, 50) ? BG_50 : ge(sig, 25) ? BG_25 : ge(sig, 12.5) ? BG_12 : lt(sig, 12.5) ? BG_LOW : null;
+      if (bg) s.bgColors.push({ time, color: bg });
+
+      const markers = s.markers;
+      // xUp = macd > 0 ? crossover : false -> 'MACD X Up': triangle down, top, tiny, red
+      if (gt(macd, 0) && over) markers.push({ time, id: 'shape0', position: 'top', shape: 'triangleDown', color: RED, size: 'tiny' });
+      // xDn = macd < 0 ? crossunder : false -> 'MACD X Dn': triangle up, bottom, tiny, green
+      if (lt(macd, 0) && under) markers.push({ time, id: 'shape1', position: 'bottom', shape: 'triangleUp', color: GREEN, size: 'tiny' });
+      // xDnHigh = macd >= 0 ? crossunder : false -> 'Big MACD X Up': triangle up, bottom, small, green
+      if (ge(macd, 0) && under) markers.push({ time, id: 'shape2', position: 'bottom', shape: 'triangleUp', color: GREEN, size: 'small' });
+      // xUpLow = macd <= 0 ? crossover : false -> 'Big MACD X Dn': triangle down, top, small, red
+      if (le(macd, 0) && over) markers.push({ time, id: 'shape3', position: 'top', shape: 'triangleDown', color: RED, size: 'small' });
+      // 'DMI+': plusDM > minusDM, arrow up, bottom, size.auto, green; 'DMI-': plusDM < minusDM, arrow down, top, red
+      if (gt(plus, minus)) markers.push({ time, id: 'shape4', position: 'bottom', shape: 'arrowUp', color: GREEN, size: 'auto' });
+      if (lt(plus, minus)) markers.push({ time, id: 'shape5', position: 'top', shape: 'arrowDown', color: RED, size: 'auto' });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const [plot0, plot1, plot2, plot3, plot4, plot5] = s.plots.map((p) => p.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0, plot1, plot2, plot3, plot4, plot5 },
+        hlines: [
+          { value: 0.7, options: { title: 'Upper Band', color: BAND_COLOR, linestyle: 'dashed' } },
+          { value: 0.3, options: { title: 'Lower Band', color: BAND_COLOR, linestyle: 'dashed' } },
+        ],
+        fills: [
+          { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'Background' }, colors: new Array<string>(n).fill(BAND_FILL) },
+        ],
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MacdWithCrossingsAndAboveBelowZeroInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MacdWithCrossingsAndAboveBelowZeroInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MacdWithCrossingsAndAboveBelowZero = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

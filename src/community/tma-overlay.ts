@@ -20,9 +20,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, time, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, time, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TmaOverlayInputs {
   show100: boolean;
@@ -139,115 +141,145 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TmaOverlayInputs> = {},
-): Omit<IndicatorResult, 'markers' | 'bgColors'> & { markers: MarkerData[]; bgColors: BgColorData[] }
-  & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers' | 'bgColors'> & { markers: MarkerData[]; bgColors: BgColorData[] }
+  & { alerts: AlertConditionState[] };
+
+const SMMA_LENGTHS = [21, 50, 100, 200];
+
+interface TmaRun extends BarRunState<Record<string, never>> {
+  smas: ReturnType<typeof taStep.sma>[];
+  ema: ReturnType<typeof taStep.ema>;
+  /** smma1 .. smma4 of each bar */
+  smma: number[][];
+  lines: Point[][];
+  fillColors: string[];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<TmaOverlayInputs>): BarStudy<TmaRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const closeSeries = new Series(bars, (b) => b.close);
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  // smma := na(smma[1]) ? sma(close, len) : (smma[1] * (len - 1) + close) / len
-  const smma = (len: number): number[] => {
-    const sma = A(ta.sma(closeSeries, len));
-    const out: number[] = new Array(n);
-    for (let i = 0; i < n; i++) {
-      const prev = i > 0 ? out[i - 1] : NaN;
-      out[i] = isNaN(prev) ? sma[i] : (prev * (len - 1) + bars[i].close) / len;
-    }
-    return out;
-  };
-  const smma1 = smma(21);
-  const smma2 = smma(50);
-  const smma3 = smma(100);
-  const smma4 = smma(200);
-  const ema2 = A(ta.ema(closeSeries, 2));
-
-  const t = (i: number) => bars[i].time;
-  const line = (v: number[], on = true) => v.map((x, i) => ({ time: t(i), value: on ? x : NaN }));
-  const plots = {
-    plot0: line(smma1),
-    plot1: line(smma2),
-    plot2: line(smma3, cfg.show100),
-    plot3: line(smma4),
-    plot4: line(ema2),
-  };
-
   // fill(ema2plot, sma4plot, ema2 > smma4 and trendFill ? green : ema2 < smma4 and trendFill ? red : na, transp = 85)
   const fillUp = String(color.new(GREEN, 85));
   const fillDown = String(color.new(RED, 85));
-  const fillColors = bars.map((_b, i) => (cfg.trendFill && gt(ema2[i], smma4[i]) ? fillUp
-    : cfg.trendFill && lt(ema2[i], smma4[i]) ? fillDown : 'transparent'));
-
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  const bullFlags: boolean[] = new Array(n).fill(false);
-  const bearFlags: boolean[] = new Array(n).fill(false);
-  const O = (i: number) => (i >= 0 ? bars[i].open : NaN);
-  const C = (i: number) => (i >= 0 ? bars[i].close : NaN);
   const tz = cfg.timezone;
-  // year(time, tz) runs on every bar, also when the session is not shown: a name that is not a time zone
-  // ("Asia/Sydney" and "Europe/Frankfurt" of the options list) is a runtime error of the original script
-  if (n > 0) {
-    try {
-      time.year(bars[0].time * 1000, tz);
-    } catch {
-      throw new Error(`Incorrect \`timezone\` value for the year() function: "${tz}". The value must be a string in either `
-        + 'UTC/GMT notation (e.g. "UTC-5", "GMT+0530") or an IANA time zone database name (e.g. "America/New_York").');
-    }
-  }
-  for (let i = 0; i < n; i++) {
-    // 3 Line Strike
-    const bearSig = gt(C(i - 3), O(i - 3)) && gt(C(i - 2), O(i - 2)) && gt(C(i - 1), O(i - 1)) && lt(C(i), O(i - 1));
-    const bullSig = lt(C(i - 3), O(i - 3)) && lt(C(i - 2), O(i - 2)) && lt(C(i - 1), O(i - 1)) && gt(C(i), O(i - 1));
-    if (cfg.showBullStrike && bullSig) {
-      markers.push({ time: t(i), position: 'belowBar', shape: 'triangleUp', color: GREEN, size: 'small', text: '3s-Bull', textColor: BLUE });
-    }
-    if (cfg.showBearStrike && bearSig) {
-      markers.push({ time: t(i), position: 'aboveBar', shape: 'triangleDown', color: RED, size: 'small', text: '3s-Bear', textColor: BLUE });
-    }
-    // Engulfing candles
-    const bullishEngulfing = le(O(i), C(i - 1)) && lt(O(i), O(i - 1)) && gt(C(i), O(i - 1));
-    const bearishEngulfing = ge(O(i), C(i - 1)) && gt(O(i), O(i - 1)) && lt(C(i), O(i - 1));
-    bullFlags[i] = bullishEngulfing;
-    bearFlags[i] = bearishEngulfing;
-    if (cfg.showBullEngulfing && bullishEngulfing) {
-      markers.push({ time: t(i), position: 'belowBar', shape: 'triangleUp', color: GREEN, size: 'tiny' });
-    }
-    if (cfg.showBearEngulfing && bearishEngulfing) {
-      markers.push({ time: t(i), position: 'aboveBar', shape: 'triangleDown', color: RED, size: 'tiny' });
-    }
-
-    // Trade session: the bar time against times of the same day in the time zone
-    if (!cfg.showSession) continue;
-    const ms = t(i) * 1000;
-    const y = time.year(ms, tz);
-    const mo = time.month(ms, tz);
-    const d = time.dayofmonth(ms, tz);
-    const dow = time.dayofweek(ms, tz); // 1 = Sunday ... 7 = Saturday
-    const dayOn = [cfg.showSun, cfg.showMon, cfg.showTue, cfg.showWed, cfg.showThu, cfg.showFri, cfg.showSat][dow - 1];
-    if (!dayOn) continue;
-    const endTime = time.timestamp(tz, y, mo, d, cfg.sessionEndHour, cfg.sessionEndMinute);
-    const startTime = time.timestamp(tz, y, mo, d, cfg.startHour, cfg.startMinute);
-    const startTime2 = time.timestamp(tz, y, mo, d, cfg.sessionStartHour, cfg.sessionStartMinute);
-    // Two bgcolor calls with the same colour (ids bgcolor0 / bgcolor1): the second is drawn on top of the first
-    if (startTime <= ms && ms <= endTime) bgColors.push({ id: 'bgcolor0', time: t(i), color: cfg.rangeColor });
-    if (startTime2 <= ms && ms <= endTime) bgColors.push({ id: 'bgcolor1', time: t(i), color: cfg.rangeColor });
-  }
-
+  const days = [cfg.showSun, cfg.showMon, cfg.showTue, cfg.showWed, cfg.showThu, cfg.showFri, cfg.showSat];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills: [{ plot1: 'plot4', plot2: 'plot3', options: { title: 'Trend Fill' }, colors: fillColors }],
-    markers,
-    bgColors,
-    // alertcondition(bullishEngulfing, "Bullish Engulfing") / alertcondition(bearishEngulfing, "Bearish Engulfing")
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags]),
+    init() {
+      const smas = SMMA_LENGTHS.map(() => taStep.sma());
+      const ema = taStep.ema(2);
+      const s: TmaRun = {
+        smas, ema, smma: [[], [], [], []], lines: [[], [], [], [], []], fillColors: [], markers: [], bgColors: [],
+        flags: [[], []], times: [[], []],
+        steps: [...smas, ema], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.bgColors, ...s.times];
+      s.series = [...s.smma, ...s.lines, s.fillColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time0 = b.time;
+      // year(time, tz) runs on every bar, also when the session is not shown: a name that is not a time zone
+      // ("Asia/Sydney" and "Europe/Frankfurt" of the options list) is a runtime error of the original script
+      if (i === 0) {
+        try {
+          time.year(b.time * 1000, tz);
+        } catch {
+          throw new Error(`Incorrect \`timezone\` value for the year() function: "${tz}". The value must be a string in either `
+            + 'UTC/GMT notation (e.g. "UTC-5", "GMT+0530") or an IANA time zone database name (e.g. "America/New_York").');
+        }
+      }
+      // smma := na(smma[1]) ? sma(close, len) : (smma[1] * (len - 1) + close) / len
+      for (let k = 0; k < 4; k++) {
+        const len = SMMA_LENGTHS[k];
+        const out = s.smma[k];
+        const sma = s.smas[k].step(b.close, len);
+        const prev = i > 0 ? out[i - 1] : NaN;
+        out[i] = isNaN(prev) ? sma : (prev * (len - 1) + b.close) / len;
+      }
+      const ema2 = s.ema.step(b.close);
+      const smma4 = s.smma[3][i];
+      s.lines[0][i] = { time: time0, value: s.smma[0][i] };
+      s.lines[1][i] = { time: time0, value: s.smma[1][i] };
+      s.lines[2][i] = { time: time0, value: cfg.show100 ? s.smma[2][i] : NaN };
+      s.lines[3][i] = { time: time0, value: smma4 };
+      s.lines[4][i] = { time: time0, value: ema2 };
+      s.fillColors[i] = cfg.trendFill && gt(ema2, smma4) ? fillUp : cfg.trendFill && lt(ema2, smma4) ? fillDown : 'transparent';
+
+      const O = (j: number) => (j >= 0 ? bars[j].open : NaN);
+      const C = (j: number) => (j >= 0 ? bars[j].close : NaN);
+      // 3 Line Strike
+      const bearSig = gt(C(i - 3), O(i - 3)) && gt(C(i - 2), O(i - 2)) && gt(C(i - 1), O(i - 1)) && lt(C(i), O(i - 1));
+      const bullSig = lt(C(i - 3), O(i - 3)) && lt(C(i - 2), O(i - 2)) && lt(C(i - 1), O(i - 1)) && gt(C(i), O(i - 1));
+      if (cfg.showBullStrike && bullSig) {
+        s.markers.push({ time: time0, position: 'belowBar', shape: 'triangleUp', color: GREEN, size: 'small', text: '3s-Bull', textColor: BLUE });
+      }
+      if (cfg.showBearStrike && bearSig) {
+        s.markers.push({ time: time0, position: 'aboveBar', shape: 'triangleDown', color: RED, size: 'small', text: '3s-Bear', textColor: BLUE });
+      }
+      // Engulfing candles
+      const bullishEngulfing = le(O(i), C(i - 1)) && lt(O(i), O(i - 1)) && gt(C(i), O(i - 1));
+      const bearishEngulfing = ge(O(i), C(i - 1)) && gt(O(i), O(i - 1)) && lt(C(i), O(i - 1));
+      s.flags[0][i] = bullishEngulfing;
+      s.flags[1][i] = bearishEngulfing;
+      if (bullishEngulfing) s.times[0].push(time0 as number);
+      if (bearishEngulfing) s.times[1].push(time0 as number);
+      if (cfg.showBullEngulfing && bullishEngulfing) {
+        s.markers.push({ time: time0, position: 'belowBar', shape: 'triangleUp', color: GREEN, size: 'tiny' });
+      }
+      if (cfg.showBearEngulfing && bearishEngulfing) {
+        s.markers.push({ time: time0, position: 'aboveBar', shape: 'triangleDown', color: RED, size: 'tiny' });
+      }
+
+      // Trade session: the bar time against times of the same day in the time zone
+      if (!cfg.showSession) return;
+      const ms = time0 * 1000;
+      const y = time.year(ms, tz);
+      const mo = time.month(ms, tz);
+      const d = time.dayofmonth(ms, tz);
+      const dow = time.dayofweek(ms, tz); // 1 = Sunday ... 7 = Saturday
+      const dayOn = days[dow - 1];
+      if (!dayOn) return;
+      const endTime = time.timestamp(tz, y, mo, d, cfg.sessionEndHour, cfg.sessionEndMinute);
+      const startTime = time.timestamp(tz, y, mo, d, cfg.startHour, cfg.startMinute);
+      const startTime2 = time.timestamp(tz, y, mo, d, cfg.sessionStartHour, cfg.sessionStartMinute);
+      // Two bgcolor calls with the same colour (ids bgcolor0 / bgcolor1): the second is drawn on top of the first
+      if (startTime <= ms && ms <= endTime) s.bgColors.push({ id: 'bgcolor0', time: time0, color: cfg.rangeColor });
+      if (startTime2 <= ms && ms <= endTime) s.bgColors.push({ id: 'bgcolor1', time: time0, color: cfg.rangeColor });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.lines[0].slice(),
+          plot1: s.lines[1].slice(),
+          plot2: s.lines[2].slice(),
+          plot3: s.lines[3].slice(),
+          plot4: s.lines[4].slice(),
+        },
+        fills: [{ plot1: 'plot4', plot2: 'plot3', options: { title: 'Trend Fill' }, colors: s.fillColors.slice() }],
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        // alertcondition(bullishEngulfing, "Bullish Engulfing") / alertcondition(bearishEngulfing, "Bearish Engulfing")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TmaOverlayInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TmaOverlayInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert0', title: 'Bullish Engulfing', message: '[CurrencyPair] [TimeFrame], Bullish candle engulfing previous candle' },
@@ -256,6 +288,8 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const TmaOverlay = {
   calculate,
+  createRun,
+
   metadata,
   defaultInputs,
   inputConfig,

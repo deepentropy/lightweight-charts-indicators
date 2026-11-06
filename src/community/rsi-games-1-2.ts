@@ -15,10 +15,11 @@
  * Original notice: © petejfjohnson
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
-import { barInterval, barTime } from '../bar-time';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type MaType = 'None' | 'SMA' | 'SMA + Bollinger Bands' | 'EMA' | 'SMMA (RMA)' | 'WMA' | 'VWMA';
 
@@ -81,195 +82,276 @@ const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RsiGames12Inputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[]; visibility: Record<string, boolean> }
-  & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[]; visibility: Record<string, boolean> }
+  & { alerts: AlertConditionState[] };
+
+interface RsiGamesVars {
+  /** ta.valuewhen(found, x, 1) histories: the last two values (older first) */
+  plRsi: readonly number[];
+  plLow: readonly number[];
+  phRsi: readonly number[];
+  phHigh: readonly number[];
+  /** Calls of the ta.barssince in _inRange (Pine v6 `and` is lazy) */
+  plCalls: number;
+  phCalls: number;
+}
+
+interface RsiGamesRun extends BarRunState<RsiGamesVars> {
+  up: ReturnType<typeof taStep.rma>;
+  down: ReturnType<typeof taStep.rma>;
+  ma: { step(v: number, volume: number): number; commit(): void } | null;
+  dev: ReturnType<typeof taStep.stdev> | null;
+  pl: PivotStep;
+  ph: PivotStep;
+  srcArr: number[];
+  rsi: number[];
+  bbUpper: number[];
+  bbLower: number[];
+  plFound: boolean[];
+  phFound: boolean[];
+  plots: Point[][];
+  /** plot5 / plot6 (offset = -lookbackRight): slot i - 5 written by bar i (outside `series`: n - 5 points) */
+  bullLine: Point[];
+  bearLine: Point[];
+  maFill: string[];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+/** ta.valuewhen history: the value added on a bar where the condition is true */
+const pushed = (h: readonly number[], v: number): readonly number[] => (h.length < 2 ? [...h, v] : [h[1]!, v]);
+/** occurrence 1 of the history (na before two values) */
+const second = (h: readonly number[]): number => (h.length === 2 ? h[0]! : NaN);
+
+function study(inputs: Partial<RsiGames12Inputs>): BarStudy<RsiGamesRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // RSI: rma of max(change, 0) and -min(change, 0)
-  const src = A(getSourceSeries(bars, cfg.rsiSource));
-  const change = src.map((v, i) => (i > 0 ? v - src[i - 1] : NaN));
-  const up = A(ta.rma(S(change.map((c) => (isNaN(c) ? NaN : Math.max(c, 0)))), cfg.rsiLength));
-  const down = A(ta.rma(S(change.map((c) => (isNaN(c) ? NaN : -Math.min(c, 0)))), cfg.rsiLength));
-  // rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
-  const rsi = up.map((u, i) => (eq(down[i], 0) ? 100 : eq(u, 0) ? 0 : 100 - 100 / (1 + u / down[i])));
-  const rsiS = S(rsi);
-
+  const value = barSource(cfg.rsiSource);
   // Smoothing MA and Bollinger Bands
   const enableMA = cfg.maType !== 'None';
   const isBB = cfg.maType === 'SMA + Bollinger Bands';
-  let ma = new Array<number>(n).fill(NaN);
-  if (enableMA) {
-    let maS: Series;
-    switch (cfg.maType) {
-      case 'EMA': maS = ta.ema(rsiS, cfg.maLength); break;
-      case 'SMMA (RMA)': maS = ta.rma(rsiS, cfg.maLength); break;
-      case 'WMA': maS = ta.wma(rsiS, cfg.maLength); break;
-      case 'VWMA': maS = ta.vwma(rsiS, cfg.maLength, S(bars.map((b) => b.volume ?? NaN))); break;
-      default: maS = ta.sma(rsiS, cfg.maLength); break;
-    }
-    ma = A(maS);
-  }
-  const sd = isBB ? A(ta.stdev(rsiS, cfg.maLength)).map((v) => v * cfg.bbMult) : new Array<number>(n).fill(NaN);
-  const bbUpper = ma.map((m, i) => m + sd[i]);
-  const bbLower = ma.map((m, i) => m - sd[i]);
-
   // Divergence
   const lbR = 5;
   const lbL = 5;
   const rangeUpper = 60;
   const rangeLower = 5;
-  const rsiLbr = (i: number) => (i - lbR >= 0 ? rsi[i - lbR] : NaN);
-  const plFound = new Array<boolean>(n).fill(false);
-  const phFound = new Array<boolean>(n).fill(false);
-  const bullCond = new Array<boolean>(n).fill(false);
-  const bearCond = new Array<boolean>(n).fill(false);
-  const hiddenBullCond = new Array<boolean>(n).fill(false);
-  const hiddenBearCond = new Array<boolean>(n).fill(false);
-  if (cfg.calculateDivergence) {
-    const pl = A(ta.pivotlow(rsiS, lbL, lbR));
-    const ph = A(ta.pivothigh(rsiS, lbL, lbR));
-    // ta.valuewhen(found, x, 1): x on the found bar before the latest one (the latest can be the current bar)
-    const plRsi: number[] = [];
-    const plLow: number[] = [];
-    const phRsi: number[] = [];
-    const phHigh: number[] = [];
-    // Pine v6 `and` is lazy: the ta.barssince inside _inRange(found[1]) only runs on the bars where the left side
-    // (rsiLBR > / < ta.valuewhen(...)) is true, so it counts those calls. The regular and hidden call sites have the
-    // same left side, so they give the same counts.
-    let plCalls = NaN;
-    let phCalls = NaN;
-    const second = (a: number[]) => (a.length >= 2 ? a[a.length - 2] : NaN);
-    for (let i = 0; i < n; i++) {
-      const r = rsiLbr(i);
-      const lowLbr = i - lbR >= 0 ? bars[i - lbR].low : NaN;
-      const highLbr = i - lbR >= 0 ? bars[i - lbR].high : NaN;
-
-      plFound[i] = !isNaN(pl[i]);
-      if (plFound[i]) {
-        plRsi.push(r);
-        plLow.push(lowLbr);
-      }
-      let rsiHL = false;
-      if (gt(r, second(plRsi))) {
-        if (i > 0 && plFound[i - 1]) plCalls = 0;
-        else if (!isNaN(plCalls)) plCalls++;
-        rsiHL = rangeLower <= plCalls && plCalls <= rangeUpper;
-      }
-      const vwLow = second(plLow);
-      bullCond[i] = lt(lowLbr, vwLow) && rsiHL && plFound[i];
-      hiddenBullCond[i] = gt(lowLbr, vwLow) && rsiHL && plFound[i];
-
-      phFound[i] = !isNaN(ph[i]);
-      if (phFound[i]) {
-        phRsi.push(r);
-        phHigh.push(highLbr);
-      }
-      let rsiLH = false;
-      if (lt(r, second(phRsi))) {
-        if (i > 0 && phFound[i - 1]) phCalls = 0;
-        else if (!isNaN(phCalls)) phCalls++;
-        rsiLH = rangeLower <= phCalls && phCalls <= rangeUpper;
-      }
-      const vwHigh = second(phHigh);
-      bearCond[i] = gt(highLbr, vwHigh) && rsiLH && phFound[i];
-      hiddenBearCond[i] = lt(highLbr, vwHigh) && rsiLH && phFound[i];
-    }
-  }
-
   // Colours
-  const above = (i: number) => gt(rsi[i], ma[i]);
-  const rsiColor = (i: number) => (enableMA && !isNaN(ma[i]) ? (above(i) ? color.green : color.red) : color.fuchsia);
-  const maColor = (i: number) => (above(i) ? color.green : color.red);
   const fillGreen = String(color.new(color.green, 80));
   const fillRed = String(color.new(color.red, 80));
   const bbFill = String(color.new(color.white, 90));
   const noneColor = String(color.new(color.white, 100));
   const bgGreen = String(color.new(color.green, 90));
   const bgRed = String(color.new(color.red, 90));
-
-  const t = (i: number) => bars[i].time;
-  const interval = barInterval(bars);
-  const line = (f: (i: number) => Point): Point[] => bars.map((_b, i) => f(i));
-  // plot(..., offset = -lookbackRight): the value of bar i is drawn on bar i - 5
-  const back = (f: (i: number) => { value: number; color: string }): Point[] => {
-    const out: Point[] = [];
-    for (let i = lbR; i < n; i++) out.push({ time: barTime(bars, i - lbR, interval), ...f(i) });
-    return out;
+  const maStep = (): RsiGamesRun['ma'] => {
+    if (!enableMA) return null;
+    switch (cfg.maType) {
+      case 'EMA': { const m = taStep.ema(cfg.maLength); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'SMMA (RMA)': { const m = taStep.rma(cfg.maLength); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, cfg.maLength), commit: () => m.commit() }; }
+      case 'VWMA': { const m = taStep.vwma(cfg.maLength); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+      default: { const m = taStep.sma(); return { step: (v) => m.step(v, cfg.maLength), commit: () => m.commit() }; }
+    }
   };
-
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    // crossAboveLowerBB = rsi[1] <= bbLower[1] and rsi > bbLower; crossBelowUpperBB = rsi[1] >= bbUpper[1] and rsi < bbUpper
-    if (isBB && i > 0 && le(rsi[i - 1], bbLower[i - 1]) && gt(rsi[i], bbLower[i])) {
-      markers.push({ time: t(i), position: 'bottom', shape: 'arrowUp', color: color.green, size: 'small' });
-    }
-    if (isBB && i > 0 && ge(rsi[i - 1], bbUpper[i - 1]) && lt(rsi[i], bbUpper[i])) {
-      markers.push({ time: t(i), position: 'top', shape: 'arrowDown', color: color.red, size: 'small' });
-    }
-    // bgcolor(rsi < 30 ? color.new(color.green, 90) : rsi > 70 ? color.new(color.red, 90) : na)
-    if (lt(rsi[i], 30)) bgColors.push({ time: t(i), color: bgGreen });
-    else if (gt(rsi[i], 70)) bgColors.push({ time: t(i), color: bgRed });
-
-    // Divergence labels (offset = -lookbackRight, location.absolute at rsiLBR)
-    if (i - lbR < 0) continue;
-    const price = rsiLbr(i);
-    if (isNaN(price)) continue;
-    const time = barTime(bars, i - lbR, interval);
-    if (bullCond[i]) {
-      markers.push({ time, position: 'atPriceBottom', price, shape: 'labelUp', color: color.green, text: ' Bull ',
-        textColor: color.white });
-    }
-    if (bearCond[i]) {
-      markers.push({ time, position: 'atPriceTop', price, shape: 'labelDown', color: color.red, text: ' Bear ',
-        textColor: color.white });
-    }
-    if (hiddenBullCond[i]) {
-      markers.push({ time, position: 'atPriceBottom', price, shape: 'labelUp', color: color.teal, text: ' H-Bull ',
-        textColor: color.white });
-    }
-    if (hiddenBearCond[i]) {
-      markers.push({ time, position: 'atPriceTop', price, shape: 'labelDown', color: color.orange, text: ' H-Bear ',
-        textColor: color.white });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line((i) => ({ time: t(i), value: rsi[i], color: rsiColor(i) })),
-      plot1: line((i) => ({ time: t(i), value: ma[i], color: maColor(i) })),
-      plot2: line((i) => ({ time: t(i), value: bbUpper[i], color: color.red })),
-      plot3: line((i) => ({ time: t(i), value: bbLower[i], color: 'rgb(41, 230, 20)' })),
-      plot4: line((i) => ({ time: t(i), value: ma[i], color: 'transparent' })),
-      plot5: back((i) => ({ value: plFound[i] ? rsiLbr(i) : NaN, color: bullCond[i] ? color.green : noneColor })),
-      plot6: back((i) => ({ value: phFound[i] ? rsiLbr(i) : NaN, color: bearCond[i] ? color.red : noneColor })),
+    fullRunReason: () => (isBarSource(cfg.rsiSource) ? null : 'source of another study'),
+    init() {
+      const up = taStep.rma(cfg.rsiLength);
+      const down = taStep.rma(cfg.rsiLength);
+      const ma = maStep();
+      const dev = isBB ? taStep.stdev() : null;
+      const pl = new PivotStep(lbL, lbR, false);
+      const ph = new PivotStep(lbL, lbR, true);
+      const s: RsiGamesRun = {
+        up, down, ma, dev, pl, ph, srcArr: [], rsi: [], bbUpper: [], bbLower: [], plFound: [], phFound: [],
+        plots: Array.from({ length: 5 }, () => []), bullLine: [], bearLine: [], maFill: [], markers: [], bgColors: [],
+        flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [up, down, ...(ma ? [ma] : []), ...(dev ? [dev] : []), ...(cfg.calculateDivergence ? [pl, ph] : [])],
+        vars: { plRsi: [], plLow: [], phRsi: [], phHigh: [], plCalls: NaN, phCalls: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, s.bgColors, ...s.times];
+      s.series = [s.srcArr, s.rsi, s.bbUpper, s.bbLower, s.plFound, s.phFound, ...s.plots, s.maFill, ...s.flags];
+      return s;
     },
-    hlines: [
-      { value: 70, options: { title: 'RSI Upper Band', color: color.red, linestyle: 'dashed' } },
-      { value: 50, options: { title: 'RSI Middle Band', color: '#f4fc0980', linestyle: 'dashed' } },
-      { value: 30, options: { title: 'RSI Lower Band', color: color.green, linestyle: 'dashed' } },
-    ],
-    fills: [
-      // fill(bbUpper, bbLower, color = isBB ? color.new(color.white, 90) : na, title = "Bollinger Bands Background Fill")
-      { plot1: 'plot2', plot2: 'plot3', options: { title: 'Bollinger Bands Background Fill' },
-        colors: bars.map(() => (isBB ? bbFill : 'transparent')) },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      // RSI: rma of max(change, 0) and -min(change, 0)
+      const src = value(b);
+      s.srcArr[i] = src;
+      const change = i > 0 ? src - s.srcArr[i - 1] : NaN;
+      const up = s.up.step(isNaN(change) ? NaN : Math.max(change, 0));
+      const down = s.down.step(isNaN(change) ? NaN : -Math.min(change, 0));
+      // rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+      const rsi = eq(down, 0) ? 100 : eq(up, 0) ? 0 : 100 - 100 / (1 + up / down);
+      s.rsi[i] = rsi;
+      const ma = s.ma ? s.ma.step(rsi, b.volume ?? NaN) : NaN;
+      const sd = s.dev ? s.dev.step(rsi, cfg.maLength) * cfg.bbMult : NaN;
+      const bbUpper = ma + sd;
+      const bbLower = ma - sd;
+      s.bbUpper[i] = bbUpper;
+      s.bbLower[i] = bbLower;
+
+      // Divergence
+      const r = i - lbR >= 0 ? s.rsi[i - lbR] : NaN;
+      let bullCond = false;
+      let bearCond = false;
+      let hiddenBullCond = false;
+      let hiddenBearCond = false;
+      let plFound = false;
+      let phFound = false;
+      if (cfg.calculateDivergence) {
+        const v = s.vars;
+        const pl = s.pl.step(i, rsi);
+        const ph = s.ph.step(i, rsi);
+        const lowLbr = i - lbR >= 0 ? bars[i - lbR].low : NaN;
+        const highLbr = i - lbR >= 0 ? bars[i - lbR].high : NaN;
+        // ta.valuewhen(found, x, 1): x on the found bar before the latest one (the latest can be the current bar)
+        // Pine v6 `and` is lazy: the ta.barssince inside _inRange(found[1]) only runs on the bars where the left side
+        // (rsiLBR > / < ta.valuewhen(...)) is true, so it counts those calls. The regular and hidden call sites have the
+        // same left side, so they give the same counts.
+        plFound = !isNaN(pl);
+        if (plFound) {
+          v.plRsi = pushed(v.plRsi, r);
+          v.plLow = pushed(v.plLow, lowLbr);
+        }
+        let rsiHL = false;
+        if (gt(r, second(v.plRsi))) {
+          if (i > 0 && s.plFound[i - 1]) v.plCalls = 0;
+          else if (!isNaN(v.plCalls)) v.plCalls++;
+          rsiHL = rangeLower <= v.plCalls && v.plCalls <= rangeUpper;
+        }
+        const vwLow = second(v.plLow);
+        bullCond = lt(lowLbr, vwLow) && rsiHL && plFound;
+        hiddenBullCond = gt(lowLbr, vwLow) && rsiHL && plFound;
+
+        phFound = !isNaN(ph);
+        if (phFound) {
+          v.phRsi = pushed(v.phRsi, r);
+          v.phHigh = pushed(v.phHigh, highLbr);
+        }
+        let rsiLH = false;
+        if (lt(r, second(v.phRsi))) {
+          if (i > 0 && s.phFound[i - 1]) v.phCalls = 0;
+          else if (!isNaN(v.phCalls)) v.phCalls++;
+          rsiLH = rangeLower <= v.phCalls && v.phCalls <= rangeUpper;
+        }
+        const vwHigh = second(v.phHigh);
+        bearCond = gt(highLbr, vwHigh) && rsiLH && phFound;
+        hiddenBearCond = lt(highLbr, vwHigh) && rsiLH && phFound;
+      }
+      s.plFound[i] = plFound;
+      s.phFound[i] = phFound;
+
+      // Colours
+      const above = gt(rsi, ma);
+      const rsiColor = enableMA && !isNaN(ma) ? (above ? color.green : color.red) : color.fuchsia;
+      const maColor = above ? color.green : color.red;
+      const p = s.plots;
+      p[0][i] = { time: t, value: rsi, color: rsiColor };
+      p[1][i] = { time: t, value: ma, color: maColor };
+      p[2][i] = { time: t, value: bbUpper, color: color.red };
+      p[3][i] = { time: t, value: bbLower, color: 'rgb(41, 230, 20)' };
+      p[4][i] = { time: t, value: ma, color: 'transparent' };
       // fill(rsiPlot, maPlot, color = enableMA and not na(ma) ? (rsi > ma ? green 80 : red 80) : na,
       //   title = "RSI & RSI MA Fill", display = enableMA ? display.all : display.none)
-      { plot1: 'plot0', plot2: 'plot4', options: { title: 'RSI & RSI MA Fill' },
-        colors: bars.map((_b, i) => (enableMA && !isNaN(ma[i]) ? (above(i) ? fillGreen : fillRed) : 'transparent')) },
-    ],
-    markers,
-    bgColors,
-    visibility: { enableMA, isBB },
-    alerts: alertStates(alertConditions, bars, [bullCond, bearCond, hiddenBullCond, hiddenBearCond]),
+      s.maFill[i] = enableMA && !isNaN(ma) ? (above ? fillGreen : fillRed) : 'transparent';
+      // plot(..., offset = -lookbackRight): the value of bar i is drawn on bar i - 5 (only writer of that slot)
+      if (i >= lbR) {
+        const time = bars[i - lbR].time;
+        s.bullLine[i - lbR] = { time, value: plFound ? r : NaN, color: bullCond ? color.green : noneColor };
+        s.bearLine[i - lbR] = { time, value: phFound ? r : NaN, color: bearCond ? color.red : noneColor };
+      }
+
+      // crossAboveLowerBB = rsi[1] <= bbLower[1] and rsi > bbLower; crossBelowUpperBB = rsi[1] >= bbUpper[1] and rsi < bbUpper
+      if (isBB && i > 0 && le(s.rsi[i - 1], s.bbLower[i - 1]) && gt(rsi, bbLower)) {
+        s.markers.push({ time: t, position: 'bottom', shape: 'arrowUp', color: color.green, size: 'small' });
+      }
+      if (isBB && i > 0 && ge(s.rsi[i - 1], s.bbUpper[i - 1]) && lt(rsi, bbUpper)) {
+        s.markers.push({ time: t, position: 'top', shape: 'arrowDown', color: color.red, size: 'small' });
+      }
+      // bgcolor(rsi < 30 ? color.new(color.green, 90) : rsi > 70 ? color.new(color.red, 90) : na)
+      if (lt(rsi, 30)) s.bgColors.push({ time: t, color: bgGreen });
+      else if (gt(rsi, 70)) s.bgColors.push({ time: t, color: bgRed });
+
+      // Divergence labels (offset = -lookbackRight, location.absolute at rsiLBR)
+      if (i - lbR >= 0 && !isNaN(r)) {
+        const time = bars[i - lbR].time;
+        if (bullCond) {
+          s.markers.push({ time, position: 'atPriceBottom', price: r, shape: 'labelUp', color: color.green, text: ' Bull ',
+            textColor: color.white });
+        }
+        if (bearCond) {
+          s.markers.push({ time, position: 'atPriceTop', price: r, shape: 'labelDown', color: color.red, text: ' Bear ',
+            textColor: color.white });
+        }
+        if (hiddenBullCond) {
+          s.markers.push({ time, position: 'atPriceBottom', price: r, shape: 'labelUp', color: color.teal, text: ' H-Bull ',
+            textColor: color.white });
+        }
+        if (hiddenBearCond) {
+          s.markers.push({ time, position: 'atPriceTop', price: r, shape: 'labelDown', color: color.orange, text: ' H-Bear ',
+            textColor: color.white });
+        }
+      }
+
+      const f = s.flags;
+      f[0][i] = bullCond;
+      f[1][i] = bearCond;
+      f[2][i] = hiddenBullCond;
+      f[3][i] = hiddenBearCond;
+      if (bullCond) s.times[0].push(t as number);
+      if (bearCond) s.times[1].push(t as number);
+      if (hiddenBullCond) s.times[2].push(t as number);
+      if (hiddenBearCond) s.times[3].push(t as number);
+    },
+    copyVars: (v) => ({ ...v }),
+    result(s, bars) {
+      const n = bars.length;
+      const backCount = Math.max(0, n - lbR);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(),
+          plot1: s.plots[1].slice(),
+          plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(),
+          plot4: s.plots[4].slice(),
+          plot5: s.bullLine.slice(0, backCount),
+          plot6: s.bearLine.slice(0, backCount),
+        },
+        hlines: [
+          { value: 70, options: { title: 'RSI Upper Band', color: color.red, linestyle: 'dashed' } },
+          { value: 50, options: { title: 'RSI Middle Band', color: '#f4fc0980', linestyle: 'dashed' } },
+          { value: 30, options: { title: 'RSI Lower Band', color: color.green, linestyle: 'dashed' } },
+        ],
+        fills: [
+          // fill(bbUpper, bbLower, color = isBB ? color.new(color.white, 90) : na, title = "Bollinger Bands Background Fill")
+          { plot1: 'plot2', plot2: 'plot3', options: { title: 'Bollinger Bands Background Fill' },
+            colors: new Array<string>(n).fill(isBB ? bbFill : 'transparent') },
+          { plot1: 'plot0', plot2: 'plot4', options: { title: 'RSI & RSI MA Fill' }, colors: s.maFill.slice() },
+        ],
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        visibility: { enableMA, isBB },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RsiGames12Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<RsiGames12Inputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[]; visibility: Record<string, boolean> }
+  & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -282,6 +364,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const RsiGames12 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

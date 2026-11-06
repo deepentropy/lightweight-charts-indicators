@@ -21,11 +21,13 @@
  */
 
 import {
-  ta, Series, color, getSourceSeries,
+  taStep, color,
   type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun, WindowSma } from '../live-run';
 
 export interface PmaxOnRsiWithTillsonT3Inputs {
   /** Source of the price cross alert conditions */
@@ -114,150 +116,187 @@ const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 /** Pine max(...): na when a value is na */
 const max3 = (a: number, b: number, c: number) => (isNaN(a) || isNaN(b) || isNaN(c) ? NaN : Math.max(a, b, c));
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<PmaxOnRsiWithTillsonT3Inputs> = {},
-): IndicatorResult & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number };
+type Result = IndicatorResult & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Cross = ReturnType<typeof taStep.crossover>;
+
+interface PmaxVars {
+  prevClose: number;
+  /** Wwma_Func: WWMA := wwalpha * src + (1 - wwalpha) * nz(WWMA[1]) */
+  avUp: number;
+  avDown: number;
+  prevRsi: number;
+  longStopBefore: number;
+  shortStopBefore: number;
+  dirBefore: number;
+}
+
+interface PmaxRun extends BarRunState<PmaxVars> {
+  avgUp: WindowSma;
+  avgDown: WindowSma;
+  atr: WindowSma;
+  ema: ReturnType<typeof taStep.ema>[];
+  buy: Cross;
+  sell: ReturnType<typeof taStep.crossunder>;
+  srcOver: Cross;
+  srcUnder: ReturnType<typeof taStep.crossunder>;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  upFill: string[];
+  downFill: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<PmaxOnRsiWithTillsonT3Inputs>): BarStudy<PmaxRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const { multiplier, length, t3a1, periods, rsiLength } = cfg;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (values: number[]) => Series.fromArray(bars, values);
-
-  // i = close >= close[1] ? close - close[1] : 0, i2 = close < close[1] ? close[1] - close : 0
-  const up: number[] = [];
-  const down: number[] = [];
-  for (let i = 0; i < n; i++) {
-    const c = bars[i].close;
-    const c1 = i > 0 ? bars[i - 1].close : NaN;
-    up.push(ge(c, c1) ? c - c1 : 0);
-    down.push(lt(c, c1) ? c1 - c : 0);
-  }
-  const avgUp = A(ta.sma(S(up), rsiLength));
-  const avgDown = A(ta.sma(S(down), rsiLength));
-
+  const src = barSource(cfg.src);
   // rsi = rs == -1 ? 0 : 100 - 100 / (1 + rs): plain divisions (x / 0 is infinite, 0 / 0 is na)
   const rsiOf = (rs: number) => (eq(rs, -1) ? 0 : 100 - 100 / (1 + rs));
   const wwalpha = 1 / rsiLength;
-  const rsi: number[] = [];
-  const tr: number[] = [];
-  let avUp = 0; // Wwma_Func: WWMA := wwalpha * src + (1 - wwalpha) * nz(WWMA[1])
-  let avDown = 0;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const c1 = i > 0 ? bars[i - 1].close : NaN;
-    avUp = wwalpha * up[i] + (1 - wwalpha) * avUp;
-    avDown = wwalpha * down[i] + (1 - wwalpha) * avDown;
-    rsi.push(rsiOf(avUp / avDown));
-
-    const k1 = gt(b.high, c1) ? b.high - c1 : 0;
-    const k2 = lt(b.high, c1) ? c1 - b.high : 0;
-    const k3 = gt(b.low, c1) ? b.low - c1 : 0;
-    const k4 = lt(b.low, c1) ? c1 - b.low : 0;
-    const avgUpH = (avgUp[i] * (rsiLength - 1) + k1) / rsiLength;
-    const avgDownH = (avgDown[i] * (rsiLength - 1) + k2) / rsiLength;
-    const avgUpL = (avgUp[i] * (rsiLength - 1) + k3) / rsiLength;
-    const avgDownL = (avgDown[i] * (rsiLength - 1) + k4) / rsiLength;
-    const rsih = rsiOf(avgUpH / avgDownH);
-    const rsil = rsiOf(avgUpL / avgDownL);
-    const rsi1 = i > 0 ? rsi[i - 1] : NaN;
-    tr.push(max3(rsih - rsil, Math.abs(rsih - rsi1), Math.abs(rsil - rsi1)));
-  }
-  const atr = A(ta.sma(S(tr), periods));
-
-  // Tillson T3 of the RSI
-  const e1 = ta.ema(S(rsi), length);
-  const e2 = ta.ema(e1, length);
-  const e3 = ta.ema(e2, length);
-  const e4 = ta.ema(e3, length);
-  const e5 = ta.ema(e4, length);
-  const e6 = ta.ema(e5, length);
-  const [a3, a4, a5, a6] = [A(e3), A(e4), A(e5), A(e6)];
   const c1 = -t3a1 * t3a1 * t3a1;
   const c2 = 3 * t3a1 * t3a1 + 3 * t3a1 * t3a1 * t3a1;
   const c3 = -6 * t3a1 * t3a1 - 3 * t3a1 - 3 * t3a1 * t3a1 * t3a1;
   const c4 = 1 + 3 * t3a1 + t3a1 * t3a1 * t3a1 + 3 * t3a1 * t3a1;
-  const mavg = a6.map((v, i) => c1 * v + c2 * a5[i] + c3 * a4[i] + c4 * a3[i]);
-
-  // Pmax_Func
-  const pmax: number[] = [];
-  let longStopBefore = NaN;
-  let shortStopBefore = NaN;
-  let dirBefore = NaN;
-  for (let i = 0; i < n; i++) {
-    const m = mavg[i];
-    let longStop = m - multiplier * atr[i];
-    // nz(longStop[1], longStop)
-    const longStopPrev = Number.isFinite(longStopBefore) ? longStopBefore : longStop;
-    longStop = gt(m, longStopPrev) ? Math.max(longStop, longStopPrev) : longStop;
-    let shortStop = m + multiplier * atr[i];
-    const shortStopPrev = Number.isFinite(shortStopBefore) ? shortStopBefore : shortStop;
-    shortStop = lt(m, shortStopPrev) ? Math.min(shortStop, shortStopPrev) : shortStop;
-    let dir = isNaN(dirBefore) ? 1 : dirBefore;
-    dir = dir === -1 && gt(m, shortStopPrev) ? 1 : dir === 1 && lt(m, longStopPrev) ? -1 : dir;
-    pmax.push(dir === 1 ? longStop : shortStop);
-    longStopBefore = longStop;
-    shortStopBefore = shortStop;
-    dirBefore = dir;
-  }
-
-  const mavgS = S(mavg);
-  const pmaxS = S(pmax);
-  const buy = ta.crossover(mavgS, pmaxS).toArray();
-  const sell = ta.crossunder(mavgS, pmaxS).toArray();
-  // crossover(src, PMax) / crossunder(src, PMax)
-  const srcS = getSourceSeries(bars, cfg.src);
-  const srcOver = ta.crossover(srcS, pmaxS).toArray();
-  const srcUnder = ta.crossunder(srcS, pmaxS).toArray();
-
-  type Point = { time: number; value: number };
-  const plot0: Point[] = [];
-  const plot1: Point[] = [];
-  const plot2: Point[] = [];
-  const plot3: Point[] = [];
-  const upFill: string[] = [];
-  const downFill: string[] = [];
-  const markers: MarkerData[] = [];
   const plotValue = (v: number) => (Number.isFinite(v) ? v : NaN);
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    plot0.push({ time, value: cfg.showRsi ? plotValue(rsi[i]) : NaN });
-    plot1.push({ time, value: cfg.showSupport ? plotValue(mavg[i]) : NaN });
-    plot2.push({ time, value: plotValue(pmax[i]) });
-    plot3.push({ time, value: plotValue(rsi[i]) });
-    upFill.push(cfg.highlighting && gt(mavg[i], pmax[i]) ? GREEN_FILL : 'transparent');
-    downFill.push(cfg.highlighting && lt(mavg[i], pmax[i]) ? RED_FILL : 'transparent');
-    if (cfg.showSignals && buy[i] && Number.isFinite(pmax[i])) {
-      markers.push({
-        time, position: 'atPriceBottom', price: pmax[i] * 0.995, shape: 'labelUp', color: GREEN, text: 'Buy', textColor: WHITE, size: 'tiny',
-      });
-    }
-    if (cfg.showSignals && sell[i] && Number.isFinite(pmax[i])) {
-      markers.push({
-        time, position: 'atPriceTop', price: pmax[i] * 1.005, shape: 'labelDown', color: RED, text: 'Sell', textColor: WHITE, size: 'tiny',
-      });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
-    hlines: [
-      { value: 70, options: { title: 'Upper Band', color: '#C0C0C0', linestyle: 'dashed' } },
-      { value: 30, options: { title: 'Lower Band', color: '#C0C0C0', linestyle: 'dashed' } },
-    ],
-    fills: [
-      { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'Background', color: BAND_FILL } },
-      { plot1: 'plot3', plot2: 'plot2', options: { title: 'UpTrend Highligter' }, colors: upFill },
-      { plot1: 'plot3', plot2: 'plot2', options: { title: 'DownTrend Highligter' }, colors: downFill },
-    ],
-    markers,
-    // alertcondition(cross(MAvg, PMax)) / crossover / crossunder; cross(src, PMax) / crossover / crossunder
-    alerts: alertStates(alertConditions, bars, [
-      buy.map((v, i) => !!v || !!sell[i]), buy.map(Boolean), sell.map(Boolean),
-      srcOver.map((v, i) => !!v || !!srcUnder[i]), srcOver.map(Boolean), srcUnder.map(Boolean),
-    ]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: PmaxRun = {
+        avgUp: new WindowSma(rsiLength), avgDown: new WindowSma(rsiLength), atr: new WindowSma(periods),
+        ema: Array.from({ length: 6 }, () => taStep.ema(length)),
+        buy: taStep.crossover(), sell: taStep.crossunder(), srcOver: taStep.crossover(), srcUnder: taStep.crossunder(),
+        plot0: [], plot1: [], plot2: [], plot3: [], upFill: [], downFill: [], markers: [],
+        flags: alertConditions.map(() => []), times: alertConditions.map(() => []),
+        steps: [],
+        vars: {
+          prevClose: NaN, avUp: 0, avDown: 0, prevRsi: NaN, longStopBefore: NaN, shortStopBefore: NaN, dirBefore: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.avgUp, s.avgDown, s.atr, ...s.ema, s.buy, s.sell, s.srcOver, s.srcUnder];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.plot0, s.plot1, s.plot2, s.plot3, s.upFill, s.downFill, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const c = b.close;
+      const cl1 = v.prevClose;
+      v.prevClose = c;
+      // i = close >= close[1] ? close - close[1] : 0, i2 = close < close[1] ? close[1] - close : 0
+      const up = ge(c, cl1) ? c - cl1 : 0;
+      const down = lt(c, cl1) ? cl1 - c : 0;
+      const avgUp = s.avgUp.step(up);
+      const avgDown = s.avgDown.step(down);
+
+      v.avUp = wwalpha * up + (1 - wwalpha) * v.avUp;
+      v.avDown = wwalpha * down + (1 - wwalpha) * v.avDown;
+      const rsi = rsiOf(v.avUp / v.avDown);
+
+      const k1 = gt(b.high, cl1) ? b.high - cl1 : 0;
+      const k2 = lt(b.high, cl1) ? cl1 - b.high : 0;
+      const k3 = gt(b.low, cl1) ? b.low - cl1 : 0;
+      const k4 = lt(b.low, cl1) ? cl1 - b.low : 0;
+      const avgUpH = (avgUp * (rsiLength - 1) + k1) / rsiLength;
+      const avgDownH = (avgDown * (rsiLength - 1) + k2) / rsiLength;
+      const avgUpL = (avgUp * (rsiLength - 1) + k3) / rsiLength;
+      const avgDownL = (avgDown * (rsiLength - 1) + k4) / rsiLength;
+      const rsih = rsiOf(avgUpH / avgDownH);
+      const rsil = rsiOf(avgUpL / avgDownL);
+      const rsi1 = v.prevRsi;
+      v.prevRsi = rsi;
+      const tr = max3(rsih - rsil, Math.abs(rsih - rsi1), Math.abs(rsil - rsi1));
+      const atr = s.atr.step(tr);
+
+      // Tillson T3 of the RSI
+      const e1 = s.ema[0].step(rsi);
+      const e2 = s.ema[1].step(e1);
+      const e3 = s.ema[2].step(e2);
+      const e4 = s.ema[3].step(e3);
+      const e5 = s.ema[4].step(e4);
+      const e6 = s.ema[5].step(e5);
+      const m = c1 * e6 + c2 * e5 + c3 * e4 + c4 * e3;
+
+      // Pmax_Func
+      let longStop = m - multiplier * atr;
+      // nz(longStop[1], longStop)
+      const longStopPrev = Number.isFinite(v.longStopBefore) ? v.longStopBefore : longStop;
+      longStop = gt(m, longStopPrev) ? Math.max(longStop, longStopPrev) : longStop;
+      let shortStop = m + multiplier * atr;
+      const shortStopPrev = Number.isFinite(v.shortStopBefore) ? v.shortStopBefore : shortStop;
+      shortStop = lt(m, shortStopPrev) ? Math.min(shortStop, shortStopPrev) : shortStop;
+      let dir = isNaN(v.dirBefore) ? 1 : v.dirBefore;
+      dir = dir === -1 && gt(m, shortStopPrev) ? 1 : dir === 1 && lt(m, longStopPrev) ? -1 : dir;
+      const pmax = dir === 1 ? longStop : shortStop;
+      v.longStopBefore = longStop;
+      v.shortStopBefore = shortStop;
+      v.dirBefore = dir;
+
+      const buy = s.buy.step(m, pmax);
+      const sell = s.sell.step(m, pmax);
+      // crossover(src, PMax) / crossunder(src, PMax)
+      const sv = src(b);
+      const srcOver = s.srcOver.step(sv, pmax);
+      const srcUnder = s.srcUnder.step(sv, pmax);
+
+      const time = b.time;
+      s.plot0[i] = { time, value: cfg.showRsi ? plotValue(rsi) : NaN };
+      s.plot1[i] = { time, value: cfg.showSupport ? plotValue(m) : NaN };
+      s.plot2[i] = { time, value: plotValue(pmax) };
+      s.plot3[i] = { time, value: plotValue(rsi) };
+      s.upFill[i] = cfg.highlighting && gt(m, pmax) ? GREEN_FILL : 'transparent';
+      s.downFill[i] = cfg.highlighting && lt(m, pmax) ? RED_FILL : 'transparent';
+      if (cfg.showSignals && buy && Number.isFinite(pmax)) {
+        s.markers.push({
+          time, position: 'atPriceBottom', price: pmax * 0.995, shape: 'labelUp', color: GREEN, text: 'Buy', textColor: WHITE, size: 'tiny',
+        });
+      }
+      if (cfg.showSignals && sell && Number.isFinite(pmax)) {
+        s.markers.push({
+          time, position: 'atPriceTop', price: pmax * 1.005, shape: 'labelDown', color: RED, text: 'Sell', textColor: WHITE, size: 'tiny',
+        });
+      }
+      // alertcondition(cross(MAvg, PMax)) / crossover / crossunder; cross(src, PMax) / crossover / crossunder
+      const flags = [buy || sell, buy, sell, srcOver || srcUnder, srcOver, srcUnder];
+      for (let k = 0; k < flags.length; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+        hlines: [
+          { value: 70, options: { title: 'Upper Band', color: '#C0C0C0', linestyle: 'dashed' } },
+          { value: 30, options: { title: 'Lower Band', color: '#C0C0C0', linestyle: 'dashed' } },
+        ],
+        fills: [
+          { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'Background', color: BAND_FILL } },
+          { plot1: 'plot3', plot2: 'plot2', options: { title: 'UpTrend Highligter' }, colors: s.upFill.slice() },
+          { plot1: 'plot3', plot2: 'plot2', options: { title: 'DownTrend Highligter' }, colors: s.downFill.slice() },
+        ],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PmaxOnRsiWithTillsonT3Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PmaxOnRsiWithTillsonT3Inputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -270,4 +309,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert5', title: 'Price Crossunder Alarm', message: 'PRICE UNDER PMax - SELL SIGNAL!' },
 ];
 
-export const PmaxOnRsiWithTillsonT3 = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig, alertConditions };
+export const PmaxOnRsiWithTillsonT3 = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig, alertConditions };

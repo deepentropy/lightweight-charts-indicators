@@ -12,8 +12,10 @@
  * Original notice: © kunalgolani
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun, WindowSma, WindowStdev } from '../live-run';
 
 export interface VolVolInputs {
   /** Length of the EMA / stdev / SMA (the intensity and momentum EMAs use length / 2) */
@@ -46,100 +48,147 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<VolVolInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface VolVolRun extends BarRunState<Record<string, never>> {
+  emaC: ReturnType<typeof taStep.ema>;
+  sdC: WindowStdev;
+  dir1: WindowSma;
+  dir2: WindowSma;
+  emaS: ReturnType<typeof taStep.ema>;
+  sdS: WindowStdev;
+  int1: ReturnType<typeof taStep.ema>;
+  int2: ReturnType<typeof taStep.ema>;
+  mom: ReturnType<typeof taStep.ema>;
+  direction: number[];
+  sum: number[];
+  bullEntry: boolean[];
+  bearEntry: boolean[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<VolVolInputs>): BarStudy<VolVolRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const len = cfg.length;
   // Pine v6: length / 2 keeps the fraction (2.5 for 5)
   const half = len / 2;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-
-  // raw_direction = 100 * (close - ta.ema(close, length)) / ta.stdev(close, length) (plain division)
-  const close = S(bars.map((b) => b.close));
-  const emaC = A(ta.ema(close, len));
-  const sdC = A(ta.stdev(close, len));
-  const rawDirection = bars.map((b, i) => (100 * (b.close - emaC[i])) / sdC[i]);
-  const direction = A(ta.sma(ta.sma(S(rawDirection), len), len));
-
-  // source = direction > 0 ? low : high
-  const source = bars.map((b, i) => (gt(direction[i], 0) ? b.low : b.high));
-  const srcS = S(source);
-  const emaS = A(ta.ema(srcS, len));
-  const sdS = A(ta.stdev(srcS, len));
-  const rawIntensity = source.map((v, i) => (100 * (v - emaS[i])) / sdS[i]);
-  const intensity = A(ta.ema(ta.ema(S(rawIntensity), half), half));
-
-  const rawMomentum: number[] = new Array(n);
-  for (let k = 0; k < n; k++) {
-    let bull = 0;
-    let bear = 0;
-    for (let i = 0; i <= len - 1; i++) {
-      const c0 = k - i >= 0 ? bars[k - i].close : NaN;
-      const c1 = k - i - 1 >= 0 ? bars[k - i - 1].close : NaN;
-      const vol = k - i >= 0 ? (bars[k - i].volume ?? NaN) : NaN;
-      // na compares false: the else branch adds the volume (na volume makes the sum na)
-      if (gt(c0, c1)) bull += vol * (len - i) * (len - i);
-      else bear += vol * (len - i) * (len - i);
-    }
-    rawMomentum[k] = (100 * (bull - bear)) / (bull + bear);
-  }
-  const momentum = A(ta.ema(S(rawMomentum), half));
-
   const posCol = String(color.rgb(62, 228, 98, 92));
   const negCol = String(color.rgb(228, 62, 68, 92));
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: fin(direction[i]), color: gt(direction[i], 0) ? posCol : negCol }));
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: fin(intensity[i]) }));
-  // plot(momentum == 0 ? intensity : momentum)
-  const plot2 = bars.map((b, i) => ({ time: b.time, value: fin(eq(momentum[i], 0) ? intensity[i] : momentum[i]) }));
-
-  const sum = (i: number) => (i >= 0 ? intensity[i] + momentum[i] : NaN);
-  const bullSpike = (i: number) => gt(sum(i), 50);
-  const bearSpike = (i: number) => lt(sum(i), -50);
-  const bullEntry = (i: number) => i >= 0 && gt(sum(i), sum(i - 1)) && (gt(direction[i], direction[i - 1]) || bullSpike(i));
-  const bearEntry = (i: number) => i >= 0 && lt(sum(i), sum(i - 1)) && (lt(direction[i], direction[i - 1]) || bearSpike(i));
-
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const up = gt(direction[i], 0);
-    const down = lt(direction[i], 0);
-    // bullish_exit = direction > 0 and bearish_spike and not bearish_spike[1]
-    if (up && bearSpike(i) && !bearSpike(i - 1)) {
-      markers.push({ time: t, position: 'belowBar', shape: 'square', color: color.red, forceOverlay: true });
-    }
-    if (down && bullSpike(i) && !bullSpike(i - 1)) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'square', color: color.green, forceOverlay: true });
-    }
-    // bullish_add = direction > 0 and ((bearish_spike[1] and not bearish_spike) or (intensity < 0 and momentum > 0))
-    if (up && ((bearSpike(i - 1) && !bearSpike(i)) || (lt(intensity[i], 0) && gt(momentum[i], 0)))) {
-      markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: color.green, forceOverlay: true });
-    }
-    if (down && ((bullSpike(i - 1) && !bullSpike(i)) || (gt(intensity[i], 0) && lt(momentum[i], 0)))) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: color.red, forceOverlay: true });
-    }
-    // plotshape(bullish_entry and not bullish_entry[1], "LONG", shape.circle)
-    if (bullEntry(i) && !bullEntry(i - 1)) {
-      markers.push({ time: t, position: 'belowBar', shape: 'circle', color: color.green, forceOverlay: true });
-    }
-    if (bearEntry(i) && !bearEntry(i - 1)) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: color.red, forceOverlay: true });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    markers,
+    init() {
+      const s: VolVolRun = {
+        emaC: taStep.ema(len), sdC: new WindowStdev(len), dir1: new WindowSma(len), dir2: new WindowSma(len),
+        emaS: taStep.ema(len), sdS: new WindowStdev(len), int1: taStep.ema(half), int2: taStep.ema(half), mom: taStep.ema(half),
+        direction: [], sum: [], bullEntry: [], bearEntry: [], plot0: [], plot1: [], plot2: [], markers: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.emaC, s.sdC, s.dir1, s.dir2, s.emaS, s.sdS, s.int1, s.int2, s.mom];
+      s.lists = [s.markers];
+      s.series = [s.direction, s.sum, s.bullEntry, s.bearEntry, s.plot0, s.plot1, s.plot2];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      // raw_direction = 100 * (close - ta.ema(close, length)) / ta.stdev(close, length) (plain division)
+      const emaC = s.emaC.step(b.close);
+      const sdC = s.sdC.step(b.close);
+      const rawDirection = (100 * (b.close - emaC)) / sdC;
+      const direction = s.dir2.step(s.dir1.step(rawDirection));
+      s.direction[i] = direction;
+
+      // source = direction > 0 ? low : high
+      const source = gt(direction, 0) ? b.low : b.high;
+      const emaS = s.emaS.step(source);
+      const sdS = s.sdS.step(source);
+      const rawIntensity = (100 * (source - emaS)) / sdS;
+      const intensity = s.int2.step(s.int1.step(rawIntensity));
+
+      let bull = 0;
+      let bear = 0;
+      for (let k = 0; k <= len - 1; k++) {
+        const c0 = i - k >= 0 ? bars[i - k].close : NaN;
+        const c1 = i - k - 1 >= 0 ? bars[i - k - 1].close : NaN;
+        const vol = i - k >= 0 ? (bars[i - k].volume ?? NaN) : NaN;
+        // na compares false: the else branch adds the volume (na volume makes the sum na)
+        if (gt(c0, c1)) bull += vol * (len - k) * (len - k);
+        else bear += vol * (len - k) * (len - k);
+      }
+      const rawMomentum = (100 * (bull - bear)) / (bull + bear);
+      const momentum = s.mom.step(rawMomentum);
+
+      s.plot0[i] = { time: t, value: fin(direction), color: gt(direction, 0) ? posCol : negCol };
+      s.plot1[i] = { time: t, value: fin(intensity) };
+      // plot(momentum == 0 ? intensity : momentum)
+      s.plot2[i] = { time: t, value: fin(eq(momentum, 0) ? intensity : momentum) };
+
+      const sum = intensity + momentum;
+      s.sum[i] = sum;
+      const sum1 = i >= 1 ? s.sum[i - 1] : NaN;
+      const dir1 = i >= 1 ? s.direction[i - 1] : NaN;
+      const bullSpike = gt(sum, 50);
+      const bearSpike = lt(sum, -50);
+      const bullSpike1 = gt(sum1, 50);
+      const bearSpike1 = lt(sum1, -50);
+      const bullEntry = gt(sum, sum1) && (gt(direction, dir1) || bullSpike);
+      const bearEntry = lt(sum, sum1) && (lt(direction, dir1) || bearSpike);
+      s.bullEntry[i] = bullEntry;
+      s.bearEntry[i] = bearEntry;
+      const bullEntry1 = i >= 1 && s.bullEntry[i - 1];
+      const bearEntry1 = i >= 1 && s.bearEntry[i - 1];
+
+      const markers = s.markers;
+      const up = gt(direction, 0);
+      const down = lt(direction, 0);
+      // bullish_exit = direction > 0 and bearish_spike and not bearish_spike[1]
+      if (up && bearSpike && !bearSpike1) {
+        markers.push({ time: t, position: 'belowBar', shape: 'square', color: color.red, forceOverlay: true });
+      }
+      if (down && bullSpike && !bullSpike1) {
+        markers.push({ time: t, position: 'aboveBar', shape: 'square', color: color.green, forceOverlay: true });
+      }
+      // bullish_add = direction > 0 and ((bearish_spike[1] and not bearish_spike) or (intensity < 0 and momentum > 0))
+      if (up && ((bearSpike1 && !bearSpike) || (lt(intensity, 0) && gt(momentum, 0)))) {
+        markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: color.green, forceOverlay: true });
+      }
+      if (down && ((bullSpike1 && !bullSpike) || (gt(intensity, 0) && lt(momentum, 0)))) {
+        markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: color.red, forceOverlay: true });
+      }
+      // plotshape(bullish_entry and not bullish_entry[1], "LONG", shape.circle)
+      if (bullEntry && !bullEntry1) {
+        markers.push({ time: t, position: 'belowBar', shape: 'circle', color: color.green, forceOverlay: true });
+      }
+      if (bearEntry && !bearEntry1) {
+        markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: color.red, forceOverlay: true });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolVolInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolVolInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const VolVol = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

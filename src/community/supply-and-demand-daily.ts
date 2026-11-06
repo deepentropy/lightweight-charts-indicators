@@ -26,6 +26,7 @@ import type { BoxData, LineDrawingData } from '../types';
 import { barInterval, barTime } from '../bar-time';
 import { chartTimeframe } from '../anchor-period';
 import { timezoneOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SupplyAndDemandDailyInputs {
   /** Threshold % */
@@ -138,170 +139,222 @@ interface Area {
   wavg: Ln;
 }
 
+type Result = IndicatorResult & { boxes: BoxData[]; lines: LineDrawingData[] };
+
+/** The drawings of an area: its box and its two lines (indices in the lists of the run) */
+interface AreaRef {
+  bx: number;
+  avg: number;
+  wavg: number;
+}
+
+interface SddVars {
+  max: number;
+  min: number;
+  x1: number;
+  csum: number;
+  supplyArea: AreaRef | null;
+  demandArea: AreaRef | null;
+  prevDay: number;
+}
+
+interface SddRun extends BarRunState<SddVars> {
+  /** Every drawing in creation order (the oldest beyond the limit are left out in result) */
+  boxes: Bx[];
+  lines: Ln[];
+}
+
+/** The drawings kept of `count` created: when a creation brings the count above max + 5, the oldest are deleted until
+ *  max remain (the number of the newest kept) */
+function keptCount(count: number): number {
+  return count <= MAX_OBJECTS + 5 ? count : MAX_OBJECTS + ((count - MAX_OBJECTS - 6) % 6);
+}
+
+function study(inputs: Partial<SupplyAndDemandDailyInputs>): BarStudy<SddRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const per = cfg.per;
+  const div = Math.trunc(cfg.div);
+  let tz = 'UTC';
+  return {
+    init(_bars, chart) {
+      tz = timezoneOf(chart);
+      const s: SddRun = {
+        boxes: [], lines: [], steps: [],
+        vars: { max: 0, min: 0, x1: 0, csum: 0, supplyArea: null, demandArea: null, prevDay: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [s.boxes, s.lines];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const { boxes, lines } = s;
+      const newArea = (css: string): AreaRef => {
+        boxes.push({ left: NaN, top: NaN, right: NaN, bottom: NaN, bg: String(color.new(css, 80)) });
+        lines.push({ x1: NaN, x2: NaN, y: NaN, color: css, dashed: false });
+        lines.push({ x1: NaN, x2: NaN, y: NaN, color: css, dashed: true });
+        return { bx: boxes.length - 1, avg: lines.length - 2, wavg: lines.length - 1 };
+      };
+      /** method set_area (on the drawings of the bar that creates them) */
+      const setArea = (
+        id: AreaRef, bar: number, x1: number, top: number, btm: number, avg: number, wavg: number,
+        showArea: boolean, showAvg: boolean, showWavg: boolean,
+      ) => {
+        if (showArea) {
+          const bx = boxes[id.bx];
+          bx.left = x1;
+          bx.top = top;
+          bx.right = bar;
+          bx.bottom = btm;
+        }
+        if (showAvg) {
+          const l = lines[id.avg];
+          l.x1 = x1;
+          l.x2 = bar;
+          l.y = avg;
+        }
+        if (showWavg) {
+          const l = lines[id.wavg];
+          l.x1 = x1;
+          l.x2 = bar;
+          l.y = wavg;
+        }
+      };
+
+      const b = bars[i];
+      const prev = i > 0 ? bars[i - 1] : null;
+      // Accumulate (math.max / math.min with an na value give na)
+      v.max = prev === null || isNaN(v.max) ? NaN : Math.max(prev.high, v.max);
+      v.min = prev === null || isNaN(v.min) ? NaN : Math.min(prev.low, v.min);
+      v.csum += prev === null ? NaN : (prev.volume ?? NaN);
+      const { max, min, csum, x1 } = v;
+
+      const day = ptime.dayofmonth(b.time * 1000, tz);
+      if (i > 0 && day !== v.prevDay) {
+        const r = (max - min) / div;
+        const supply: Bin = { lvl: max, prev: max, sum: 0, prevSum: 0, csum: 0, avg: 0, isreached: false };
+        const demand: Bin = { lvl: min, prev: min, sum: 0, prevSum: 0, csum: 0, avg: 0, isreached: false };
+        // for j = 1 to (n - x1) - 1: a loop whose end is below its start counts down (daily bars: j = 1, 0)
+        const end = i - x1 - 1;
+        const step = end >= 1 ? 1 : -1;
+        // Loop through the intervals
+        intervals: for (let k = 0; k < div; k++) {
+          supply.lvl -= r;
+          demand.lvl += r;
+          // Loop through the bars; each bar has one intrabar, the bar itself
+          for (let j = 1; step > 0 ? j <= end : j >= end; j += step) {
+            const bj = bars[i - j];
+            const vol = bj.volume ?? NaN;
+            // Accumulate if within the upper interval
+            supply.sum += gt(bj.high, supply.lvl) && lt(bj.high, supply.prev) ? vol : 0;
+            supply.avg += supply.lvl * (supply.sum - supply.prevSum);
+            supply.csum += supply.sum - supply.prevSum;
+            supply.prevSum = supply.sum;
+            // Accumulate if within the lower interval
+            demand.sum += lt(bj.low, demand.lvl) && gt(bj.low, demand.prev) ? vol : 0;
+            demand.avg += demand.lvl * (demand.sum - demand.prevSum);
+            demand.csum += demand.sum - demand.prevSum;
+            demand.prevSum = demand.sum;
+
+            // Supply: the accumulated volume is above the threshold
+            if (gt((supply.sum / csum) * 100, per) && !supply.isreached) {
+              const avg = (max + supply.lvl) / 2;
+              const wavg = supply.avg / supply.csum;
+              if (cfg.showSupply) {
+                v.supplyArea = newArea(cfg.supplyCss);
+                setArea(v.supplyArea, i, x1, max, supply.lvl, avg, wavg, cfg.supplyArea, cfg.supplyAvg, cfg.supplyWavg);
+              }
+              supply.isreached = true;
+            }
+            // Demand: the accumulated volume is above the threshold
+            if (gt((demand.sum / csum) * 100, per) && !demand.isreached && cfg.showDemand) {
+              const avg = (min + demand.lvl) / 2;
+              const wavg = demand.avg / demand.csum;
+              v.demandArea = newArea(cfg.demandCss);
+              setArea(v.demandArea, i, x1, demand.lvl, min, avg, wavg, cfg.demandArea, cfg.demandAvg, cfg.demandWavg);
+              demand.isreached = true;
+            }
+            // The original only leaves the loop of the bars here; nothing more can change once both are found
+            if (supply.isreached && demand.isreached) break intervals;
+          }
+          supply.prev = supply.lvl;
+          demand.prev = demand.lvl;
+        }
+        v.max = b.high;
+        v.min = b.low;
+        v.csum = b.volume ?? NaN;
+        v.x1 = i;
+      }
+      v.prevDay = day;
+    },
+    result(s, bars, chart) {
+      const n = bars.length;
+      if (cfg.tf !== '' && n > 0) {
+        const chartTf = chartTimeframe(bars, chart);
+        if (chartTf === '' || timeframe.in_seconds(cfg.tf) !== timeframe.in_seconds(chartTf)) {
+          throw new Error('Supply and Demand Daily: "Intrabar TF" needs the bars of a lower timeframe, which the chart bars do not have');
+        }
+      }
+      // Last bar: the latest zones reach the current bar (their right / x2 replaced in the output)
+      const extBoxes = new Set<number>();
+      const extLines = new Set<number>();
+      if (n > 0) {
+        const extend = (area: AreaRef | null) => {
+          if (area === null) throw new Error("Cannot access the 'area.bx' field of an undefined object. The object is 'na'.");
+          extBoxes.add(area.bx);
+          extLines.add(area.avg);
+          extLines.add(area.wavg);
+        };
+        if (cfg.showSupply) extend(s.vars.supplyArea);
+        if (cfg.showDemand) extend(s.vars.demandArea);
+      }
+      const last = n - 1;
+      const interval = barInterval(bars);
+      const T = (index: number) => barTime(bars, index, interval);
+      const boxes: BoxData[] = [];
+      for (let k = s.boxes.length - keptCount(s.boxes.length); k < s.boxes.length; k++) {
+        const b = s.boxes[k];
+        const right = extBoxes.has(k) ? last : b.right;
+        // an object with an na coordinate is not drawn
+        if (isNaN(b.left) || isNaN(b.top) || isNaN(b.bottom) || isNaN(right)) continue;
+        boxes.push({ time1: T(b.left), price1: b.top, time2: T(right), price2: b.bottom, bgColor: b.bg, borderColor: 'transparent' });
+      }
+      const lines: LineDrawingData[] = [];
+      for (let k = s.lines.length - keptCount(s.lines.length); k < s.lines.length; k++) {
+        const l = s.lines[k];
+        const x2 = extLines.has(k) ? last : l.x2;
+        if (isNaN(l.x1) || isNaN(x2) || isNaN(l.y)) continue;
+        lines.push({
+          time1: T(l.x1), price1: l.y, time2: T(x2), price2: l.y, color: l.color,
+          ...(l.dashed ? { style: 'dashed' as const } : {}),
+        });
+      }
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        boxes,
+        lines,
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SupplyAndDemandDailyInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<SupplyAndDemandDailyInputs> = {},
   chart?: ChartContext,
 ): IndicatorResult & { boxes: BoxData[]; lines: LineDrawingData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  if (cfg.tf !== '' && n > 0) {
-    const chartTf = chartTimeframe(bars, chart);
-    if (chartTf === '' || timeframe.in_seconds(cfg.tf) !== timeframe.in_seconds(chartTf)) {
-      throw new Error('Supply and Demand Daily: "Intrabar TF" needs the bars of a lower timeframe, which the chart bars do not have');
-    }
-  }
-  const per = cfg.per;
-  const div = Math.trunc(cfg.div);
-  const tz = timezoneOf(chart);
-
-  // Drawings in creation order: when a creation brings the count above max + 5, the oldest are deleted until max remain
-  const boxes: Bx[] = [];
-  const lines: Ln[] = [];
-  const limit = <T>(list: T[]) => {
-    if (list.length > MAX_OBJECTS + 5) list.splice(0, list.length - MAX_OBJECTS);
-  };
-  const newArea = (css: string): Area => {
-    const bx: Bx = { left: NaN, top: NaN, right: NaN, bottom: NaN, bg: String(color.new(css, 80)) };
-    boxes.push(bx);
-    limit(boxes);
-    const avg: Ln = { x1: NaN, x2: NaN, y: NaN, color: css, dashed: false };
-    lines.push(avg);
-    limit(lines);
-    const wavg: Ln = { x1: NaN, x2: NaN, y: NaN, color: css, dashed: true };
-    lines.push(wavg);
-    limit(lines);
-    return { bx, avg, wavg };
-  };
-  /** method set_area */
-  const setArea = (
-    id: Area, bar: number, x1: number, top: number, btm: number, avg: number, wavg: number,
-    showArea: boolean, showAvg: boolean, showWavg: boolean,
-  ) => {
-    if (showArea) {
-      id.bx.left = x1;
-      id.bx.top = top;
-      id.bx.right = bar;
-      id.bx.bottom = btm;
-    }
-    if (showAvg) {
-      id.avg.x1 = x1;
-      id.avg.x2 = bar;
-      id.avg.y = avg;
-    }
-    if (showWavg) {
-      id.wavg.x1 = x1;
-      id.wavg.x2 = bar;
-      id.wavg.y = wavg;
-    }
-  };
-
-  let max = 0;
-  let min = 0;
-  let x1 = 0;
-  let csum = 0;
-  let supplyArea: Area | null = null;
-  let demandArea: Area | null = null;
-  let prevDay = NaN;
-
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const prev = i > 0 ? bars[i - 1] : null;
-    // Accumulate (math.max / math.min with an na value give na)
-    max = prev === null || isNaN(max) ? NaN : Math.max(prev.high, max);
-    min = prev === null || isNaN(min) ? NaN : Math.min(prev.low, min);
-    csum += prev === null ? NaN : (prev.volume ?? NaN);
-
-    const day = ptime.dayofmonth(b.time * 1000, tz);
-    if (i > 0 && day !== prevDay) {
-      const r = (max - min) / div;
-      const supply: Bin = { lvl: max, prev: max, sum: 0, prevSum: 0, csum: 0, avg: 0, isreached: false };
-      const demand: Bin = { lvl: min, prev: min, sum: 0, prevSum: 0, csum: 0, avg: 0, isreached: false };
-      // for j = 1 to (n - x1) - 1: a loop whose end is below its start counts down (daily bars: j = 1, 0)
-      const end = i - x1 - 1;
-      const step = end >= 1 ? 1 : -1;
-      // Loop through the intervals
-      intervals: for (let k = 0; k < div; k++) {
-        supply.lvl -= r;
-        demand.lvl += r;
-        // Loop through the bars; each bar has one intrabar, the bar itself
-        for (let j = 1; step > 0 ? j <= end : j >= end; j += step) {
-          const bj = bars[i - j];
-          const vol = bj.volume ?? NaN;
-          // Accumulate if within the upper interval
-          supply.sum += gt(bj.high, supply.lvl) && lt(bj.high, supply.prev) ? vol : 0;
-          supply.avg += supply.lvl * (supply.sum - supply.prevSum);
-          supply.csum += supply.sum - supply.prevSum;
-          supply.prevSum = supply.sum;
-          // Accumulate if within the lower interval
-          demand.sum += lt(bj.low, demand.lvl) && gt(bj.low, demand.prev) ? vol : 0;
-          demand.avg += demand.lvl * (demand.sum - demand.prevSum);
-          demand.csum += demand.sum - demand.prevSum;
-          demand.prevSum = demand.sum;
-
-          // Supply: the accumulated volume is above the threshold
-          if (gt((supply.sum / csum) * 100, per) && !supply.isreached) {
-            const avg = (max + supply.lvl) / 2;
-            const wavg = supply.avg / supply.csum;
-            if (cfg.showSupply) {
-              supplyArea = newArea(cfg.supplyCss);
-              setArea(supplyArea, i, x1, max, supply.lvl, avg, wavg, cfg.supplyArea, cfg.supplyAvg, cfg.supplyWavg);
-            }
-            supply.isreached = true;
-          }
-          // Demand: the accumulated volume is above the threshold
-          if (gt((demand.sum / csum) * 100, per) && !demand.isreached && cfg.showDemand) {
-            const avg = (min + demand.lvl) / 2;
-            const wavg = demand.avg / demand.csum;
-            demandArea = newArea(cfg.demandCss);
-            setArea(demandArea, i, x1, demand.lvl, min, avg, wavg, cfg.demandArea, cfg.demandAvg, cfg.demandWavg);
-            demand.isreached = true;
-          }
-          // The original only leaves the loop of the bars here; nothing more can change once both are found
-          if (supply.isreached && demand.isreached) break intervals;
-        }
-        supply.prev = supply.lvl;
-        demand.prev = demand.lvl;
-      }
-      max = b.high;
-      min = b.low;
-      csum = b.volume ?? NaN;
-      x1 = i;
-    }
-    prevDay = day;
-  }
-
-  // Last bar: the latest zones reach the current bar
-  if (n > 0) {
-    const last = n - 1;
-    const extend = (area: Area | null) => {
-      if (area === null) throw new Error("Cannot access the 'area.bx' field of an undefined object. The object is 'na'.");
-      area.bx.right = last;
-      area.avg.x2 = last;
-      area.wavg.x2 = last;
-    };
-    if (cfg.showSupply) extend(supplyArea);
-    if (cfg.showDemand) extend(demandArea);
-  }
-
-  const interval = barInterval(bars);
-  const T = (index: number) => barTime(bars, index, interval);
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    // an object with an na coordinate is not drawn
-    boxes: boxes.filter((b) => !isNaN(b.left) && !isNaN(b.top) && !isNaN(b.bottom) && !isNaN(b.right)).map((b) => ({
-      time1: T(b.left), price1: b.top, time2: T(b.right), price2: b.bottom, bgColor: b.bg, borderColor: 'transparent',
-    })),
-    lines: lines.filter((l) => !isNaN(l.x1) && !isNaN(l.x2) && !isNaN(l.y)).map((l) => ({
-      time1: T(l.x1), price1: l.y, time2: T(l.x2), price2: l.y, color: l.color,
-      ...(l.dashed ? { style: 'dashed' as const } : {}),
-    })),
-  };
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 export const SupplyAndDemandDaily = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

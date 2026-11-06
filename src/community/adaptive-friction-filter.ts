@@ -14,9 +14,11 @@
  * Original notice: © QuantAlgo
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AdaptiveFrictionFilterInputs {
   /** Preset: 'Default' uses the three inputs below; the others replace them */
@@ -106,13 +108,33 @@ const PRESET_COLORS: Record<string, [string, string, string]> = {
   Neon: ['#ffff00', '#ff00ff', '#aaaaaa'],
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AdaptiveFrictionFilterInputs> = {},
-): IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface AffVars {
+  /** var float aff_line = na */
+  line: number;
+  /** var int trend_dir = 0 */
+  dir: number;
+}
+
+interface AffRun extends BarRunState<AffVars> {
+  sma: ReturnType<typeof taStep.sma>;
+  highest: ReturnType<typeof taStep.highest>;
+  srcArr: number[];
+  aff: number[];
+  trendDir: number[];
+  plot0: Point[];
+  plot1: Point[];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<AdaptiveFrictionFilterInputs>): BarStudy<AffRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
+  const value = barSource(cfg.src);
 
   let { frictionMult, catchupScalar, lookback } = cfg;
   if (cfg.preset === 'Fast Response') {
@@ -126,67 +148,98 @@ export function calculate(
   }
   const [bullishColor, bearishColor, neutralColor] = PRESET_COLORS[cfg.colorPreset]
     ?? [cfg.bullishColor, cfg.bearishColor, cfg.neutralColor];
-
-  const src = A(getSourceSeries(bars, cfg.src));
-  // friction = ta.sma(math.abs(src - src[1]), lookback) * friction_mult
-  const absChange = src.map((v, i) => (i > 0 ? Math.abs(v - src[i - 1]) : NaN));
-  const friction = A(ta.sma(Series.fromArray(bars, absChange), lookback)).map((v) => v * frictionMult);
-
-  const aff: number[] = new Array(n);
-  const trendDir: number[] = new Array(n);
-  let line = NaN; // var float aff_line = na
-  let dir = 0; // var int trend_dir = 0
-  for (let i = 0; i < n; i++) {
-    if (isNaN(line)) {
-      line = src[i];
-    } else {
-      const force = src[i] - line;
-      line = gt(Math.abs(force), friction[i]) ? line + force * catchupScalar : line;
-    }
-    aff[i] = line;
-    const prev = i > 0 ? aff[i - 1] : NaN;
-    dir = gt(line, prev) ? 1 : lt(line, prev) ? -1 : dir;
-    trendDir[i] = dir;
-  }
-
-  // slope_norm = ta.highest(slope, 100); intensity = math.min(slope / math.max(slope_norm, 0.0001), 1.0)
-  const slope = aff.map((v, i) => (i > 0 ? Math.abs(v - aff[i - 1]) : NaN));
-  const slopeNorm = A(ta.highest(Series.fromArray(bars, slope), 100));
   const bullDim = String(color.new(bullishColor, 50));
   const bearDim = String(color.new(bearishColor, 50));
-  // turned_bullish = trend_dir == 1 and trend_dir[1] == -1; turned_bearish = trend_dir == -1 and trend_dir[1] == 1
-  const turnedBull = trendDir.map((d, i) => d === 1 && i > 0 && trendDir[i - 1] === -1);
-  const turnedBear = trendDir.map((d, i) => d === -1 && i > 0 && trendDir[i - 1] === 1);
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const isNeutral = cfg.enableNeutral && i > 0 && eq(aff[i], aff[i - 1]);
-    // math.max / math.min with na give na; color.from_gradient(na, ...) is na
-    const intensity = Math.min(slope[i] / Math.max(slopeNorm[i], 0.0001), 1.0);
-    const grad = (dim: string, full: string) => (isNaN(intensity) || isNaN(slopeNorm[i]) || isNaN(slope[i])
-      ? null : String(color.from_gradient(intensity, 0, 1, dim, full)));
-    const lineCol: string | null = isNeutral ? neutralColor
-      : trendDir[i] === 1 ? grad(bullDim, bullishColor) : grad(bearDim, bearishColor);
-    // color.new(na, t) is black with transparency t
-    const withT = (tr: number) => String(color.new(lineCol ?? (null as unknown as string), tr));
-    plot0.push({ time: t, value: aff[i], color: withT(20) });
-    plot1.push({ time: t, value: aff[i], color: lineCol ?? 'transparent' });
-    if (cfg.showCandles) barColors.push({ time: t, color: withT(cfg.barTransparency) });
-    if (cfg.showBgcolor) bgColors.push({ time: t, color: withT(cfg.bgTransparency) });
-  }
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    barColors,
-    bgColors,
-    // alertcondition(turned_bullish / turned_bearish / trend_changed, ...)
-    alerts: alertStates(alertConditions, bars, [turnedBull, turnedBear, turnedBull.map((v, i) => v || turnedBear[i])]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const sma = taStep.sma();
+      const highest = taStep.highest();
+      const s: AffRun = {
+        sma, highest, srcArr: [], aff: [], trendDir: [], plot0: [], plot1: [], barColors: [], bgColors: [],
+        flags: [[], [], []], times: [[], [], []],
+        steps: [sma, highest], vars: { line: NaN, dir: 0 }, lists: [], series: [],
+      };
+      s.lists = [s.barColors, s.bgColors, ...s.times];
+      s.series = [s.srcArr, s.aff, s.trendDir, s.plot0, s.plot1, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time;
+      const v = s.vars;
+      const src = value(bars[i]);
+      s.srcArr[i] = src;
+      // friction = ta.sma(math.abs(src - src[1]), lookback) * friction_mult
+      const absChange = i > 0 ? Math.abs(src - s.srcArr[i - 1]) : NaN;
+      const friction = s.sma.step(absChange, lookback) * frictionMult;
+
+      if (isNaN(v.line)) {
+        v.line = src;
+      } else {
+        const force = src - v.line;
+        v.line = gt(Math.abs(force), friction) ? v.line + force * catchupScalar : v.line;
+      }
+      const line = v.line;
+      s.aff[i] = line;
+      const prev = i > 0 ? s.aff[i - 1] : NaN;
+      v.dir = gt(line, prev) ? 1 : lt(line, prev) ? -1 : v.dir;
+      const dir = v.dir;
+      s.trendDir[i] = dir;
+
+      // slope_norm = ta.highest(slope, 100); intensity = math.min(slope / math.max(slope_norm, 0.0001), 1.0)
+      const slope = i > 0 ? Math.abs(line - prev) : NaN;
+      const slopeNorm = s.highest.step(slope, 100);
+      // turned_bullish = trend_dir == 1 and trend_dir[1] == -1; turned_bearish = trend_dir == -1 and trend_dir[1] == 1
+      const turnedBull = dir === 1 && i > 0 && s.trendDir[i - 1] === -1;
+      const turnedBear = dir === -1 && i > 0 && s.trendDir[i - 1] === 1;
+
+      const isNeutral = cfg.enableNeutral && i > 0 && eq(line, prev);
+      // math.max / math.min with na give na; color.from_gradient(na, ...) is na
+      const intensity = Math.min(slope / Math.max(slopeNorm, 0.0001), 1.0);
+      const grad = (dim: string, full: string) => (isNaN(intensity) || isNaN(slopeNorm) || isNaN(slope)
+        ? null : String(color.from_gradient(intensity, 0, 1, dim, full)));
+      const lineCol: string | null = isNeutral ? neutralColor
+        : dir === 1 ? grad(bullDim, bullishColor) : grad(bearDim, bearishColor);
+      // color.new(na, t) is black with transparency t
+      const withT = (tr: number) => String(color.new(lineCol ?? (null as unknown as string), tr));
+      s.plot0[i] = { time: t, value: line, color: withT(20) };
+      s.plot1[i] = { time: t, value: line, color: lineCol ?? 'transparent' };
+      if (cfg.showCandles) s.barColors.push({ time: t, color: withT(cfg.barTransparency) });
+      if (cfg.showBgcolor) s.bgColors.push({ time: t, color: withT(cfg.bgTransparency) });
+
+      // alertcondition(turned_bullish / turned_bearish / trend_changed, ...)
+      const any = turnedBull || turnedBear;
+      s.flags[0][i] = turnedBull;
+      s.flags[1][i] = turnedBear;
+      s.flags[2][i] = any;
+      if (turnedBull) s.times[0].push(t as number);
+      if (turnedBear) s.times[1].push(t as number);
+      if (any) s.times[2].push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdaptiveFrictionFilterInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<AdaptiveFrictionFilterInputs> = {},
+): IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -198,6 +251,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const AdaptiveFrictionFilter = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

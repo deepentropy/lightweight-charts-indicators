@@ -19,9 +19,11 @@
  * Original notice: © Zeiierman
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type VolumeSuperTrendAiMaSource = 'SMA' | 'EMA' | 'WMA' | 'RMA' | 'VWMA';
 
@@ -116,145 +118,190 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert5', title: '6 Any Trend Signal', message: 'Any AI Trend Signal' },
 ];
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<VolumeSuperTrendAiInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Avg = { step(v: number, volume: number): number; commit(): void };
+
+/** average(source, len) of the `Moving Average Source` input */
+function avgStep(maSrc: VolumeSuperTrendAiMaSource, len: number): Avg {
+  switch (maSrc) {
+    case 'SMA': { const m = taStep.sma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+    case 'EMA': { const m = taStep.ema(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'RMA': { const m = taStep.rma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'VWMA': { const m = taStep.vwma(len); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+    case 'WMA':
+    default: { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+  }
+}
+
+interface VstRun extends BarRunState<Record<string, never>> {
+  num: Avg;
+  den: Avg;
+  atr: ReturnType<typeof taStep.atr>;
+  price: ReturnType<typeof taStep.wma>;
+  sT: ReturnType<typeof taStep.wma>;
+  atrArr: number[];
+  lowerBand: number[];
+  upperBand: number[];
+  direction: number[];
+  superTrend: number[];
+  labelOf: number[];
+  col: string[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  fillCol: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<VolumeSuperTrendAiInputs>): BarStudy<VstRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const nb = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const at = (a: number[], i: number) => (i >= 0 && i < a.length ? a[i] : NaN);
-  const close = bars.map((b) => b.close);
-  const volume = bars.map((b) => b.volume ?? NaN);
   const len = cfg.atrLen;
   const k = cfg.k;
   const n = Math.max(k, cfg.n);
-
-  // vwma = average(close * volume, len) / average(volume, len)
-  const cv = S(close.map((c, i) => c * volume[i]));
-  const vol = S(volume);
-  let num: number[];
-  let den: number[];
-  switch (cfg.maSrc) {
-    case 'SMA': num = A(ta.sma(cv, len)); den = A(ta.sma(vol, len)); break;
-    case 'EMA': num = A(ta.ema(cv, len)); den = A(ta.ema(vol, len)); break;
-    case 'RMA': num = A(ta.rma(cv, len)); den = A(ta.rma(vol, len)); break;
-    case 'VWMA': num = A(ta.vwma(cv, len, vol)); den = A(ta.vwma(vol, len, vol)); break;
-    case 'WMA':
-    default: num = A(ta.wma(cv, len)); den = A(ta.wma(vol, len)); break;
-  }
-  // division by zero gives na
-  const vwma = num.map((x, i) => (den[i] === 0 ? NaN : x / den[i]));
-  const atr = A(ta.atr(bars, len));
-
-  const lowerBand: number[] = new Array(nb);
-  const upperBand: number[] = new Array(nb);
-  const direction: number[] = new Array(nb);
-  const superTrend: number[] = new Array(nb);
-  for (let i = 0; i < nb; i++) {
-    const ub = vwma[i] + cfg.factor * atr[i];
-    const lb = vwma[i] - cfg.factor * atr[i];
-    const prevLower = i > 0 && !isNaN(lowerBand[i - 1]) ? lowerBand[i - 1] : 0; // nz(lowerBand[1])
-    const prevUpper = i > 0 && !isNaN(upperBand[i - 1]) ? upperBand[i - 1] : 0; // nz(upperBand[1])
-    const close1 = at(close, i - 1);
-    lowerBand[i] = lb > prevLower || close1 < prevLower ? lb : prevLower;
-    upperBand[i] = ub < prevUpper || close1 > prevUpper ? ub : prevUpper;
-    const prevSuperTrend = at(superTrend, i - 1);
-    let dir: number;
-    if (isNaN(at(atr, i - 1))) dir = 1;
-    else if (prevSuperTrend === prevUpper) dir = close[i] > upperBand[i] ? -1 : 1;
-    else dir = close[i] < lowerBand[i] ? 1 : -1;
-    direction[i] = dir;
-    superTrend[i] = dir === -1 ? lowerBand[i] : upperBand[i];
-  }
-
-  // KNN points: superTrend[i] labelled price[i] > sT[i] ? 1 : 0, i = 0 .. n - 1 bars back
-  const price = A(ta.wma(S(close), cfg.knnPriceLen));
-  const sT = A(ta.wma(S(superTrend), cfg.knnSTLen));
-  const labelOf = price.map((p, i) => (p > sT[i] ? 1 : 0));
-  const label_: number[] = new Array(nb);
+  const at = (a: number[], i: number) => (i >= 0 && i < a.length ? a[i] : NaN);
+  // scratch arrays of the KNN vote, written in full on each bar
   const distances: number[] = new Array(n);
   const indices: number[] = new Array(n);
-  for (let b = 0; b < nb; b++) {
-    const x = superTrend[b];
-    for (let i = 0; i < n; i++) {
-      distances[i] = Math.abs(x - at(superTrend, b - i));
-      indices[i] = i;
-    }
-    // bubble sort, ascending (a comparison with na is false: no swap)
-    for (let i = 0; i <= n - 2; i++) {
-      for (let j = 0; j <= n - i - 2; j++) {
-        if (distances[j] > distances[j + 1]) {
-          const td = distances[j]; distances[j] = distances[j + 1]; distances[j + 1] = td;
-          const ti = indices[j]; indices[j] = indices[j + 1]; indices[j + 1] = ti;
+  return {
+    init() {
+      const num = avgStep(cfg.maSrc, len);
+      const den = avgStep(cfg.maSrc, len);
+      const atr = taStep.atr(len);
+      const price = taStep.wma();
+      const sT = taStep.wma();
+      const s: VstRun = {
+        num, den, atr, price, sT, atrArr: [], lowerBand: [], upperBand: [], direction: [], superTrend: [], labelOf: [],
+        col: [], plot0: [], plot1: [], plot2: [], plot3: [], fillCol: [], markers: [],
+        flags: [[], [], [], [], [], []], times: [[], [], [], [], [], []],
+        steps: [num, den, atr, price, sT], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [
+        s.atrArr, s.lowerBand, s.upperBand, s.direction, s.superTrend, s.labelOf, s.col, s.plot0, s.plot1, s.plot2,
+        s.plot3, s.fillCol, ...s.flags,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = b.close;
+      const volume = b.volume ?? NaN;
+      // vwma = average(close * volume, len) / average(volume, len)
+      const num = s.num.step(close * volume, volume);
+      const den = s.den.step(volume, volume);
+      // division by zero gives na
+      const vwma = den === 0 ? NaN : num / den;
+      const atr = s.atr.step(b.high, b.low, b.close);
+      s.atrArr[i] = atr;
+
+      const ub = vwma + cfg.factor * atr;
+      const lb = vwma - cfg.factor * atr;
+      const prevLower = i > 0 && !isNaN(s.lowerBand[i - 1]) ? s.lowerBand[i - 1] : 0; // nz(lowerBand[1])
+      const prevUpper = i > 0 && !isNaN(s.upperBand[i - 1]) ? s.upperBand[i - 1] : 0; // nz(upperBand[1])
+      const close1 = i > 0 ? bars[i - 1].close : NaN;
+      const lowerBand = lb > prevLower || close1 < prevLower ? lb : prevLower;
+      const upperBand = ub < prevUpper || close1 > prevUpper ? ub : prevUpper;
+      s.lowerBand[i] = lowerBand;
+      s.upperBand[i] = upperBand;
+      const prevSuperTrend = i > 0 ? s.superTrend[i - 1] : NaN;
+      let dir: number;
+      if (isNaN(i > 0 ? s.atrArr[i - 1] : NaN)) dir = 1;
+      else if (prevSuperTrend === prevUpper) dir = close > upperBand ? -1 : 1;
+      else dir = close < lowerBand ? 1 : -1;
+      s.direction[i] = dir;
+      const superTrend = dir === -1 ? lowerBand : upperBand;
+      s.superTrend[i] = superTrend;
+
+      // KNN points: superTrend[i] labelled price[i] > sT[i] ? 1 : 0, i = 0 .. n - 1 bars back
+      const price = s.price.step(close, cfg.knnPriceLen);
+      const sT = s.sT.step(superTrend, cfg.knnSTLen);
+      s.labelOf[i] = price > sT ? 1 : 0;
+      const st = s.superTrend;
+      for (let j = 0; j < n; j++) {
+        distances[j] = Math.abs(superTrend - at(st, i - j));
+        indices[j] = j;
+      }
+      // bubble sort, ascending (a comparison with na is false: no swap)
+      for (let a = 0; a <= n - 2; a++) {
+        for (let j = 0; j <= n - a - 2; j++) {
+          if (distances[j] > distances[j + 1]) {
+            const td = distances[j]; distances[j] = distances[j + 1]; distances[j + 1] = td;
+            const ti = indices[j]; indices[j] = indices[j + 1]; indices[j + 1] = ti;
+          }
         }
       }
-    }
-    let weightedSum = 0;
-    let totalWeight = 0;
-    for (let i = 0; i < k; i++) {
-      const back = indices[i];
-      const lbl = b - back >= 0 ? labelOf[b - back] : 0; // price[i] > sT[i] with na is false
-      const w = 1 / (distances[i] + 1e-6);
-      weightedSum += w * lbl;
-      totalWeight += w;
-    }
-    label_[b] = weightedSum / totalWeight;
-  }
+      let weightedSum = 0;
+      let totalWeight = 0;
+      for (let j = 0; j < k; j++) {
+        const back = indices[j];
+        const lbl = i - back >= 0 ? s.labelOf[i - back] : 0; // price[i] > sT[i] with na is false
+        const w = 1 / (distances[j] + 1e-6);
+        weightedSum += w * lbl;
+        totalWeight += w;
+      }
+      const label_ = weightedSum / totalWeight;
 
-  const col = label_.map((l) => (l === 1 ? cfg.upCol : l === 0 ? cfg.dnCol : cfg.neCol));
-  const fillCol = col.map((c) => String(color.new(c, 90)));
+      const col = label_ === 1 ? cfg.upCol : label_ === 0 ? cfg.dnCol : cfg.neCol;
+      s.col[i] = col;
+      s.fillCol[i] = String(color.new(col, 90));
 
-  // Signals
-  const startUp: boolean[] = [], startDn: boolean[] = [], trendUp: boolean[] = [], trendDn: boolean[] = [];
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < nb; i++) {
-    const c1 = i > 0 ? col[i - 1] : undefined; // col[1] na on the first bar: != is true, == is false
-    const su = col[i] === cfg.upCol && (c1 !== cfg.upCol || c1 === cfg.neCol) && cfg.aiSignals;
-    const sd = col[i] === cfg.dnCol && (c1 !== cfg.dnCol || c1 === cfg.neCol) && cfg.aiSignals;
-    const d1 = at(direction, i - 1);
-    const tu = direction[i] === -1 && d1 === 1 && label_[i] === 1 && cfg.aiSignals;
-    const td = direction[i] === 1 && d1 === -1 && label_[i] === 0 && cfg.aiSignals;
-    startUp.push(su); startDn.push(sd); trendUp.push(tu); trendDn.push(td);
-    const st = superTrend[i];
-    if (isNaN(st)) continue;
-    const t = bars[i].time;
-    if (su) markers.push({ id: 'shape0', time: t, position: 'atPriceMiddle', price: st, shape: 'circle', color: cfg.bullishCol, size: 'tiny' });
-    if (sd) markers.push({ id: 'shape1', time: t, position: 'atPriceMiddle', price: st, shape: 'circle', color: cfg.bearishCol, size: 'tiny' });
-    if (tu) markers.push({ id: 'shape2', time: t, position: 'atPriceMiddle', price: st, shape: 'triangleUp', color: cfg.bullishCol, size: 'small' });
-    if (td) markers.push({ id: 'shape3', time: t, position: 'atPriceMiddle', price: st, shape: 'triangleDown', color: cfg.bearishCol, size: 'small' });
-  }
+      // Signals
+      const c1 = i > 0 ? s.col[i - 1] : undefined; // col[1] na on the first bar: != is true, == is false
+      const su = col === cfg.upCol && (c1 !== cfg.upCol || c1 === cfg.neCol) && cfg.aiSignals;
+      const sd = col === cfg.dnCol && (c1 !== cfg.dnCol || c1 === cfg.neCol) && cfg.aiSignals;
+      const d1 = i > 0 ? s.direction[i - 1] : NaN;
+      const tu = dir === -1 && d1 === 1 && label_ === 1 && cfg.aiSignals;
+      const td = dir === 1 && d1 === -1 && label_ === 0 && cfg.aiSignals;
+      const t = b.time;
+      const flags = [su, sd, su || sd, tu, td, tu || td];
+      for (let f = 0; f < 6; f++) {
+        s.flags[f][i] = flags[f];
+        if (flags[f]) s.times[f].push(t as number);
+      }
+      if (!isNaN(superTrend)) {
+        if (su) s.markers.push({ id: 'shape0', time: t, position: 'atPriceMiddle', price: superTrend, shape: 'circle', color: cfg.bullishCol, size: 'tiny' });
+        if (sd) s.markers.push({ id: 'shape1', time: t, position: 'atPriceMiddle', price: superTrend, shape: 'circle', color: cfg.bearishCol, size: 'tiny' });
+        if (tu) s.markers.push({ id: 'shape2', time: t, position: 'atPriceMiddle', price: superTrend, shape: 'triangleUp', color: cfg.bullishCol, size: 'small' });
+        if (td) s.markers.push({ id: 'shape3', time: t, position: 'atPriceMiddle', price: superTrend, shape: 'triangleDown', color: cfg.bearishCol, size: 'small' });
+      }
 
-  const line = (f: (i: number) => number) => bars.map((b, i) => ({ time: b.time, value: f(i), color: col[i] }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
       // plot(current_superTrend, color = col, title = "Volume Super Trend AI")
-      plot0: line((i) => superTrend[i]),
+      s.plot0[i] = { time: t, value: superTrend, color: col };
       // plot(superTrend == lowerBand ? current_superTrend : na, "Up Volume Super Trend AI", col, linebr)
-      plot1: line((i) => (superTrend[i] === lowerBand[i] ? superTrend[i] : NaN)),
+      s.plot1[i] = { time: t, value: superTrend === lowerBand ? superTrend : NaN, color: col };
       // Middle = plot((open + close) / 2, display = display.none, editable = false)
-      plot2: bars.map((b) => ({ time: b.time, value: (b.open + b.close) / 2 })),
+      s.plot2[i] = { time: t, value: (b.open + b.close) / 2 };
       // plot(superTrend == upperBand ? current_superTrend : na, "Down Volume Super Trend AI", col, linebr)
-      plot3: line((i) => (superTrend[i] === upperBand[i] ? superTrend[i] : NaN)),
+      s.plot3[i] = { time: t, value: superTrend === upperBand ? superTrend : NaN, color: col };
     },
-    // fill(Middle, upTrend / downTrend, color.new(col, 90), fillgaps = false)
-    fills: [
-      { plot1: 'plot2', plot2: 'plot1', options: { title: 'Up Volume Super Trend AI' }, colors: fillCol },
-      { plot1: 'plot2', plot2: 'plot3', options: { title: 'Down Volume Super Trend AI' }, colors: fillCol },
-    ],
-    markers,
-    alerts: alertStates(alertConditions, bars, [
-      startUp,
-      startDn,
-      startUp.map((v, i) => v || startDn[i]),
-      trendUp,
-      trendDn,
-      trendUp.map((v, i) => v || trendDn[i]),
-    ]),
+    result(s, bars) {
+      const nb = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+        // fill(Middle, upTrend / downTrend, color.new(col, 90), fillgaps = false)
+        fills: [
+          { plot1: 'plot2', plot2: 'plot1', options: { title: 'Up Volume Super Trend AI' }, colors: s.fillCol.slice() },
+          { plot1: 'plot2', plot2: 'plot3', options: { title: 'Down Volume Super Trend AI' }, colors: s.fillCol.slice() },
+        ],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => nb > 0 && f[nb - 1])),
+      };
+    },
   };
 }
 
-export const VolumeSuperTrendAi = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeSuperTrendAiInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolumeSuperTrendAiInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+export const VolumeSuperTrendAi = { calculate, createRun, metadata,
+ defaultInputs, inputConfig, plotConfig, alertConditions };
