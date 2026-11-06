@@ -13,6 +13,8 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface HighForLoopMisinkomasterInputs {
   /** Start of the for loop */
@@ -58,52 +60,82 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<HighForLoopMisinkomasterInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+interface HflVars {
+  /** var col = color.white */
+  col: string;
+}
+
+interface HflRun extends BarRunState<HflVars> {
+  high: number[];
+  score: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<HighForLoopMisinkomasterInputs>): BarStudy<HflRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { start, end, ut, lt } = cfg;
-  const n = bars.length;
-  const high = bars.map((b) => b.high);
-
   // flscore: for i = start to end (counts down when start > end); high[i] before the first bar is na
   const step = start <= end ? 1 : -1;
-  const score: number[] = new Array(n);
-  for (let k = 0; k < n; k++) {
-    let flscore = 0;
-    for (let i = start; step > 0 ? i <= end : i >= end; i += step) {
-      const hi = k - i >= 0 ? high[k - i] : NaN;
-      if (gt(hi, high[k])) flscore += -1;
-      if (gt(high[k], hi)) flscore += 1;
-    }
-    score[k] = flscore;
-  }
-
-  // var col = color.white; L = ta.crossover(flscore, ut), S = ta.crossunder(flscore, lt) (exact comparisons)
-  const colors: string[] = new Array(n);
-  let col: string = color.white;
-  for (let k = 0; k < n; k++) {
-    const L = k > 0 && score[k] > ut && score[k - 1] <= ut;
-    const S = k > 0 && score[k] < lt && score[k - 1] >= lt;
-    if (L && !S) col = LONG_COL;
-    if (S) col = SHORT_COL;
-    colors[k] = col;
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: score[i], color: colors[i] })),
-      plot1: bars.map((b) => ({ time: b.time, value: ut, color: LONG_COL })),
-      plot2: bars.map((b) => ({ time: b.time, value: lt, color: SHORT_COL })),
+    init() {
+      const s: HflRun = {
+        high: [], score: [], plot0: [], plot1: [], plot2: [], barColors: [],
+        steps: [], vars: { col: color.white }, lists: [], series: [],
+      };
+      s.series = [s.high, s.score, s.plot0, s.plot1, s.plot2, s.barColors];
+      return s;
     },
-    barColors: bars.map((b, i) => ({ time: b.time, color: colors[i] })),
+    bar(s, k, bars) {
+      const b = bars[k];
+      const h = b.high;
+      const high = s.high;
+      high[k] = h;
+      let flscore = 0;
+      for (let i = start; step > 0 ? i <= end : i >= end; i += step) {
+        const hi = k - i >= 0 ? high[k - i] : NaN;
+        if (gt(hi, h)) flscore += -1;
+        if (gt(h, hi)) flscore += 1;
+      }
+      s.score[k] = flscore;
+      // L = ta.crossover(flscore, ut), S = ta.crossunder(flscore, lt) (exact comparisons)
+      const L = k > 0 && flscore > ut && s.score[k - 1] <= ut;
+      const S = k > 0 && flscore < lt && s.score[k - 1] >= lt;
+      if (L && !S) s.vars.col = LONG_COL;
+      if (S) s.vars.col = SHORT_COL;
+      const col = s.vars.col;
+      s.plot0[k] = { time: b.time, value: flscore, color: col };
+      s.plot1[k] = { time: b.time, value: ut, color: LONG_COL };
+      s.plot2[k] = { time: b.time, value: lt, color: SHORT_COL };
+      s.barColors[k] = { time: b.time, color: col };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HighForLoopMisinkomasterInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<HighForLoopMisinkomasterInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const HighForLoopMisinkomaster = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

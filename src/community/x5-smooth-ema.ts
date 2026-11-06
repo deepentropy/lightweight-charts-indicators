@@ -10,7 +10,9 @@
  * Original notice: © traderninezero
  */
 
-import { taCore, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface X5SmoothEmaInputs {
   /** Source of the base EMA */
@@ -55,44 +57,92 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<X5SmoothEmaInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface X5Run extends BarRunState<Record<string, never>> {
+  mainEma: ReturnType<typeof taStep.ema>;
+  sma: WindowSma;
+  ema: ReturnType<typeof taStep.ema>;
+  rma: ReturnType<typeof taStep.rma>;
+  wma: ReturnType<typeof taStep.wma>;
+  vwma: WindowVwma;
+  /** Values of the five smoothed lines per bar */
+  vals: number[][];
+  lines: Point[][];
+}
+
+/** Line `k` on bar `i`: its value and colour (x > x[1] ? bullColor : bearColor) */
+function line(s: X5Run, k: number, i: number, time: number, x: number, bull: string, bear: string): string {
+  const vals = s.vals[k]!;
+  vals[i] = x;
+  const color = i > 0 && gt(x, vals[i - 1]!) ? bull : bear;
+  s.lines[k]![i] = { time, value: x, color };
+  return color;
+}
+
+function study(inputs: Partial<X5SmoothEmaInputs>): BarStudy<X5Run, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const len = cfg.emaLen;
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
-  const volume = bars.map((b) => b.volume ?? NaN);
-
-  const mainEMA = taCore.ema(src, len);
-  const smoothSMA = taCore.sma(mainEMA, len);
-  const smoothEMA = taCore.ema(mainEMA, len);
-  const smoothSMMA = taCore.rma(mainEMA, len);
-  const smoothWMA = taCore.wma(mainEMA, len);
-  const smoothVWMA = taCore.vwma(mainEMA, len, volume);
-  const baseEMA = taCore.ema(src, len);
-
-  // x > x[1] ? bullColor : bearColor
-  const rising = (x: number[], i: number) => i > 0 && gt(x[i], x[i - 1]);
-  const line = (x: number[], colorOf: number[]) => bars.map((b, i) => ({
-    time: b.time,
-    value: x[i],
-    color: rising(colorOf, i) ? cfg.bullColor : cfg.bearColor,
-  }));
-
+  const value = barSource(cfg.src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(smoothSMA, smoothSMA),
-      plot1: line(smoothEMA, smoothEMA),
-      plot2: line(smoothSMMA, smoothSMMA),
-      plot3: line(smoothWMA, smoothWMA),
-      plot4: line(smoothVWMA, smoothVWMA),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const mainEma = taStep.ema(len);
+      const sma = new WindowSma(len);
+      const ema = taStep.ema(len);
+      const rma = taStep.rma(len);
+      const wma = taStep.wma();
+      const vwma = new WindowVwma(len);
+      const s: X5Run = {
+        mainEma, sma, ema, rma, wma, vwma, vals: [[], [], [], [], []], lines: [[], [], [], [], [], []],
+        steps: [mainEma, sma, ema, rma, wma, vwma], vars: {}, lists: [], series: [],
+      };
+      s.series = [...s.vals, ...s.lines];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const time = b.time as number;
+      const mainEMA = s.mainEma.step(value(b));
+      // baseEMA = ta.ema(src, len): the doubles of mainEMA
+      const baseEMA = mainEMA;
+      // x > x[1] ? bullColor : bearColor
+      line(s, 0, i, time, s.sma.step(mainEMA), cfg.bullColor, cfg.bearColor);
+      line(s, 1, i, time, s.ema.step(mainEMA), cfg.bullColor, cfg.bearColor);
+      line(s, 2, i, time, s.rma.step(mainEMA), cfg.bullColor, cfg.bearColor);
+      line(s, 3, i, time, s.wma.step(mainEMA, len), cfg.bullColor, cfg.bearColor);
+      const vwmaColor = line(s, 4, i, time, s.vwma.step(mainEMA, b.volume ?? NaN), cfg.bullColor, cfg.bearColor);
       // plot(baseEMA, "fl0", color = smoothVWMAColor)
-      plot5: line(baseEMA, smoothVWMA),
+      s.lines[5]![i] = { time, value: baseEMA, color: vwmaColor };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.lines[0]!.slice(),
+          plot1: s.lines[1]!.slice(),
+          plot2: s.lines[2]!.slice(),
+          plot3: s.lines[3]!.slice(),
+          plot4: s.lines[4]!.slice(),
+          plot5: s.lines[5]!.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<X5SmoothEmaInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<X5SmoothEmaInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const X5SmoothEma = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

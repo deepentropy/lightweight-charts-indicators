@@ -18,8 +18,10 @@
  * Based on the standard Auto Pitchfork indicator.
  */
 
-import { ZigZag as ZigZagEngine, barTime, color, type Bar, type IndicatorResult, type InputConfig, type PlotConfig } from 'oakscriptjs';
+import { barTime, color, type Bar, type IndicatorResult, type InputConfig, type PlotConfig } from 'oakscriptjs';
 import type { LineDrawingData, LinefillData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type LineStyleInput = 'Dashed' | 'Dotted' | 'Solid';
 type PitchforkType = 'Original' | 'Schiff' | 'Modified Schiff' | 'Inside';
@@ -134,44 +136,85 @@ interface Point {
 
 const avg = (a: number, b: number) => (a + b) / 2;
 
-export function calculate(bars: Bar[], inputs: Partial<AutoPitchforkInputs> = {}): AutoPitchforkResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const result: AutoPitchforkResult = {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    lines: [],
-    linefills: [],
-  };
+/** One zigzag pivot (the parts of the oakscriptjs ZigZag pivot the pitchfork reads), replaced rather than changed */
+interface ZzPivot {
+  isHigh: boolean;
+  start: Point;
+  end: Point;
+}
 
-  // Zigzag: the points are updated on each bar where the zigzag changes; the drawings keep their objects (`var`)
-  // and take the points of the last bar
-  const zigZag = new ZigZagEngine({ devThreshold: 0, depth: cfg.depth, extendLast: false });
-  let lastP: Point | null = null;
-  let prevP: Point | null = null;
-  let prev2P: Point | null = null;
-  for (let i = 0; i < n; i++) {
-    if (!zigZag.update(bars[i], i)) continue;
-    const pivots = zigZag.pivots;
+interface PitchforkVars {
+  /** The pivots of the zigzag (oakscriptjs ZigZag with devThreshold 0, extendLast false) */
+  pivots: ZzPivot[];
+  lastP: Point | null;
+  prevP: Point | null;
+  prev2P: Point | null;
+}
+
+type PitchforkRun = BarRunState<PitchforkVars>;
+
+/**
+ * ZigZag.update(bars[i], i) of the oakscriptjs engine (pivots only: the volumes are not read), one bar at a time:
+ * true when a pivot was added or moved. The engine's buffers are the bar values, read from the bars.
+ */
+function zigZagUpdate(pivots: ZzPivot[], bars: Bar[], i: number, settingsDepth: number): boolean {
+  const depth = Math.max(2, Math.floor(settingsDepth / 2));
+  // Need enough bars for pivot detection (depth bars before and after)
+  if (i + 1 < depth * 2 + 1) return false;
+  const findPivotPoint = (isHigh: boolean): Point | null => {
+    const pivotIdx = i - depth;
+    if (pivotIdx < depth) return null;
+    const pivotPrice = isHigh ? bars[pivotIdx].high : bars[pivotIdx].low;
+    // For a pivot high, subsequent bars must be strictly lower; for a pivot low, strictly higher
+    for (let k = pivotIdx + 1; k <= i; k++) {
+      if (isHigh ? bars[k].high > pivotPrice : bars[k].low < pivotPrice) return null;
+    }
+    // For a pivot high, previous bars must be lower or equal; for a pivot low, higher or equal
+    for (let k = pivotIdx - depth; k < pivotIdx; k++) {
+      if (isHigh ? bars[k].high >= pivotPrice : bars[k].low <= pivotPrice) return null;
+    }
+    return { index: i - depth, price: pivotPrice };
+  };
+  const newPivotPointFound = (isHigh: boolean, point: Point): boolean => {
     const count = pivots.length;
-    if (count > 1) {
-      const p = pivots[count - 2];
-      // ZigZag v7: the start of the first pivot moves with its end (the library engine keeps the first point)
-      const start = count - 2 === 0 ? p.end : p.start;
-      lastP = { index: p.end.barIndex, price: p.end.price };
-      prevP = { index: start.barIndex, price: start.price };
-      if (count > 2) {
-        const p2 = pivots[count - 3];
-        const start2 = count - 3 === 0 ? p2.end : p2.start;
-        prev2P = { index: start2.barIndex, price: start2.price };
+    if (count === 0) {
+      pivots.push({ isHigh, start: point, end: point });
+      return true;
+    }
+    const last = pivots[count - 1];
+    if (last.isHigh === isHigh) {
+      // Same direction - check if this is a more extreme price
+      const isMoreExtreme = isHigh ? point.price > last.end.price : point.price < last.end.price;
+      if (isMoreExtreme) {
+        // the first pivot moves its start with its end
+        pivots[count - 1] = { isHigh: last.isHigh, start: count === 1 ? point : last.start, end: point };
+        return true;
+      }
+    } else {
+      // Direction change - check if deviation threshold is met
+      const dev = 100 * (point.price - last.end.price) / Math.abs(last.end.price);
+      const threshold = 0;
+      const meetsThreshold = last.isHigh ? dev <= -threshold : dev >= threshold;
+      if (meetsThreshold) {
+        pivots.push({ isHigh, start: last.end, end: point });
+        return true;
       }
     }
-  }
-  if (!lastP || !prevP || !prev2P) return result;
-  const P2 = lastP;
-  const P1 = prevP;
-  const P0 = prev2P;
+    return false;
+  };
+  const tryFindPivot = (isHigh: boolean): boolean => {
+    const point = findPivotPoint(isHigh);
+    if (!point) return false;
+    return newPivotPointFound(isHigh, point);
+  };
+  let somethingChanged = tryFindPivot(true);
+  // allowZigZagOnOneBar (true): the low is registered too
+  somethingChanged = tryFindPivot(false) || somethingChanged;
+  return somethingChanged;
+}
 
+/** The pitchfork drawn from the last three zigzag points */
+function draw(cfg: AutoPitchforkInputs, bars: Bar[], result: AutoPitchforkResult, P0: Point, P1: Point, P2: Point): void {
   const extendLine = cfg.isExtended ? 'both' : 'right';
   const time = (index: number) => barTime(bars, index);
   const styleOf = (s: LineStyleInput) => (s === 'Solid' ? 'solid' : s === 'Dotted' ? 'dotted' : 'dashed');
@@ -256,8 +299,57 @@ export function calculate(bars: Bar[], inputs: Partial<AutoPitchforkInputs> = {}
     other1 = lineId1;
     other2 = lineId2;
   }
-
-  return result;
 }
 
-export const AutoPitchfork = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+function study(inputs: Partial<AutoPitchforkInputs>): BarStudy<PitchforkRun, AutoPitchforkResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      return { steps: [], lists: [], series: [], vars: { pivots: [], lastP: null, prevP: null, prev2P: null } };
+    },
+    bar(s, i, bars) {
+      // Zigzag: the points are updated on each bar where the zigzag changes; the drawings keep their objects (`var`)
+      // and take the points of the last bar
+      const v = s.vars;
+      if (!zigZagUpdate(v.pivots, bars, i, cfg.depth)) return;
+      const pivots = v.pivots;
+      const count = pivots.length;
+      if (count > 1) {
+        const p = pivots[count - 2];
+        // ZigZag v7: the start of the first pivot moves with its end (the library engine keeps the first point)
+        const start = count - 2 === 0 ? p.end : p.start;
+        v.lastP = { index: p.end.index, price: p.end.price };
+        v.prevP = { index: start.index, price: start.price };
+        if (count > 2) {
+          const p2 = pivots[count - 3];
+          const start2 = count - 3 === 0 ? p2.end : p2.start;
+          v.prev2P = { index: start2.index, price: start2.price };
+        }
+      }
+    },
+    copyVars: (v) => ({ ...v, pivots: v.pivots.slice() }),
+    result(s, bars) {
+      const result: AutoPitchforkResult = {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        lines: [],
+        linefills: [],
+      };
+      const { lastP, prevP, prev2P } = s.vars;
+      if (!lastP || !prevP || !prev2P) return result;
+      draw(cfg, bars, result, prev2P, prevP, lastP);
+      return result;
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AutoPitchforkInputs> = {}, chart: ChartContext = {}): IndicatorRun<AutoPitchforkResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AutoPitchforkInputs> = {}): AutoPitchforkResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const AutoPitchfork = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

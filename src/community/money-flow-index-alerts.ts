@@ -26,6 +26,7 @@ import {
 } from 'oakscriptjs';
 import { chartTimeframe, higherTimeframeBars } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MoneyFlowIndexAlertsInputs {
   length: number;
@@ -117,13 +118,24 @@ function timeframeBars(bars: Bar[], tf: string, context?: ChartContext): Timefra
   return higherTimeframeBars(bars, tf, context);
 }
 
-export function calculate(bars: Bar[], inputs: Partial<MoneyFlowIndexAlertsInputs> = {}, chart?: ChartContext): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
+type Point = { time: number; value: number };
+type CrossPoint = { time: number; value: number; color: string };
 
-  // res = CurrentRes ? period : CustomRes
-  const { htf, latest } = timeframeBars(bars, cfg.currentRes ? '' : cfg.customRes, chart);
+interface MfiRun extends BarRunState<Record<string, never>> {
+  /** Another timeframe: the index of each chart bar, calculated on the whole bar set (null: chart timeframe) */
+  pre: number[] | null;
+  pos: WindowSma | null;
+  neg: WindowSma | null;
+  hlc3: number[];
+  mfi: number[];
+  plot0: Point[];
+  plot1: CrossPoint[];
+}
+
+/** The index of every chart bar on another timeframe (the bars of that timeframe built from the chart bars) */
+function otherTimeframeIndex(bars: Bar[], cfg: MoneyFlowIndexAlertsInputs, chart?: ChartContext): number[] {
+  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
+  const { htf, latest } = timeframeBars(bars, cfg.customRes, chart);
   const hlc3 = htf.map((b) => (b.high + b.low + b.close) / 3);
   // rawMoneyFlow = hlc3 * volume, kept on bars where hlc3 rises (positive) or falls (negative), else 0
   const positive = hlc3.map((v, i) => (i > 0 && gt(v, hlc3[i - 1]) ? v * (htf[i].volume ?? NaN) : 0));
@@ -132,35 +144,90 @@ export function calculate(bars: Bar[], inputs: Partial<MoneyFlowIndexAlertsInput
   const negAvg = A(ta.sma(Series.fromArray(htf, negative), cfg.length));
   // a non-zero value / 0 is infinite (index 100), 0 / 0 is na
   const index = posAvg.map((p, i) => 100 - 100 / (1 + p / negAvg[i]));
-  const mfi = latest.map((g) => (g >= 0 ? index[g] : NaN));
+  return latest.map((g) => (g >= 0 ? index[g] : NaN));
+}
 
-  const plot0: Array<{ time: number; value: number }> = [];
-  const plot1: Array<{ time: number; value: number; color: string }> = [];
-  for (let i = 0; i < n; i++) {
-    const v = Number.isFinite(mfi[i]) ? mfi[i] : NaN;
-    const prev = i > 0 && Number.isFinite(mfi[i - 1]) ? mfi[i - 1] : NaN;
-    // oversold = moneyFlowIndex[1] > os[1] and moneyFlowIndex < os
-    const oversold = gt(prev, cfg.os) && lt(v, cfg.os);
-    const overbought = lt(prev, cfg.ob) && gt(v, cfg.ob);
-    plot0.push({ time: bars[i].time, value: v });
-    plot1.push({ time: bars[i].time, value: oversold || overbought ? v : NaN, color: oversold ? GREEN : RED });
-  }
-
+function study(inputs: Partial<MoneyFlowIndexAlertsInputs>): BarStudy<MfiRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  /** Another timeframe than the chart's on the bars of the last update (set by key) */
+  let other = false;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    hlines: [
-      { value: 80, options: { title: 'Overbought', color: HLINE, linestyle: 'dashed' } },
-      { value: 20, options: { title: 'Oversold', color: HLINE, linestyle: 'dashed' } },
-      { value: 40, options: { title: 'Bears', color: HLINE, linestyle: 'dashed' } },
-      { value: 60, options: { title: 'Bulls', color: HLINE, linestyle: 'dashed' } },
-    ],
-    fills: [
-      { plot1: 'hline_3', plot2: 'hline_0', options: { title: 'Uptrend', color: FILL('#008000') } },
-      { plot1: 'hline_2', plot2: 'hline_1', options: { title: 'Downtrend', color: FILL('#FF0000') } },
-      { plot1: 'hline_2', plot2: 'hline_3', options: { title: 'Transition Zone', color: FILL('#808080') } },
-    ],
+    key(bars, chart) {
+      if (cfg.currentRes) {
+        other = false;
+        return '';
+      }
+      const tf = cfg.customRes;
+      const chartTf = chartTimeframe(bars, chart);
+      other = !(tf.trim() === '' || chartTf === '' || timeframe.in_seconds(tf) === timeframe.in_seconds(chartTf));
+      return chartTf;
+    },
+    fullRunReason: () => (other ? 'another timeframe, calculated on the whole bar set' : null),
+    init(bars, chart) {
+      // res = CurrentRes ? period : CustomRes
+      const pre = other ? otherTimeframeIndex(bars, cfg, chart) : null;
+      const pos = pre ? null : new WindowSma(cfg.length);
+      const neg = pre ? null : new WindowSma(cfg.length);
+      const s: MfiRun = {
+        pre, pos, neg, hlc3: [], mfi: [], plot0: [], plot1: [],
+        steps: pos && neg ? [pos, neg] : [], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.hlc3, s.mfi, s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      let m: number;
+      if (s.pre) {
+        m = s.pre[i];
+      } else {
+        const v = (b.high + b.low + b.close) / 3;
+        s.hlc3[i] = v;
+        const p = i > 0 ? s.hlc3[i - 1] : NaN;
+        // rawMoneyFlow = hlc3 * volume, kept on bars where hlc3 rises (positive) or falls (negative), else 0
+        const positive = i > 0 && gt(v, p) ? v * (b.volume ?? NaN) : 0;
+        const negative = i > 0 && lt(v, p) ? v * (b.volume ?? NaN) : 0;
+        const posAvg = s.pos!.step(positive);
+        const negAvg = s.neg!.step(negative);
+        // a non-zero value / 0 is infinite (index 100), 0 / 0 is na
+        m = 100 - 100 / (1 + posAvg / negAvg);
+      }
+      s.mfi[i] = m;
+      const v = Number.isFinite(m) ? m : NaN;
+      const prev = i > 0 && Number.isFinite(s.mfi[i - 1]) ? s.mfi[i - 1] : NaN;
+      // oversold = moneyFlowIndex[1] > os[1] and moneyFlowIndex < os
+      const oversold = gt(prev, cfg.os) && lt(v, cfg.os);
+      const overbought = lt(prev, cfg.ob) && gt(v, cfg.ob);
+      s.plot0[i] = { time: b.time, value: v };
+      s.plot1[i] = { time: b.time, value: oversold || overbought ? v : NaN, color: oversold ? GREEN : RED };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [
+          { value: 80, options: { title: 'Overbought', color: HLINE, linestyle: 'dashed' } },
+          { value: 20, options: { title: 'Oversold', color: HLINE, linestyle: 'dashed' } },
+          { value: 40, options: { title: 'Bears', color: HLINE, linestyle: 'dashed' } },
+          { value: 60, options: { title: 'Bulls', color: HLINE, linestyle: 'dashed' } },
+        ],
+        fills: [
+          { plot1: 'hline_3', plot2: 'hline_0', options: { title: 'Uptrend', color: FILL('#008000') } },
+          { plot1: 'hline_2', plot2: 'hline_1', options: { title: 'Downtrend', color: FILL('#FF0000') } },
+          { plot1: 'hline_2', plot2: 'hline_3', options: { title: 'Transition Zone', color: FILL('#808080') } },
+        ],
+      };
+    },
   };
 }
 
-export const MoneyFlowIndexAlerts = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MoneyFlowIndexAlertsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MoneyFlowIndexAlertsInputs> = {}, chart?: ChartContext): IndicatorResult {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const MoneyFlowIndexAlerts = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig };

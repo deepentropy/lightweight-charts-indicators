@@ -10,7 +10,9 @@
  * Original notice: ©nocachy
  */
 
-import { getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AlPoSArithmeticMeanInputs {
   /** Sum source */
@@ -52,59 +54,96 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<AlPoSArithmeticMeanInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface EamVars {
+  /** var sum: the running sum of the source */
+  sum: number;
+}
+
+interface EamRun extends BarRunState<EamVars> {
+  above: number[];
+  below: number[];
+  /** plot0..plot4 */
+  points: Point[][];
+}
+
+function study(inputs: Partial<AlPoSArithmeticMeanInputs>): BarStudy<EamRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.sumSource).toArray().map((v) => v ?? NaN);
-
-  const am: number[] = new Array(n);
-  const above: number[] = new Array(n);
-  const below: number[] = new Array(n);
-  let sum = NaN;
-  for (let i = 0; i < n; i++) {
-    // sum := barstate.isfirst ? sumSource : sum[1] + sumSource
-    sum = i === 0 ? src[i] : sum + src[i];
-    am[i] = sum / (i + 1);
-    // barsAbove / barsBelow start at 0 on each bar; above the mean: barsAbove[1] + 1 (barsBelow kept), below:
-    // barsBelow[1] + 1 (barsAbove kept); equal (within 1e-10) or na: both stay 0
-    let a = 0;
-    let b = 0;
-    if (lt(am[i], src[i])) {
-      if (i === 0) a = 1;
-      else {
-        a = above[i - 1] + 1;
-        b = below[i - 1];
-      }
-    } else if (gt(am[i], src[i])) {
-      if (i === 0) b = 1;
-      else {
-        b = below[i - 1] + 1;
-        a = above[i - 1];
-      }
-    }
-    above[i] = a;
-    below[i] = b;
-  }
-
-  const t = (i: number) => bars[i].time;
-  const P = (a: number[], c: string) => a.map((v, i) => ({ time: t(i), value: v, color: c }));
+  const value = barSource(cfg.sumSource);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
+    fullRunReason: () => (isBarSource(cfg.sumSource) ? null : 'source of another study'),
+    init() {
+      const s: EamRun = {
+        above: [], below: [], points: [[], [], [], [], []],
+        steps: [], vars: { sum: NaN }, lists: [], series: [],
+      };
+      s.series = [s.above, s.below, ...s.points];
+      return s;
+    },
+    bar(s, i, bars) {
+      const bar = bars[i]!;
+      const time = bar.time as number;
+      const src = value(bar);
+      // sum := barstate.isfirst ? sumSource : sum[1] + sumSource
+      const sum = i === 0 ? src : s.vars.sum + src;
+      s.vars.sum = sum;
+      const am = sum / (i + 1);
+      // barsAbove / barsBelow start at 0 on each bar; above the mean: barsAbove[1] + 1 (barsBelow kept), below:
+      // barsBelow[1] + 1 (barsAbove kept); equal (within 1e-10) or na: both stay 0
+      let a = 0;
+      let b = 0;
+      if (lt(am, src)) {
+        if (i === 0) a = 1;
+        else {
+          a = s.above[i - 1]! + 1;
+          b = s.below[i - 1]!;
+        }
+      } else if (gt(am, src)) {
+        if (i === 0) b = 1;
+        else {
+          b = s.below[i - 1]! + 1;
+          a = s.above[i - 1]!;
+        }
+      }
+      s.above[i] = a;
+      s.below[i] = b;
       // plotchar(barsAbove / barsBelow, ..., '', location.top, display = display.status_line / display.data_window):
       // an empty character, only the value is shown
-      plot0: P(above, color.green),
-      plot1: P(below, color.red),
-      plot2: P(above, color.green),
-      plot3: P(below, color.red),
+      s.points[0]![i] = { time, value: a, color: color.green };
+      s.points[1]![i] = { time, value: b, color: color.red };
+      s.points[2]![i] = { time, value: a, color: color.green };
+      s.points[3]![i] = { time, value: b, color: color.red };
       // plot(am, color = color.purple, style = GetStyle(sumStyle), linewidth = math.max(1, sumWidth))
-      plot4: P(am, color.purple),
+      s.points[4]![i] = { time, value: am, color: color.purple };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.points[0]!.slice(),
+          plot1: s.points[1]!.slice(),
+          plot2: s.points[2]!.slice(),
+          plot3: s.points[3]!.slice(),
+          plot4: s.points[4]!.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AlPoSArithmeticMeanInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AlPoSArithmeticMeanInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const AlPoSArithmeticMean = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

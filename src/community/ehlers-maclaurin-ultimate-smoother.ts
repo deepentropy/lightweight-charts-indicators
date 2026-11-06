@@ -16,10 +16,12 @@
  */
 
 import {
-  ta, color, getSourceSeries,
+  taStep, color,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EhlersMaclaurinUltimateSmootherInputs {
   /** Plotted smoother */
@@ -122,96 +124,125 @@ function approxCos(x: number): number {
   return term1 + term2 + term3 + term4 + term5;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<EhlersMaclaurinUltimateSmootherInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+interface EmssRun extends BarRunState<Record<string, never>> {
+  atr: ReturnType<typeof taStep.atr> | null;
+  src: number[];
+  us: number[];
+  hp: number[];
+  usEnh: number[];
+  clrMa: (string | undefined)[];
+  plot0: Point[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<EhlersMaclaurinUltimateSmootherInputs>): BarStudy<EmssRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { length, hpLength } = cfg;
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
+  const value = barSource(cfg.src);
 
-  // UltimateSmoother(src, length): us = src; from bar_index 4 on the 2-pole recursion
-  const us: number[] = new Array(n);
-  {
-    const a1 = Math.exp((-1.414 * Math.PI) / length);
-    const c2 = 2.0 * a1 * Math.cos((1.414 * Math.PI) / length);
-    const c3 = -a1 * a1;
-    const c1 = (1.0 + c2 - c3) / 4.0;
-    for (let i = 0; i < n; i++) {
+  // UltimateSmoother(src, length) coefficients
+  const a1 = Math.exp((-1.414 * Math.PI) / length);
+  const c2 = 2.0 * a1 * Math.cos((1.414 * Math.PI) / length);
+  const c3 = -a1 * a1;
+  const c1 = (1.0 + c2 - c3) / 4.0;
+
+  // erf_ultimatesmoother_enhanced(src, hpLength, length) coefficients
+  const pi = 2 * Math.asin(1);
+  const twoPiPrd = (2 * pi) / hpLength;
+  const alpha1 = (approxCos(twoPiPrd) + approxSin(twoPiPrd) - 1) / approxCos(twoPiPrd);
+  const ea1 = Math.exp((-1.414 * pi) / length);
+  const ec2 = 2.0 * ea1 * approxCos((1.414 * pi) / length);
+  const ec3 = -ea1 * ea1;
+  const ec1 = (1.0 + ec2 - ec3) / 4.0;
+
+  const noAtr = !cfg.smartColor || cfg.colorMode === 'Normal';
+  const plotOriginal = cfg.plotType === 'Original SuperSmoother';
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const atr = noAtr ? null : taStep.atr(14);
+      const s: EmssRun = {
+        atr, src: [], us: [], hp: [], usEnh: [], clrMa: [], plot0: [], barColors: [],
+        steps: atr ? [atr] : [], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.src, s.us, s.hp, s.usEnh, s.clrMa, s.plot0, s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const { src, us, hp, usEnh, clrMa } = s;
+      src[i] = value(b) ?? NaN;
+
+      // UltimateSmoother(src, length): us = src; from bar_index 4 on the 2-pole recursion
       us[i] = src[i];
       if (i >= 4) {
         us[i] = (1.0 - c1) * src[i] + (2.0 * c1 - c2) * src[i - 1] - (c1 + c3) * src[i - 2]
           + c2 * nz(us[i - 1]) + c3 * nz(us[i - 2]);
       }
-    }
-  }
 
-  // erf_ultimatesmoother_enhanced(src, hpLength, length)
-  const usEnh: number[] = new Array(n);
-  {
-    const pi = 2 * Math.asin(1);
-    const twoPiPrd = (2 * pi) / hpLength;
-    const alpha1 = (approxCos(twoPiPrd) + approxSin(twoPiPrd) - 1) / approxCos(twoPiPrd);
-    const a1 = Math.exp((-1.414 * pi) / length);
-    const c2 = 2.0 * a1 * approxCos((1.414 * pi) / length);
-    const c3 = -a1 * a1;
-    const c1 = (1.0 + c2 - c3) / 4.0;
-    const hp: number[] = new Array(n);
-    for (let i = 0; i < n; i++) {
       // hp := (1 - alpha1 / 2) * (src - nz(src[1])) + (1 - alpha1) * nz(hp[1])
       hp[i] = (1 - alpha1 / 2) * (src[i] - nz(i > 0 ? src[i - 1] : NaN)) + (1 - alpha1) * nz(i > 0 ? hp[i - 1] : NaN);
       usEnh[i] = hp[i];
       if (i >= 4) {
-        usEnh[i] = (1.0 - c1) * hp[i] + (2.0 * c1 - c2) * hp[i - 1] - (c1 + c3) * hp[i - 2]
-          + c2 * nz(usEnh[i - 1]) + c3 * nz(usEnh[i - 2]);
+        usEnh[i] = (1.0 - ec1) * hp[i] + (2.0 * ec1 - ec2) * hp[i - 1] - (ec1 + ec3) * hp[i - 2]
+          + ec2 * nz(usEnh[i - 1]) + ec3 * nz(usEnh[i - 2]);
       }
-    }
-  }
 
-  // MA_Smart_Color(us, smart_clr_ON, clr_up, clr_dn, clr_mono, color_mode); na colour = undefined
-  const clrMa: (string | undefined)[] = new Array(n);
-  const noAtr = !cfg.smartColor || cfg.colorMode === 'Normal';
-  const atr = noAtr ? [] : ta.atr(bars, 14).toArray().map((v) => v ?? NaN);
-  for (let i = 0; i < n; i++) {
-    const prev = i > 0 ? us[i - 1] : NaN;
-    if (!cfg.smartColor) {
-      clrMa[i] = cfg.colorMono;
-    } else if (cfg.colorMode === 'Normal') {
-      clrMa[i] = gt(us[i], prev) ? cfg.colorUp : lt(us[i], prev) ? cfg.colorDown : (i > 0 ? clrMa[i - 1] : undefined);
-    } else {
-      // intensity_color(ma - ma[1]): value / ta.atr(14) * 10 (a plain division: x / 0 is +-infinity)
-      const value = us[i] - prev;
-      const normalized = (value / atr[i]) * 10;
-      const strength = Math.abs(normalized) * 255 * cfg.intensityMultiplier;
-      clrMa[i] = gt(value, 0)
-        ? String(color.rgb(0, Math.min(strength, 255), 0, 70))
-        : String(color.rgb(Math.min(strength, 255), 0, 0, 70));
-    }
-  }
+      // MA_Smart_Color(us, smart_clr_ON, clr_up, clr_dn, clr_mono, color_mode); na colour = undefined
+      const atr = s.atr ? s.atr.step(b.high, b.low, b.close) ?? NaN : NaN;
+      const prev = i > 0 ? us[i - 1] : NaN;
+      if (!cfg.smartColor) {
+        clrMa[i] = cfg.colorMono;
+      } else if (cfg.colorMode === 'Normal') {
+        clrMa[i] = gt(us[i], prev) ? cfg.colorUp : lt(us[i], prev) ? cfg.colorDown : (i > 0 ? clrMa[i - 1] : undefined);
+      } else {
+        // intensity_color(ma - ma[1]): value / ta.atr(14) * 10 (a plain division: x / 0 is +-infinity)
+        const change = us[i] - prev;
+        const normalized = (change / atr) * 10;
+        const strength = Math.abs(normalized) * 255 * cfg.intensityMultiplier;
+        clrMa[i] = gt(change, 0)
+          ? String(color.rgb(0, Math.min(strength, 255), 0, 70))
+          : String(color.rgb(Math.min(strength, 255), 0, 0, 70));
+      }
 
-  const plotOriginal = cfg.plotType === 'Original SuperSmoother';
-  const plot0 = bars.map((b, i) => {
-    const v = plotOriginal ? us[i] : usEnh[i];
-    const c = i > 0 ? clrMa[i - 1] : undefined; // color = clr_ma[1]
-    return { time: b.time, value: Number.isFinite(v) ? v : NaN, ...(c !== undefined ? { color: c } : {}) };
-  });
+      const v = plotOriginal ? us[i] : usEnh[i];
+      const c = i > 0 ? clrMa[i - 1] : undefined; // color = clr_ma[1]
+      s.plot0[i] = { time: b.time, value: Number.isFinite(v) ? v : NaN, ...(c !== undefined ? { color: c } : {}) };
 
-  // barcolor(color.new(clr_ma, 30)): color.new(na, 30) is black with a transparency of 30
-  const barColors: BarColorData[] = bars.map((b, i) => ({
-    time: b.time as number,
-    color: clrMa[i] === undefined ? 'rgba(0, 0, 0, 0.7)' : String(color.new(clrMa[i] as string, 30)),
-  }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    barColors,
+      // barcolor(color.new(clr_ma, 30)): color.new(na, 30) is black with a transparency of 30
+      s.barColors[i] = {
+        time: b.time as number,
+        color: clrMa[i] === undefined ? 'rgba(0, 0, 0, 0.7)' : String(color.new(clrMa[i] as string, 30)),
+      };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EhlersMaclaurinUltimateSmootherInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<EhlersMaclaurinUltimateSmootherInputs> = {},
+): IndicatorResult & { barColors: BarColorData[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const EhlersMaclaurinUltimateSmoother = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

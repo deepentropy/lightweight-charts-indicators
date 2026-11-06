@@ -8,8 +8,10 @@
  * Reference: "FX Sniper T3-CCI" community indicator
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface FXSniperT3CCIInputs {
   cciLength: number;
@@ -43,27 +45,28 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<FXSniperT3CCIInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
-  const { cciLength, t3Length, t3Factor, src } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
-  const srcArr = source.toArray();
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
 
-  // Manual CCI on source
-  const smaArr = ta.sma(source, cciLength).toArray();
-  const cciArr: number[] = new Array(bars.length);
-  for (let i = 0; i < bars.length; i++) {
-    const sma = smaArr[i];
-    if (sma == null || i < cciLength - 1) {
-      cciArr[i] = NaN;
-      continue;
-    }
-    let sumDev = 0;
-    for (let j = 0; j < cciLength; j++) {
-      sumDev += Math.abs((srcArr[i - j] ?? 0) - sma);
-    }
-    const meanDev = sumDev / cciLength;
-    cciArr[i] = meanDev === 0 ? 0 : ((srcArr[i] ?? 0) - sma) / (0.015 * meanDev);
-  }
+interface T3CciVars {
+  /** The previous value of each of the 6 EMAs of the cascade */
+  prev: number[];
+  pos: number;
+}
+
+interface T3CciRun extends BarRunState<T3CciVars> {
+  sma: WindowSma;
+  /** The values of the 6 EMAs on the bar (scratch) */
+  e: number[];
+  srcArr: number[];
+  plot0: Point[];
+  histogram: Point[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<FXSniperT3CCIInputs>): BarStudy<T3CciRun, Result> {
+  const { cciLength, t3Length, t3Factor, src } = { ...defaultInputs, ...inputs };
+  const value = barSource(src);
 
   // T3 smoothing: 6-stage EMA cascade
   // T3 coefficients: b = t3Factor
@@ -83,79 +86,98 @@ export function calculate(bars: Bar[], inputs: Partial<FXSniperT3CCIInputs> = {}
   const w1 = 2 / (nr + 1);
   const w2 = 1 - w1;
 
-  // EMA helper using Pine's w1/w2 weighting
-  const emaArray = (input: number[]): number[] => {
-    const result: number[] = new Array(input.length);
-    let prev = NaN;
-    for (let i = 0; i < input.length; i++) {
-      const v = input[i];
-      if (isNaN(v)) {
-        result[i] = prev;
-      } else if (isNaN(prev)) {
-        prev = v;
-        result[i] = v;
-      } else {
-        prev = w1 * v + w2 * prev;
-        result[i] = prev;
-      }
-    }
-    return result;
-  };
-
-  const e1 = emaArray(cciArr);
-  const e2 = emaArray(e1);
-  const e3 = emaArray(e2);
-  const e4 = emaArray(e3);
-  const e5 = emaArray(e4);
-  const e6 = emaArray(e5);
-
-  const t3Arr: number[] = new Array(bars.length);
-  for (let i = 0; i < bars.length; i++) {
-    if (i < cciLength - 1 || isNaN(e6[i])) {
-      t3Arr[i] = NaN;
-    } else {
-      t3Arr[i] = c1 * e6[i] + c2 * e5[i] + c3 * e4[i] + c4 * e3[i];
-    }
-  }
-
-  // Pine: plot(xccir, color=blue, title="T3-CCI") -- line plot
-  const plot0 = t3Arr.map((v, i) => ({
-    time: bars[i].time,
-    value: isNaN(v) ? NaN : v,
-  }));
-
-  // Pine: plot(xccir, color=cciHcolor, title="CCIH", style=histogram)
-  // cciHcolor = xccir >= 0 ? green : xccir < 0 ? red : black
-  const histogram = t3Arr.map((v, i) => ({
-    time: bars[i].time,
-    value: isNaN(v) ? NaN : v,
-    color: isNaN(v) ? undefined : (v >= 0 ? '#008000' : '#FF0000'),
-  }));
-
-  // Pine: pos = xccir > 0 ? 1 : xccir < 0 ? -1 : pos[1]
-  // barcolor(pos == -1 ? red : pos == 1 ? green : blue)
-  const barColors: BarColorData[] = [];
-  let pos = 0;
-  for (let i = 0; i < bars.length; i++) {
-    const v = t3Arr[i];
-    if (!isNaN(v)) {
-      if (v > 0) pos = 1;
-      else if (v < 0) pos = -1;
-    }
-    if (i >= cciLength - 1 && !isNaN(t3Arr[i])) {
-      const color = pos === 1 ? '#008000' : pos === -1 ? '#FF0000' : '#0000FF'; // green/red/blue
-      barColors.push({ time: bars[i].time as number, color });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'histogram': histogram },
-    hlines: [
-      { value: 0, options: { color: '#800080', linestyle: 'solid', title: 'Zero' } },
-    ],
-    barColors,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const sma = new WindowSma(cciLength);
+      const s: T3CciRun = {
+        sma, e: [NaN, NaN, NaN, NaN, NaN, NaN], srcArr: [], plot0: [], histogram: [], barColors: [],
+        steps: [sma], vars: { prev: [NaN, NaN, NaN, NaN, NaN, NaN], pos: 0 }, lists: [], series: [],
+      };
+      s.lists = [s.barColors];
+      s.series = [s.srcArr, s.plot0, s.histogram];
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      const v0 = value(bars[i]);
+      s.srcArr[i] = v0;
+
+      // Manual CCI on source
+      const sma: number | null = s.sma.step(v0);
+      let cci: number;
+      if (sma == null || i < cciLength - 1) {
+        cci = NaN;
+      } else {
+        let sumDev = 0;
+        for (let j = 0; j < cciLength; j++) {
+          sumDev += Math.abs((s.srcArr[i - j] ?? 0) - sma);
+        }
+        const meanDev = sumDev / cciLength;
+        cci = meanDev === 0 ? 0 : ((s.srcArr[i] ?? 0) - sma) / (0.015 * meanDev);
+      }
+
+      // EMA helper using Pine's w1/w2 weighting, one stage after the other
+      const prev = s.vars.prev;
+      const e = s.e;
+      let input = cci;
+      for (let k = 0; k < 6; k++) {
+        const p = prev[k]!;
+        let r: number;
+        if (isNaN(input)) {
+          r = p;
+        } else if (isNaN(p)) {
+          prev[k] = input;
+          r = input;
+        } else {
+          prev[k] = w1 * input + w2 * p;
+          r = prev[k]!;
+        }
+        e[k] = r;
+        input = r;
+      }
+
+      const t3 = i < cciLength - 1 || isNaN(e[5]!) ? NaN : c1 * e[5]! + c2 * e[4]! + c3 * e[3]! + c4 * e[2]!;
+
+      // Pine: plot(xccir, color=blue, title="T3-CCI") -- line plot
+      s.plot0[i] = { time, value: isNaN(t3) ? NaN : t3 };
+      // Pine: plot(xccir, color=cciHcolor, title="CCIH", style=histogram)
+      // cciHcolor = xccir >= 0 ? green : xccir < 0 ? red : black
+      s.histogram[i] = { time, value: isNaN(t3) ? NaN : t3, color: isNaN(t3) ? undefined : (t3 >= 0 ? '#008000' : '#FF0000') };
+
+      // Pine: pos = xccir > 0 ? 1 : xccir < 0 ? -1 : pos[1]
+      // barcolor(pos == -1 ? red : pos == 1 ? green : blue)
+      if (!isNaN(t3)) {
+        if (t3 > 0) s.vars.pos = 1;
+        else if (t3 < 0) s.vars.pos = -1;
+      }
+      if (i >= cciLength - 1 && !isNaN(t3)) {
+        const pos = s.vars.pos;
+        const color = pos === 1 ? '#008000' : pos === -1 ? '#FF0000' : '#0000FF'; // green/red/blue
+        s.barColors.push({ time: time as number, color });
+      }
+    },
+    copyVars: (v) => ({ prev: v.prev.slice(), pos: v.pos }),
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'histogram': s.histogram.slice() },
+        hlines: [
+          { value: 0, options: { color: '#800080', linestyle: 'solid', title: 'Zero' } },
+        ],
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const FXSniperT3CCI = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FXSniperT3CCIInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<FXSniperT3CCIInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const FXSniperT3CCI = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

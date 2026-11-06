@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PriceContractionExpansionInputs {
   /** Body average period */
@@ -58,51 +60,72 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<PriceContractionExpansionInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+interface PceVars {
+  /** var color barColor = na */
+  barColor: string | null;
+}
+
+interface PceRun extends BarRunState<PceVars> {
+  avgBody: WindowSma;
+  avgVol: WindowSma;
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<PriceContractionExpansionInputs>): BarStudy<PceRun, Result> {
   const { lenRange, multThresh, volPeriod, volThresh, lowVolThresh } = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const bodySize = bars.map((b) => Math.abs(b.close - b.open));
-  const avgBody = A(ta.sma(Series.fromArray(bars, bodySize), lenRange));
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const avgVol = A(ta.sma(Series.fromArray(bars, volume), volPeriod));
-
   const yellow = String(color.new(color.yellow, 0));
   const blue = String(color.new(color.blue, 0));
   const green = String(color.new(color.green, 0));
   const red = String(color.new(color.red, 0));
-
-  const barColors: BarColorData[] = [];
-  // var color barColor = na
-  let barColor: string | null = null;
-  for (let i = 0; i < bars.length; i++) {
-    const { open, close, time } = bars[i];
-    const thresh = avgBody[i] * multThresh;
-    const isHighVol = ge(volume[i], avgVol[i] * volThresh);
-    const isLowVol = le(volume[i], avgVol[i] * lowVolThresh);
-    const isContraction = lt(bodySize[i], thresh);
-    const isExpansion = ge(bodySize[i], thresh);
-    const isBull = gt(close, open);
-    const isBear = lt(close, open);
-
-    if (isContraction && isHighVol) barColor = yellow;
-    else if (isContraction) barColor = blue;
-    else if (isExpansion && isLowVol) barColor = blue;
-    else if (isExpansion && isBull) barColor = green;
-    else if (isExpansion && isBear) barColor = red;
-
-    // barcolor(barColor)
-    if (barColor !== null) barColors.push({ time, color: barColor });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    barColors,
+    init() {
+      const avgBody = new WindowSma(lenRange);
+      const avgVol = new WindowSma(volPeriod);
+      const s: PceRun = { avgBody, avgVol, barColors: [], steps: [avgBody, avgVol], vars: { barColor: null }, lists: [], series: [] };
+      s.lists = [s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const { open, close, time } = bars[i];
+      const bodySize = Math.abs(close - open);
+      const volume = bars[i].volume ?? NaN;
+      const avgBody = s.avgBody.step(bodySize);
+      const avgVol = s.avgVol.step(volume);
+      const thresh = avgBody * multThresh;
+      const isHighVol = ge(volume, avgVol * volThresh);
+      const isLowVol = le(volume, avgVol * lowVolThresh);
+      const isContraction = lt(bodySize, thresh);
+      const isExpansion = ge(bodySize, thresh);
+      const isBull = gt(close, open);
+      const isBear = lt(close, open);
+      const v = s.vars;
+      if (isContraction && isHighVol) v.barColor = yellow;
+      else if (isContraction) v.barColor = blue;
+      else if (isExpansion && isLowVol) v.barColor = blue;
+      else if (isExpansion && isBull) v.barColor = green;
+      else if (isExpansion && isBear) v.barColor = red;
+      // barcolor(barColor)
+      if (v.barColor !== null) s.barColors.push({ time, color: v.barColor });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const PriceContractionExpansion = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PriceContractionExpansionInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PriceContractionExpansionInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const PriceContractionExpansion = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

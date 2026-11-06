@@ -7,7 +7,9 @@
  * Reference: "EMA Ribbon" (community)
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EMARibbonInputs {
   src: SourceType;
@@ -38,27 +40,50 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<EMARibbonInputs> = {}): IndicatorResult {
+const LENGTHS = [5, 8, 13, 21, 34, 55, 89, 144];
+
+interface RibbonRun extends BarRunState<Record<string, never>> {
+  emas: Array<ReturnType<typeof taStep.ema>>;
+  plots: Array<Array<{ time: number; value: number }>>;
+}
+
+function study(inputs: Partial<EMARibbonInputs>): BarStudy<RibbonRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const src = getSourceSeries(bars, cfg.src);
-
-  const lengths = [5, 8, 13, 21, 34, 55, 89, 144];
-
-  const emaArrays = lengths.map((len) => ta.ema(src, len).toArray());
-
-  const plots: Record<string, Array<{ time: number; value: number }>> = {};
-  for (let idx = 0; idx < lengths.length; idx++) {
-    const arr = emaArrays[idx];
-    plots[`plot${idx}`] = arr.map((v, i) => ({
-      time: bars[i].time,
-      value: i < lengths[idx] ? NaN : (v ?? NaN),
-    }));
-  }
-
+  const source = barSource(cfg.src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const emas = LENGTHS.map((len) => taStep.ema(len));
+      const s: RibbonRun = { emas, plots: LENGTHS.map(() => []), steps: emas, vars: {}, lists: [], series: [] };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      const v = source(bars[i]);
+      for (let idx = 0; idx < LENGTHS.length; idx++) {
+        const e = s.emas[idx].step(v);
+        s.plots[idx][i] = { time, value: i < LENGTHS[idx] ? NaN : (e ?? NaN) };
+      }
+    },
+    result(s) {
+      const plots: Record<string, Array<{ time: number; value: number }>> = {};
+      for (let idx = 0; idx < LENGTHS.length; idx++) plots[`plot${idx}`] = s.plots[idx].slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
 }
 
-export const EMARibbon = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EMARibbonInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EMARibbonInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const EMARibbon = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

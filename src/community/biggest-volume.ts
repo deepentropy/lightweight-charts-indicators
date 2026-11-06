@@ -10,8 +10,10 @@
  * Original notice: © mikhail_marka
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BiggestVolumeInputs {
   /** Lookback length of the highest volume */
@@ -52,27 +54,64 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert0', title: 'Big Volume', message: 'Big Volume' },
 ];
 
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface BiggestVolumeRun extends BarRunState<Record<string, never>> {
+  hi: WindowExtreme;
+  plot0: Point[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<BiggestVolumeInputs>): BarStudy<BiggestVolumeRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const hi = new WindowExtreme(false, cfg.accuracy);
+      const s: BiggestVolumeRun = { hi, plot0: [], flags: [[]], times: [[]], steps: [hi], vars: {}, lists: [], series: [] };
+      s.lists = s.times;
+      s.series = [s.plot0, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = b.volume ?? NaN;
+      const hi = s.hi.step(volume);
+      const big = eq(volume, hi);
+      // plot(volume, color = volume == Hi ? Bl : Wt, linewidth = 3, style = plot.style_histogram)
+      s.plot0[i] = { time: b.time as number, value: volume, color: big ? BL : WT };
+      // alertcondition(AlrtSwitch and isVolBig, "Big Volume")
+      const f = cfg.alertSwitch && big;
+      s.flags[0][i] = f;
+      if (f) s.times[0].push(b.time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BiggestVolumeInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<BiggestVolumeInputs> = {},
 ): IndicatorResult & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const hi = ta.highest(Series.fromArray(bars, volume), cfg.accuracy).toArray().map((v) => v ?? NaN);
-
-  // plot(volume, color = volume == Hi ? Bl : Wt, linewidth = 3, style = plot.style_histogram)
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: volume[i], color: eq(volume[i], hi[i]) ? BL : WT }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    // alertcondition(AlrtSwitch and isVolBig, "Big Volume")
-    alerts: alertStates(alertConditions, bars, [volume.map((v, i) => cfg.alertSwitch && eq(v, hi[i]))]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const BiggestVolume = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

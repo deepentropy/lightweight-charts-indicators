@@ -5,7 +5,9 @@
  * TSI = 100 * (double_smooth(pc) / double_smooth(|pc|))
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TSIInputs {
   /** Long EMA period */
@@ -43,72 +45,77 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TSIInputs> = {}): IndicatorResult {
+type Ema = ReturnType<typeof taStep.ema>;
+type Point = { time: any; value: number };
+
+interface TsiRun extends BarRunState<Record<string, never>> {
+  pc1: Ema;
+  pc2: Ema;
+  abs1: Ema;
+  abs2: Ema;
+  sig: Ema;
+  tsiData: Point[];
+  signalData: Point[];
+}
+
+function study(inputs: Partial<TSIInputs>): BarStudy<TsiRun, IndicatorResult> {
   const { longLength, shortLength, signalLength } = { ...defaultInputs, ...inputs };
-
-  // Price change
-  const pc: number[] = [NaN];
-  for (let i = 1; i < bars.length; i++) {
-    pc.push(bars[i].close - bars[i - 1].close);
-  }
-
-  // Absolute price change
-  const absPC = pc.map(v => isNaN(v) ? NaN : Math.abs(v));
-
-  // Double smooth function: EMA(EMA(src, long), short)
-  const pcSeries = new Series(bars, (_, i) => pc[i]);
-  const firstSmoothPC = ta.ema(pcSeries, longLength);
-  const doubleSmoothPC = ta.ema(firstSmoothPC, shortLength);
-  const doubleSmoothPCArr = doubleSmoothPC.toArray();
-
-  const absPCSeries = new Series(bars, (_, i) => absPC[i]);
-  const firstSmoothAbsPC = ta.ema(absPCSeries, longLength);
-  const doubleSmoothAbsPC = ta.ema(firstSmoothAbsPC, shortLength);
-  const doubleSmoothAbsPCArr = doubleSmoothAbsPC.toArray();
-
-  // TSI = 100 * (double_smooth_pc / double_smooth_abs_pc)
-  const tsiValues: number[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const dsPC = doubleSmoothPCArr[i];
-    const dsAbsPC = doubleSmoothAbsPCArr[i];
-
-    if (dsPC == null || dsAbsPC == null || dsAbsPC === 0) {
-      tsiValues.push(NaN);
-    } else {
-      tsiValues.push(100 * dsPC / dsAbsPC);
-    }
-  }
-
-  // Signal = EMA(TSI, signalLength)
-  const tsiSeries = new Series(bars, (_, i) => tsiValues[i]);
-  const signalValues = ta.ema(tsiSeries, signalLength);
-  const signalArr = signalValues.toArray();
-
-  const tsiData = tsiValues.map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const signalData = signalArr.map((value: number | null, i: number) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    init() {
+      // Double smooth function: EMA(EMA(src, long), short)
+      const pc1 = taStep.ema(longLength);
+      const pc2 = taStep.ema(shortLength);
+      const abs1 = taStep.ema(longLength);
+      const abs2 = taStep.ema(shortLength);
+      // Signal = EMA(TSI, signalLength)
+      const sig = taStep.ema(signalLength);
+      const s: TsiRun = {
+        pc1, pc2, abs1, abs2, sig, tsiData: [], signalData: [],
+        steps: [pc1, pc2, abs1, abs2, sig], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.tsiData, s.signalData];
+      return s;
     },
-    plots: {
-      'plot0': tsiData,
-      'plot1': signalData,
+    bar(s, i, bars) {
+      // Price change, absolute price change
+      const pc = i > 0 ? bars[i].close - bars[i - 1].close : NaN;
+      const absPC = isNaN(pc) ? NaN : Math.abs(pc);
+      const dsPC = s.pc2.step(s.pc1.step(pc));
+      const dsAbsPC = s.abs2.step(s.abs1.step(absPC));
+      // TSI = 100 * (double_smooth_pc / double_smooth_abs_pc)
+      const value = dsPC == null || dsAbsPC == null || dsAbsPC === 0 ? NaN : 100 * dsPC / dsAbsPC;
+      const signal = s.sig.step(value);
+      s.tsiData[i] = { time: bars[i].time, value: value ?? NaN };
+      s.signalData[i] = { time: bars[i].time, value: signal ?? NaN };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.tsiData.slice(),
+          'plot1': s.signalData.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TSIInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TSIInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const TSI = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

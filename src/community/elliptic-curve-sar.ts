@@ -15,6 +15,8 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EllipticCurveSarInputs {
   /** Curve parameter a of y^2 = x^3 + a*x + b */
@@ -64,17 +66,32 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<EllipticCurveSarInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] };
+
+interface EcsVars {
+  trend: number;
+  EP: number;
+  SAR: number;
+  qx: number;
+  qy: number;
+}
+
+interface EcsRun extends BarRunState<EcsVars> {
+  plot0: { time: number; value: number; color: string }[];
+  plot1: { time: number; value: number }[];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<EllipticCurveSarInputs>): BarStudy<EcsRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { a, xP, yP, initialAcc, maxAcc } = cfg;
-  const n = bars.length;
 
   // add_P_to_Q(Q_x, Q_y): doubling when Q == P, else the chord through Q and P (plain divisions: x / 0 is
   // +-infinity, 0 / 0 na)
-  const addPToQ = (qx: number, qy: number): [number, number] => {
+  const addPToQ = (v: EcsVars): void => {
+    const qx = v.qx;
+    const qy = v.qy;
     let slope: number;
     let x3: number;
     if (eq(qx, xP) && eq(qy, yP)) {
@@ -85,92 +102,106 @@ export function calculate(
       x3 = slope * slope - qx - xP;
     }
     const y3 = slope * (qx - x3) - qy;
-    return [x3, y3];
+    v.qx = x3;
+    v.qy = y3;
   };
 
-  let trend = 1;
-  let EP = 0.0;
-  let SAR = 0.0;
-  let qx = xP;
-  let qy = yP;
-
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number }[] = [];
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
   const upBg = String(color.new(color.green, 90));
   const downBg = String(color.new(color.red, 90));
 
-  for (let i = 0; i < n; i++) {
-    const { high, low, close } = bars[i];
-    let reversalUp = false;
-    let reversalDown = false;
-
-    if (i === 1) {
-      if (gt(close, bars[0].close)) {
-        trend = 1;
-        EP = bars[0].high;
-        SAR = bars[0].low;
-      } else {
-        trend = -1;
-        EP = bars[0].low;
-        SAR = bars[0].high;
-      }
-      qx = xP;
-      qy = yP;
-    }
-
-    if (i > 1) {
-      if (trend === 1) {
-        if (gt(close, SAR)) {
-          [qx, qy] = addPToQ(qx, qy);
-          const acceleration = initialAcc + ((maxAcc - initialAcc) * (Math.atan(qy) + Math.PI / 2)) / Math.PI;
-          SAR = SAR + acceleration * (EP - SAR);
-          SAR = gt(SAR, low) ? low : SAR;
-          EP = Math.max(EP, high);
-        } else {
-          reversalDown = true;
-          trend = -1;
-          SAR = EP;
-          EP = low;
-          qx = xP;
-          qy = yP;
-        }
-      } else if (lt(close, SAR)) {
-        [qx, qy] = addPToQ(qx, qy);
-        const acceleration = initialAcc + ((maxAcc - initialAcc) * (Math.atan(qy) + Math.PI / 2)) / Math.PI;
-        SAR = SAR + acceleration * (EP - SAR);
-        SAR = lt(SAR, high) ? high : SAR;
-        EP = Math.min(EP, low);
-      } else {
-        reversalUp = true;
-        trend = 1;
-        SAR = EP;
-        EP = high;
-        qx = xP;
-        qy = yP;
-      }
-    }
-
-    const t = bars[i].time;
-    plot0.push({ time: t, value: fin(SAR), color: trend === 1 ? color.blue : color.red });
-    plot1.push({ time: t, value: fin(EP) });
-    if (reversalUp) markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'small' });
-    if (reversalDown) markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'small' });
-    bgColors.push({ time: t, color: trend === 1 ? upBg : downBg });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    markers,
-    bgColors,
+    init() {
+      const s: EcsRun = {
+        plot0: [], plot1: [], markers: [], bgColors: [],
+        steps: [], vars: { trend: 1, EP: 0.0, SAR: 0.0, qx: xP, qy: yP }, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.bgColors];
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const { high, low, close } = bars[i];
+      let reversalUp = false;
+      let reversalDown = false;
+
+      if (i === 1) {
+        if (gt(close, bars[0].close)) {
+          v.trend = 1;
+          v.EP = bars[0].high;
+          v.SAR = bars[0].low;
+        } else {
+          v.trend = -1;
+          v.EP = bars[0].low;
+          v.SAR = bars[0].high;
+        }
+        v.qx = xP;
+        v.qy = yP;
+      }
+
+      if (i > 1) {
+        if (v.trend === 1) {
+          if (gt(close, v.SAR)) {
+            addPToQ(v);
+            const acceleration = initialAcc + ((maxAcc - initialAcc) * (Math.atan(v.qy) + Math.PI / 2)) / Math.PI;
+            v.SAR = v.SAR + acceleration * (v.EP - v.SAR);
+            v.SAR = gt(v.SAR, low) ? low : v.SAR;
+            v.EP = Math.max(v.EP, high);
+          } else {
+            reversalDown = true;
+            v.trend = -1;
+            v.SAR = v.EP;
+            v.EP = low;
+            v.qx = xP;
+            v.qy = yP;
+          }
+        } else if (lt(close, v.SAR)) {
+          addPToQ(v);
+          const acceleration = initialAcc + ((maxAcc - initialAcc) * (Math.atan(v.qy) + Math.PI / 2)) / Math.PI;
+          v.SAR = v.SAR + acceleration * (v.EP - v.SAR);
+          v.SAR = lt(v.SAR, high) ? high : v.SAR;
+          v.EP = Math.min(v.EP, low);
+        } else {
+          reversalUp = true;
+          v.trend = 1;
+          v.SAR = v.EP;
+          v.EP = high;
+          v.qx = xP;
+          v.qy = yP;
+        }
+      }
+
+      const t = bars[i].time;
+      s.plot0[i] = { time: t, value: fin(v.SAR), color: v.trend === 1 ? color.blue : color.red };
+      s.plot1[i] = { time: t, value: fin(v.EP) };
+      if (reversalUp) s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'small' });
+      if (reversalDown) s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'small' });
+      s.bgColors.push({ time: t, color: v.trend === 1 ? upBg : downBg });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EllipticCurveSarInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EllipticCurveSarInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const EllipticCurveSar = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

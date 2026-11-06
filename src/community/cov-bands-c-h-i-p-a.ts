@@ -12,7 +12,9 @@
  * Original notice: © C_H_I_P_A
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { PlotCandleData } from '../types';
 
 export interface CovBandsInputs {
@@ -59,58 +61,94 @@ export const metadata = {
 /** Pine float comparisons: a > b only when a - b > 1e-10 (na compares false) */
 const gt = (a: number, b: number) => a - b > 1e-10;
 
+type Result = IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> };
+type Point = { time: number; value: number; color: string };
+
+interface CovVars {
+  /** var cb = 0 */
+  cb: number;
+  /** var color coloring = na */
+  coloring: string;
+}
+
+interface CovRun extends BarRunState<CovVars> {
+  mean: WindowSma;
+  dev: WindowStdev;
+  plot0: Point[];
+  plot1: Point[];
+  /** The candle of every bar (plotcandle show_last: the last ones are shown) */
+  candles: PlotCandleData[];
+}
+
+const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+
+function study(inputs: Partial<CovBandsInputs>): BarStudy<CovRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const mean = new WindowSma(cfg.length);
+      const dev = new WindowStdev(cfg.stddev);
+      const s: CovRun = {
+        mean, dev, plot0: [], plot1: [], candles: [],
+        steps: [mean, dev], vars: { cb: 0, coloring: 'transparent' }, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1, s.candles];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const v = s.vars;
+      const c = b.close;
+      const mean = s.mean.step(c);
+      const stdDev = s.dev.step(c);
+      // A plain division: x / 0 is +-infinity (0 / 0 NaN), as in Pine
+      const cov = stdDev / mean;
+      const upper = mean + mean * cov * cfg.upperBandMulti;
+      const lower = mean - mean * cov * cfg.lowerBandMulti;
+      if (gt(c, upper)) v.cb = 1;
+      if (gt(lower, c)) v.cb = -1;
+      if (v.cb === 1) v.coloring = LONG_COL;
+      else if (v.cb === -1) v.coloring = SHORT_COL;
+      const coloring = v.coloring;
+      // plotcandle(open, high, low, close, 'Candle Coloring', coloring, coloring, true, show_last = 10000, coloring)
+      s.candles[i] = {
+        time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
+        color: coloring, wickColor: coloring, borderColor: coloring,
+      };
+      s.plot0[i] = { time: b.time as number, value: fin(upper), color: GRAY };
+      s.plot1[i] = { time: b.time as number, value: fin(lower), color: GRAY };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plot0.slice(),
+          plot1: s.plot1.slice(),
+        },
+        // fill(upper_plot, lower_plot, grayfade)
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: GRAY_FADE } }],
+        plotCandles: { candleColoring: s.candles.slice(Math.max(0, n - SHOW_LAST)) },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CovBandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<CovBandsInputs> = {},
-): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-
-  const mean = A(ta.sma(close, cfg.length));
-  const stdDev = A(ta.stdev(close, cfg.stddev));
-
-  const upper: number[] = new Array(n);
-  const lower: number[] = new Array(n);
-  const candles: PlotCandleData[] = [];
-  let cb = 0; // var cb = 0
-  let coloring = 'transparent'; // var color coloring = na
-  for (let i = 0; i < n; i++) {
-    // A plain division: x / 0 is +-infinity (0 / 0 NaN), as in Pine
-    const cov = stdDev[i] / mean[i];
-    upper[i] = mean[i] + mean[i] * cov * cfg.upperBandMulti;
-    lower[i] = mean[i] - mean[i] * cov * cfg.lowerBandMulti;
-    const c = bars[i].close;
-    if (gt(c, upper[i])) cb = 1;
-    if (gt(lower[i], c)) cb = -1;
-    if (cb === 1) coloring = LONG_COL;
-    else if (cb === -1) coloring = SHORT_COL;
-    // plotcandle(open, high, low, close, 'Candle Coloring', coloring, coloring, true, show_last = 10000, coloring)
-    if (i >= n - SHOW_LAST) {
-      const b = bars[i];
-      candles.push({
-        time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
-        color: coloring, wickColor: coloring, borderColor: coloring,
-      });
-    }
-  }
-
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: fin(upper[i]), color: GRAY })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: fin(lower[i]), color: GRAY })),
-    },
-    // fill(upper_plot, lower_plot, grayfade)
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: GRAY_FADE } }],
-    plotCandles: { candleColoring: candles },
-  };
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const CovBands = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

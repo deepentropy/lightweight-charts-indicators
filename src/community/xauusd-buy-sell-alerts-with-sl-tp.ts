@@ -13,9 +13,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, str, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, str, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall, MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -62,62 +64,104 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alertCalls: AlertCall[] } & { alerts: AlertConditionState[] };
+
+interface XauusdRun extends BarRunState<Record<string, never>> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  rsi: ReturnType<typeof taStep.rsi>;
+  emaFast: number[];
+  emaSlow: number[];
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+  alertCalls: AlertCall[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<XauusdBuySellAlertsWithSlTpInputs>): BarStudy<XauusdRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const pip = 0.01;
+  const fmt = (x: number) => str.tostring(x, 'price');
+  return {
+    init() {
+      const fast = taStep.ema(cfg.emaFastLen);
+      const slow = taStep.ema(cfg.emaSlowLen);
+      const rsi = taStep.rsi(cfg.rsiLen);
+      const s: XauusdRun = {
+        fast, slow, rsi, emaFast: [], emaSlow: [], plot0: [], plot1: [], markers: [], alertCalls: [],
+        flags: [[], []], times: [[], []], steps: [fast, slow, rsi], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.alertCalls, ...s.times];
+      s.series = [s.emaFast, s.emaSlow, s.plot0, s.plot1, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const emaFast = s.emaFast;
+      const emaSlow = s.emaSlow;
+      emaFast[i] = s.fast.step(b.close) ?? NaN;
+      emaSlow[i] = s.slow.step(b.close) ?? NaN;
+      const rsi = s.rsi.step(b.close) ?? NaN;
+      s.plot0[i] = { time: b.time, value: emaFast[i] };
+      s.plot1[i] = { time: b.time, value: emaSlow[i] };
+      let buySignal = false;
+      let sellSignal = false;
+      if (i >= 1) {
+        // ta.crossover / ta.crossunder: exact comparisons (no tolerance), a tie on the previous bar counts
+        const crossUp = emaFast[i] > emaSlow[i] && emaFast[i - 1] <= emaSlow[i - 1];
+        const crossDown = emaFast[i] < emaSlow[i] && emaFast[i - 1] >= emaSlow[i - 1];
+        // plotshape(buySignal, "Buy Signal", location.belowbar, color.green, shape.labelup, text = "BUY")
+        buySignal = crossUp && lt(rsi, 60);
+        sellSignal = crossDown && gt(rsi, 40);
+        if (buySignal) {
+          s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY', textColor: color.blue });
+        }
+        // plotshape(sellSignal, "Sell Signal", location.abovebar, color.red, shape.labeldown, text = "SELL")
+        if (sellSignal) {
+          s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL', textColor: color.blue });
+        }
+        // alert("XAUUSD BUY\nEntry: " + str.tostring(close, format.price) + "\nSL: " + ... , alert.freq_once_per_bar_close)
+        const c = b.close;
+        if (buySignal) {
+          s.alertCalls.push({ time: b.time, freq: 'once_per_bar_close',
+            message: `XAUUSD BUY\nEntry: ${fmt(c)}\nSL: ${fmt(c - cfg.stopLossPips * pip)}\nTP: ${fmt(c + cfg.takeProfitPips * pip)}` });
+        }
+        if (sellSignal) {
+          s.alertCalls.push({ time: b.time, freq: 'once_per_bar_close',
+            message: `XAUUSD SELL\nEntry: ${fmt(c)}\nSL: ${fmt(c + cfg.stopLossPips * pip)}\nTP: ${fmt(c - cfg.takeProfitPips * pip)}` });
+        }
+      }
+      s.flags[0][i] = buySignal;
+      s.flags[1][i] = sellSignal;
+      if (buySignal) s.times[0].push(b.time as number);
+      if (sellSignal) s.times[1].push(b.time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<XauusdBuySellAlertsWithSlTpInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<XauusdBuySellAlertsWithSlTpInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alertCalls: AlertCall[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-  const emaFast = A(ta.ema(close, cfg.emaFastLen));
-  const emaSlow = A(ta.ema(close, cfg.emaSlowLen));
-  const rsi = A(ta.rsi(close, cfg.rsiLen));
-
-  const markers: MarkerData[] = [];
-  const buyFlags: boolean[] = new Array(n).fill(false);
-  const sellFlags: boolean[] = new Array(n).fill(false);
-  const alertCalls: AlertCall[] = [];
-  const pip = 0.01;
-  const fmt = (x: number) => str.tostring(x, 'price');
-  for (let i = 1; i < n; i++) {
-    // ta.crossover / ta.crossunder: exact comparisons (no tolerance), a tie on the previous bar counts
-    const crossUp = emaFast[i] > emaSlow[i] && emaFast[i - 1] <= emaSlow[i - 1];
-    const crossDown = emaFast[i] < emaSlow[i] && emaFast[i - 1] >= emaSlow[i - 1];
-    // plotshape(buySignal, "Buy Signal", location.belowbar, color.green, shape.labelup, text = "BUY")
-    const buySignal = crossUp && lt(rsi[i], 60);
-    const sellSignal = crossDown && gt(rsi[i], 40);
-    buyFlags[i] = buySignal;
-    sellFlags[i] = sellSignal;
-    if (buySignal) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY', textColor: color.blue });
-    }
-    // plotshape(sellSignal, "Sell Signal", location.abovebar, color.red, shape.labeldown, text = "SELL")
-    if (sellSignal) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL', textColor: color.blue });
-    }
-    // alert("XAUUSD BUY\nEntry: " + str.tostring(close, format.price) + "\nSL: " + ... , alert.freq_once_per_bar_close)
-    const c = bars[i].close;
-    if (buySignal) {
-      alertCalls.push({ time: bars[i].time, freq: 'once_per_bar_close',
-        message: `XAUUSD BUY\nEntry: ${fmt(c)}\nSL: ${fmt(c - cfg.stopLossPips * pip)}\nTP: ${fmt(c + cfg.takeProfitPips * pip)}` });
-    }
-    if (sellSignal) {
-      alertCalls.push({ time: bars[i].time, freq: 'once_per_bar_close',
-        message: `XAUUSD SELL\nEntry: ${fmt(c)}\nSL: ${fmt(c + cfg.stopLossPips * pip)}\nTP: ${fmt(c - cfg.takeProfitPips * pip)}` });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: emaFast[i] })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: emaSlow[i] })),
-    },
-    markers,
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
-    alertCalls,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** alertcondition(buySignal / sellSignal) of the original */
@@ -128,6 +172,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const XauusdBuySellAlertsWithSlTp = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

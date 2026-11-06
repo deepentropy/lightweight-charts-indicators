@@ -7,7 +7,9 @@
  * Reference: "CCT Bollinger Band Oscillator" by LazyBear
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CCTBBOInputs {
   length: number;
@@ -48,38 +50,63 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<CCTBBOInputs> = {}): IndicatorResult {
+type Point = { time: any; value: number };
+
+interface CctRun extends BarRunState<Record<string, never>> {
+  sd: WindowStdev;
+  sma: WindowSma;
+  ema: ReturnType<typeof taStep.ema>;
+  cctData: Point[];
+  emaData: Point[];
+}
+
+function study(inputs: Partial<CCTBBOInputs>): BarStudy<CctRun, IndicatorResult> {
   const { length, lengthMA, src } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
-
-  const sd = ta.stdev(source, length);
-  const sma = ta.sma(source, length);
-  // cctbbo = 100 * (src + 2*stdev - sma) / (4 * stdev)
-  const cctbbo = source.add(sd.mul(2)).sub(sma).div(sd.mul(4)).mul(100);
-  const emaLine = ta.ema(cctbbo, lengthMA);
-
-  const cctData = cctbbo.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const emaData = emaLine.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
+  const source = barSource(src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': cctData, 'plot1': emaData },
-    hlines: [
-      { value: 100, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Upper' } },
-      { value: 50, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Mid' } },
-      { value: 0, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Lower' } },
-    ],
-    fills: [
-      { plot1: 'hline_upper', plot2: 'hline_lower', options: { color: 'rgba(41, 98, 255, 0.12)' } },
-    ],
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const sd = new WindowStdev(length);
+      const sma = new WindowSma(length);
+      const ema = taStep.ema(lengthMA);
+      const s: CctRun = { sd, sma, ema, cctData: [], emaData: [], steps: [sd, sma, ema], vars: {}, lists: [], series: [] };
+      s.series = [s.cctData, s.emaData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = source(bars[i]);
+      const sd = s.sd.step(v);
+      const sma = s.sma.step(v);
+      // cctbbo = 100 * (src + 2*stdev - sma) / (4 * stdev)
+      const cctbbo = (v + sd * 2 - sma) / (sd * 4) * 100;
+      const e = s.ema.step(cctbbo);
+      s.cctData[i] = { time: bars[i].time, value: cctbbo ?? NaN };
+      s.emaData[i] = { time: bars[i].time, value: e ?? NaN };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.cctData.slice(), 'plot1': s.emaData.slice() },
+        hlines: [
+          { value: 100, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Upper' } },
+          { value: 50, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Mid' } },
+          { value: 0, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Lower' } },
+        ],
+        fills: [
+          { plot1: 'hline_upper', plot2: 'hline_lower', options: { color: 'rgba(41, 98, 255, 0.12)' } },
+        ],
+      };
+    },
   };
 }
 
-export const CCTBBO = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CCTBBOInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CCTBBOInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const CCTBBO = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig };

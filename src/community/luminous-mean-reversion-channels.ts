@@ -12,9 +12,11 @@
  * Original notice: © Pineify
  */
 
-import { ta, color, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface LuminousMeanReversionChannelsInputs {
   /** ATR length of the step */
@@ -59,78 +61,131 @@ const gt = (a: number, b: number) => a - b > EPS;
 /** Pine a != b: false when a value is na */
 const ne = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) > EPS;
 
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface LuminousVars {
+  /** var float avg_line = src (first bar) */
+  avgLine: number;
+  /** var float hold_atr = 0.0 */
+  holdAtr: number;
+}
+
+interface LuminousRun extends BarRunState<LuminousVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  src: number[];
+  avg: number[];
+  upper: number[];
+  lower: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<LuminousMeanReversionChannelsInputs>): BarStudy<LuminousRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const atr = taStep.atr(cfg.length);
+      const s: LuminousRun = {
+        atr, src: [], avg: [], upper: [], lower: [], plot0: [], plot1: [], plot2: [], markers: [],
+        flags: [[], []], times: [[], []],
+        steps: [atr], vars: { avgLine: NaN, holdAtr: 0.0 }, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.src, s.avg, s.upper, s.lower, s.plot0, s.plot1, s.plot2, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const src = s.src;
+      src[i] = value(b) ?? NaN;
+      const atr = s.atr.step(b.high, b.low, b.close) ?? NaN;
+      if (i === 0) v.avgLine = src[0];
+      const prev = i > 0 ? s.avg[i - 1] : NaN;
+      // atr_val = nz(ta.atr(length)) * mult
+      const atrVal = (isNaN(atr) ? 0 : atr) * cfg.mult;
+      let avgLine = v.avgLine;
+      // avg_line := src - avg_line > atr_val ? avg_line + atr_val : avg_line - src > atr_val ? avg_line - atr_val : avg_line
+      avgLine = gt(src[i] - avgLine, atrVal) ? avgLine + atrVal : gt(avgLine - src[i], atrVal) ? avgLine - atrVal : avgLine;
+      v.avgLine = avgLine;
+      // hold_atr := avg_line != avg_line[1] ? atr_val / 2 : hold_atr
+      if (ne(avgLine, prev)) v.holdAtr = atrVal / 2;
+      const upper = avgLine + v.holdAtr * 2;
+      const lower = avgLine - v.holdAtr * 2;
+      s.avg[i] = avgLine;
+      s.upper[i] = upper;
+      s.lower[i] = lower;
+      const time = b.time;
+      s.plot0[i] = { time, value: upper, color: RED };
+      s.plot1[i] = { time, value: avgLine, color: MID };
+      s.plot2[i] = { time, value: lower, color: GREEN };
+
+      let buy = false;
+      let sell = false;
+      if (i >= 1) {
+        // buy_signal = ta.crossover(src, lower_band); sell_signal = ta.crossunder(src, upper_band): exact comparisons
+        buy = src[i] > lower && src[i - 1] <= s.lower[i - 1];
+        sell = src[i] < upper && src[i - 1] >= s.upper[i - 1];
+        if (buy) {
+          s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: GREEN, text: 'BUY',
+            textColor: color.white, size: 'small' });
+        }
+        if (sell) {
+          s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: RED, text: 'SELL',
+            textColor: color.white, size: 'small' });
+        }
+      }
+      s.flags[0][i] = buy;
+      s.flags[1][i] = sell;
+      if (buy) s.times[0].push(time as number);
+      if (sell) s.times[1].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        fills: [
+          // fill(up_plot, mid_plot, top_color = color.new(#f23645, 85), bottom_color = color.new(#f23645, 100)):
+          // the gradient goes from the upper band (top) to the mean level (bottom)
+          {
+            plot1: 'plot0', plot2: 'plot1', options: { title: 'Bearish Reversal Aura' },
+            gradient: { topValue: s.upper.slice(), bottomValue: s.avg.slice(),
+              topColor: new Array(n).fill(String(color.new(RED, 85))), bottomColor: new Array(n).fill(String(color.new(RED, 100))) },
+          },
+          // fill(dn_plot, mid_plot, top_color = color.new(#089981, 100), bottom_color = color.new(#089981, 85)):
+          // the gradient goes from the mean level (top) to the lower band (bottom)
+          {
+            plot1: 'plot2', plot2: 'plot1', options: { title: 'Bullish Reversal Aura' },
+            gradient: { topValue: s.avg.slice(), bottomValue: s.lower.slice(),
+              topColor: new Array(n).fill(String(color.new(GREEN, 100))), bottomColor: new Array(n).fill(String(color.new(GREEN, 85))) },
+          },
+        ],
+        markers: s.markers.slice(),
+        // alertcondition(buy_signal, ...) / alertcondition(sell_signal, ...)
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<LuminousMeanReversionChannelsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<LuminousMeanReversionChannelsInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
-  const atr = ta.atr(bars, cfg.length).toArray().map((v) => v ?? NaN);
-
-  const avg: number[] = new Array(n);
-  const upper: number[] = new Array(n);
-  const lower: number[] = new Array(n);
-  let avgLine = NaN; // var float avg_line = src (first bar)
-  let holdAtr = 0.0; // var float hold_atr = 0.0
-  for (let i = 0; i < n; i++) {
-    if (i === 0) avgLine = src[0];
-    const prev = i > 0 ? avg[i - 1] : NaN;
-    // atr_val = nz(ta.atr(length)) * mult
-    const atrVal = (isNaN(atr[i]) ? 0 : atr[i]) * cfg.mult;
-    // avg_line := src - avg_line > atr_val ? avg_line + atr_val : avg_line - src > atr_val ? avg_line - atr_val : avg_line
-    avgLine = gt(src[i] - avgLine, atrVal) ? avgLine + atrVal : gt(avgLine - src[i], atrVal) ? avgLine - atrVal : avgLine;
-    // hold_atr := avg_line != avg_line[1] ? atr_val / 2 : hold_atr
-    if (ne(avgLine, prev)) holdAtr = atrVal / 2;
-    avg[i] = avgLine;
-    upper[i] = avgLine + holdAtr * 2;
-    lower[i] = avgLine - holdAtr * 2;
-  }
-
-  const markers: MarkerData[] = [];
-  const buyFlags: boolean[] = new Array(n).fill(false), sellFlags: boolean[] = new Array(n).fill(false);
-  for (let i = 1; i < n; i++) {
-    // buy_signal = ta.crossover(src, lower_band); sell_signal = ta.crossunder(src, upper_band): exact comparisons
-    buyFlags[i] = src[i] > lower[i] && src[i - 1] <= lower[i - 1];
-    sellFlags[i] = src[i] < upper[i] && src[i - 1] >= upper[i - 1];
-    if (buyFlags[i]) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: GREEN, text: 'BUY',
-        textColor: color.white, size: 'small' });
-    }
-    if (sellFlags[i]) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: RED, text: 'SELL',
-        textColor: color.white, size: 'small' });
-    }
-  }
-
-  const t = (i: number) => bars[i].time;
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((_b, i) => ({ time: t(i), value: upper[i], color: RED })),
-      plot1: bars.map((_b, i) => ({ time: t(i), value: avg[i], color: MID })),
-      plot2: bars.map((_b, i) => ({ time: t(i), value: lower[i], color: GREEN })),
-    },
-    fills: [
-      // fill(up_plot, mid_plot, top_color = color.new(#f23645, 85), bottom_color = color.new(#f23645, 100)):
-      // the gradient goes from the upper band (top) to the mean level (bottom)
-      {
-        plot1: 'plot0', plot2: 'plot1', options: { title: 'Bearish Reversal Aura' },
-        gradient: { topValue: upper.slice(), bottomValue: avg.slice(),
-          topColor: new Array(n).fill(String(color.new(RED, 85))), bottomColor: new Array(n).fill(String(color.new(RED, 100))) },
-      },
-      // fill(dn_plot, mid_plot, top_color = color.new(#089981, 100), bottom_color = color.new(#089981, 85)):
-      // the gradient goes from the mean level (top) to the lower band (bottom)
-      {
-        plot1: 'plot2', plot2: 'plot1', options: { title: 'Bullish Reversal Aura' },
-        gradient: { topValue: avg.slice(), bottomValue: lower.slice(),
-          topColor: new Array(n).fill(String(color.new(GREEN, 100))), bottomColor: new Array(n).fill(String(color.new(GREEN, 85))) },
-      },
-    ],
-    markers,
-    // alertcondition(buy_signal, ...) / alertcondition(sell_signal, ...)
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -141,6 +196,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const LuminousMeanReversionChannels = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

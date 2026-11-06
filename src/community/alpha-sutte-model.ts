@@ -12,7 +12,9 @@
  * Original notice: © SegaRKO
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AlphaSutteModelInputs {
   /** SMA length of the Sutte low / high lines */
@@ -46,61 +48,88 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<AlphaSutteModelInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface AsRun extends BarRunState<Record<string, never>> {
+  lowMa: WindowSma;
+  highMa: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+}
+
+function study(inputs: Partial<AlphaSutteModelInputs>): BarStudy<AsRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = (i: number) => (i >= 0 ? bars[i].close : NaN);
   /** Plots show na for non-finite values */
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-
-  const alphaSutte: number[] = new Array(n);
-  const sutteL: number[] = new Array(n);
-  const sutteH: number[] = new Array(n);
-  const combo: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const delta = close(i - 4);
-    const alpha = close(i - 3);
-    const beta = close(i - 2);
-    const gamma = close(i - 1);
-    const x = alpha - delta;
-    const y = beta - alpha;
-    const z = gamma - beta;
-    const a = alpha + delta;
-    const b = beta + alpha;
-    const g = gamma + beta;
-    // Plain divisions (x / 0 is +-infinity, 0 / 0 na), as Pine
-    const p1b = (x / (a / 2)) * alpha;
-    const p2b = (y / (b / 2)) * beta;
-    const p3b = (z / (g / 2)) * gamma;
-    const aT = (p1b + p2b + p3b) / 3;
-    alphaSutte[i] = aT + gamma;
-
-    const c = bars[i].close;
-    sutteL[i] = (c + gamma) / 2 + c - bars[i].low;
-    sutteH[i] = (c + gamma) / 2 + bars[i].high - c;
-    const sutte = (sutteL[i] + sutteH[i]) / 2;
-    // math.avg(a_t0, Sutte)
-    combo[i] = (alphaSutte[i] + sutte) / 2;
-  }
-  const sutteLMA = A(ta.sma(S(sutteL), cfg.len));
-  const sutteHMA = A(ta.sma(S(sutteH), cfg.len));
-
-  const P = (vals: number[], col: string) => bars.map((bar, i) => ({ time: bar.time, value: fin(vals[i]), color: col }));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: P(alphaSutte, DEFAULT_BLUE),
-      plot1: P(combo, COMBO_COL),
-      plot2: P(sutteLMA, LOW_COL),
-      plot3: P(sutteHMA, HIGH_COL),
+    init() {
+      const lowMa = new WindowSma(cfg.len);
+      const highMa = new WindowSma(cfg.len);
+      const s: AsRun = {
+        lowMa, highMa, plot0: [], plot1: [], plot2: [], plot3: [],
+        steps: [lowMa, highMa], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1, s.plot2, s.plot3];
+      return s;
+    },
+    bar(s, i, bars) {
+      const close = (k: number) => (k >= 0 ? bars[k].close : NaN);
+      const delta = close(i - 4);
+      const alpha = close(i - 3);
+      const beta = close(i - 2);
+      const gamma = close(i - 1);
+      const x = alpha - delta;
+      const y = beta - alpha;
+      const z = gamma - beta;
+      const a = alpha + delta;
+      const b = beta + alpha;
+      const g = gamma + beta;
+      // Plain divisions (x / 0 is +-infinity, 0 / 0 na), as Pine
+      const p1b = (x / (a / 2)) * alpha;
+      const p2b = (y / (b / 2)) * beta;
+      const p3b = (z / (g / 2)) * gamma;
+      const aT = (p1b + p2b + p3b) / 3;
+      const alphaSutte = aT + gamma;
+
+      const bar = bars[i];
+      const c = bar.close;
+      const sutteL = (c + gamma) / 2 + c - bar.low;
+      const sutteH = (c + gamma) / 2 + bar.high - c;
+      const sutte = (sutteL + sutteH) / 2;
+      // math.avg(a_t0, Sutte)
+      const combo = (alphaSutte + sutte) / 2;
+      const sutteLMA = s.lowMa.step(sutteL);
+      const sutteHMA = s.highMa.step(sutteH);
+
+      const time = bar.time;
+      s.plot0[i] = { time, value: fin(alphaSutte), color: DEFAULT_BLUE };
+      s.plot1[i] = { time, value: fin(combo), color: COMBO_COL };
+      s.plot2[i] = { time, value: fin(sutteLMA), color: LOW_COL };
+      s.plot3[i] = { time, value: fin(sutteHMA), color: HIGH_COL };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AlphaSutteModelInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AlphaSutteModelInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const AlphaSutteModel = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

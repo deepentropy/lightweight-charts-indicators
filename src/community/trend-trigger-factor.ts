@@ -9,7 +9,9 @@
  * Reference: "Trend Trigger Factor [LazyBear]"
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrendTriggerFactorInputs {
   length: number;
@@ -41,63 +43,82 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TrendTriggerFactorInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface TtfRun extends BarRunState<Record<string, never>> {
+  hhStep: WindowExtreme;
+  llStep: WindowExtreme;
+  hhArr: number[];
+  llArr: number[];
+  ttfPlot: Point[];
+  bsPlot: Point[];
+  usPlot: Point[];
+}
+
+function study(inputs: Partial<TrendTriggerFactorInputs>): BarStudy<TtfRun, IndicatorResult> {
   const { length, buyTrigger, sellTrigger } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-  const hhArr = ta.highest(highSeries, length).toArray();
-  const llArr = ta.lowest(lowSeries, length).toArray();
-
   const warmup = 2 * length;
-  const ttfArr: number[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    if (i < warmup) {
-      ttfArr[i] = NaN;
-      continue;
-    }
-    const hh = hhArr[i] ?? 0;
-    const ll = llArr[i] ?? 0;
-    const hhPrev = hhArr[i - length] ?? 0;
-    const llPrev = llArr[i - length] ?? 0;
-
-    const bp = hh - llPrev; // current highest - past lowest
-    const sp = hhPrev - ll; // past highest - current lowest
-    const denom = 0.5 * (bp + sp);
-    ttfArr[i] = denom !== 0 ? 100 * (bp - sp) / denom : 0;
-  }
-
-  const ttfPlot = ttfArr.map((v, i) => ({
-    time: bars[i].time,
-    value: isNaN(v) ? NaN : v,
-  }));
-
-  // Pine: bs = (ttf > bt) ? bt : ttf; us = (ttf < st) ? st : ttf
-  // fill(bl, tl, color=green, transp=75); fill(ul, tl, color=red, transp=75)
-  const bsPlot = ttfArr.map((v, i) => ({
-    time: bars[i].time,
-    value: isNaN(v) ? NaN : (v > buyTrigger ? buyTrigger : v),
-  }));
-  const usPlot = ttfArr.map((v, i) => ({
-    time: bars[i].time,
-    value: isNaN(v) ? NaN : (v < sellTrigger ? sellTrigger : v),
-  }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': ttfPlot, 'plot1': bsPlot, 'plot2': usPlot },
-    fills: [
-      { plot1: 'plot1', plot2: 'plot0', options: { color: 'rgba(0,128,0,0.25)' } },
-      { plot1: 'plot2', plot2: 'plot0', options: { color: 'rgba(255,0,0,0.25)' } },
-    ],
-    hlines: [
-      { value: buyTrigger, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Buy' } },
-      { value: 0, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Zero' } },
-      { value: sellTrigger, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Sell' } },
-    ],
+    init() {
+      const hhStep = new WindowExtreme(false, length);
+      const llStep = new WindowExtreme(true, length);
+      const s: TtfRun = {
+        hhStep, llStep, hhArr: [], llArr: [], ttfPlot: [], bsPlot: [], usPlot: [],
+        steps: [hhStep, llStep], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.hhArr, s.llArr, s.ttfPlot, s.bsPlot, s.usPlot];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      s.hhArr[i] = s.hhStep.step(b.high);
+      s.llArr[i] = s.llStep.step(b.low);
+      let ttf: number;
+      if (i < warmup) {
+        ttf = NaN;
+      } else {
+        const hh = s.hhArr[i] ?? 0;
+        const ll = s.llArr[i] ?? 0;
+        const hhPrev = s.hhArr[i - length] ?? 0;
+        const llPrev = s.llArr[i - length] ?? 0;
+
+        const bp = hh - llPrev; // current highest - past lowest
+        const sp = hhPrev - ll; // past highest - current lowest
+        const denom = 0.5 * (bp + sp);
+        ttf = denom !== 0 ? 100 * (bp - sp) / denom : 0;
+      }
+      const time = b.time as number;
+      s.ttfPlot[i] = { time, value: isNaN(ttf) ? NaN : ttf };
+      // Pine: bs = (ttf > bt) ? bt : ttf; us = (ttf < st) ? st : ttf
+      s.bsPlot[i] = { time, value: isNaN(ttf) ? NaN : (ttf > buyTrigger ? buyTrigger : ttf) };
+      s.usPlot[i] = { time, value: isNaN(ttf) ? NaN : (ttf < sellTrigger ? sellTrigger : ttf) };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.ttfPlot.slice(), 'plot1': s.bsPlot.slice(), 'plot2': s.usPlot.slice() },
+        // fill(bl, tl, color=green, transp=75); fill(ul, tl, color=red, transp=75)
+        fills: [
+          { plot1: 'plot1', plot2: 'plot0', options: { color: 'rgba(0,128,0,0.25)' } },
+          { plot1: 'plot2', plot2: 'plot0', options: { color: 'rgba(255,0,0,0.25)' } },
+        ],
+        hlines: [
+          { value: buyTrigger, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Buy' } },
+          { value: 0, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Zero' } },
+          { value: sellTrigger, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Sell' } },
+        ],
+      };
+    },
   };
 }
 
-export const TrendTriggerFactor = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrendTriggerFactorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TrendTriggerFactorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const TrendTriggerFactor = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

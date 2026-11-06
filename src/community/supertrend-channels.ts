@@ -7,7 +7,9 @@
  * Reference: "SuperTrend Channels" (community)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SupertrendChannelsInputs {
   atrLen: number;
@@ -40,93 +42,106 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SupertrendChannelsInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface StChRun extends BarRunState<Record<string, never>> {
+  atr: ReturnType<typeof taStep.atr>;
+  upper: WindowExtreme;
+  lower: WindowExtreme;
+  stArr: number[];
+  dirArr: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+}
+
+function study(inputs: Partial<SupertrendChannelsInputs>): BarStudy<StChRun, IndicatorResult> {
   const { atrLen, factor, channelLen } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const atrArr = ta.atr(bars, atrLen).toArray();
-
-  // SuperTrend calculation
-  const stArr: number[] = new Array(n);
-  const dirArr: number[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    const hl2 = (bars[i].high + bars[i].low) / 2;
-    const atr = (atrArr[i] ?? 0) * factor;
-    const up = hl2 - atr;
-    const dn = hl2 + atr;
-
-    if (i === 0) {
-      stArr[i] = up;
-      dirArr[i] = 1;
-      continue;
-    }
-
-    const prevDir = dirArr[i - 1];
-    const prevSt = stArr[i - 1];
-    const close = bars[i].close;
-    const prevClose = bars[i - 1].close;
-
-    const trailUp = prevClose > prevSt && prevDir === 1 ? Math.max(up, prevSt) : up;
-    const trailDn = prevClose < prevSt && prevDir === -1 ? Math.min(dn, prevSt) : dn;
-
-    if (prevDir === 1) {
-      if (close < trailUp) {
-        dirArr[i] = -1;
-        stArr[i] = trailDn;
-      } else {
-        dirArr[i] = 1;
-        stArr[i] = trailUp;
-      }
-    } else {
-      if (close > trailDn) {
-        dirArr[i] = 1;
-        stArr[i] = trailUp;
-      } else {
-        dirArr[i] = -1;
-        stArr[i] = trailDn;
-      }
-    }
-  }
-
-  // Channel = highest/lowest of SuperTrend over channelLen
-  const stSeries = new Series(bars, (_b, i) => stArr[i]);
-  const chUpperArr = ta.highest(stSeries, channelLen).toArray();
-  const chLowerArr = ta.lowest(stSeries, channelLen).toArray();
-
   const warmup = atrLen + channelLen;
-
-  const plot0 = stArr.map((v, i) => {
-    if (i < atrLen) return { time: bars[i].time, value: NaN };
-    const color = dirArr[i] === 1 ? '#26A69A' : '#EF5350';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  const plot1 = chUpperArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup || v == null ? NaN : v,
-  }));
-
-  const plot2 = chLowerArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup || v == null ? NaN : v,
-  }));
-
-  const plot3 = chUpperArr.map((v, i) => {
-    const upper = v ?? NaN;
-    const lower = chLowerArr[i] ?? NaN;
-    const avg = (i < warmup || isNaN(upper) || isNaN(lower)) ? NaN : (upper + lower) / 2;
-    return { time: bars[i].time, value: avg };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
-    fills: [
-      { plot1: 'plot1', plot2: 'plot0', options: { color: 'rgba(12,181,26,0.15)' } },
-      { plot1: 'plot0', plot2: 'plot2', options: { color: 'rgba(255,17,0,0.15)' } },
-    ],
+    init() {
+      const atr = taStep.atr(atrLen);
+      // Channel = highest/lowest of SuperTrend over channelLen
+      const upper = new WindowExtreme(false, channelLen);
+      const lower = new WindowExtreme(true, channelLen);
+      const s: StChRun = {
+        atr, upper, lower, stArr: [], dirArr: [], plot0: [], plot1: [], plot2: [], plot3: [],
+        steps: [atr, upper, lower], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.stArr, s.dirArr, s.plot0, s.plot1, s.plot2, s.plot3];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const { stArr, dirArr } = s;
+      // SuperTrend calculation
+      const hl2 = (b.high + b.low) / 2;
+      const atr = s.atr.step(b.high, b.low, b.close) * factor;
+      const up = hl2 - atr;
+      const dn = hl2 + atr;
+
+      if (i === 0) {
+        stArr[i] = up;
+        dirArr[i] = 1;
+      } else {
+        const prevDir = dirArr[i - 1];
+        const prevSt = stArr[i - 1];
+        const close = b.close;
+        const prevClose = bars[i - 1].close;
+
+        const trailUp = prevClose > prevSt && prevDir === 1 ? Math.max(up, prevSt) : up;
+        const trailDn = prevClose < prevSt && prevDir === -1 ? Math.min(dn, prevSt) : dn;
+
+        if (prevDir === 1) {
+          if (close < trailUp) {
+            dirArr[i] = -1;
+            stArr[i] = trailDn;
+          } else {
+            dirArr[i] = 1;
+            stArr[i] = trailUp;
+          }
+        } else {
+          if (close > trailDn) {
+            dirArr[i] = 1;
+            stArr[i] = trailUp;
+          } else {
+            dirArr[i] = -1;
+            stArr[i] = trailDn;
+          }
+        }
+      }
+      const v = stArr[i];
+      const upper = s.upper.step(v);
+      const lower = s.lower.step(v);
+
+      if (i < atrLen) s.plot0[i] = { time: b.time, value: NaN };
+      else s.plot0[i] = { time: b.time, value: v, color: dirArr[i] === 1 ? '#26A69A' : '#EF5350' };
+      s.plot1[i] = { time: b.time, value: i < warmup ? NaN : upper };
+      s.plot2[i] = { time: b.time, value: i < warmup ? NaN : lower };
+      const avg = (i < warmup || isNaN(upper) || isNaN(lower)) ? NaN : (upper + lower) / 2;
+      s.plot3[i] = { time: b.time, value: avg };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice(), 'plot2': s.plot2.slice(), 'plot3': s.plot3.slice() },
+        fills: [
+          { plot1: 'plot1', plot2: 'plot0', options: { color: 'rgba(12,181,26,0.15)' } },
+          { plot1: 'plot0', plot2: 'plot2', options: { color: 'rgba(255,17,0,0.15)' } },
+        ],
+      };
+    },
   };
 }
 
-export const SupertrendChannels = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SupertrendChannelsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SupertrendChannelsInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const SupertrendChannels = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

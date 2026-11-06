@@ -9,7 +9,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface GammaFibonacciEmaBandsInputs {
   /** Source */
@@ -58,42 +60,69 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<GammaFibonacciEmaBandsInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface GammaRun extends BarRunState<Record<string, never>> {
+  emas: ReturnType<typeof taStep.ema>[];
+  /** The values of the three gamma EMAs */
+  gemas: number[][];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<GammaFibonacciEmaBandsInputs>): BarStudy<GammaRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.src);
-  const s = src.toArray().map((v) => v ?? NaN);
-
-  // calcGEMA(_src, g): if barstate.isfirst: _ema := _src; then _ema := g * _src + (1 - g) * nz(_ema[1])
-  const gema = (g: number): number[] => {
-    const out: number[] = new Array(n);
-    for (let i = 0; i < n; i++) {
-      const prev = i > 0 && !isNaN(out[i - 1]) ? out[i - 1] : 0; // nz(_ema[1])
-      out[i] = g * s[i] + (1 - g) * prev;
-    }
-    return out;
-  };
-
-  const series: number[][] = [
-    gema(cfg.gamma1),
-    gema(cfg.gamma2),
-    gema(cfg.gamma3),
-    ...FIB_LENGTHS.map((len) => ta.ema(src, len).toArray().map((v) => v ?? NaN)),
-  ];
-
-  const plots: Record<string, Array<{ time: number; value: number; color: string }>> = {};
-  series.forEach((vals, k) => {
-    plots[`plot${k}`] = bars.map((b, i) => ({ time: b.time, value: vals[i], color: COLORS[k] }));
-  });
-
+  const value = barSource(cfg.src);
+  const gammas = [cfg.gamma1, cfg.gamma2, cfg.gamma3];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const emas = FIB_LENGTHS.map((len) => taStep.ema(len));
+      const s: GammaRun = {
+        emas, gemas: [[], [], []], plots: TITLES.map(() => []), steps: emas, vars: {}, lists: [], series: [],
+      };
+      s.series = [...s.gemas, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = value(b) ?? NaN;
+      // calcGEMA(_src, g): if barstate.isfirst: _ema := _src; then _ema := g * _src + (1 - g) * nz(_ema[1])
+      for (let k = 0; k < 3; k++) {
+        const out = s.gemas[k];
+        const g = gammas[k];
+        const prev = i > 0 && !isNaN(out[i - 1]) ? out[i - 1] : 0; // nz(_ema[1])
+        out[i] = g * v + (1 - g) * prev;
+        s.plots[k][i] = { time: b.time, value: out[i], color: COLORS[k] };
+      }
+      for (let k = 0; k < FIB_LENGTHS.length; k++) {
+        s.plots[k + 3][i] = { time: b.time, value: s.emas[k].step(v) ?? NaN, color: COLORS[k + 3] };
+      }
+    },
+    result(s) {
+      const plots: Record<string, Array<{ time: number; value: number; color: string }>> = {};
+      s.plots.forEach((p, k) => {
+        plots[`plot${k}`] = p.slice();
+      });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GammaFibonacciEmaBandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<GammaFibonacciEmaBandsInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const GammaFibonacciEmaBands = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

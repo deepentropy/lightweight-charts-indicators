@@ -6,7 +6,9 @@
  * Reference: "Volume Weighted MACD V2" community indicator
  */
 
-import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VWMACDV2Inputs {
   fastLength: number;
@@ -41,43 +43,76 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VWMACDV2Inputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface VwMacdRun extends BarRunState<Record<string, never>> {
+  fast: WindowVwma;
+  slow: WindowVwma;
+  sig: ReturnType<typeof taStep.ema>;
+  hist: number[];
+  macdData: Point[];
+  sigData: Point[];
+  histData: Point[];
+}
+
+function study(inputs: Partial<VWMACDV2Inputs>): BarStudy<VwMacdRun, IndicatorResult> {
   const { fastLength, slowLength, signalLength, src } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
-  const volume = new Series(bars, (b) => b.volume ?? 0);
-
-  const vwmaFast = ta.vwma(source, fastLength, volume);
-  const vwmaSlow = ta.vwma(source, slowLength, volume);
-  const macdLine = vwmaFast.sub(vwmaSlow);
-  const signalLine = ta.ema(macdLine, signalLength);
-  const histogram = macdLine.sub(signalLine);
-
-  const macdArr = macdLine.toArray();
-  const sigArr = signalLine.toArray();
-  const histArr = histogram.toArray();
-
+  const value = barSource(src);
   const warmup = slowLength;
-
-  const toPlot = (arr: (number | null)[]) =>
-    arr.map((v, i) => ({ time: bars[i].time, value: (i < warmup || v == null) ? NaN : v }));
-
-  const histPlot = histArr.map((v, i) => {
-    if (i < warmup || v == null) return { time: bars[i].time, value: NaN };
-    const prev = i > 0 ? (histArr[i - 1] ?? NaN) : NaN;
-    let color: string;
-    if (v >= 0) {
-      color = v > prev ? '#00E676' : '#26A69A';
-    } else {
-      color = v < prev ? '#FF5252' : '#EF5350';
-    }
-    return { time: bars[i].time, value: v, color };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(macdArr), 'plot1': toPlot(sigArr), 'plot2': histPlot },
-    hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed', title: 'Zero' } }],
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const fast = new WindowVwma(fastLength);
+      const slow = new WindowVwma(slowLength);
+      const sig = taStep.ema(signalLength);
+      const s: VwMacdRun = {
+        fast, slow, sig, hist: [], macdData: [], sigData: [], histData: [],
+        steps: [fast, slow, sig], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.hist, s.macdData, s.sigData, s.histData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const v = value(b);
+      const vol = b.volume ?? 0;
+      const macd = s.fast.step(v, vol) - s.slow.step(v, vol);
+      const signal = s.sig.step(macd);
+      const h = macd - signal;
+      s.hist[i] = h;
+      s.macdData[i] = { time, value: i < warmup || macd == null ? NaN : macd };
+      s.sigData[i] = { time, value: i < warmup || signal == null ? NaN : signal };
+      if (i < warmup || h == null) {
+        s.histData[i] = { time, value: NaN };
+      } else {
+        const prev = i > 0 ? (s.hist[i - 1] ?? NaN) : NaN;
+        let color: string;
+        if (h >= 0) {
+          color = h > prev ? '#00E676' : '#26A69A';
+        } else {
+          color = h < prev ? '#FF5252' : '#EF5350';
+        }
+        s.histData[i] = { time, value: h, color };
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.macdData.slice(), 'plot1': s.sigData.slice(), 'plot2': s.histData.slice() },
+        hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed', title: 'Zero' } }],
+      };
+    },
   };
 }
 
-export const VWMACDV2 = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VWMACDV2Inputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VWMACDV2Inputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const VWMACDV2 = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

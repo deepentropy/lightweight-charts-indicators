@@ -11,8 +11,10 @@
  * Original notice: © lihulu123
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BgColorData, PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type DnMacdMaType = 'SMA' | 'EMA';
 
@@ -69,22 +71,25 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 /** plotcandle without wickcolor: the style default of the plot */
 const CANDLE_WICK = '#737375';
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DnMacdInputs> = {},
-): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]>; bgColors: BgColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = getSourceSeries(bars, cfg.src);
+type Result = IndicatorResult & { plotCandles: Record<string, PlotCandleData[]>; bgColors: BgColorData[] };
+type Ma = { step(v: number): number; commit(): void };
 
+interface DnRun extends BarRunState<Record<string, never>> {
+  fast: Ma;
+  slow: Ma;
+  sig: Ma;
+  hist: number[];
+  candles: PlotCandleData[];
+  bgColors: BgColorData[];
+  plot0: { time: number; value: number; color: string }[];
+  plot1: { time: number; value: number; color: string }[];
+}
+
+function study(inputs: Partial<DnMacdInputs>): BarStudy<DnRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
   // The MA types are inputs (constant): the selected branch runs on every bar
-  const fastMa = A(cfg.smaSource === 'SMA' ? ta.sma(src, cfg.fastLength) : ta.ema(src, cfg.fastLength));
-  const slowMa = A(cfg.smaSource === 'SMA' ? ta.sma(src, cfg.slowLength) : ta.ema(src, cfg.slowLength));
-  const macd = fastMa.map((f, i) => f - slowMa[i]);
-  const signal = A(cfg.smaSignal === 'SMA' ? ta.sma(S(macd), cfg.signalLength) : ta.ema(S(macd), cfg.signalLength));
-  const hist = macd.map((m, i) => (m - signal[i]) * 2);
+  const maStep = (sma: boolean, length: number): Ma => (sma ? new WindowSma(length) : taStep.ema(length));
 
   const green = String(color.new('#089981', 0));
   const greenHollow = String(color.new('#089981', 100));
@@ -92,35 +97,60 @@ export function calculate(
   const redHollow = String(color.new('#FF5252', 100));
   const bgRed = String(color.new(color.red, 80));
   const bgGreen = String(color.new(color.green, 80));
-
-  const candles: PlotCandleData[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const h = hist[i];
-    const prev = i > 0 ? hist[i - 1] : NaN;
-    const borderColor = ge(h, 0) ? green : red;
-    const histColor = ge(h, 0) ? (lt(prev, h) ? greenHollow : green) : lt(prev, h) ? redHollow : red;
-    // plotcandle(hist, 0, 0, 0, bordercolor = bordercolor, color = histColor): an na open gives NaN (no candle)
-    candles.push({ time: bars[i].time, open: h, high: 0, low: 0, close: 0, color: histColor,
-      wickColor: CANDLE_WICK, borderColor });
-    // GetBackgroundColor = signal > 0 ? 1 : -1 (na signal gives -1: red)
-    bgColors.push({ time: bars[i].time, color: gt(signal[i], 0) ? bgGreen : bgRed });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: macd[i], color: MACD_COL })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: signal[i], color: SIGNAL_COL })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const fast = maStep(cfg.smaSource === 'SMA', cfg.fastLength);
+      const slow = maStep(cfg.smaSource === 'SMA', cfg.slowLength);
+      const sig = maStep(cfg.smaSignal === 'SMA', cfg.signalLength);
+      const s: DnRun = {
+        fast, slow, sig, hist: [], candles: [], bgColors: [], plot0: [], plot1: [],
+        steps: [fast, slow, sig], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.hist, s.candles, s.bgColors, s.plot0, s.plot1];
+      return s;
     },
-    hlines: [{ value: 0, options: { title: 'Zero Line', color: String(color.new('#787B86', 50)), linestyle: 'dashed' } }],
-    plotCandles: { histCandles: candles },
-    bgColors,
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      const v = value(bars[i]);
+      const macd = s.fast.step(v) - s.slow.step(v);
+      const signal = s.sig.step(macd);
+      const h = (macd - signal) * 2;
+      s.hist[i] = h;
+      const prev = i > 0 ? s.hist[i - 1] : NaN;
+      const borderColor = ge(h, 0) ? green : red;
+      const histColor = ge(h, 0) ? (lt(prev, h) ? greenHollow : green) : lt(prev, h) ? redHollow : red;
+      // plotcandle(hist, 0, 0, 0, bordercolor = bordercolor, color = histColor): an na open gives NaN (no candle)
+      s.candles[i] = { time, open: h, high: 0, low: 0, close: 0, color: histColor, wickColor: CANDLE_WICK, borderColor };
+      // GetBackgroundColor = signal > 0 ? 1 : -1 (na signal gives -1: red)
+      s.bgColors[i] = { time, color: gt(signal, 0) ? bgGreen : bgRed };
+      s.plot0[i] = { time, value: macd, color: MACD_COL };
+      s.plot1[i] = { time, value: signal, color: SIGNAL_COL };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [{ value: 0, options: { title: 'Zero Line', color: String(color.new('#787B86', 50)), linestyle: 'dashed' } }],
+        plotCandles: { histCandles: s.candles.slice() },
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DnMacdInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DnMacdInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const DnMacd = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -11,7 +11,9 @@
  * Original notice: © XrayAlgo
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { PlotCandleData } from '../types';
 
 export interface VacuumCandlesInputs {
@@ -44,47 +46,66 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<VacuumCandlesInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
+type Result = Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> };
+
+interface VacuumRun extends BarRunState<Record<string, never>> {
+  avgVolume: WindowSma;
+  avgMove: WindowSma;
+  candles: PlotCandleData[];
+}
+
+function study(inputs: Partial<VacuumCandlesInputs>): BarStudy<VacuumRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const currMove = bars.map((b) => b.high - b.low);
-
-  const avgVolume = A(ta.sma(S(volume), cfg.len));
-  const avgMove = A(ta.sma(S(currMove), cfg.len));
-
   const transparentCol = color.rgb(0, 0, 0, 100);
-  const candles: PlotCandleData[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const b = bars[i];
-    // Plain division as Pine: x / 0 is +-infinity, 0 / 0 is na
-    const eff = (volume[i] / currMove[i]) * cfg.mult;
-    const avgEff = avgVolume[i] / avgMove[i];
-    const relEff = eff / avgEff;
-    const clampedEff = Math.max(0, Math.min(relEff, 1));
-    const inefficientAlpha = Math.trunc(100 * clampedEff); // int(): na stays na
-    candles.push({
-      time: b.time as number,
-      open: b.open,
-      high: b.high,
-      low: b.low,
-      close: b.close,
-      color: color.rgb(0, 0, 0, inefficientAlpha),
-      wickColor: transparentCol,
-      borderColor: transparentCol,
-      forceOverlay: true,
-    });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    plotCandles: { vacuum: candles },
+    init() {
+      const avgVolume = new WindowSma(cfg.len);
+      const avgMove = new WindowSma(cfg.len);
+      const s: VacuumRun = { avgVolume, avgMove, candles: [], steps: [avgVolume, avgMove], vars: {}, lists: [], series: [] };
+      s.series = [s.candles];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = b.volume ?? NaN;
+      const currMove = b.high - b.low;
+      const avgVolume = s.avgVolume.step(volume) ?? NaN;
+      const avgMove = s.avgMove.step(currMove) ?? NaN;
+      // Plain division as Pine: x / 0 is +-infinity, 0 / 0 is na
+      const eff = (volume / currMove) * cfg.mult;
+      const avgEff = avgVolume / avgMove;
+      const relEff = eff / avgEff;
+      const clampedEff = Math.max(0, Math.min(relEff, 1));
+      const inefficientAlpha = Math.trunc(100 * clampedEff); // int(): na stays na
+      s.candles[i] = {
+        time: b.time as number,
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+        color: color.rgb(0, 0, 0, inefficientAlpha),
+        wickColor: transparentCol,
+        borderColor: transparentCol,
+        forceOverlay: true,
+      };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        plotCandles: { vacuum: s.candles.slice() },
+      };
+    },
   };
 }
 
-export const VacuumCandles = { calculate, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VacuumCandlesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VacuumCandlesInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const VacuumCandles = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig };

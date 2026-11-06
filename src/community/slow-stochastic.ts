@@ -10,8 +10,10 @@
  */
 
 import {
-  ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar,
+  taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar,
 } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SlowStochasticInputs {
   /** Bars of the stochastic range */
@@ -58,39 +60,68 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SlowStochasticInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface SlowStochRun extends BarRunState<Record<string, never>> {
+  stoch: ReturnType<typeof taStep.stoch>;
+  kSma: WindowSma;
+  dSma: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<SlowStochasticInputs>): BarStudy<SlowStochRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const smoothK = Math.trunc(cfg.smoothK);
   const smoothD = Math.trunc(cfg.smoothD);
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const close = new Series(bars, (b) => b.close);
-  const high = new Series(bars, (b) => b.high);
-  const low = new Series(bars, (b) => b.low);
-
-  // k = sma(stoch(close, high, low, smoothK), 3); d = sma(k, smoothD)
-  const kSeries = ta.sma(ta.stoch(close, high, low, smoothK), 3);
-  const k = A(kSeries);
-  const d = A(ta.sma(kSeries, smoothD));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: k[i], color: BLACK })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: d[i], color: RED })),
+    init() {
+      const stoch = taStep.stoch(smoothK);
+      const kSma = new WindowSma(3);
+      const dSma = new WindowSma(smoothD);
+      const s: SlowStochRun = { stoch, kSma, dSma, plot0: [], plot1: [], steps: [stoch, kSma, dSma], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1];
+      return s;
     },
-    hlines: [
-      { value: 80, options: { title: 'Level', color: LEVEL, linestyle: 'dashed' } },
-      { value: 20, options: { title: 'Level', color: LEVEL, linestyle: 'dashed' } },
-    ],
-    fills: [
-      { plot1: 'hline_0', plot2: 'hline_1', options: { title: 'Hlines Background', color: BACKGROUND } },
-    ],
+    bar(s, i, bars) {
+      const b = bars[i];
+      // k = sma(stoch(close, high, low, smoothK), 3); d = sma(k, smoothD)
+      const k = s.kSma.step(s.stoch.step(b.close, b.high, b.low));
+      const d = s.dSma.step(k);
+      s.plot0[i] = { time: b.time, value: k, color: BLACK };
+      s.plot1[i] = { time: b.time, value: d, color: RED };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plot0.slice(),
+          plot1: s.plot1.slice(),
+        },
+        hlines: [
+          { value: 80, options: { title: 'Level', color: LEVEL, linestyle: 'dashed' } },
+          { value: 20, options: { title: 'Level', color: LEVEL, linestyle: 'dashed' } },
+        ],
+        fills: [
+          { plot1: 'hline_0', plot2: 'hline_1', options: { title: 'Hlines Background', color: BACKGROUND } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SlowStochasticInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SlowStochasticInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const SlowStochastic = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

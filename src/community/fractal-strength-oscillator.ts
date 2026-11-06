@@ -13,8 +13,10 @@
  * Original notice: © SurgeQuant
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { AlmaStep, barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowVwma, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export interface FractalStrengthOscillatorInputs {
   /** Source */
@@ -84,16 +86,38 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<FractalStrengthOscillatorInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
+type Result = IndicatorResult & { barColors: BarColorData[] };
+type Point = { time: number; value: number; color: string };
+/** The moving average of calcMovingAverage on one bar (`i`: the bar, for the WMA loop over the RSI history) */
+type Ma = Committable & { step(v: number, volume: number, i: number): number };
+
+interface FsoVars {
+  /** var int RSItrend = 0 */
+  rsiTrend: number;
+  /** var int FDItrend = 0 */
+  fdiTrend: number;
+  /** var int Trend = 0 */
+  trend: number;
+  /** var col = color.gray */
+  col: string;
+}
+
+interface FsoRun extends BarRunState<FsoVars> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  ma: Ma;
+  baseRsi: number[];
+  fdiPlot: Point[];
+  rsiPlot: Point[];
+  barColors: BarColorData[];
+}
+
+const NO_COMMIT = (): void => {};
+
+function study(inputs: Partial<FractalStrengthOscillatorInputs>): BarStudy<FsoRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const N = cfg.length;
   const length = cfg.maLength;
+  const value = barSource(cfg.src);
 
   // The hh / ll / diffs array / fdi_length code of the Pine source is not used by any output: Pine removes it (no
   // runtime error even with Length 0 or 1, where array.get would be out of bounds), so it is not ported.
@@ -101,103 +125,150 @@ export function calculate(
   // FDI = 1 + (math.log(length) + math.log(2)) / math.log(2 * N): `length` is the MA Length input
   const FDI = 1 + (Math.log(length) + Math.log(2)) / Math.log(2 * N);
 
-  // RSI and the moving average of calcMovingAverage(ma_type, base_rsi, length, sigma) (called on every bar)
-  const baseRsi = A(ta.rsi(getSourceSeries(bars, cfg.src), cfg.rsiLength));
-  const rsiS = S(baseRsi);
-  let smoothed: number[];
-  switch (cfg.maType) {
-    case 'SMA':
-      smoothed = A(ta.sma(rsiS, length));
-      break;
-    case 'EMA':
-      smoothed = A(ta.ema(rsiS, length));
-      break;
-    case 'DEMA': {
-      const e1 = A(ta.ema(rsiS, length));
-      const e2 = A(ta.ema(S(e1), length));
-      smoothed = e1.map((v, i) => 2 * v - e2[i]);
-      break;
+  // The moving average of calcMovingAverage(ma_type, base_rsi, length, sigma) (called on every bar)
+  const maStep = (baseRsi: number[]): Ma => {
+    switch (cfg.maType) {
+      case 'SMA': {
+        const m = new WindowSma(length);
+        return { step: (v) => m.step(v), commit: () => m.commit() };
+      }
+      case 'EMA': {
+        const m = taStep.ema(length);
+        return { step: (v) => m.step(v), commit: () => m.commit() };
+      }
+      case 'DEMA': {
+        const m1 = taStep.ema(length);
+        const m2 = taStep.ema(length);
+        return {
+          step: (v) => { const e1 = m1.step(v); const e2 = m2.step(e1); return 2 * e1 - e2; },
+          commit: () => { m1.commit(); m2.commit(); },
+        };
+      }
+      case 'TEMA': {
+        const m1 = taStep.ema(length);
+        const m2 = taStep.ema(length);
+        const m3 = taStep.ema(length);
+        return {
+          step: (v) => { const e1 = m1.step(v); const e2 = m2.step(e1); const e3 = m3.step(e2); return 3 * (e1 - e2) + e3; },
+          commit: () => { m1.commit(); m2.commit(); m3.commit(); },
+        };
+      }
+      case 'WMA':
+        // for i = 0 to length - 1: weight = length - i; norm += weight; sum += S[i] * weight; result = sum / norm
+        return {
+          step: (_v, _vol, bi) => {
+            let norm = 0.0;
+            let sum = 0.0;
+            for (let i = 0; i <= length - 1; i++) {
+              const weight = length - i;
+              norm = norm + weight;
+              sum = sum + (bi - i >= 0 ? baseRsi[bi - i]! : NaN) * weight;
+            }
+            return sum / norm;
+          },
+          commit: NO_COMMIT,
+        };
+      case 'VWMA': {
+        const m = new WindowVwma(length);
+        return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() };
+      }
+      case 'SMMA': {
+        const m = taStep.rma(length);
+        return { step: (v) => m.step(v), commit: () => m.commit() };
+      }
+      case 'HMA': {
+        const m = taStep.hma(length);
+        return {
+          step: (v) => {
+            if (length === 1) throw new Error("Invalid value of the 'length' argument (0.0) in the 'wma' function. It must be > 0.");
+            return m.step(v);
+          },
+          commit: () => m.commit(),
+        };
+      }
+      case 'LSMA': {
+        const m = taStep.linreg(length, 0);
+        return { step: (v) => m.step(v), commit: () => m.commit() };
+      }
+      case 'ALMA': {
+        const m = new AlmaStep(length, 0.85, cfg.sigma);
+        return { step: (v) => m.step(v), commit: () => m.commit() };
+      }
+      default:
+        return { step: () => NaN, commit: NO_COMMIT };
     }
-    case 'TEMA': {
-      const e1 = A(ta.ema(rsiS, length));
-      const e2 = A(ta.ema(S(e1), length));
-      const e3 = A(ta.ema(S(e2), length));
-      smoothed = e1.map((v, i) => 3 * (v - e2[i]) + e3[i]);
-      break;
-    }
-    case 'WMA':
-      // for i = 0 to length - 1: weight = length - i; norm += weight; sum += S[i] * weight; result = sum / norm
-      smoothed = baseRsi.map((_v, bi) => {
-        let norm = 0.0;
-        let sum = 0.0;
-        for (let i = 0; i <= length - 1; i++) {
-          const weight = length - i;
-          norm = norm + weight;
-          sum = sum + (bi - i >= 0 ? baseRsi[bi - i] : NaN) * weight;
-        }
-        return sum / norm;
-      });
-      break;
-    case 'VWMA':
-      smoothed = A(ta.vwma(rsiS, length, S(bars.map((b) => b.volume ?? NaN))));
-      break;
-    case 'SMMA':
-      smoothed = A(ta.rma(rsiS, length));
-      break;
-    case 'HMA':
-      if (length === 1 && n > 0) throw new Error("Invalid value of the 'length' argument (0.0) in the 'wma' function. It must be > 0.");
-      smoothed = A(ta.hma(rsiS, length));
-      break;
-    case 'LSMA':
-      smoothed = A(ta.linreg(rsiS, length, 0));
-      break;
-    case 'ALMA':
-      smoothed = A(ta.alma(rsiS, length, 0.85, cfg.sigma));
-      break;
-    default:
-      smoothed = new Array(n).fill(NaN);
-  }
-  const standardRsi = cfg.useSmoothing ? smoothed : baseRsi;
+  };
 
   const gray = color.gray;
-  const fdiPlot: { time: number; value: number; color: string }[] = [];
-  const rsiPlot: { time: number; value: number; color: string }[] = [];
-  const barColors: BarColorData[] = [];
-  let rsiTrend = 0; // var int RSItrend = 0
-  let fdiTrend = 0; // var int FDItrend = 0
-  let trend = 0; // var int Trend = 0
-  let col: string = gray; // var col = color.gray
-  for (let i = 0; i < n; i++) {
-    const r = standardRsi[i];
-    if (lt(r, 45)) rsiTrend = -1;
-    if (gt(r, 55)) rsiTrend = 1;
-    if (gt(FDI, cfg.fdiThreshold)) fdiTrend = -1;
-    if (lt(FDI, cfg.fdiThreshold)) fdiTrend = 1;
-    if (rsiTrend === 1 && fdiTrend === 1) trend = 1;
-    if (rsiTrend === 1 && fdiTrend === -1) trend = 1;
-    if (rsiTrend === -1 && fdiTrend === -1) trend = -1;
-    if (rsiTrend === -1 && fdiTrend === 1) trend = -1;
-    if (trend === 1) col = cfg.bullColor;
-    if (trend === -1) col = cfg.bearColor;
-    if (trend === 0) col = gray;
-
-    const t = bars[i].time;
-    fdiPlot.push({ time: t, value: Number.isFinite(FDI) ? FDI : NaN, color: col });
-    rsiPlot.push({ time: t, value: r, color: rsiTrend === 1 ? cfg.bullColor : cfg.bearColor });
-    barColors.push({ time: t, color: col });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: fdiPlot, plot1: rsiPlot },
-    // hline(50, color = color.gray): default dashed, width 1
-    hlines: [{ value: 50, options: { title: 'Level', color: gray, linestyle: 'dashed', linewidth: 1 } }],
-    barColors,
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const rsi = taStep.rsi(cfg.rsiLength);
+      const baseRsi: number[] = [];
+      const ma = maStep(baseRsi);
+      const s: FsoRun = {
+        rsi, ma, baseRsi, fdiPlot: [], rsiPlot: [], barColors: [],
+        steps: [rsi, ma], vars: { rsiTrend: 0, fdiTrend: 0, trend: 0, col: gray }, lists: [], series: [],
+      };
+      s.series = [s.baseRsi, s.fdiPlot, s.rsiPlot, s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const v = s.vars;
+      // RSI and the moving average (called on every bar)
+      const base = s.rsi.step(value(b));
+      s.baseRsi[i] = base;
+      const smoothed = s.ma.step(base, b.volume ?? NaN, i);
+      const r = cfg.useSmoothing ? smoothed : base;
+      if (lt(r, 45)) v.rsiTrend = -1;
+      if (gt(r, 55)) v.rsiTrend = 1;
+      if (gt(FDI, cfg.fdiThreshold)) v.fdiTrend = -1;
+      if (lt(FDI, cfg.fdiThreshold)) v.fdiTrend = 1;
+      const rsiTrend = v.rsiTrend;
+      const fdiTrend = v.fdiTrend;
+      if (rsiTrend === 1 && fdiTrend === 1) v.trend = 1;
+      if (rsiTrend === 1 && fdiTrend === -1) v.trend = 1;
+      if (rsiTrend === -1 && fdiTrend === -1) v.trend = -1;
+      if (rsiTrend === -1 && fdiTrend === 1) v.trend = -1;
+      const trend = v.trend;
+      if (trend === 1) v.col = cfg.bullColor;
+      if (trend === -1) v.col = cfg.bearColor;
+      if (trend === 0) v.col = gray;
+      const col = v.col;
+
+      const t = b.time as number;
+      s.fdiPlot[i] = { time: t, value: Number.isFinite(FDI) ? FDI : NaN, color: col };
+      s.rsiPlot[i] = { time: t, value: r, color: rsiTrend === 1 ? cfg.bullColor : cfg.bearColor };
+      s.barColors[i] = { time: t, color: col };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.fdiPlot.slice(), plot1: s.rsiPlot.slice() },
+        // hline(50, color = color.gray): default dashed, width 1
+        hlines: [{ value: 50, options: { title: 'Level', color: gray, linestyle: 'dashed', linewidth: 1 } }],
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FractalStrengthOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<FractalStrengthOscillatorInputs> = {},
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const FractalStrengthOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -6,8 +6,10 @@
  * Reference: "MACD VXI" community indicator
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MACDVXIInputs {
   fastLength: number;
@@ -43,70 +45,94 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MACDVXIInputs> = {}): Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] } {
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] };
+
+interface VxiRun extends BarRunState<Record<string, never>> {
+  fastEMA: ReturnType<typeof taStep.ema>;
+  slowEMA: ReturnType<typeof taStep.ema>;
+  signalSma: WindowSma;
+  macd: number[];
+  sig: number[];
+  histPlot: Point[];
+  macdPlot: Point[];
+  signalPlot: Point[];
+  crossPlot: Point[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<MACDVXIInputs>): BarStudy<VxiRun, Result> {
   const { fastLength, slowLength, signalLength, src } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
-
-  const fastEMA = ta.ema(source, fastLength);
-  const slowEMA = ta.ema(source, slowLength);
-  const macdLine = fastEMA.sub(slowEMA);
-  const signalLine = ta.sma(macdLine, signalLength); // Pine uses sma for signal
-  const histogram = macdLine.sub(signalLine);
-  const histArr = histogram.toArray();
-  const macdArr = macdLine.toArray();
-  const sigArr = signalLine.toArray();
-
+  const value = barSource(src);
   const warmup = slowLength;
-
-  // plot0: histogram (black, style=histogram per Pine)
-  const histPlot = histArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || v == null) ? NaN : v,
-  }));
-
-  // plot1: MACD line (red per Pine)
-  const macdPlot = macdArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || v == null) ? NaN : v,
-  }));
-
-  // plot2: Signal line (blue per Pine)
-  const signalPlot = sigArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || v == null) ? NaN : v,
-  }));
-
-  // plot3: Cross detection circles - plot signal value when cross(signal, macd)
-  const crossPlot = sigArr.map((v, i) => {
-    if (i < warmup + 1 || v == null) return { time: bars[i].time, value: NaN };
-    const s = sigArr[i]!;
-    const sPrev = sigArr[i - 1] ?? NaN;
-    const m = macdArr[i] ?? NaN;
-    const mPrev = macdArr[i - 1] ?? NaN;
-    // cross(signal, macd): signal crosses above or below macd
-    const crossUp = sPrev <= mPrev && s > m;
-    const crossDn = sPrev >= mPrev && s < m;
-    return { time: bars[i].time, value: (crossUp || crossDn) ? s : NaN };
-  });
-
-  // Background color: Pine bgcolor(OutputSignal>0?#000000:#128E89, transp=80)
-  const bgColors: BgColorData[] = [];
-  for (let i = warmup; i < bars.length; i++) {
-    const m = macdArr[i] ?? NaN;
-    const s = sigArr[i] ?? NaN;
-    if (isNaN(m) || isNaN(s)) continue;
-    const color = s >= m
-      ? 'rgba(0,0,0,0.1)'        // bearish: black at low alpha
-      : 'rgba(18,142,137,0.1)';  // bullish: teal
-    bgColors.push({ time: bars[i].time, color });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': histPlot, 'plot1': macdPlot, 'plot2': signalPlot, 'plot3': crossPlot },
-    hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } }],
-    bgColors,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const fastEMA = taStep.ema(fastLength);
+      const slowEMA = taStep.ema(slowLength);
+      const signalSma = new WindowSma(signalLength); // Pine uses sma for signal
+      const s: VxiRun = {
+        fastEMA, slowEMA, signalSma, macd: [], sig: [], histPlot: [], macdPlot: [], signalPlot: [], crossPlot: [], bgColors: [],
+        steps: [fastEMA, slowEMA, signalSma], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.bgColors];
+      s.series = [s.macd, s.sig, s.histPlot, s.macdPlot, s.signalPlot, s.crossPlot];
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      const v = value(bars[i]);
+      const macd = s.fastEMA.step(v) - s.slowEMA.step(v);
+      const sig = s.signalSma.step(macd);
+      const hist = macd - sig;
+      s.macd[i] = macd;
+      s.sig[i] = sig;
+
+      // plot0: histogram (black, style=histogram per Pine)
+      s.histPlot[i] = { time, value: i < warmup ? NaN : hist };
+      // plot1: MACD line (red per Pine)
+      s.macdPlot[i] = { time, value: i < warmup ? NaN : macd };
+      // plot2: Signal line (blue per Pine)
+      s.signalPlot[i] = { time, value: i < warmup ? NaN : sig };
+
+      // plot3: Cross detection circles - plot signal value when cross(signal, macd)
+      if (i < warmup + 1) {
+        s.crossPlot[i] = { time, value: NaN };
+      } else {
+        const sPrev = s.sig[i - 1];
+        const mPrev = s.macd[i - 1];
+        // cross(signal, macd): signal crosses above or below macd
+        const crossUp = sPrev <= mPrev && sig > macd;
+        const crossDn = sPrev >= mPrev && sig < macd;
+        s.crossPlot[i] = { time, value: (crossUp || crossDn) ? sig : NaN };
+      }
+
+      // Background color: Pine bgcolor(OutputSignal>0?#000000:#128E89, transp=80)
+      if (i >= warmup && !isNaN(macd) && !isNaN(sig)) {
+        const color = sig >= macd
+          ? 'rgba(0,0,0,0.1)'        // bearish: black at low alpha
+          : 'rgba(18,142,137,0.1)';  // bullish: teal
+        s.bgColors.push({ time, color });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.histPlot.slice(), 'plot1': s.macdPlot.slice(), 'plot2': s.signalPlot.slice(), 'plot3': s.crossPlot.slice() },
+        hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } }],
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
 }
 
-export const MACDVXI = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MACDVXIInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MACDVXIInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MACDVXI = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

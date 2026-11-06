@@ -10,7 +10,9 @@
  * Original notice: © TFlab
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RSIMultiLevelsInputs {
   showShort: boolean;
@@ -152,50 +154,74 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RSIMultiLevelsInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface RmlRun extends BarRunState<Record<string, never>> {
+  rsis: ReturnType<typeof taStep.rsi>[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+}
+
+function study(inputs: Partial<RSIMultiLevelsInputs>): BarStudy<RmlRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const close = getSourceSeries(bars, 'close');
-  const rsi = (len: number) => ta.rsi(close, len).toArray().map((v) => v ?? NaN);
-  const rsiShort = rsi(cfg.lenShort);
-  const rsiMid = rsi(cfg.lenMid);
-  const rsiLong = rsi(cfg.lenLong);
-
-  // plot(..., display = Show_x ? display.all : display.none): a hidden plot draws nothing
-  const line = (vals: number[], show: boolean, c: string) =>
-    bars.map((b, i) => ({ time: b.time, value: show ? vals[i] : NaN, color: c }));
-
   const c = cfg as unknown as Record<string, number | boolean>;
   const levelValue = (k: number) => c[`lvl${k}`] as number;
   const levelShown = (k: number) => c[`showLvl${k}`] as boolean;
-  // hline(Lvl_k, ..., display = Show_Lvl_k ? display.all : display.none): a hidden level still bounds its fills
-  const hlines = LEVELS.map((_v, k) => k + 1).filter(levelShown).map((k) => ({
-    value: levelValue(k),
-    options: { title: `Level ${k}`, color: k === 7 ? color.red : HLINE_COLOR, linestyle: 'dashed' as const },
-  }));
-
   const zone = { LP: [cfg.showLP, cfg.colorLP], MP: [cfg.showMP, cfg.colorMP], HP: [cfg.showHP, cfg.colorHP] } as const;
-  const fills = FILLS.map(([a, b, z]) => ({
-    plot1: `hline_lvl${a}`,
-    plot2: `hline_lvl${b}`,
-    options: { title: ZONE_TITLE[z] },
-    colors: new Array<string>(n).fill(zone[z][0] ? String(zone[z][1]) : 'transparent'),
-  }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(rsiShort, cfg.showShort, cfg.colorShort),
-      plot1: line(rsiMid, cfg.showMid, cfg.colorMid),
-      plot2: line(rsiLong, cfg.showLong, cfg.colorLong),
+    init() {
+      const rsis = [taStep.rsi(cfg.lenShort), taStep.rsi(cfg.lenMid), taStep.rsi(cfg.lenLong)];
+      const s: RmlRun = { rsis, plot0: [], plot1: [], plot2: [], steps: rsis, vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1, s.plot2];
+      return s;
     },
-    hlines,
-    fills,
+    bar(s, i, bars) {
+      const close = bars[i].close;
+      const time = bars[i].time;
+      const rsiShort = s.rsis[0].step(close);
+      const rsiMid = s.rsis[1].step(close);
+      const rsiLong = s.rsis[2].step(close);
+      // plot(..., display = Show_x ? display.all : display.none): a hidden plot draws nothing
+      s.plot0[i] = { time, value: cfg.showShort ? rsiShort : NaN, color: cfg.colorShort };
+      s.plot1[i] = { time, value: cfg.showMid ? rsiMid : NaN, color: cfg.colorMid };
+      s.plot2[i] = { time, value: cfg.showLong ? rsiLong : NaN, color: cfg.colorLong };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // hline(Lvl_k, ..., display = Show_Lvl_k ? display.all : display.none): a hidden level still bounds its fills
+      const hlines = LEVELS.map((_v, k) => k + 1).filter(levelShown).map((k) => ({
+        value: levelValue(k),
+        options: { title: `Level ${k}`, color: k === 7 ? color.red : HLINE_COLOR, linestyle: 'dashed' as const },
+      }));
+      const fills = FILLS.map(([a, b, z]) => ({
+        plot1: `hline_lvl${a}`,
+        plot2: `hline_lvl${b}`,
+        options: { title: ZONE_TITLE[z] },
+        colors: new Array<string>(n).fill(zone[z][0] ? String(zone[z][1]) : 'transparent'),
+      }));
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        hlines,
+        fills,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RSIMultiLevelsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RSIMultiLevelsInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RSIMultiLevels = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

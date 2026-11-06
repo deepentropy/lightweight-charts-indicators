@@ -13,9 +13,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type ATRHEMAColorScheme = 'Default' | 'Modern' | 'Cool' | 'Alternate' | 'Bright';
 
@@ -80,77 +82,109 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ATRHEMAInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const [bull, bear] = SCHEMES[cfg.colScheme];
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
-  const atr = ta.atr(bars, cfg.atrleng).toArray().map((v) => v ?? NaN);
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
 
+interface HemaVars {
+  /** hema[1] / b[1] (na on the first bar) */
+  hemaPrev: number;
+  bPrev: number;
+  /** var color prevColor = na */
+  prevColor: string | null;
+}
+
+interface HemaRun extends BarRunState<HemaVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  plot0: { time: number; value: number; color: string }[];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<ATRHEMAInputs>): BarStudy<HemaRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const [bull, bear] = SCHEMES[cfg.colScheme];
+  const source = barSource(cfg.src);
   const alpha = 2 / (cfg.alphaL + 1);
   const gamma = 2 / (cfg.gammaL + 1);
-
-  const hema: number[] = new Array(n);
-  const b: number[] = new Array(n);
-  const hemaColor: (string | null)[] = new Array(n);
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const longFlags: boolean[] = [], shortFlags: boolean[] = [];
-  let prevColorVar: string | null = null; // var color prevColor = na
-  let hemaColorVar: string | null = null; // var color hemaColor = na
-  for (let i = 0; i < n; i++) {
-    // hema := (1 - alpha) * (nz(hema[1]) + nz(b[1], src)) + alpha * src (hema[1], b[1] are na on the first bar)
-    const hemaPrev = i > 0 ? hema[i - 1] : NaN;
-    const bPrev = i > 0 ? b[i - 1] : NaN;
-    const nzHemaPrev = isNaN(hemaPrev) ? 0 : hemaPrev;
-    hema[i] = (1 - alpha) * (nzHemaPrev + (isNaN(bPrev) ? src[i] : bPrev)) + alpha * src[i];
-    // b := (1 - gamma) * nz(b[1]) + gamma * (hema - nz(hema[1]))
-    b[i] = (1 - gamma) * (isNaN(bPrev) ? 0 : bPrev) + gamma * (hema[i] - nzHemaPrev);
-
-    // neutralThreshold = ta.atr(atrleng) * atrMult; hemaChange = hema - hema[1]
-    // inNeutralZone = math.abs(hemaChange) < neutralThreshold (false when a value is na)
-    const neutralThreshold = atr[i] * cfg.atrMult;
-    const hemaChange = hema[i] - hemaPrev;
-    const inNeutralZone = lt(Math.abs(hemaChange), neutralThreshold);
-    if (inNeutralZone) hemaColorVar = prevColorVar;
-    else hemaColorVar = gt(hemaChange, 0) ? bull : bear;
-
-    const longSignal = hemaColorVar === bull && prevColorVar === bear;
-    const shortSignal = hemaColorVar === bear && prevColorVar === bull;
-    prevColorVar = hemaColorVar;
-    hemaColor[i] = hemaColorVar;
-    longFlags.push(longSignal);
-    shortFlags.push(shortSignal);
-
-    const t = bars[i].time;
-    // barcolor(paint ? hemaColor : na)
-    if (cfg.paint && hemaColorVar !== null) barColors.push({ time: t, color: hemaColorVar });
-    // plotshape(longSignal, style = shape.triangleup, color = bull, location = location.belowbar, text = "𝐋",
-    //   textcolor = bull, size = size.small, force_overlay = true); the short signal mirrors it above the bar
-    if (longSignal) {
-      markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: bull, text: '𝐋', textColor: bull,
-        size: 'small', forceOverlay: true });
-    }
-    if (shortSignal) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: bear, text: '𝐒', textColor: bear,
-        size: 'small', forceOverlay: true });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(hema, "HEMA", linewidth = 4, color = hemaColor, force_overlay = true)
-      plot0: bars.map((bar, i) => ({ time: bar.time, value: hema[i], color: hemaColor[i] ?? 'transparent' })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const atr = taStep.atr(cfg.atrleng);
+      const s: HemaRun = {
+        atr, plot0: [], flags: [[], []], times: [[], []], markers: [], barColors: [],
+        steps: [atr], vars: { hemaPrev: NaN, bPrev: NaN, prevColor: null }, lists: [], series: [],
+      };
+      s.lists = [...s.times, s.markers, s.barColors];
+      s.series = [s.plot0, ...s.flags];
+      return s;
     },
-    markers,
-    barColors,
-    // alertcondition(longSignal, ...) / alertcondition(shortSignal, ...)
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags]),
+    bar(s, i, bars) {
+      const bar = bars[i];
+      const v = s.vars;
+      const src = source(bar);
+      const atr = s.atr.step(bar.high, bar.low, bar.close);
+      // hema := (1 - alpha) * (nz(hema[1]) + nz(b[1], src)) + alpha * src (hema[1], b[1] are na on the first bar)
+      const hemaPrev = v.hemaPrev;
+      const bPrev = v.bPrev;
+      const nzHemaPrev = isNaN(hemaPrev) ? 0 : hemaPrev;
+      const hema = (1 - alpha) * (nzHemaPrev + (isNaN(bPrev) ? src : bPrev)) + alpha * src;
+      // b := (1 - gamma) * nz(b[1]) + gamma * (hema - nz(hema[1]))
+      const b = (1 - gamma) * (isNaN(bPrev) ? 0 : bPrev) + gamma * (hema - nzHemaPrev);
+      v.hemaPrev = hema;
+      v.bPrev = b;
+      // neutralThreshold = ta.atr(atrleng) * atrMult; hemaChange = hema - hema[1]
+      // inNeutralZone = math.abs(hemaChange) < neutralThreshold (false when a value is na)
+      const neutralThreshold = atr * cfg.atrMult;
+      const hemaChange = hema - hemaPrev;
+      const inNeutralZone = lt(Math.abs(hemaChange), neutralThreshold);
+      const prevColorVar = v.prevColor;
+      // var color hemaColor = na
+      const hemaColorVar = inNeutralZone ? prevColorVar : gt(hemaChange, 0) ? bull : bear;
+      const longSignal = hemaColorVar === bull && prevColorVar === bear;
+      const shortSignal = hemaColorVar === bear && prevColorVar === bull;
+      v.prevColor = hemaColorVar;
+      s.flags[0][i] = longSignal;
+      s.flags[1][i] = shortSignal;
+      const t = bar.time;
+      if (longSignal) s.times[0].push(t as number);
+      if (shortSignal) s.times[1].push(t as number);
+      // barcolor(paint ? hemaColor : na)
+      if (cfg.paint && hemaColorVar !== null) s.barColors.push({ time: t, color: hemaColorVar });
+      // plotshape(longSignal, style = shape.triangleup, color = bull, location = location.belowbar, text = "𝐋",
+      //   textcolor = bull, size = size.small, force_overlay = true); the short signal mirrors it above the bar
+      if (longSignal) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: bull, text: '𝐋', textColor: bull,
+          size: 'small', forceOverlay: true });
+      }
+      if (shortSignal) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: bear, text: '𝐒', textColor: bear,
+          size: 'small', forceOverlay: true });
+      }
+      // plot(hema, "HEMA", linewidth = 4, color = hemaColor, force_overlay = true)
+      s.plot0[i] = { time: t, value: hema, color: hemaColorVar ?? 'transparent' };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        // alertcondition(longSignal, ...) / alertcondition(shortSignal, ...)
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ATRHEMAInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ATRHEMAInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -161,6 +195,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const ATRHEMA = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

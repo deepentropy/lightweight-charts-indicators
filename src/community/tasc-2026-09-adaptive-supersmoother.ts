@@ -12,7 +12,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TascAdaptiveSuperSmootherInputs {
   /** Source series */
@@ -52,68 +54,98 @@ export const metadata = {
 /** Pine float comparison: a > b only when a - b > 1e-10 (na compares false) */
 const gt = (a: number, b: number) => a - b > 1e-10;
 
-/** superSmoother(source, period) with a per-bar period (one call site: its own history of res) */
-function superSmoother(src: number[], period: (i: number) => number): number[] {
-  const n = src.length;
-  const res: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const p = period(i);
-    const w = (1.414 * Math.PI) / p;
-    const q = Math.exp(-w);
-    const c1 = 2.0 * q * Math.cos(w);
-    const c2 = q * q;
-    const a0 = (1.0 - c1 + c2) / 2.0;
-    let r = src[i];
-    // if bar_index >= 4: res := a0 * (source + source[1]) + c1 * res[1] - c2 * res[2]
-    if (i >= 4) r = a0 * (src[i] + src[i - 1]) + c1 * res[i - 1] - c2 * res[i - 2];
-    res[i] = r;
-  }
-  return res;
+/**
+ * superSmoother(source, period) on bar i with the bar's period (one call site: its own history of res, `res`
+ * indexed by bar)
+ */
+function superSmoother(src: number[], res: number[], i: number, p: number): number {
+  const w = (1.414 * Math.PI) / p;
+  const q = Math.exp(-w);
+  const c1 = 2.0 * q * Math.cos(w);
+  const c2 = q * q;
+  const a0 = (1.0 - c1 + c2) / 2.0;
+  let r = src[i];
+  // if bar_index >= 4: res := a0 * (source + source[1]) + c1 * res[1] - c2 * res[2]
+  if (i >= 4) r = a0 * (src[i] + src[i - 1]) + c1 * res[i - 1] - c2 * res[i - 2];
+  res[i] = r;
+  return r;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<TascAdaptiveSuperSmootherInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface SsRun extends BarRunState<Record<string, never>> {
+  meanSq: WindowSma;
+  src: number[];
+  ssBase: number[];
+  ss: number[];
+  ssAdaptive: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+}
+
+function study(inputs: Partial<TascAdaptiveSuperSmootherInputs>): BarStudy<SsRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.source).toArray().map((v) => v ?? NaN);
-
-  // ssBase = superSmoother(srcInput, perInput)
-  const ssBase = superSmoother(src, () => cfg.period);
-
-  // adaptiveSuperSmoother(srcInput, perInput, rmsInput)
-  const ss = superSmoother(src, () => cfg.period);
-  // roc1 = nz(ss - ss[1])
-  const roc1 = ss.map((v, i) => {
-    const d = i > 0 ? v - ss[i - 1] : NaN;
-    return isNaN(d) ? 0 : d;
-  });
-  // rms(roc1, rmsLength) = math.sqrt(ta.sma(roc1 * roc1, rmsLength))
-  const meanSq = ta.sma(Series.fromArray(bars, roc1.map((x) => x * x)), cfg.rmsLength).toArray().map((v) => v ?? NaN);
-  const aPeriod: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const rocRMS = Math.sqrt(meanSq[i]);
-    let roc = 0.0;
-    if (gt(rocRMS, 0)) roc = Math.min(Math.abs(roc1[i] / rocRMS), 2.0);
-    const factor = Math.pow(1.0 - 0.5 * roc, 2);
-    // int aPeriod = math.max(int(period * factor), 2)
-    aPeriod[i] = Math.max(Math.trunc(cfg.period * factor), 2);
-  }
-  const ssAdaptive = superSmoother(src, (i) => aPeriod[i]);
-
-  const t = (i: number) => bars[i].time;
+  const value = barSource(cfg.source);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((_b, i) => ({ time: t(i), value: ssBase[i], color: color.red })),
-      plot1: bars.map((_b, i) => ({ time: t(i), value: ssAdaptive[i], color: color.blue })),
-      plot2: bars.map((_b, i) => ({ time: t(i), value: 0, color: color.red })),
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const meanSq = new WindowSma(cfg.rmsLength);
+      const s: SsRun = {
+        meanSq, src: [], ssBase: [], ss: [], ssAdaptive: [], plot0: [], plot1: [], plot2: [], plot3: [],
+        steps: [meanSq], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.src, s.ssBase, s.ss, s.ssAdaptive, s.plot0, s.plot1, s.plot2, s.plot3];
+      return s;
+    },
+    bar(s, i, bars) {
+      s.src[i] = value(bars[i]) ?? NaN;
+      // ssBase = superSmoother(srcInput, perInput)
+      const base = superSmoother(s.src, s.ssBase, i, cfg.period);
+
+      // adaptiveSuperSmoother(srcInput, perInput, rmsInput)
+      const ss = superSmoother(s.src, s.ss, i, cfg.period);
+      // roc1 = nz(ss - ss[1])
+      const d = i > 0 ? ss - s.ss[i - 1] : NaN;
+      const roc1 = isNaN(d) ? 0 : d;
+      // rms(roc1, rmsLength) = math.sqrt(ta.sma(roc1 * roc1, rmsLength))
+      const rocRMS = Math.sqrt(s.meanSq.step(roc1 * roc1) ?? NaN);
+      let roc = 0.0;
+      if (gt(rocRMS, 0)) roc = Math.min(Math.abs(roc1 / rocRMS), 2.0);
+      const factor = Math.pow(1.0 - 0.5 * roc, 2);
+      // int aPeriod = math.max(int(period * factor), 2)
+      const aPeriod = Math.max(Math.trunc(cfg.period * factor), 2);
+      const adaptive = superSmoother(s.src, s.ssAdaptive, i, aPeriod);
+
+      const time = bars[i].time;
+      s.plot0[i] = { time, value: base, color: color.red };
+      s.plot1[i] = { time, value: adaptive, color: color.blue };
+      s.plot2[i] = { time, value: 0, color: color.red };
       // osc = ssAdaptive - ssBase
-      plot3: bars.map((_b, i) => ({ time: t(i), value: ssAdaptive[i] - ssBase[i], color: color.blue })),
+      s.plot3[i] = { time, value: adaptive - base, color: color.blue };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TascAdaptiveSuperSmootherInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TascAdaptiveSuperSmootherInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const TascAdaptiveSuperSmoother = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

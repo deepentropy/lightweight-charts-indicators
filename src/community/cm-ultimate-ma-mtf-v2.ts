@@ -27,12 +27,13 @@
  */
 
 import {
-  ta, Series, color, timeframe, resample, mapToChart,
+  ta, taStep, Series, color, timeframe, resample, mapToChart,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar,
 } from 'oakscriptjs';
 import type { BarColorData } from '../types';
 import { periodStarts, chartTimeframe, securityBars } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowVwma, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export interface CmUltimateMaMtfV2Inputs {
   /** Use the chart timeframe (the timeframe input is ignored) */
@@ -156,86 +157,199 @@ function timeframeBars(bars: Bar[], tf: string, context?: ChartContext): { htf: 
   return { htf, toChart: (values) => mapToChart(values, group, [], true, false) };
 }
 
-export function calculate(bars: Bar[], inputs: Partial<CmUltimateMaMtfV2Inputs> = {}, chart?: ChartContext): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
+type Point = { time: number; value: number; color: string };
+/** One average of the chart bars, one bar at a time */
+type Average = Committable & { step(close: number, volume: number): number };
 
-  // res = useCurrentRes ? period : resCustom
-  const { htf, toChart } = timeframeBars(bars, cfg.useCurrentRes ? '' : cfg.resCustom, chart);
-  const S = (a: number[]) => Series.fromArray(htf, a);
-  const src = S(htf.map((b) => b.close));
-  const volume = S(htf.map((b) => b.volume ?? NaN));
+function emaPair(len: number): [ReturnType<typeof taStep.ema>, ReturnType<typeof taStep.ema>] {
+  return [taStep.ema(len), taStep.ema(len)];
+}
 
-  // tema = 3 * (ema1 - ema2) + ema3, with the first length (type 7 of the second average uses it too)
-  const tema = (): number[] => {
-    const ema1 = ta.ema(src, cfg.len);
-    const ema2 = ta.ema(ema1, cfg.len);
-    const e1 = A(ema1);
-    const e2 = A(ema2);
-    const e3 = A(ta.ema(ema2, cfg.len));
-    return e1.map((v, i) => 3 * (v - e2[i]) + e3[i]);
-  };
-  // gd(src, len, factor) = ema(src, len) * (1 + factor) - ema(ema(src, len), len) * factor; t3 = gd(gd(gd(src)))
-  const gd = (x: Series, len: number, factor: number): Series => {
-    const e = ta.ema(x, len);
-    const a = A(e);
-    const b = A(ta.ema(e, len));
-    return S(a.map((v, i) => v * (1 + factor) - b[i] * factor));
-  };
-  const t3 = (len: number, factor: number): number[] => A(gd(gd(gd(src, len, factor), len, factor), len, factor));
-  const average = (type: number, len: number, factor: number): number[] => {
-    switch (type) {
-      case 1: return A(ta.sma(src, len));
-      case 2: return A(ta.ema(src, len));
-      case 3: return A(ta.wma(src, len));
-      case 4: {
-        // hullma = wma(2 * wma(src, len / 2) - wma(src, len), round(sqrt(len))); len / 2 is an integer division
-        const half = A(ta.wma(src, Math.trunc(len / 2)));
-        const full = A(ta.wma(src, len));
-        return A(ta.wma(S(half.map((v, i) => 2 * v - full[i])), Math.round(Math.sqrt(len))));
-      }
-      case 5: return A(ta.vwma(src, len, volume));
-      case 6: return A(ta.rma(src, len));
-      case 7: return tema();
-      default: return t3(len, factor);
+/** average(type, len, factor) of the chart bars as machines: the doubles of the Series functions */
+function averageStep(type: number, len: number, factor: number, temaLen: number): Average {
+  switch (type) {
+    case 1: { const m = new WindowSma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 2: { const m = taStep.ema(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 3: { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+    case 4: {
+      // hullma = wma(2 * wma(src, len / 2) - wma(src, len), round(sqrt(len))); len / 2 is an integer division
+      const half = taStep.wma();
+      const full = taStep.wma();
+      const outer = taStep.wma();
+      const halfLen = Math.trunc(len / 2);
+      const sqrtLen = Math.round(Math.sqrt(len));
+      return {
+        step: (v) => outer.step(2 * half.step(v, halfLen) - full.step(v, len), sqrtLen),
+        commit: () => { half.commit(); full.commit(); outer.commit(); },
+      };
     }
-  };
-  const out1 = toChart(average(cfg.atype, cfg.len, cfg.factorT3 * 0.1));
-  const out2 = toChart(average(cfg.atype2, cfg.len2, cfg.sfactorT3 * 0.1));
-  const crossed = ta.cross(Series.fromArray(bars, out1), Series.fromArray(bars, out2)).toArray();
+    case 5: { const m = new WindowVwma(len); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+    case 6: { const m = taStep.rma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 7: {
+    // tema = 3 * (ema1 - ema2) + ema3, with the first length (type 7 of the second average uses it too)
+    const m1 = taStep.ema(temaLen);
+    const m2 = taStep.ema(temaLen);
+    const m3 = taStep.ema(temaLen);
+    return {
+      step: (v) => { const e1 = m1.step(v); const e2 = m2.step(e1); return 3 * (e1 - e2) + m3.step(e2); },
+      commit: () => { m1.commit(); m2.commit(); m3.commit(); },
+    };
+    }
+    default: {
+    // gd(src, len, factor) = ema(src, len) * (1 + factor) - ema(ema(src, len), len) * factor; t3 = gd(gd(gd(src)))
+    const g = [emaPair(len), emaPair(len), emaPair(len)];
+    return {
+      step: (v) => {
+        let x = v;
+        for (const [e, ee] of g) {
+          const a = e.step(x);
+          x = a * (1 + factor) - ee.step(a) * factor;
+        }
+        return x;
+      },
+      commit: () => { for (const [e, ee] of g) { e.commit(); ee.commit(); } },
+    };
+    }
+  }
+}
 
-  const plot0: Array<{ time: number; value: number; color: string }> = [];
-  const plot1: typeof plot0 = [];
-  const plot2: Array<{ time: number; value: number }> = [];
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const prev = i - cfg.smoothe >= 0 ? out1[i - cfg.smoothe] : NaN;
-    const maUp = ge(out1[i], prev);
-    const maDown = lt(out1[i], prev);
+interface CmuRun extends BarRunState<Record<string, never>> {
+  /** The averages of the chart bars (null: precalculated) */
+  ma1: Average | null;
+  ma2: Average | null;
+  /** The averages of the other timeframe (or of a negative smoothing) brought to the chart bars */
+  pre: { out1: number[]; out2: number[] } | null;
+  cross: ReturnType<typeof taStep.cross>;
+  out1: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: { time: number; value: number }[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<CmUltimateMaMtfV2Inputs>): BarStudy<CmuRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  // another timeframe: every chart bar of a period shows the value of the period at its end (from the later bars);
+  // a negative smoothing reads later bars
+  const whole = !cfg.useCurrentRes || cfg.smoothe < 0;
+  return {
+    fullRunReason: () => (!cfg.useCurrentRes ? 'another timeframe, calculated on the whole bar set'
+    : cfg.smoothe < 0 ? 'negative smoothing reads the next bars' : null),
+    init(bars, chart) {
+    let pre: CmuRun['pre'] = null;
+    if (whole) {
+      pre = precalculated(bars, chart);
+    }
+    const ma1 = pre ? null : averageStep(cfg.atype, cfg.len, cfg.factorT3 * 0.1, cfg.len);
+    const ma2 = pre ? null : averageStep(cfg.atype2, cfg.len2, cfg.sfactorT3 * 0.1, cfg.len);
+    const s: CmuRun = {
+      ma1, ma2, pre, cross: taStep.cross(), out1: [], plot0: [], plot1: [], plot2: [], barColors: [],
+      steps: [], vars: {}, lists: [], series: [],
+    };
+    s.steps = [...(ma1 ? [ma1, ma2!] : []), s.cross];
+    s.lists = [s.barColors];
+    s.series = [s.out1, s.plot0, s.plot1, s.plot2];
+    return s;
+    },
+    bar(s, i, bars) {
+    const bar = bars[i]!;
+    const { open, close } = bar;
+    let o1: number;
+    let o2: number;
+    if (s.pre) {
+      o1 = s.pre.out1[i]!;
+      o2 = s.pre.out2[i]!;
+    } else {
+      o1 = s.ma1!.step(close, bar.volume ?? NaN);
+      o2 = s.ma2!.step(close, bar.volume ?? NaN);
+    }
+    s.out1[i] = o1;
+    const crossed = s.cross.step(o1, o2);
+
+    const prev = i - cfg.smoothe >= 0 ? (s.pre ? s.pre.out1 : s.out1)[i - cfg.smoothe]! : NaN;
+    const maUp = ge(o1, prev);
+    const maDown = lt(o1, prev);
     const direction = maUp ? LIME : maDown ? RED : AQUA;
-    const time = bars[i].time;
-    plot0.push({ time, value: out1[i], color: cfg.cc ? direction : AQUA });
+    const time = bar.time as number;
+    s.plot0[i] = { time, value: o1, color: cfg.cc ? direction : AQUA };
     // plot(doma2 and out2 ? out2 : na): a value of 0 or na is not drawn
-    plot1.push({ time, value: cfg.doma2 && truthy(out2[i]) ? out2[i] : NaN, color: cfg.cc2 ? direction : WHITE });
-    plot2.push({ time, value: cfg.sd && crossed[i] ? out2[i] : NaN });
+    s.plot1[i] = { time, value: cfg.doma2 && truthy(o2) ? o2 : NaN, color: cfg.cc2 ? direction : WHITE };
+    s.plot2[i] = { time, value: cfg.sd && crossed ? o2 : NaN };
 
     // barcolor: yellow when the bar opens on one side of an average and closes on the other side, one entry per
     // barcolor() call of the original (cr_up, cr_Down of the first average, cr_up2, cr_Down2 of the second)
-    const { open, close } = bars[i];
-    const up = (ma: number) => lt(open, ma) && gt(close, ma);
-    const down = (ma: number) => gt(open, ma) && lt(close, ma);
-    if (cfg.spc && up(out1[i])) barColors.push({ id: 'barcolor0', time, color: BAR_YELLOW });
-    if (cfg.spc && down(out1[i])) barColors.push({ id: 'barcolor1', time, color: BAR_YELLOW });
-    if (cfg.spc2 && up(out2[i])) barColors.push({ id: 'barcolor2', time, color: BAR_YELLOW });
-    if (cfg.spc2 && down(out2[i])) barColors.push({ id: 'barcolor3', time, color: BAR_YELLOW });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    barColors,
+    if (cfg.spc && lt(open, o1) && gt(close, o1)) s.barColors.push({ id: 'barcolor0', time, color: BAR_YELLOW });
+    if (cfg.spc && gt(open, o1) && lt(close, o1)) s.barColors.push({ id: 'barcolor1', time, color: BAR_YELLOW });
+    if (cfg.spc2 && lt(open, o2) && gt(close, o2)) s.barColors.push({ id: 'barcolor2', time, color: BAR_YELLOW });
+    if (cfg.spc2 && gt(open, o2) && lt(close, o2)) s.barColors.push({ id: 'barcolor3', time, color: BAR_YELLOW });
+    },
+    result(s) {
+    return {
+      metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+      plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+      barColors: s.barColors.slice(),
+    };
+    },
   };
+
+  /** The two averages calculated on the whole bar set (another timeframe) and brought to the chart bars */
+  function precalculated(bars: Bar[], chart: ChartContext): { out1: number[]; out2: number[] } {
+    const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
+
+    // res = useCurrentRes ? period : resCustom
+    const { htf, toChart } = timeframeBars(bars, cfg.useCurrentRes ? '' : cfg.resCustom, chart);
+    const S = (a: number[]) => Series.fromArray(htf, a);
+    const src = S(htf.map((b) => b.close));
+    const volume = S(htf.map((b) => b.volume ?? NaN));
+
+    // tema = 3 * (ema1 - ema2) + ema3, with the first length (type 7 of the second average uses it too)
+    const tema = (): number[] => {
+      const ema1 = ta.ema(src, cfg.len);
+      const ema2 = ta.ema(ema1, cfg.len);
+      const e1 = A(ema1);
+      const e2 = A(ema2);
+      const e3 = A(ta.ema(ema2, cfg.len));
+      return e1.map((v, i) => 3 * (v - e2[i]) + e3[i]);
+    };
+    // gd(src, len, factor) = ema(src, len) * (1 + factor) - ema(ema(src, len), len) * factor; t3 = gd(gd(gd(src)))
+    const gd = (x: Series, len: number, factor: number): Series => {
+      const e = ta.ema(x, len);
+      const a = A(e);
+      const b = A(ta.ema(e, len));
+      return S(a.map((v, i) => v * (1 + factor) - b[i] * factor));
+    };
+    const t3 = (len: number, factor: number): number[] => A(gd(gd(gd(src, len, factor), len, factor), len, factor));
+    const average = (type: number, len: number, factor: number): number[] => {
+      switch (type) {
+        case 1: return A(ta.sma(src, len));
+        case 2: return A(ta.ema(src, len));
+        case 3: return A(ta.wma(src, len));
+        case 4: {
+          // hullma = wma(2 * wma(src, len / 2) - wma(src, len), round(sqrt(len))); len / 2 is an integer division
+          const half = A(ta.wma(src, Math.trunc(len / 2)));
+          const full = A(ta.wma(src, len));
+          return A(ta.wma(S(half.map((v, i) => 2 * v - full[i])), Math.round(Math.sqrt(len))));
+        }
+        case 5: return A(ta.vwma(src, len, volume));
+        case 6: return A(ta.rma(src, len));
+        case 7: return tema();
+        default: return t3(len, factor);
+      }
+    };
+    return {
+      out1: toChart(average(cfg.atype, cfg.len, cfg.factorT3 * 0.1)),
+      out2: toChart(average(cfg.atype2, cfg.len2, cfg.sfactorT3 * 0.1)),
+    };
+  }
 }
 
-export const CmUltimateMaMtfV2 = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CmUltimateMaMtfV2Inputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CmUltimateMaMtfV2Inputs> = {}, chart?: ChartContext): IndicatorResult {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const CmUltimateMaMtfV2 = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

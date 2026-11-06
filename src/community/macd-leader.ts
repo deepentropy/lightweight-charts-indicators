@@ -7,7 +7,9 @@
  * Reference: "MACD Leader" by LazyBear
  */
 
-import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MACDLeaderInputs {
   fastLength: number;
@@ -43,81 +45,98 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MACDLeaderInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+type Ema = ReturnType<typeof taStep.ema>;
+
+interface LeaderRun extends BarRunState<Record<string, never>> {
+  emaFast: Ema;
+  emaSlow: Ema;
+  emaSrcMinusFast: Ema;
+  emaSrcMinusSlow: Ema;
+  emaSignal: Ema;
+  macd: number[];
+  signal: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+}
+
+function study(inputs: Partial<MACDLeaderInputs>): BarStudy<LeaderRun, IndicatorResult> {
   const { fastLength, slowLength, signalLength, src } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
-  const srcArr = source.toArray();
-
-  const emaFast = ta.ema(source, fastLength);
-  const emaSlow = ta.ema(source, slowLength);
-  const emaFastArr = emaFast.toArray();
-  const emaSlowArr = emaSlow.toArray();
-
-  // src - emaFast series, then EMA it
-  const srcMinusFastArr: number[] = new Array(bars.length);
-  const srcMinusSlowArr: number[] = new Array(bars.length);
-  for (let i = 0; i < bars.length; i++) {
-    const s = srcArr[i] ?? 0;
-    srcMinusFastArr[i] = s - (emaFastArr[i] ?? 0);
-    srcMinusSlowArr[i] = s - (emaSlowArr[i] ?? 0);
-  }
-
-  const emaSrcMinusFast = ta.ema(new Series(bars, (_b, i) => srcMinusFastArr[i]), fastLength).toArray();
-  const emaSrcMinusSlow = ta.ema(new Series(bars, (_b, i) => srcMinusSlowArr[i]), slowLength).toArray();
-
-  const macdArr: number[] = new Array(bars.length);
-  const leaderArr: number[] = new Array(bars.length);
-  for (let i = 0; i < bars.length; i++) {
-    const ef = emaFastArr[i] ?? NaN;
-    const es = emaSlowArr[i] ?? NaN;
-    macdArr[i] = ef - es;
-    const i1 = ef + (emaSrcMinusFast[i] ?? 0);
-    const i2 = es + (emaSrcMinusSlow[i] ?? 0);
-    leaderArr[i] = i1 - i2;
-  }
-
-  const signalArr = ta.ema(new Series(bars, (_b, i) => macdArr[i]), signalLength).toArray();
-
+  const value = barSource(src);
   const warmup = slowLength;
-
-  const plot0 = macdArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : v,
-  }));
-
-  const plot1 = signalArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || v == null) ? NaN : v,
-  }));
-
-  const plot2 = leaderArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : v,
-  }));
-
-  const plot3 = macdArr.map((v, i) => {
-    const sig = signalArr[i] ?? NaN;
-    if (i < warmup || isNaN(sig)) return { time: bars[i].time, value: NaN };
-    const hist = v - sig;
-    const prevMacd = i > 0 ? macdArr[i - 1] : NaN;
-    const prevSig = i > 0 ? (signalArr[i - 1] ?? NaN) : NaN;
-    const prevHist = isNaN(prevMacd) || isNaN(prevSig) ? NaN : prevMacd - prevSig;
-    let color: string;
-    if (hist >= 0) {
-      color = (!isNaN(prevHist) && hist >= prevHist) ? '#26A69A' : '#B2DFDB';
-    } else {
-      color = (!isNaN(prevHist) && hist < prevHist) ? '#EF5350' : '#FFCDD2';
-    }
-    return { time: bars[i].time, value: hist, color };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
-    hlines: [
-      { value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } },
-    ],
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const emaFast = taStep.ema(fastLength);
+      const emaSlow = taStep.ema(slowLength);
+      const emaSrcMinusFast = taStep.ema(fastLength);
+      const emaSrcMinusSlow = taStep.ema(slowLength);
+      const emaSignal = taStep.ema(signalLength);
+      const s: LeaderRun = {
+        emaFast, emaSlow, emaSrcMinusFast, emaSrcMinusSlow, emaSignal, macd: [], signal: [],
+        plot0: [], plot1: [], plot2: [], plot3: [],
+        steps: [emaFast, emaSlow, emaSrcMinusFast, emaSrcMinusSlow, emaSignal], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.macd, s.signal, s.plot0, s.plot1, s.plot2, s.plot3];
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      const v = value(bars[i]) ?? 0;
+      const ef = s.emaFast.step(v);
+      const es = s.emaSlow.step(v);
+      // src - emaFast series, then EMA it
+      const emaSrcMinusFast = s.emaSrcMinusFast.step(v - (ef ?? 0));
+      const emaSrcMinusSlow = s.emaSrcMinusSlow.step(v - (es ?? 0));
+      const macd = ef - es;
+      const i1 = ef + (emaSrcMinusFast ?? 0);
+      const i2 = es + (emaSrcMinusSlow ?? 0);
+      const leader = i1 - i2;
+      const sig = s.emaSignal.step(macd);
+      s.macd[i] = macd;
+      s.signal[i] = sig;
+
+      s.plot0[i] = { time, value: i < warmup ? NaN : macd };
+      s.plot1[i] = { time, value: (i < warmup || sig == null) ? NaN : sig };
+      s.plot2[i] = { time, value: i < warmup ? NaN : leader };
+
+      if (i < warmup || isNaN(sig)) {
+        s.plot3[i] = { time, value: NaN };
+      } else {
+        const hist = macd - sig;
+        const prevMacd = i > 0 ? s.macd[i - 1] : NaN;
+        const prevSig = i > 0 ? s.signal[i - 1] : NaN;
+        const prevHist = isNaN(prevMacd) || isNaN(prevSig) ? NaN : prevMacd - prevSig;
+        let color: string;
+        if (hist >= 0) {
+          color = (!isNaN(prevHist) && hist >= prevHist) ? '#26A69A' : '#B2DFDB';
+        } else {
+          color = (!isNaN(prevHist) && hist < prevHist) ? '#EF5350' : '#FFCDD2';
+        }
+        s.plot3[i] = { time, value: hist, color };
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice(), 'plot2': s.plot2.slice(), 'plot3': s.plot3.slice() },
+        hlines: [
+          { value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } },
+        ],
+      };
+    },
   };
 }
 
-export const MACDLeader = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MACDLeaderInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MACDLeaderInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MACDLeader = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

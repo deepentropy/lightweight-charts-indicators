@@ -12,8 +12,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface LaguerreKalmanAdaptiveFilterAlphanattInputs {
   /** Laguerre gamma */
@@ -57,66 +59,109 @@ export const metadata = {
 const gt = (a: number, b: number) => a - b > 1e-10;
 const nz = (v: number) => (isNaN(v) ? 0 : v);
 
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+
+interface LkafVars {
+  /** Laguerre elements of the previous bar (series history, read with nz()) */
+  l0: number; l1: number; l2: number; l3: number;
+  a0: number; a1: number; a2: number; a3: number;
+  /** var float estimate = na */
+  estimate: number;
+  /** var float errorCovariance = 1.0 */
+  errorCovariance: number;
+}
+
+interface LkafRun extends BarRunState<LkafVars> {
+  dev: WindowStdev;
+  ema: ReturnType<typeof taStep.ema>;
+  smoothed: number[];
+  plot0: Point[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<LaguerreKalmanAdaptiveFilterAlphanattInputs>): BarStudy<LkafRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { gamma, adaptivePeriod, noiseLevel, threshold } = cfg;
+  return {
+    init() {
+      const dev = new WindowStdev(adaptivePeriod);
+      const ema = taStep.ema(3);
+      const s: LkafRun = {
+        dev, ema, smoothed: [], plot0: [], flags: [[], []], times: [[], []],
+        steps: [dev, ema],
+        vars: { l0: NaN, l1: NaN, l2: NaN, l3: NaN, a0: NaN, a1: NaN, a2: NaN, a3: NaN, estimate: NaN, errorCovariance: 1.0 },
+        lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.smoothed, s.plot0, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const c = b.close;
+      const stdev = s.dev.step(c);
+      const L0 = (1 - gamma) * c + gamma * nz(v.l0);
+      const L1 = -gamma * L0 + nz(v.l0) + gamma * nz(v.l1);
+      const L2 = -gamma * L1 + nz(v.l1) + gamma * nz(v.l2);
+      const L3 = -gamma * L2 + nz(v.l2) + gamma * nz(v.l3);
+      v.l0 = L0; v.l1 = L1; v.l2 = L2; v.l3 = L3;
+      const laguerreFilter = (L0 + 2 * L1 + 2 * L2 + L3) / 6;
+
+      if (isNaN(v.estimate)) v.estimate = laguerreFilter;
+      const predictedEstimate = v.estimate;
+      const predictedError = v.errorCovariance + noiseLevel * noiseLevel;
+      const kalmanGain = predictedError / (predictedError + noiseLevel);
+      v.estimate = predictedEstimate + kalmanGain * (laguerreFilter - predictedEstimate);
+      v.errorCovariance = (1 - kalmanGain) * predictedError;
+
+      // volatility = ta.stdev(close, adaptivePeriod) / close; math.min / math.max give na with an na argument
+      const volatility = stdev / c;
+      const adaptiveGamma = Math.min(0.99, Math.max(0.1, gamma * (1 + volatility * 10)));
+      const A0 = (1 - adaptiveGamma) * c + adaptiveGamma * nz(v.a0);
+      const A1 = -adaptiveGamma * A0 + nz(v.a0) + adaptiveGamma * nz(v.a1);
+      const A2 = -adaptiveGamma * A1 + nz(v.a1) + adaptiveGamma * nz(v.a2);
+      const A3 = -adaptiveGamma * A2 + nz(v.a2) + adaptiveGamma * nz(v.a3);
+      v.a0 = A0; v.a1 = A1; v.a2 = A2; v.a3 = A3;
+      const adaptiveFilter = (A0 + 2 * A1 + 2 * A2 + A3) / 6;
+
+      const smoothed = s.ema.step((v.estimate + adaptiveFilter) / 2);
+      s.smoothed[i] = smoothed;
+      const prev = i > 0 ? s.smoothed[i - 1] : NaN;
+      const prevClose = i > 0 ? bars[i - 1].close : NaN;
+      const filterTrend = gt(smoothed, prev + threshold);
+      const priceTrend = gt(c, smoothed) && i > 0 && gt(prevClose, prev);
+      s.plot0[i] = { time: b.time, value: smoothed, color: filterTrend && priceTrend ? UP_COL : DOWN_COL };
+      // alertcondition(ta.crossover(close, smoothed), ...) / alertcondition(ta.crossunder(close, smoothed), ...)
+      const flags = [c > smoothed && prevClose <= prev, c < smoothed && prevClose >= prev];
+      for (let k = 0; k < 2; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(b.time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<LaguerreKalmanAdaptiveFilterAlphanattInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<LaguerreKalmanAdaptiveFilterAlphanattInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const { gamma, adaptivePeriod, noiseLevel, threshold } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = bars.map((b) => b.close);
-  const stdev = A(ta.stdev(Series.fromArray(bars, close), adaptivePeriod));
-
-  const finalFilter: number[] = new Array(n);
-  // Laguerre elements of the previous bar (series history, read with nz())
-  let l0 = NaN, l1 = NaN, l2 = NaN, l3 = NaN;
-  let a0 = NaN, a1 = NaN, a2 = NaN, a3 = NaN;
-  let estimate = NaN; // var float estimate = na
-  let errorCovariance = 1.0; // var float errorCovariance = 1.0
-  for (let i = 0; i < n; i++) {
-    const c = close[i];
-    const L0 = (1 - gamma) * c + gamma * nz(l0);
-    const L1 = -gamma * L0 + nz(l0) + gamma * nz(l1);
-    const L2 = -gamma * L1 + nz(l1) + gamma * nz(l2);
-    const L3 = -gamma * L2 + nz(l2) + gamma * nz(l3);
-    l0 = L0; l1 = L1; l2 = L2; l3 = L3;
-    const laguerreFilter = (L0 + 2 * L1 + 2 * L2 + L3) / 6;
-
-    if (isNaN(estimate)) estimate = laguerreFilter;
-    const predictedEstimate = estimate;
-    const predictedError = errorCovariance + noiseLevel * noiseLevel;
-    const kalmanGain = predictedError / (predictedError + noiseLevel);
-    estimate = predictedEstimate + kalmanGain * (laguerreFilter - predictedEstimate);
-    errorCovariance = (1 - kalmanGain) * predictedError;
-
-    // volatility = ta.stdev(close, adaptivePeriod) / close; math.min / math.max give na with an na argument
-    const volatility = stdev[i] / c;
-    const adaptiveGamma = Math.min(0.99, Math.max(0.1, gamma * (1 + volatility * 10)));
-    const A0 = (1 - adaptiveGamma) * c + adaptiveGamma * nz(a0);
-    const A1 = -adaptiveGamma * A0 + nz(a0) + adaptiveGamma * nz(a1);
-    const A2 = -adaptiveGamma * A1 + nz(a1) + adaptiveGamma * nz(a2);
-    const A3 = -adaptiveGamma * A2 + nz(a2) + adaptiveGamma * nz(a3);
-    a0 = A0; a1 = A1; a2 = A2; a3 = A3;
-    const adaptiveFilter = (A0 + 2 * A1 + 2 * A2 + A3) / 6;
-
-    finalFilter[i] = (estimate + adaptiveFilter) / 2;
-  }
-  const smoothed = A(ta.ema(Series.fromArray(bars, finalFilter), 3));
-
-  const plot0 = bars.map((b, i) => {
-    const prev = i > 0 ? smoothed[i - 1] : NaN;
-    const filterTrend = gt(smoothed[i], prev + threshold);
-    const priceTrend = gt(close[i], smoothed[i]) && i > 0 && gt(close[i - 1], prev);
-    return { time: b.time, value: smoothed[i], color: filterTrend && priceTrend ? UP_COL : DOWN_COL };
-  });
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    // alertcondition(ta.crossover(close, smoothed), ...) / alertcondition(ta.crossunder(close, smoothed), ...)
-    alerts: alertStates(alertConditions, bars, [crossedOver(close, smoothed), crossedUnder(close, smoothed)]),
-  };
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions (each declared twice by the original, listed once) */
@@ -127,6 +172,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const LaguerreKalmanAdaptiveFilterAlphanatt = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

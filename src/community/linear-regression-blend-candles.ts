@@ -13,8 +13,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, math, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { AlmaStep, createBarRun, fullResult, WindowStdev, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface LinearRegressionBlendCandlesInputs {
   /** LR Lookback */
@@ -128,22 +130,39 @@ const ne = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) >
 /** Pine math.max / math.min: na when an argument is na (as JS Math.max / Math.min with NaN) */
 const nz = (x: number, y = 0) => (isNaN(x) ? y : x);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<LinearRegressionBlendCandlesInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
+type Result = Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> };
+
+interface LrbVars {
+  /** kalmanX[1] / kamaVal (var float, one per call site) of open, high, low, close */
+  prev: number[];
+}
+
+interface LrbRun extends BarRunState<LrbVars> {
+  atr: ReturnType<typeof taStep.atr> | null;
+  std: WindowStdev | null;
+  atrRank: ReturnType<typeof taStep.percentrank> | null;
+  stdRank: ReturnType<typeof taStep.percentrank> | null;
+  /** ta.linreg of open, high, low, close (not advanced) */
+  linreg: Array<ReturnType<typeof taStep.linreg>>;
+  alma: AlmaStep[];
+  /** math.sum(diff, smoothLen) of the KAMA */
+  volatility: WindowSum[];
+  /** weightedLinreg of each price (advanced) */
+  wlr: number[][];
+  /** The LR value of each price before the smoothing */
+  lrRaw: number[][];
+  ghost: PlotCandleData[];
+  blendCandles: PlotCandleData[];
+}
+
+const PRICES: Array<(b: Bar) => number> = [(b) => b.open, (b) => b.high, (b) => b.low, (b) => b.close];
+
+function study(inputs: Partial<LinearRegressionBlendCandlesInputs>): BarStudy<LrbRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const open = bars.map((b) => b.open);
-  const high = bars.map((b) => b.high);
-  const low = bars.map((b) => b.low);
-  const close = bars.map((b) => b.close);
   const len = cfg.lrLength;
 
   // weightedLinreg(src, len, decay): exponentially weighted regression, end point; src[i] before bar 0 is nz() = 0
-  const weightedLinreg = (src: number[], i: number): number => {
+  const weightedLinreg = (bars: Bar[], price: (b: Bar) => number, i: number): number => {
     let sumW = 0.0;
     let sumWX = 0.0;
     let sumWY = 0.0;
@@ -152,7 +171,7 @@ export function calculate(
     for (let k = 0; k <= len - 1; k++) {
       const w = Math.pow(cfg.weightDecay, k);
       const x = len - 1 - k;
-      const y = i - k >= 0 ? nz(src[i - k]) : 0;
+      const y = i - k >= 0 ? nz(price(bars[i - k])) : 0;
       sumW += w;
       sumWX += w * x;
       sumWY += w * y;
@@ -161,21 +180,12 @@ export function calculate(
     }
     const denom = sumW * sumWXX - sumWX * sumWX;
     const slope = ne(denom, 0) ? (sumW * sumWXY - sumWX * sumWY) / denom : 0.0;
-    const intercept = ne(denom, 0) ? (sumWY - slope * sumWX) / sumW : src[i];
+    const intercept = ne(denom, 0) ? (sumWY - slope * sumWX) / sumW : price(bars[i]);
     return intercept + slope * (len - 1);
-  };
-  // advancedLR: wlr + (wlr - nz(wlr[1], wlr)) * (lagFactor - 1)
-  const advancedLR = (src: number[]): number[] => {
-    const wlr = src.map((_, i) => weightedLinreg(src, i));
-    return wlr.map((v, i) => {
-      const wlr1 = i > 0 ? nz(wlr[i - 1], v) : v;
-      return v + (v - wlr1) * (cfg.lagCorrection - 1);
-    });
   };
 
   // calcRSquared(close, lrLength): computed on every bar
-  const rSquared: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
+  const rSquaredAt = (bars: Bar[], i: number): number => {
     let sumX = 0.0;
     let sumY = 0.0;
     let sumXY = 0.0;
@@ -183,7 +193,7 @@ export function calculate(
     let sumY2 = 0.0;
     for (let k = 0; k <= len - 1; k++) {
       const x = k;
-      const y = i - k >= 0 ? nz(close[i - k]) : 0;
+      const y = i - k >= 0 ? nz(bars[i - k].close) : 0;
       sumX += x;
       sumY += y;
       sumXY += x * y;
@@ -192,120 +202,152 @@ export function calculate(
     }
     const nn = len;
     const denom = (nn * sumX2 - sumX * sumX) * (nn * sumY2 - sumY * sumY);
-    if (le(denom, 0)) {
-      rSquared[i] = 0.0;
-    } else {
-      const r = (nn * sumXY - sumX * sumY) / Math.sqrt(denom);
-      rSquared[i] = r * r;
-    }
-  }
-
-  // effectiveBlendPct = useAdaptive ? calcAdaptiveBlend() : blendPct (an input: the call runs on all bars or none)
-  let blendPctArr: number[];
-  if (cfg.useAdaptive) {
-    const atrVal = A(ta.atr(bars, cfg.adaptiveLen));
-    const atrPct = atrVal.map((v, i) => (v / close[i]) * 100);
-    const stdVal = A(ta.stdev(S(close), cfg.adaptiveLen));
-    const stdPct = stdVal.map((v, i) => (v / close[i]) * 100);
-    const atrNorm = A(ta.percentrank(S(atrPct), 100)).map((v) => v / 100);
-    const stdNorm = A(ta.percentrank(S(stdPct), 100)).map((v) => v / 100);
-    blendPctArr = new Array(n);
-    for (let i = 0; i < n; i++) {
-      const rSquaredNorm = Math.max(0.0, Math.min(1.0,
-        (rSquared[i] - cfg.rSquaredThreshLow) / (cfg.rSquaredThreshHigh - cfg.rSquaredThreshLow)));
-      let adaptiveVal: number;
-      switch (cfg.adaptiveMode) {
-        case 'ATR': adaptiveVal = atrNorm[i]; break;
-        case 'StdDev': adaptiveVal = stdNorm[i]; break;
-        case 'ATR + StdDev': adaptiveVal = (atrNorm[i] + stdNorm[i]) / 2; break;
-        case 'R-Squared': adaptiveVal = rSquaredNorm; break;
-        case 'R² + ATR': adaptiveVal = (rSquaredNorm + atrNorm[i]) / 2; break;
-        default: adaptiveVal = atrNorm[i];
-      }
-      blendPctArr[i] = cfg.adaptiveMin + adaptiveVal * (cfg.adaptiveMax - cfg.adaptiveMin);
-    }
-  } else {
-    blendPctArr = new Array(n).fill(cfg.blendPct);
-  }
-
-  // LR OHLC (useAdvanced is an input: one branch on every bar)
-  let lr: number[][] = cfg.useAdvanced
-    ? [open, high, low, close].map((s) => advancedLR(s))
-    : [open, high, low, close].map((s) => A(ta.linreg(S(s), len, 0)));
-
-  // Post-LR smoothing
-  if (cfg.smoothMode === 'ALMA') {
-    lr = lr.map((s) => A(ta.alma(S(s), cfg.smoothLen, cfg.almaOffset, cfg.almaSigma)));
-  } else if (cfg.smoothMode === 'Kalman') {
-    // kalmanX := kalman(lrX, gain, kalmanX[1]); kalman: state = nz(prev, src); state + gain * (src - state)
-    lr = lr.map((s) => {
-      const out: number[] = new Array(n);
-      let prev = NaN;
-      for (let i = 0; i < n; i++) {
-        const state = nz(prev, s[i]);
-        out[i] = state + cfg.kalmanGain * (s[i] - state);
-        prev = out[i];
-      }
-      return out;
-    });
-  } else if (cfg.smoothMode === 'KAMA') {
-    const L = cfg.smoothLen;
-    const fastSC = 2.0 / (2.0 + 1);
-    const slowSC = 2.0 / (30.0 + 1);
-    lr = lr.map((s) => {
-      const diff = s.map((v, i) => (i > 0 ? Math.abs(v - s[i - 1]) : NaN));
-      const volatility = A(math.sum(S(diff), L) as Series);
-      const out: number[] = new Array(n);
-      let prev = NaN; // var float kamaVal (one per call site)
-      for (let i = 0; i < n; i++) {
-        const change = i - L >= 0 ? Math.abs(s[i] - s[i - L]) : NaN;
-        const er = ne(volatility[i], 0) ? change / volatility[i] : 0;
-        const sc = Math.pow(er * (fastSC - slowSC) + slowSC, 2);
-        out[i] = nz(prev, s[i]) + sc * (s[i] - nz(prev, s[i]));
-        prev = out[i];
-      }
-      return out;
-    });
-  }
-  const [lrOpen, lrHigh, lrLow, lrClose] = lr;
+    if (le(denom, 0)) return 0.0;
+    const r = (nn * sumXY - sumX * sumY) / Math.sqrt(denom);
+    return r * r;
+  };
 
   const ghostWickCol = String(color.new(cfg.colGrayWick, cfg.ghostOpacity));
   const ghostUp = String(color.new(cfg.colUp, cfg.ghostOpacity));
   const ghostDn = String(color.new(cfg.colDn, cfg.ghostOpacity));
-  const ghost: PlotCandleData[] = [];
-  const blendCandles: PlotCandleData[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const blend = blendPctArr[i] / 100.0;
-    const bo = b.open * (1 - blend) + lrOpen[i] * blend;
-    let bh = b.high * (1 - blend) + lrHigh[i] * blend;
-    let bl = b.low * (1 - blend) + lrLow[i] * blend;
-    const bc = b.close * (1 - blend) + lrClose[i] * blend;
-    bh = Math.max(bh, Math.max(bo, bc));
-    bl = Math.min(bl, Math.min(bo, bc));
+  const fastSC = 2.0 / (2.0 + 1);
+  const slowSC = 2.0 / (30.0 + 1);
 
-    const bodyCol = ge(bc, bo) ? cfg.colUp : cfg.colDn;
-    const wickCol = cfg.useGrayWick ? cfg.colGrayWick : bodyCol;
-    // plotcandle(showGhost ? open : na, ..., 'Ghost Candles')
-    if (cfg.showGhost) {
-      const gc = ge(b.close, b.open) ? ghostUp : ghostDn;
-      ghost.push({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: gc, wickColor: ghostWickCol, borderColor: gc });
+  /** The LR value of price `f` (open, high, low, close) on bar `i`, smoothed */
+  const lrAt = (s: LrbRun, bars: Bar[], i: number, f: number): number => {
+    const prev = s.vars.prev;
+    const price = PRICES[f];
+    const src = price(bars[i]);
+    let raw: number;
+    if (cfg.useAdvanced) {
+      // advancedLR: wlr + (wlr - nz(wlr[1], wlr)) * (lagFactor - 1)
+      const v = weightedLinreg(bars, price, i);
+      s.wlr[f][i] = v;
+      const wlr1 = i > 0 ? nz(s.wlr[f][i - 1], v) : v;
+      raw = v + (v - wlr1) * (cfg.lagCorrection - 1);
+    } else {
+      raw = s.linreg[f].step(src);
     }
-    // plotcandle(blendOpen, blendHigh, blendLow, blendClose, 'Blend Candles'): no candle when a value is na
-    if (!isNaN(bo) && !isNaN(bh) && !isNaN(bl) && !isNaN(bc)) {
-      blendCandles.push({ time: b.time, open: bo, high: bh, low: bl, close: bc, color: bodyCol, wickColor: wickCol, borderColor: bodyCol });
+    s.lrRaw[f][i] = raw;
+    if (cfg.smoothMode === 'ALMA') return s.alma[f].step(raw);
+    if (cfg.smoothMode === 'Kalman') {
+      // kalmanX := kalman(lrX, gain, kalmanX[1]); kalman: state = nz(prev, src); state + gain * (src - state)
+      const state = nz(prev[f], raw);
+      prev[f] = state + cfg.kalmanGain * (raw - state);
+      return prev[f];
     }
-  }
+    if (cfg.smoothMode === 'KAMA') {
+      const L = cfg.smoothLen;
+      const series = s.lrRaw[f];
+      const diff = i > 0 ? Math.abs(raw - series[i - 1]) : NaN;
+      const volatility = s.volatility[f].step(diff);
+      const change = i - L >= 0 ? Math.abs(raw - series[i - L]) : NaN;
+      const er = ne(volatility, 0) ? change / volatility : 0;
+      const sc = Math.pow(er * (fastSC - slowSC) + slowSC, 2);
+      prev[f] = nz(prev[f], raw) + sc * (raw - nz(prev[f], raw));
+      return prev[f];
+    }
+    return raw;
+  };
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    plotCandles: { ghost, blend: blendCandles },
+    init() {
+      // effectiveBlendPct = useAdaptive ? calcAdaptiveBlend() : blendPct (an input: the call runs on all bars or none)
+      const atr = cfg.useAdaptive ? taStep.atr(cfg.adaptiveLen) : null;
+      const std = cfg.useAdaptive ? new WindowStdev(cfg.adaptiveLen) : null;
+      const atrRank = cfg.useAdaptive ? taStep.percentrank(100) : null;
+      const stdRank = cfg.useAdaptive ? taStep.percentrank(100) : null;
+      // LR OHLC (useAdvanced is an input: one branch on every bar)
+      const linreg = cfg.useAdvanced ? [] : PRICES.map(() => taStep.linreg(len, 0));
+      // Post-LR smoothing
+      const alma = cfg.smoothMode === 'ALMA' ? PRICES.map(() => new AlmaStep(cfg.smoothLen, cfg.almaOffset, cfg.almaSigma)) : [];
+      const volatility = cfg.smoothMode === 'KAMA' ? PRICES.map(() => new WindowSum(cfg.smoothLen)) : [];
+      const s: LrbRun = {
+        atr, std, atrRank, stdRank, linreg, alma, volatility, wlr: PRICES.map(() => []), lrRaw: PRICES.map(() => []),
+        ghost: [], blendCandles: [],
+        steps: [
+          ...(atr ? [atr] : []), ...(std ? [std] : []), ...(atrRank ? [atrRank] : []), ...(stdRank ? [stdRank] : []),
+          ...linreg, ...alma, ...volatility,
+        ],
+        vars: { prev: PRICES.map(() => NaN) }, lists: [], series: [],
+      };
+      s.lists = [s.ghost, s.blendCandles];
+      s.series = [...s.wlr, ...s.lrRaw];
+      return s;
+    },
+    copyVars: (v) => ({ prev: v.prev.slice() }),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = b.close;
+      let blendPct: number;
+      if (cfg.useAdaptive) {
+        const atrPct = (s.atr!.step(b.high, b.low, close) / close) * 100;
+        const stdPct = (s.std!.step(close) / close) * 100;
+        const atrNorm = s.atrRank!.step(atrPct) / 100;
+        const stdNorm = s.stdRank!.step(stdPct) / 100;
+        const rSquaredNorm = Math.max(0.0, Math.min(1.0,
+          (rSquaredAt(bars, i) - cfg.rSquaredThreshLow) / (cfg.rSquaredThreshHigh - cfg.rSquaredThreshLow)));
+        let adaptiveVal: number;
+        switch (cfg.adaptiveMode) {
+          case 'ATR': adaptiveVal = atrNorm; break;
+          case 'StdDev': adaptiveVal = stdNorm; break;
+          case 'ATR + StdDev': adaptiveVal = (atrNorm + stdNorm) / 2; break;
+          case 'R-Squared': adaptiveVal = rSquaredNorm; break;
+          case 'R² + ATR': adaptiveVal = (rSquaredNorm + atrNorm) / 2; break;
+          default: adaptiveVal = atrNorm;
+        }
+        blendPct = cfg.adaptiveMin + adaptiveVal * (cfg.adaptiveMax - cfg.adaptiveMin);
+      } else {
+        blendPct = cfg.blendPct;
+      }
+
+      const lrOpen = lrAt(s, bars, i, 0);
+      const lrHigh = lrAt(s, bars, i, 1);
+      const lrLow = lrAt(s, bars, i, 2);
+      const lrClose = lrAt(s, bars, i, 3);
+
+      const blend = blendPct / 100.0;
+      const bo = b.open * (1 - blend) + lrOpen * blend;
+      let bh = b.high * (1 - blend) + lrHigh * blend;
+      let bl = b.low * (1 - blend) + lrLow * blend;
+      const bc = b.close * (1 - blend) + lrClose * blend;
+      bh = Math.max(bh, Math.max(bo, bc));
+      bl = Math.min(bl, Math.min(bo, bc));
+
+      const bodyCol = ge(bc, bo) ? cfg.colUp : cfg.colDn;
+      const wickCol = cfg.useGrayWick ? cfg.colGrayWick : bodyCol;
+      // plotcandle(showGhost ? open : na, ..., 'Ghost Candles')
+      if (cfg.showGhost) {
+        const gc = ge(b.close, b.open) ? ghostUp : ghostDn;
+        s.ghost.push({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: gc, wickColor: ghostWickCol, borderColor: gc });
+      }
+      // plotcandle(blendOpen, blendHigh, blendLow, blendClose, 'Blend Candles'): no candle when a value is na
+      if (!isNaN(bo) && !isNaN(bh) && !isNaN(bl) && !isNaN(bc)) {
+        s.blendCandles.push({ time: b.time, open: bo, high: bh, low: bl, close: bc, color: bodyCol, wickColor: wickCol, borderColor: bodyCol });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        plotCandles: { ghost: s.ghost.slice(), blend: s.blendCandles.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<LinearRegressionBlendCandlesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<LinearRegressionBlendCandlesInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const LinearRegressionBlendCandles = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

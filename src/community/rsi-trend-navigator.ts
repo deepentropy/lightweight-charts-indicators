@@ -14,9 +14,11 @@
  * Original notice: © QuantAlgo
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
 
 export type RSITrendNavigatorPreset = 'Classic' | 'Aqua' | 'Cosmic' | 'Custom';
 
@@ -92,95 +94,144 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RSITrendNavigatorInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Result = IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color?: string };
+
+interface NavigatorVars {
+  /** var float adaptiveTrend, var float trendLine */
+  adaptiveTrend: number;
+  line: number;
+  isBullish: boolean;
+  isBearish: boolean;
+}
+
+interface NavigatorRun extends BarRunState<NavigatorVars> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  ema: ReturnType<typeof taStep.ema>;
+  atr14: ReturnType<typeof taStep.atr>;
+  atr: ReturnType<typeof taStep.atr>;
+  trendLine: number[];
+  hl2: number[];
+  bottomColor: string[];
+  lineData: Point[];
+  priceData: Point[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<RSITrendNavigatorInputs>): BarStudy<NavigatorRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
+  const value = barSource(cfg.priceSource);
 
   const [bullCol, bearCol] = cfg.colorPreset === 'Classic' ? ['#00ff00', '#ff0000']
     : cfg.colorPreset === 'Aqua' ? ['#00bfff', '#ff8c00']
       : cfg.colorPreset === 'Cosmic' ? ['#ff1493', '#9932cc']
         : [cfg.bullColor, cfg.bearColor];
-
-  // rsiSmoothedTrend(priceSource, rsiPeriod, rsiSmoothing, trendPeriod, rsiSensitivity)
-  const srcSeries = getSourceSeries(bars, cfg.priceSource);
-  const src = A(srcSeries);
-  const rsi = A(ta.rsi(srcSeries, cfg.rsiPeriod));
-  const smoothedRSI = A(ta.ema(Series.fromArray(bars, rsi), cfg.rsiSmoothing));
-  const atr14 = A(ta.atr(bars, 14));
-  const atr = A(ta.atr(bars, cfg.atrPeriod));
   const fastAlpha = 2.0 / (cfg.trendPeriod * 0.5 + 1);
   const slowAlpha = 2.0 / (cfg.trendPeriod * 1.5 + 1);
 
-  const trendLine: number[] = new Array(n).fill(NaN);
-  const currentTrend: string[] = new Array(n);
-  let adaptiveTrend = NaN; // var float adaptiveTrend = source (bar 0), then the update below on every bar
-  let line = NaN; // var float trendLine = rsiTrendValue
-  let isBullish = false;
-  let isBearish = false;
-  // alertcondition(isBullish and not isBullish[1]) / alertcondition(isBearish and not isBearish[1])
-  const bullTurn: boolean[] = new Array(n).fill(false);
-  const bearTurn: boolean[] = new Array(n).fill(false);
-  for (let i = 0; i < n; i++) {
-    const s = src[i];
-    const normalizedRSI = (smoothedRSI[i] - 50) / 50;
-    const rsiAdjustment = normalizedRSI * atr14[i] * cfg.rsiSensitivity;
-    const adaptiveAlpha = gt(smoothedRSI[i], 50) ? fastAlpha : slowAlpha;
-    // adaptiveTrend := adaptiveAlpha * source + (1 - adaptiveAlpha) * nz(adaptiveTrend[1], source)
-    const prev = i === 0 || isNaN(adaptiveTrend) ? s : adaptiveTrend;
-    adaptiveTrend = adaptiveAlpha * s + (1 - adaptiveAlpha) * prev;
-    const rsiTrendValue = adaptiveTrend + rsiAdjustment;
-
-    const deviation = atr[i] * cfg.atrMultiplier;
-    const upperBound = rsiTrendValue + deviation;
-    const lowerBound = rsiTrendValue - deviation;
-    // trendLine := nz(trendLine[1], rsiTrendValue)
-    if (isNaN(line)) line = rsiTrendValue;
-    if (lt(upperBound, line)) line = upperBound;
-    if (gt(lowerBound, line)) line = lowerBound;
-    trendLine[i] = line;
-
-    const prevLine = i > 0 ? trendLine[i - 1] : NaN;
-    const wasBullish = isBullish;
-    const wasBearish = isBearish;
-    if (gt(line, prevLine)) { isBullish = true; isBearish = false; }
-    else if (lt(line, prevLine)) { isBullish = false; isBearish = true; }
-    bullTurn[i] = isBullish && !wasBullish;
-    bearTurn[i] = isBearish && !wasBearish;
-    currentTrend[i] = isBullish ? bullCol : bearCol;
-  }
-
-  const hl2 = bars.map((b) => (b.high + b.low) / 2);
-  const barColors: BarColorData[] = [];
-  if (cfg.paintBars) {
-    // barcolor(paintBars ? currentTrend : na)
-    for (let i = 0; i < n; i++) barColors.push({ time: bars[i].time, color: currentTrend[i] });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(trendLine, 'RSI Trend Line', color = currentTrend, linewidth = 4)
-      plot0: bars.map((b, i) => ({ time: b.time, value: trendLine[i], color: currentTrend[i] })),
-      // plot(hl2, 'Price', display = display.none, editable = false)
-      plot1: bars.map((b, i) => ({ time: b.time, value: hl2[i] })),
+    fullRunReason: () => (isBarSource(cfg.priceSource) ? null : 'source of another study'),
+    init() {
+      // rsiSmoothedTrend(priceSource, rsiPeriod, rsiSmoothing, trendPeriod, rsiSensitivity)
+      const rsi = taStep.rsi(cfg.rsiPeriod);
+      const ema = taStep.ema(cfg.rsiSmoothing);
+      const atr14 = taStep.atr(14);
+      const atr = taStep.atr(cfg.atrPeriod);
+      const s: NavigatorRun = {
+        rsi, ema, atr14, atr, trendLine: [], hl2: [], bottomColor: [], lineData: [], priceData: [], barColors: [],
+        flags: [[], []], times: [[], []],
+        steps: [rsi, ema, atr14, atr],
+        vars: { adaptiveTrend: NaN, line: NaN, isBullish: false, isBearish: false },
+        lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.trendLine, s.hl2, s.bottomColor, s.lineData, s.priceData, s.barColors, ...s.flags];
+      return s;
     },
-    fills: [{
-      // fill(p_trend, p_price, hl2, trendLine, na, color.new(currentTrend, 20))
-      plot1: 'plot0', plot2: 'plot1',
-      gradient: {
-        topValue: hl2,
-        bottomValue: trendLine,
-        topColor: new Array<string | null>(n).fill(null),
-        bottomColor: currentTrend.map((c) => String(color.new(c, 20))),
-      },
-    }],
-    barColors,
-    alerts: alertStates(alertConditions, bars, [bullTurn, bearTurn]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const src = value(b);
+      const smoothedRSI = s.ema.step(s.rsi.step(src));
+      const atr14 = s.atr14.step(b.high, b.low, b.close);
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const normalizedRSI = (smoothedRSI - 50) / 50;
+      const rsiAdjustment = normalizedRSI * atr14 * cfg.rsiSensitivity;
+      const adaptiveAlpha = gt(smoothedRSI, 50) ? fastAlpha : slowAlpha;
+      // adaptiveTrend := adaptiveAlpha * source + (1 - adaptiveAlpha) * nz(adaptiveTrend[1], source)
+      const prev = i === 0 || isNaN(v.adaptiveTrend) ? src : v.adaptiveTrend;
+      v.adaptiveTrend = adaptiveAlpha * src + (1 - adaptiveAlpha) * prev;
+      const rsiTrendValue = v.adaptiveTrend + rsiAdjustment;
+
+      const deviation = atr * cfg.atrMultiplier;
+      const upperBound = rsiTrendValue + deviation;
+      const lowerBound = rsiTrendValue - deviation;
+      // trendLine := nz(trendLine[1], rsiTrendValue)
+      let line = v.line;
+      if (isNaN(line)) line = rsiTrendValue;
+      if (lt(upperBound, line)) line = upperBound;
+      if (gt(lowerBound, line)) line = lowerBound;
+      v.line = line;
+      s.trendLine[i] = line;
+
+      const prevLine = i > 0 ? s.trendLine[i - 1] : NaN;
+      const wasBullish = v.isBullish;
+      const wasBearish = v.isBearish;
+      if (gt(line, prevLine)) { v.isBullish = true; v.isBearish = false; }
+      else if (lt(line, prevLine)) { v.isBullish = false; v.isBearish = true; }
+      // alertcondition(isBullish and not isBullish[1]) / alertcondition(isBearish and not isBearish[1])
+      const bullTurn = v.isBullish && !wasBullish;
+      const bearTurn = v.isBearish && !wasBearish;
+      const currentTrend = v.isBullish ? bullCol : bearCol;
+
+      const hl2 = (b.high + b.low) / 2;
+      s.hl2[i] = hl2;
+      s.bottomColor[i] = String(color.new(currentTrend, 20));
+      // plot(trendLine, 'RSI Trend Line', color = currentTrend, linewidth = 4)
+      s.lineData[i] = { time: b.time, value: line, color: currentTrend };
+      // plot(hl2, 'Price', display = display.none, editable = false)
+      s.priceData[i] = { time: b.time, value: hl2 };
+      // barcolor(paintBars ? currentTrend : na)
+      s.barColors[i] = { time: b.time, color: currentTrend };
+      s.flags[0][i] = bullTurn;
+      s.flags[1][i] = bearTurn;
+      if (bullTurn) s.times[0].push(b.time as number);
+      if (bearTurn) s.times[1].push(b.time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.lineData.slice(),
+          plot1: s.priceData.slice(),
+        },
+        fills: [{
+          // fill(p_trend, p_price, hl2, trendLine, na, color.new(currentTrend, 20))
+          plot1: 'plot0', plot2: 'plot1',
+          gradient: {
+            topValue: s.hl2.slice(),
+            bottomValue: s.trendLine.slice(),
+            topColor: new Array<string | null>(n).fill(null),
+            bottomColor: s.bottomColor.slice(),
+          },
+        }],
+        barColors: cfg.paintBars ? s.barColors.slice() : [],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RSITrendNavigatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RSITrendNavigatorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -191,6 +242,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const RSITrendNavigator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

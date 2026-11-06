@@ -14,7 +14,9 @@
  * Reference: "Schaff Trend Cycle" by LazyBear
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SchaffTrendCycleInputs {
   length: number;
@@ -67,37 +69,65 @@ function windowExtreme(a: number[], i: number, len: number, max: boolean): numbe
   return out;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<SchaffTrendCycleInputs> = {}): IndicatorResult {
+interface StcRun extends BarRunState<{ f1: number; f2: number }> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  m: number[];
+  pf: number[];
+  stc: number[];
+  plot0: { time: any; value: number }[];
+}
+
+function study(inputs: Partial<SchaffTrendCycleInputs>): BarStudy<StcRun, IndicatorResult> {
   const { length, fastLength, slowLength, factor, src } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const source = getSourceSeries(bars, src);
-
-  // m = macd(close, fastLength, slowLength) = ema(close, fast) - ema(close, slow)
-  const fastEMA = ta.ema(source, fastLength).toArray();
-  const slowEMA = ta.ema(source, slowLength).toArray();
-  const m = fastEMA.map((f, i) => (f ?? NaN) - (slowEMA[i] ?? NaN));
-
-  // f1 = v2 > 0 ? (m - v1) / v2 * 100 : nz(f1[1]); pf = na(pf[1]) ? f1 : pf[1] + factor * (f1 - pf[1]);
-  // f2 / pff the same over pf. A na v2 / v4 keeps the previous f1 / f2 (0 at first).
-  const pf: number[] = new Array(n).fill(NaN);
-  const stc: number[] = new Array(n).fill(NaN);
-  let f1 = 0;
-  let f2 = 0;
-  for (let i = 0; i < n; i++) {
-    const v1 = windowExtreme(m, i, length, false);
-    const v2 = windowExtreme(m, i, length, true) - v1;
-    f1 = v2 > 0 ? ((m[i] - v1) / v2) * 100 : f1;
-    pf[i] = i === 0 || Number.isNaN(pf[i - 1]) ? f1 : pf[i - 1] + factor * (f1 - pf[i - 1]);
-    const v3 = windowExtreme(pf, i, length, false);
-    const v4 = windowExtreme(pf, i, length, true) - v3;
-    f2 = v4 > 0 ? ((pf[i] - v3) / v4) * 100 : f2;
-    stc[i] = i === 0 || Number.isNaN(stc[i - 1]) ? f2 : stc[i - 1] + factor * (f2 - stc[i - 1]);
-  }
-
+  const source = barSource(src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': stc.map((value, i) => ({ time: bars[i].time, value })) },
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const fast = taStep.ema(fastLength);
+      const slow = taStep.ema(slowLength);
+      const s: StcRun = {
+        fast, slow, m: [], pf: [], stc: [], plot0: [],
+        steps: [fast, slow], vars: { f1: 0, f2: 0 }, lists: [], series: [],
+      };
+      s.series = [s.m, s.pf, s.stc, s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const { m, pf, stc } = s;
+      const v = source(bars[i]);
+      // m = macd(close, fastLength, slowLength) = ema(close, fast) - ema(close, slow)
+      m[i] = (s.fast.step(v) ?? NaN) - (s.slow.step(v) ?? NaN);
+
+      // f1 = v2 > 0 ? (m - v1) / v2 * 100 : nz(f1[1]); pf = na(pf[1]) ? f1 : pf[1] + factor * (f1 - pf[1]);
+      // f2 / pff the same over pf. A na v2 / v4 keeps the previous f1 / f2 (0 at first).
+      const vars = s.vars;
+      const v1 = windowExtreme(m, i, length, false);
+      const v2 = windowExtreme(m, i, length, true) - v1;
+      vars.f1 = v2 > 0 ? ((m[i] - v1) / v2) * 100 : vars.f1;
+      pf[i] = i === 0 || Number.isNaN(pf[i - 1]) ? vars.f1 : pf[i - 1] + factor * (vars.f1 - pf[i - 1]);
+      const v3 = windowExtreme(pf, i, length, false);
+      const v4 = windowExtreme(pf, i, length, true) - v3;
+      vars.f2 = v4 > 0 ? ((pf[i] - v3) / v4) * 100 : vars.f2;
+      stc[i] = i === 0 || Number.isNaN(stc[i - 1]) ? vars.f2 : stc[i - 1] + factor * (vars.f2 - stc[i - 1]);
+      s.plot0[i] = { time: bars[i].time, value: stc[i] };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice() },
+      };
+    },
   };
 }
 
-export const SchaffTrendCycle = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SchaffTrendCycleInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SchaffTrendCycleInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const SchaffTrendCycle = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

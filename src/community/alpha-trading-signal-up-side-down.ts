@@ -14,9 +14,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AlphaTradingSignalUpSideDownInputs {
   /** ATR period */
@@ -76,96 +78,136 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface AlphaRun extends BarRunState<{ trend: number }> {
+  atr: { step(high: number, low: number, close: number): number; commit(): void };
+  up: number[];
+  dn: number[];
+  trendArr: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  upColors: string[];
+  dnColors: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<AlphaTradingSignalUpSideDownInputs>): BarStudy<AlphaRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      // atr2 = ta.sma(ta.tr, Periods); atr = changeATR ? ta.atr(Periods) : atr2
+      let atr: AlphaRun['atr'];
+      if (cfg.changeATR) {
+        atr = taStep.atr(cfg.periods);
+      } else {
+        const tr = taStep.tr();
+        const sma = new WindowSma(cfg.periods);
+        atr = { step: (h, l, c) => sma.step(tr.step(h, l, c)), commit: () => { tr.commit(); sma.commit(); } };
+      }
+      const s: AlphaRun = {
+        atr, up: [], dn: [], trendArr: [], plot0: [], plot1: [], plot2: [], upColors: [], dnColors: [], markers: [],
+        flags: [[], [], []], times: [[], [], []],
+        steps: [atr], vars: { trend: 1 }, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.up, s.dn, s.trendArr, s.plot0, s.plot1, s.plot2, s.upColors, s.dnColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const { up, dn, trendArr } = s;
+      const src = value(b) ?? NaN;
+      const atr = s.atr.step(b.high, b.low, b.close) ?? NaN;
+      const c1 = i > 0 ? bars[i - 1].close : NaN;
+      let u = src - cfg.multiplier * atr;
+      const up1 = i > 0 && !isNaN(up[i - 1]) ? up[i - 1] : u; // nz(up[1], up)
+      u = gt(c1, up1) ? Math.max(u, up1) : u;
+      let d = src + cfg.multiplier * atr;
+      const dn1 = i > 0 && !isNaN(dn[i - 1]) ? dn[i - 1] : d; // nz(dn[1], dn)
+      d = lt(c1, dn1) ? Math.min(d, dn1) : d;
+      up[i] = u;
+      dn[i] = d;
+      // trend := nz(trend[1], trend); trend := trend == -1 and close > dn1 ? 1 : trend == 1 and close < up1 ? -1 : trend
+      const close = b.close;
+      let trend = s.vars.trend;
+      trend = trend === -1 && gt(close, dn1) ? 1 : trend === 1 && lt(close, up1) ? -1 : trend;
+      s.vars.trend = trend;
+      trendArr[i] = trend;
+
+      const time = b.time;
+      const prev = i > 0 ? trendArr[i - 1] : NaN;
+      const buySignal = trend === 1 && prev === -1;
+      const sellSignal = trend === -1 && prev === 1;
+      // changeCond = trend != trend[1] (na on the first bar: false)
+      const change = i > 0 && trend !== prev;
+      s.flags[0][i] = buySignal;
+      s.flags[1][i] = sellSignal;
+      s.flags[2][i] = change;
+      if (buySignal) s.times[0].push(time as number);
+      if (sellSignal) s.times[1].push(time as number);
+      if (change) s.times[2].push(time as number);
+      if (buySignal && !isNaN(u)) {
+        // plotshape(buySignal ? up : na, 'UpTrend Begins', location.absolute, shape.circle, size.tiny)
+        s.markers.push({ time, position: 'atPriceMiddle', price: u, shape: 'circle', color: GREEN, size: 'tiny', id: 'shape0' });
+        // plotshape(buySignal and showsignals ? up : na, 'Buy', text 'Buy', location.absolute, shape.labelup, size.tiny)
+        if (cfg.showSignals) {
+          s.markers.push({ time, position: 'atPriceBottom', price: u, shape: 'labelUp', color: GREEN,
+            size: 'tiny', text: 'Buy', textColor: WHITE, id: 'shape1' });
+        }
+      }
+      if (sellSignal && !isNaN(d)) {
+        s.markers.push({ time, position: 'atPriceMiddle', price: d, shape: 'circle', color: RED, size: 'tiny', id: 'shape2' });
+        if (cfg.showSignals) {
+          s.markers.push({ time, position: 'atPriceTop', price: d, shape: 'labelDown', color: RED,
+            size: 'tiny', text: 'Sell', textColor: WHITE, id: 'shape3' });
+        }
+      }
+
+      s.plot0[i] = { time, value: trend === 1 ? u : NaN, color: GREEN };
+      s.plot1[i] = { time, value: trend === 1 ? NaN : d, color: RED };
+      s.plot2[i] = { time, value: (b.open + b.high + b.low + b.close) / 4, color: PINE_BLUE };
+      // fill(mPlot, upPlot, color = highlighting ? trend == 1 ? color.green : color.white : color.white)
+      s.upColors[i] = cfg.highlighting && trend === 1 ? GREEN : WHITE;
+      // fill(mPlot, dnPlot, color = highlighting ? trend == -1 ? color.red : color.white : color.white)
+      s.dnColors[i] = cfg.highlighting && trend === -1 ? RED : WHITE;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: {
+          title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay,
+          format: metadata.format, precision: metadata.precision,
+        },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        fills: [
+          { plot1: 'plot2', plot2: 'plot0', options: { title: 'UpTrend Highligter' }, colors: s.upColors.slice() },
+          { plot1: 'plot2', plot2: 'plot1', options: { title: 'DownTrend Highligter' }, colors: s.dnColors.slice() },
+        ],
+        markers: s.markers.slice(),
+        // alertcondition(buySignal) / alertcondition(sellSignal) / alertcondition(changeCond)
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AlphaTradingSignalUpSideDownInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<AlphaTradingSignalUpSideDownInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: { toArray(): (number | null | undefined)[] }) => s.toArray().map((v) => v ?? NaN);
-  const src = A(getSourceSeries(bars, cfg.src));
-  // atr2 = ta.sma(ta.tr, Periods); atr = changeATR ? ta.atr(Periods) : atr2
-  const atr = cfg.changeATR ? A(ta.atr(bars, cfg.periods)) : A(ta.sma(ta.tr(bars), cfg.periods));
-
-  const up: number[] = new Array(n).fill(NaN);
-  const dn: number[] = new Array(n).fill(NaN);
-  const trendArr: number[] = new Array(n).fill(1);
-  let trend = 1;
-  for (let i = 0; i < n; i++) {
-    const c1 = i > 0 ? bars[i - 1].close : NaN;
-    let u = src[i] - cfg.multiplier * atr[i];
-    const up1 = i > 0 && !isNaN(up[i - 1]) ? up[i - 1] : u; // nz(up[1], up)
-    u = gt(c1, up1) ? Math.max(u, up1) : u;
-    let d = src[i] + cfg.multiplier * atr[i];
-    const dn1 = i > 0 && !isNaN(dn[i - 1]) ? dn[i - 1] : d; // nz(dn[1], dn)
-    d = lt(c1, dn1) ? Math.min(d, dn1) : d;
-    up[i] = u;
-    dn[i] = d;
-    // trend := nz(trend[1], trend); trend := trend == -1 and close > dn1 ? 1 : trend == 1 and close < up1 ? -1 : trend
-    const close = bars[i].close;
-    trend = trend === -1 && gt(close, dn1) ? 1 : trend === 1 && lt(close, up1) ? -1 : trend;
-    trendArr[i] = trend;
-  }
-
-  const t = (i: number) => bars[i].time;
-  const markers: MarkerData[] = [];
-  const buyFlags: boolean[] = [], sellFlags: boolean[] = [], changeFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const prev = i > 0 ? trendArr[i - 1] : NaN;
-    const buySignal = trendArr[i] === 1 && prev === -1;
-    const sellSignal = trendArr[i] === -1 && prev === 1;
-    buyFlags.push(buySignal);
-    sellFlags.push(sellSignal);
-    // changeCond = trend != trend[1] (na on the first bar: false)
-    changeFlags.push(i > 0 && trendArr[i] !== prev);
-    if (buySignal && !isNaN(up[i])) {
-      // plotshape(buySignal ? up : na, 'UpTrend Begins', location.absolute, shape.circle, size.tiny)
-      markers.push({ time: t(i), position: 'atPriceMiddle', price: up[i], shape: 'circle', color: GREEN, size: 'tiny', id: 'shape0' });
-      // plotshape(buySignal and showsignals ? up : na, 'Buy', text 'Buy', location.absolute, shape.labelup, size.tiny)
-      if (cfg.showSignals) {
-        markers.push({ time: t(i), position: 'atPriceBottom', price: up[i], shape: 'labelUp', color: GREEN,
-          size: 'tiny', text: 'Buy', textColor: WHITE, id: 'shape1' });
-      }
-    }
-    if (sellSignal && !isNaN(dn[i])) {
-      markers.push({ time: t(i), position: 'atPriceMiddle', price: dn[i], shape: 'circle', color: RED, size: 'tiny', id: 'shape2' });
-      if (cfg.showSignals) {
-        markers.push({ time: t(i), position: 'atPriceTop', price: dn[i], shape: 'labelDown', color: RED,
-          size: 'tiny', text: 'Sell', textColor: WHITE, id: 'shape3' });
-      }
-    }
-  }
-
-  const idx = bars.map((_b, i) => i);
-  return {
-    metadata: {
-      title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay,
-      format: metadata.format, precision: metadata.precision,
-    },
-    plots: {
-      plot0: idx.map((i) => ({ time: t(i), value: trendArr[i] === 1 ? up[i] : NaN, color: GREEN })),
-      plot1: idx.map((i) => ({ time: t(i), value: trendArr[i] === 1 ? NaN : dn[i], color: RED })),
-      plot2: idx.map((i) => {
-        const b = bars[i];
-        return { time: t(i), value: (b.open + b.high + b.low + b.close) / 4, color: PINE_BLUE };
-      }),
-    },
-    fills: [
-      // fill(mPlot, upPlot, color = highlighting ? trend == 1 ? color.green : color.white : color.white)
-      {
-        plot1: 'plot2', plot2: 'plot0', options: { title: 'UpTrend Highligter' },
-        colors: idx.map((i) => (cfg.highlighting && trendArr[i] === 1 ? GREEN : WHITE)),
-      },
-      // fill(mPlot, dnPlot, color = highlighting ? trend == -1 ? color.red : color.white : color.white)
-      {
-        plot1: 'plot2', plot2: 'plot1', options: { title: 'DownTrend Highligter' },
-        colors: idx.map((i) => (cfg.highlighting && trendArr[i] === -1 ? RED : WHITE)),
-      },
-    ],
-    markers,
-    // alertcondition(buySignal) / alertcondition(sellSignal) / alertcondition(changeCond)
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags, changeFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -177,6 +219,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const AlphaTradingSignalUpSideDown = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

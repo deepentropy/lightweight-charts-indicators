@@ -10,7 +10,9 @@
  * Original notice: © bharatTrader
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MeanAnglesInputs {
   /** Number of bars of the slope (Range) */
@@ -78,43 +80,77 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MeanAnglesInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+type Ma = { step(v: number): number; commit(): void };
+
+interface MeanAnglesRun extends BarRunState<Record<string, never>> {
+  mas: Ma[];
+  /** nz(ma) of each average, by bar */
+  vals: number[][];
+  data: Point[][];
+}
+
+function study(inputs: Partial<MeanAnglesInputs>): BarStudy<MeanAnglesRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const { base } = cfg;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const myClose = Series.fromArray(bars, bars.map((b) => b.close * cfg.scale));
   const isEma = cfg.mean === 'EMA';
-
-  // ma = nz(ta.ema(my_close, len)) (or nz(ta.sma(...))); angle = math.atan((ma - ma[base]) / base)
-  const angle = (len: number): number[] => {
-    const ma = A(isEma ? ta.ema(myClose, len) : ta.sma(myClose, len)).map((v) => (isNaN(v) ? 0 : v));
-    return ma.map((v, i) => (i - base >= 0 ? Math.atan((v - ma[i - base]) / base) : NaN));
-  };
-  const angles = [cfg.len0, cfg.len1, cfg.len2, cfg.len3, cfg.len4].map(angle);
+  const lens = [cfg.len0, cfg.len1, cfg.len2, cfg.len3, cfg.len4];
   const shown = [cfg.showLeadingTrend, ...new Array(4).fill(!cfg.showLeadingTrendOnly)];
   const cols = [COL0, COL1, COL2, COL3, COL4];
-
-  const plots: IndicatorResult['plots'] = {};
-  angles.forEach((a, k) => {
-    plots[`plot${k}`] = bars.map((b, i) => ({ time: b.time, value: shown[k] ? a[i] : NaN, color: cols[k] }));
-  });
-
-  // Pi = 3.14159; hline(+-Pi / 2) and hline(0), dotted, width 3, colour na unless showRadianLevels
-  const piBy2 = 3.14159 / 2;
-  const level = (c: string) => (cfg.showRadianLevels ? c : 'transparent');
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    hlines: [
-      { value: piBy2, options: { title: 'Pi / 2', color: level(color.green), linestyle: 'dotted', linewidth: 3 } },
-      { value: 0, options: { title: 'Zero', color: level(color.gray), linestyle: 'dotted', linewidth: 3 } },
-      { value: -piBy2, options: { title: '-Pi / 2', color: level(color.red), linestyle: 'dotted', linewidth: 3 } },
-    ],
+    init() {
+      const mas: Ma[] = lens.map((len) => (isEma ? taStep.ema(len) : new WindowSma(len)));
+      const vals = lens.map(() => [] as number[]);
+      const data = lens.map(() => [] as Point[]);
+      return { mas, vals, data, steps: mas, vars: {}, lists: [], series: [...vals, ...data] };
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // my_close = close * scale
+      const myClose = b.close * cfg.scale;
+      // ma = nz(ta.ema(my_close, len)) (or nz(ta.sma(...))); angle = math.atan((ma - ma[base]) / base)
+      for (let k = 0; k < 5; k++) {
+        const m = s.mas[k].step(myClose);
+        const v = isNaN(m) ? 0 : m;
+        const vals = s.vals[k];
+        vals[i] = v;
+        const a = i - base >= 0 ? Math.atan((v - vals[i - base]) / base) : NaN;
+        s.data[k][i] = { time: b.time, value: shown[k] ? a : NaN, color: cols[k] };
+      }
+    },
+    result(s) {
+      const plots: IndicatorResult['plots'] = {};
+      s.data.forEach((d, k) => {
+        plots[`plot${k}`] = d.slice();
+      });
+      // Pi = 3.14159; hline(+-Pi / 2) and hline(0), dotted, width 3, colour na unless showRadianLevels
+      const piBy2 = 3.14159 / 2;
+      const level = (c: string) => (cfg.showRadianLevels ? c : 'transparent');
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        hlines: [
+          { value: piBy2, options: { title: 'Pi / 2', color: level(color.green), linestyle: 'dotted', linewidth: 3 } },
+          { value: 0, options: { title: 'Zero', color: level(color.gray), linestyle: 'dotted', linewidth: 3 } },
+          { value: -piBy2, options: { title: '-Pi / 2', color: level(color.red), linestyle: 'dotted', linewidth: 3 } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MeanAnglesInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MeanAnglesInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MeanAngles = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

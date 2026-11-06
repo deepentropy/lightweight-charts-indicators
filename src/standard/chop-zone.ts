@@ -8,7 +8,9 @@
  * Plus barcolor is not used — the columns themselves are colored per-bar.
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ChopZoneInputs {
   // No configurable inputs in the standard indicator
@@ -51,51 +53,68 @@ function getChopZoneColor(emaAngle: number): string {
   return COLOR_YELLOW;
 }
 
-export function calculate(bars: Bar[], _inputs: Partial<ChopZoneInputs> = {}): IndicatorResult {
+type Point = { time: any; value: number; color?: string };
+
+interface ChopZoneRun extends BarRunState<{ prevEma34: number }> {
+  ema: ReturnType<typeof taStep.ema>;
+  hi: WindowExtreme;
+  lo: WindowExtreme;
+  plotData: Point[];
+}
+
+function study(_inputs: Partial<ChopZoneInputs>): BarStudy<ChopZoneRun, IndicatorResult> {
   const periods = 30;
   const pi = Math.PI;
-
-  // Calculate EMA(close, 34)
-  const closeSeries = new Series(bars, (b) => b.close);
-  const ema34Series = ta.ema(closeSeries, 34);
-  const ema34Values = ema34Series.toArray();
-
-  // Calculate highest(high, 30) and lowest(low, 30)
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-  const highestValues = ta.highest(highSeries, periods).toArray();
-  const lowestValues = ta.lowest(lowSeries, periods).toArray();
-
-  const plotData: { time: any; value: number; color?: string }[] = [];
-
-  for (let i = 0; i < bars.length; i++) {
-    const bar = bars[i];
-    const avg = (bar.high + bar.low + bar.close) / 3; // hlc3
-    const ema34 = ema34Values[i];
-    const prevEma34 = i > 0 ? ema34Values[i - 1] : null;
-    const hh = highestValues[i];
-    const ll = lowestValues[i];
-
-    if (ema34 == null || prevEma34 == null || hh == null || ll == null || hh === ll) {
-      plotData.push({ time: bar.time, value: 1, color: COLOR_YELLOW });
-      continue;
-    }
-
-    const span = 25 / (hh - ll) * ll;
-
-    // Calculate EMA angle using atan2-based formula from PineScript
-    const y2 = (prevEma34 - ema34) / avg * span;
-    const c = Math.sqrt(1 + y2 * y2);
-    let emaAngle = Math.round(180 * Math.acos(1 / c) / pi);
-    if (y2 > 0) emaAngle = -emaAngle;
-
-    plotData.push({ time: bar.time, value: 1, color: getChopZoneColor(emaAngle) });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plotData },
+    init() {
+      // Calculate EMA(close, 34), highest(high, 30) and lowest(low, 30)
+      const ema = taStep.ema(34);
+      const hi = new WindowExtreme(false, periods);
+      const lo = new WindowExtreme(true, periods);
+      const s: ChopZoneRun = { ema, hi, lo, plotData: [], steps: [ema, hi, lo], vars: { prevEma34: NaN }, lists: [], series: [] };
+      s.series = [s.plotData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const bar = bars[i];
+      const avg = (bar.high + bar.low + bar.close) / 3; // hlc3
+      const ema34 = s.ema.step(bar.close);
+      const prevEma34 = i > 0 ? s.vars.prevEma34 : null;
+      s.vars.prevEma34 = ema34;
+      const hh = s.hi.step(bar.high);
+      const ll = s.lo.step(bar.low);
+
+      if (ema34 == null || prevEma34 == null || hh == null || ll == null || hh === ll) {
+        s.plotData[i] = { time: bar.time, value: 1, color: COLOR_YELLOW };
+        return;
+      }
+
+      const span = 25 / (hh - ll) * ll;
+
+      // Calculate EMA angle using atan2-based formula from PineScript
+      const y2 = (prevEma34 - ema34) / avg * span;
+      const c = Math.sqrt(1 + y2 * y2);
+      let emaAngle = Math.round(180 * Math.acos(1 / c) / pi);
+      if (y2 > 0) emaAngle = -emaAngle;
+
+      s.plotData[i] = { time: bar.time, value: 1, color: getChopZoneColor(emaAngle) };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plotData.slice() },
+      };
+    },
   };
 }
 
-export const ChopZone = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ChopZoneInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ChopZoneInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const ChopZone = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

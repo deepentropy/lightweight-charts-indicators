@@ -5,7 +5,9 @@
  * Reduces lag while maintaining smoothness using weighted moving averages.
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface HMAInputs {
   length: number;
@@ -32,28 +34,53 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<HMAInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface HmaRun extends BarRunState<Record<string, never>> {
+  wma1: ReturnType<typeof taStep.wma>;
+  wma2: ReturnType<typeof taStep.wma>;
+  hma: ReturnType<typeof taStep.wma>;
+  plotData: Point[];
+}
+
+function study(inputs: Partial<HMAInputs>): BarStudy<HmaRun, IndicatorResult> {
   const { length, src } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
+  const value = barSource(src);
 
   // HMA = WMA(2*WMA(n/2) - WMA(n), sqrt(n))
   const halfLength = Math.max(1, Math.floor(length / 2));
   const sqrtLength = Math.max(1, Math.floor(Math.sqrt(length)));
-
-  const wma1 = ta.wma(source, halfLength);
-  const wma2 = ta.wma(source, length);
-  const diff = wma1.mul(2).sub(wma2);
-  const hma = ta.wma(diff, sqrtLength);
-
-  const plotData = hma.toArray().map((value: number | undefined, i: number) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plotData },
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const wma1 = taStep.wma();
+      const wma2 = taStep.wma();
+      const hma = taStep.wma();
+      const s: HmaRun = { wma1, wma2, hma, plotData: [], steps: [wma1, wma2, hma], vars: {}, lists: [], series: [] };
+      s.series = [s.plotData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = value(bars[i]);
+      const diff = s.wma1.step(v, halfLength) * 2 - s.wma2.step(v, length);
+      s.plotData[i] = { time: bars[i].time as number, value: s.hma.step(diff, sqrtLength) };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plotData.slice() },
+      };
+    },
   };
 }
 
-export const HMA = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HMAInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<HMAInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const HMA = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

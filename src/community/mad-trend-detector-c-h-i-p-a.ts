@@ -11,8 +11,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MadTrendDetectorInputs {
   src: SourceType;
@@ -62,57 +64,83 @@ export const metadata = {
 /** Pine a > b: a - b > 1e-10 (false with na) */
 const gt = (a: number, b: number) => a - b > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MadTrendDetectorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> };
+
+interface MadRun extends BarRunState<{ signal: number }> {
+  ma: { step(v: number): number; commit(): void };
+  med: ReturnType<typeof taStep.median>;
+  mad: WindowSma;
+  pane: PlotCandleData[];
+  overlay: PlotCandleData[];
+  plot0: { time: number; value: number }[];
+  plot1: { time: number; value: number }[];
+}
+
+function study(inputs: Partial<MadTrendDetectorInputs>): BarStudy<MadRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const srcS = getSourceSeries(bars, cfg.src);
-  const src = A(srcS);
-  // ma = ma_type == "EMA" ? ta.ema(src, ma_length) : ta.sma(src, ma_length) (the input is constant: one branch on
-  // every bar)
-  const ma = A(cfg.maType === 'EMA' ? ta.ema(srcS, cfg.maLength) : ta.sma(srcS, cfg.maLength));
-  const med = A(ta.median(srcS, cfg.madLength));
-  const absDev = Series.fromArray(bars, src.map((v, i) => Math.abs(v - med[i])));
-  const mad = A(ta.sma(absDev, cfg.madLength));
-
+  const value = barSource(cfg.src);
   const up = String(color.rgb(0, 180, 255));
   const down = String(color.rgb(255, 80, 60));
-  const pane: PlotCandleData[] = [];
-  const overlay: PlotCandleData[] = [];
-  const plot0: { time: number; value: number }[] = [];
-  const plot1: { time: number; value: number }[] = [];
-  let signal = 0; // var int signal = 0
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const madScaled = mad[i] * cfg.madMultiplier;
-    const upper = ma[i] + madScaled * cfg.upperDeviation;
-    const lower = ma[i] - madScaled * cfg.lowerDeviation;
-    if (gt(b.close, upper)) signal = 1;
-    if (gt(lower, b.close)) signal = -1;
-    plot0.push({ time: b.time as number, value: upper });
-    plot1.push({ time: b.time as number, value: lower });
-    // coloring = signal == 1 ? rgb(0, 180, 255) : signal == -1 ? rgb(255, 80, 60) : na
-    const c = signal === 1 ? up : signal === -1 ? down : 'transparent';
-    const candle = { time: b.time as number, open: b.open, high: b.high, low: b.low, close: b.close, color: c, wickColor: c, borderColor: c };
-    pane.push(candle);
-    // the second plotcandle has force_overlay = true
-    overlay.push({ ...candle, forceOverlay: true });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    markers: [],
-    plotCandles: { barColoring: pane, barColoringOverlay: overlay },
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      // ma = ma_type == "EMA" ? ta.ema(src, ma_length) : ta.sma(src, ma_length) (the input is constant: one branch on
+      // every bar)
+      const ma = cfg.maType === 'EMA' ? taStep.ema(cfg.maLength) : new WindowSma(cfg.maLength);
+      const med = taStep.median(cfg.madLength);
+      const mad = new WindowSma(cfg.madLength);
+      const s: MadRun = {
+        ma, med, mad, pane: [], overlay: [], plot0: [], plot1: [],
+        steps: [ma, med, mad], vars: { signal: 0 }, lists: [], series: [],
+      };
+      s.series = [s.pane, s.overlay, s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const src = value(b);
+      const ma = s.ma.step(src);
+      const med = s.med.step(src);
+      const mad = s.mad.step(Math.abs(src - med));
+      const madScaled = mad * cfg.madMultiplier;
+      const upper = ma + madScaled * cfg.upperDeviation;
+      const lower = ma - madScaled * cfg.lowerDeviation;
+      // var int signal = 0
+      if (gt(b.close, upper)) s.vars.signal = 1;
+      if (gt(lower, b.close)) s.vars.signal = -1;
+      const signal = s.vars.signal;
+      s.plot0[i] = { time: b.time as number, value: upper };
+      s.plot1[i] = { time: b.time as number, value: lower };
+      // coloring = signal == 1 ? rgb(0, 180, 255) : signal == -1 ? rgb(255, 80, 60) : na
+      const c = signal === 1 ? up : signal === -1 ? down : 'transparent';
+      const candle = { time: b.time as number, open: b.open, high: b.high, low: b.low, close: b.close, color: c, wickColor: c, borderColor: c };
+      s.pane[i] = candle;
+      // the second plotcandle has force_overlay = true
+      s.overlay[i] = { ...candle, forceOverlay: true };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: [],
+        plotCandles: { barColoring: s.pane.slice(), barColoringOverlay: s.overlay.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MadTrendDetectorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MadTrendDetectorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MadTrendDetector = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

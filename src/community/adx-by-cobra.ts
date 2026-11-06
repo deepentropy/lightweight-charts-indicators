@@ -15,10 +15,12 @@
  */
 
 import {
-  ta, Series, color,
+  color,
   type BarColorConfig, type IndicatorResult, type InputConfig, type PlotConfig, type Bar,
 } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AdxByCobraInputs {
   /** Length of the Wilder sums and of the ADX average */
@@ -74,67 +76,102 @@ const ORANGE_20 = String(color.new('#FF7F00', 20));
 const GREEN_60 = String(color.new('#008000', 60));
 const RED_60 = String(color.new('#FF0000', 60));
 
-export function calculate(bars: Bar[], inputs: Partial<AdxByCobraInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+type Point = { time: number; value: number };
+
+interface AdxVars {
+  sTr: number;
+  sPlus: number;
+  sMinus: number;
+}
+
+interface AdxRun extends BarRunState<AdxVars> {
+  adxSma: WindowSma;
+  callSma: WindowSma;
+  putSma: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  bgColors: BgColorData[];
+}
+
+// A number used as a condition: na and 0 are false
+const truthy = (v: number) => !Number.isNaN(v) && v !== 0;
+const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+
+function study(inputs: Partial<AdxByCobraInputs>): BarStudy<AdxRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { len, len1, th } = cfg;
-  const n = bars.length;
-
-  const diPlus: number[] = new Array(n);
-  const diMinus: number[] = new Array(n);
-  const dx: number[] = new Array(n);
-  const call: number[] = new Array(n);
-  const put: number[] = new Array(n);
-  let sTr = 0;
-  let sPlus = 0;
-  let sMinus = 0;
-  for (let i = 0; i < n; i++) {
-    const { high, low } = bars[i];
-    // nz(close[1]), nz(high[1]), nz(low[1]): 0 on the first bar
-    const pc = i > 0 ? bars[i - 1].close : 0;
-    const ph = i > 0 ? bars[i - 1].high : 0;
-    const pl = i > 0 ? bars[i - 1].low : 0;
-    const tr = Math.max(Math.max(high - low, Math.abs(high - pc)), Math.abs(low - pc));
-    const dmPlus = gt(high - ph, pl - low) ? Math.max(high - ph, 0) : 0;
-    const dmMinus = gt(pl - low, high - ph) ? Math.max(pl - low, 0) : 0;
-    sTr = sTr - sTr / len + tr;
-    sPlus = sPlus - sPlus / len + dmPlus;
-    sMinus = sMinus - sMinus / len + dmMinus;
-    // Plain divisions, as Pine: x / 0 is +-infinity, 0 / 0 is na
-    diPlus[i] = (sPlus / sTr) * 100;
-    diMinus[i] = (sMinus / sTr) * 100;
-    dx[i] = (Math.abs(diPlus[i] - diMinus[i]) / (diPlus[i] + diMinus[i])) * 100;
-    // crosscall / crossput: bools used as numbers by sma (true 1, false 0)
-    call[i] = gt(diPlus[i], diMinus[i]) ? 1 : 0;
-    put[i] = gt(diMinus[i], diPlus[i]) ? 1 : 0;
-  }
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const adx = A(ta.sma(Series.fromArray(bars, dx), len));
-  const callAvg = A(ta.sma(Series.fromArray(bars, call), len1));
-  const putAvg = A(ta.sma(Series.fromArray(bars, put), len1));
-
-  // A number used as a condition: na and 0 are false
-  const truthy = (v: number) => !Number.isNaN(v) && v !== 0;
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    if (gt(diMinus[i], 60)) bgColors.push({ id: 'bgcolor0', time, color: LIME_40 });
-    if (gt(diPlus[i], 60)) bgColors.push({ id: 'bgcolor1', time, color: ORANGE_20 });
-    if (truthy(callAvg[i])) bgColors.push({ id: 'bgcolor2', time, color: GREEN_60 });
-    if (truthy(putAvg[i])) bgColors.push({ id: 'bgcolor3', time, color: RED_60 });
-  }
-
-  const out = (a: number[]) => bars.map((b, i) => ({ time: b.time, value: Number.isFinite(a[i]) ? a[i] : NaN }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: out(diPlus), plot1: out(diMinus), plot2: out(adx) },
-    hlines: [{ value: th, options: { color: '#FFFFFF', linestyle: 'dashed', linewidth: 1 } }],
-    bgColors,
+    init() {
+      const adxSma = new WindowSma(len);
+      const callSma = new WindowSma(len1);
+      const putSma = new WindowSma(len1);
+      const s: AdxRun = {
+        adxSma, callSma, putSma, plot0: [], plot1: [], plot2: [], bgColors: [],
+        steps: [adxSma, callSma, putSma], vars: { sTr: 0, sPlus: 0, sMinus: 0 }, lists: [], series: [],
+      };
+      s.lists = [s.bgColors];
+      s.series = [s.plot0, s.plot1, s.plot2];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const { high, low } = bars[i];
+      // nz(close[1]), nz(high[1]), nz(low[1]): 0 on the first bar
+      const pc = i > 0 ? bars[i - 1].close : 0;
+      const ph = i > 0 ? bars[i - 1].high : 0;
+      const pl = i > 0 ? bars[i - 1].low : 0;
+      const tr = Math.max(Math.max(high - low, Math.abs(high - pc)), Math.abs(low - pc));
+      const dmPlus = gt(high - ph, pl - low) ? Math.max(high - ph, 0) : 0;
+      const dmMinus = gt(pl - low, high - ph) ? Math.max(pl - low, 0) : 0;
+      v.sTr = v.sTr - v.sTr / len + tr;
+      v.sPlus = v.sPlus - v.sPlus / len + dmPlus;
+      v.sMinus = v.sMinus - v.sMinus / len + dmMinus;
+      // Plain divisions, as Pine: x / 0 is +-infinity, 0 / 0 is na
+      const diPlus = (v.sPlus / v.sTr) * 100;
+      const diMinus = (v.sMinus / v.sTr) * 100;
+      const dx = (Math.abs(diPlus - diMinus) / (diPlus + diMinus)) * 100;
+      // crosscall / crossput: bools used as numbers by sma (true 1, false 0)
+      const call = gt(diPlus, diMinus) ? 1 : 0;
+      const put = gt(diMinus, diPlus) ? 1 : 0;
+      const adx = s.adxSma.step(dx);
+      const callAvg = s.callSma.step(call);
+      const putAvg = s.putSma.step(put);
+
+      const time = bars[i].time;
+      if (gt(diMinus, 60)) s.bgColors.push({ id: 'bgcolor0', time, color: LIME_40 });
+      if (gt(diPlus, 60)) s.bgColors.push({ id: 'bgcolor1', time, color: ORANGE_20 });
+      if (truthy(callAvg)) s.bgColors.push({ id: 'bgcolor2', time, color: GREEN_60 });
+      if (truthy(putAvg)) s.bgColors.push({ id: 'bgcolor3', time, color: RED_60 });
+
+      s.plot0[i] = { time, value: fin(diPlus) };
+      s.plot1[i] = { time, value: fin(diMinus) };
+      s.plot2[i] = { time, value: fin(adx) };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        hlines: [{ value: th, options: { color: '#FFFFFF', linestyle: 'dashed', linewidth: 1 } }],
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdxByCobraInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AdxByCobraInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AdxByCobra = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

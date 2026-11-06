@@ -6,7 +6,9 @@
  * Based on the standard DMI indicator.
  */
 
-import { ta, type Series, type Bar, type IndicatorResult, type InputConfig, type PlotConfig } from 'oakscriptjs';
+import { taStep, type Bar, type IndicatorResult, type InputConfig, type PlotConfig } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DMIInputs {
   /** ADX Smoothing length */
@@ -51,32 +53,61 @@ export const metadata = {
  * sum = plus + minus
  * adx = 100 * ta.rma(math.abs(plus - minus) / (sum == 0 ? 1 : sum), lensig)
  */
-export function calculate(bars: Bar[], inputs: Partial<DMIInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface DmiRun extends BarRunState<Record<string, never>> {
+  dmi: ReturnType<typeof taStep.dmi>;
+  adx: Point[];
+  plus: Point[];
+  minus: Point[];
+}
+
+function study(inputs: Partial<DMIInputs>): BarStudy<DmiRun, IndicatorResult> {
   const { adxSmoothing, diLength } = { ...defaultInputs, ...inputs };
-
-  // ta.dmi follows the algorithm above (1e-10 comparisons, ta.tr without handle_na, x / 0 is na for fixnan)
-  const [plus, minus, adx] = ta.dmi(bars, diLength, adxSmoothing);
-  const toPlot = (s: Series) => {
-    const arr = s.toArray();
-    return bars.map((bar, i) => ({ time: bar.time, value: arr[i] ?? NaN }));
-  };
-
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    init() {
+      // ta.dmi follows the algorithm above (1e-10 comparisons, ta.tr without handle_na, x / 0 is na for fixnan)
+      const dmi = taStep.dmi(diLength, adxSmoothing);
+      const s: DmiRun = { dmi, adx: [], plus: [], minus: [], steps: [dmi], vars: {}, lists: [], series: [] };
+      s.series = [s.adx, s.plus, s.minus];
+      return s;
     },
-    plots: {
-      'plot0': toPlot(adx),
-      'plot1': toPlot(plus),
-      'plot2': toPlot(minus),
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const [plus, minus, adx] = s.dmi.step(b.high, b.low, b.close);
+      s.adx[i] = { time: b.time as number, value: adx ?? NaN };
+      s.plus[i] = { time: b.time as number, value: plus ?? NaN };
+      s.minus[i] = { time: b.time as number, value: minus ?? NaN };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.adx.slice(),
+          'plot1': s.plus.slice(),
+          'plot2': s.minus.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DMIInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DMIInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const DMI = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

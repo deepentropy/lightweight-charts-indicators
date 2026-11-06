@@ -8,8 +8,10 @@
  * Reference: "Swing Highs/Lows & Candle Patterns [LuxAlgo]" by LuxAlgo (Pine v5)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, LabelData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SwingHighsLowsPatternsInputs {
   length: number;
@@ -53,96 +55,121 @@ const EPS = 1e-10;
 const lt = (a: number, b: number) => b - a > EPS;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<SwingHighsLowsPatternsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; labels: LabelData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; labels: LabelData[] };
+
+interface SwingVars {
+  /** Pine: var float phy = na, var float ply = na */
+  phy: number;
+  ply: number;
+}
+
+interface SwingRun extends BarRunState<SwingVars> {
+  ph: PivotStep;
+  pl: PivotStep;
+  closePlot: { time: number; value: number }[];
+  labels: LabelData[];
+}
+
+function study(inputs: Partial<SwingHighsLowsPatternsInputs>): BarStudy<SwingRun, Result> {
   const { length, swinghCss, swinglCss } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-
-  const phArr = ta.pivothigh(highSeries, length, length).toArray();
-  const plArr = ta.pivotlow(lowSeries, length, length).toArray();
-
-  const labels: LabelData[] = [];
-  const closePlot = bars.map((b) => ({ time: b.time, value: NaN }));
-
-  // Pine: var float phy = na, var float ply = na
-  let phy = NaN;
-  let ply = NaN;
-
-  for (let i = 0; i < n; i++) {
-    const ph = phArr[i] ?? NaN;
-    const pl = plArr[i] ?? NaN;
-    // Pine v5 `if ph` / `pl and ...`: a float is true when it is not na and not 0
-    const hasPh = !Number.isNaN(ph) && ph !== 0;
-    const hasPl = !Number.isNaN(pl) && pl !== 0;
-
-    // Candle data at the pivot bar: o = open[length], ...
-    const pivotIdx = i - length;
-    if (pivotIdx < 0) continue;
-
-    const o = bars[pivotIdx].open;
-    const h = bars[pivotIdx].high;
-    const l = bars[pivotIdx].low;
-    const c = bars[pivotIdx].close;
-    const d = Math.abs(c - o);
-    // c[1], o[1] (na before the first bar: conditions false)
-    const c1 = pivotIdx >= 1 ? bars[pivotIdx - 1].close : NaN;
-    const o1 = pivotIdx >= 1 ? bars[pivotIdx - 1].open : NaN;
-
-    const isHammer = hasPl && gt(Math.min(o, c) - l, d) && lt(h - Math.max(c, o), d);
-    const isInvHammer = hasPl && gt(h - Math.max(c, o), d) && lt(Math.min(c, o) - l, d);
-    const isBullEng = gt(c, o) && lt(c1, o1) && gt(c, o1) && lt(o, c1);
-    const isHanging = hasPh && gt(Math.min(c, o) - l, d) && lt(h - Math.max(o, c), d);
-    const isShooting = hasPh && gt(h - Math.max(o, c), d) && lt(Math.min(c, o) - l, d);
-    // Pine source: same condition as bullish engulfing
-    const isBearEng = gt(c, o) && lt(c1, o1) && gt(c, o1) && lt(o, c1);
-
-    let patternName = 'None';
-    if (isHammer) patternName = 'Hammer';
-    else if (isInvHammer) patternName = 'Inverted Hammer';
-    else if (isBullEng) patternName = 'Bullish Engulfing';
-    else if (isHanging) patternName = 'Hanging Man';
-    else if (isShooting) patternName = 'Shooting Star';
-    else if (isBearEng) patternName = 'Bearish Engulfing';
-
-    // Pine: if ph ... else if pl (one label per bar at most)
-    if (hasPh) {
-      // ph > phy is false when phy is na: the first swing high is 'LH'
-      const label = gt(ph, phy) ? 'HH' : 'LH';
-      labels.push({
-        time: bars[pivotIdx].time,
-        price: ph,
-        text: label + '\n' + patternName,
-        textColor: swinghCss,
-        color: 'transparent',
-        style: 'label_down',
-        size: 'normal',
-      });
-      phy = ph;
-    } else if (hasPl) {
-      // pl < ply is false when ply is na: the first swing low is 'HL'
-      const label = lt(pl, ply) ? 'LL' : 'HL';
-      labels.push({
-        time: bars[pivotIdx].time,
-        price: pl,
-        text: label + '\n' + patternName,
-        textColor: swinglCss,
-        color: 'transparent',
-        style: 'label_up',
-        size: 'normal',
-      });
-      ply = pl;
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': closePlot },
-    // Pine draws labels only (no plotshape)
-    markers: [],
-    labels: labels.slice(-MAX_LABELS),
+    init() {
+      const ph = new PivotStep(length, length, true);
+      const pl = new PivotStep(length, length, false);
+      const s: SwingRun = {
+        ph, pl, closePlot: [], labels: [],
+        steps: [ph, pl], vars: { phy: NaN, ply: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.labels];
+      s.series = [s.closePlot];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const ph = s.ph.step(i, bars[i]!.high);
+      const pl = s.pl.step(i, bars[i]!.low);
+      s.closePlot[i] = { time: bars[i]!.time as number, value: NaN };
+      // Pine v5 `if ph` / `pl and ...`: a float is true when it is not na and not 0
+      const hasPh = !Number.isNaN(ph) && ph !== 0;
+      const hasPl = !Number.isNaN(pl) && pl !== 0;
+
+      // Candle data at the pivot bar: o = open[length], ...
+      const pivotIdx = i - length;
+      if (pivotIdx < 0) return;
+
+      const o = bars[pivotIdx]!.open;
+      const h = bars[pivotIdx]!.high;
+      const l = bars[pivotIdx]!.low;
+      const c = bars[pivotIdx]!.close;
+      const d = Math.abs(c - o);
+      // c[1], o[1] (na before the first bar: conditions false)
+      const c1 = pivotIdx >= 1 ? bars[pivotIdx - 1]!.close : NaN;
+      const o1 = pivotIdx >= 1 ? bars[pivotIdx - 1]!.open : NaN;
+
+      const isHammer = hasPl && gt(Math.min(o, c) - l, d) && lt(h - Math.max(c, o), d);
+      const isInvHammer = hasPl && gt(h - Math.max(c, o), d) && lt(Math.min(c, o) - l, d);
+      const isBullEng = gt(c, o) && lt(c1, o1) && gt(c, o1) && lt(o, c1);
+      const isHanging = hasPh && gt(Math.min(c, o) - l, d) && lt(h - Math.max(o, c), d);
+      const isShooting = hasPh && gt(h - Math.max(o, c), d) && lt(Math.min(c, o) - l, d);
+      // Pine source: same condition as bullish engulfing
+      const isBearEng = gt(c, o) && lt(c1, o1) && gt(c, o1) && lt(o, c1);
+
+      let patternName = 'None';
+      if (isHammer) patternName = 'Hammer';
+      else if (isInvHammer) patternName = 'Inverted Hammer';
+      else if (isBullEng) patternName = 'Bullish Engulfing';
+      else if (isHanging) patternName = 'Hanging Man';
+      else if (isShooting) patternName = 'Shooting Star';
+      else if (isBearEng) patternName = 'Bearish Engulfing';
+
+      // Pine: if ph ... else if pl (one label per bar at most)
+      if (hasPh) {
+        // ph > phy is false when phy is na: the first swing high is 'LH'
+        const label = gt(ph, v.phy) ? 'HH' : 'LH';
+        s.labels.push({
+          time: bars[pivotIdx]!.time,
+          price: ph,
+          text: label + '\n' + patternName,
+          textColor: swinghCss,
+          color: 'transparent',
+          style: 'label_down',
+          size: 'normal',
+        });
+        v.phy = ph;
+      } else if (hasPl) {
+        // pl < ply is false when ply is na: the first swing low is 'HL'
+        const label = lt(pl, v.ply) ? 'LL' : 'HL';
+        s.labels.push({
+          time: bars[pivotIdx]!.time,
+          price: pl,
+          text: label + '\n' + patternName,
+          textColor: swinglCss,
+          color: 'transparent',
+          style: 'label_up',
+          size: 'normal',
+        });
+        v.ply = pl;
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.closePlot.slice() },
+        // Pine draws labels only (no plotshape)
+        markers: [],
+        labels: s.labels.slice(-MAX_LABELS),
+      };
+    },
   };
 }
 
-export const SwingHighsLowsPatterns = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SwingHighsLowsPatternsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SwingHighsLowsPatternsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const SwingHighsLowsPatterns = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

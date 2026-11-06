@@ -10,7 +10,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AggressiveVolumeInputs {
   /** Moving average length */
@@ -57,69 +59,86 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <= EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<AggressiveVolumeInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+type Ma = { step(v: number, volume: number): number; commit(): void };
+
+interface AggRun extends BarRunState<Record<string, never>> {
+  ma: Ma;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+}
+
+function study(inputs: Partial<AggressiveVolumeInputs>): BarStudy<AggRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const len = cfg.periodoMedia;
-  const vol = bars.map((b) => b.volume ?? NaN);
-
-  const delta = bars.map((b, i) => {
-    const corpo = Math.abs(b.close - b.open);
-    let amplitude = b.high - b.low;
-    // amplitude := amplitude == 0 ? 0.0001 : amplitude
-    amplitude = eq(amplitude, 0) ? 0.0001 : amplitude;
-    const proporcao = corpo / amplitude;
-    const direcao = gt(b.close, b.open) ? 1 : lt(b.close, b.open) ? -1 : 0;
-    return direcao * vol[i] * proporcao;
-  });
-  // deltaEstimadoPositivo = deltaEstimado >= 0 ? deltaEstimado : na; deltaEstimadoNegativo = deltaEstimado < 0 ? -deltaEstimado : na
-  const pos = delta.map((d) => (ge(d, 0) ? d : NaN));
-  const neg = delta.map((d) => (lt(d, 0) ? -d : NaN));
-
+  const P = (time: number, v: number, c: string): Point => ({ time, value: Number.isFinite(v) ? v : NaN, color: c });
   // mediaDeltaEstimado(): the moving average of the buy part, chosen by type (a constant input: one branch runs on
   // every bar)
-  const posS = S(pos);
-  let media: number[];
-  switch (cfg.tipoMedia) {
-    case 'SMA':
-    case 'SMMA':
-      media = A(ta.sma(posS, len));
-      break;
-    case 'EMA':
-      media = A(ta.ema(posS, len));
-      break;
-    case 'WMA':
-      media = A(ta.wma(posS, len));
-      break;
-    case 'VWMA':
-      media = A(ta.vwma(posS, len, S(vol)));
-      break;
-    default:
+  const maStep = (): Ma => {
+    switch (cfg.tipoMedia) {
+      case 'SMA':
+      case 'SMMA': { const m = new WindowSma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'EMA': { const m = taStep.ema(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+      case 'VWMA': { const m = new WindowVwma(len); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+      default: { const m = taStep.hma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    }
+  };
+  const hma = cfg.tipoMedia !== 'SMA' && cfg.tipoMedia !== 'SMMA' && cfg.tipoMedia !== 'EMA' && cfg.tipoMedia !== 'WMA' && cfg.tipoMedia !== 'VWMA';
+  return {
+    init() {
+      const ma = maStep();
+      const s: AggRun = { ma, plot0: [], plot1: [], plot2: [], plot3: [], steps: [ma], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1, s.plot2, s.plot3];
+      return s;
+    },
+    bar(s, i, bars) {
       // ta.hma(x, 1) calls ta.wma(x, 0): a Pine runtime error
-      if (Math.floor(len / 2) < 1 && bars.length > 0) {
+      if (hma && i === 0 && Math.floor(len / 2) < 1) {
         throw new Error("Invalid value of the 'length' argument (0.0) in the 'wma' function. It must be > 0.");
       }
-      media = A(ta.hma(posS, len));
-  }
-
-  const P = (vals: number[], c: string) => bars.map((b, i) => ({
-    time: b.time, value: Number.isFinite(vals[i]) ? vals[i] : NaN, color: c,
-  }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: P(vol, COMMON),
-      plot1: P(pos, BUY),
-      plot2: P(neg, SELL),
-      plot3: P(cfg.mostrarMedia ? media : media.map(() => NaN), color.orange),
+      const b = bars[i];
+      const time = b.time as number;
+      const vol = b.volume ?? NaN;
+      const corpo = Math.abs(b.close - b.open);
+      let amplitude = b.high - b.low;
+      // amplitude := amplitude == 0 ? 0.0001 : amplitude
+      amplitude = eq(amplitude, 0) ? 0.0001 : amplitude;
+      const proporcao = corpo / amplitude;
+      const direcao = gt(b.close, b.open) ? 1 : lt(b.close, b.open) ? -1 : 0;
+      const delta = direcao * vol * proporcao;
+      // deltaEstimadoPositivo = deltaEstimado >= 0 ? deltaEstimado : na; deltaEstimadoNegativo = deltaEstimado < 0 ? -deltaEstimado : na
+      const pos = ge(delta, 0) ? delta : NaN;
+      const neg = lt(delta, 0) ? -delta : NaN;
+      const media = s.ma.step(pos, vol);
+      s.plot0[i] = P(time, vol, COMMON);
+      s.plot1[i] = P(time, pos, BUY);
+      s.plot2[i] = P(time, neg, SELL);
+      s.plot3[i] = P(time, cfg.mostrarMedia ? media : NaN, color.orange);
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AggressiveVolumeInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AggressiveVolumeInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const AggressiveVolume = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -6,7 +6,9 @@
  * Reference: "Super Smoothed MACD for Crypto" community indicator
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SuperSmoothedMACDInputs {
   fastLength: number;
@@ -44,45 +46,80 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SuperSmoothedMACDInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+type Ema = ReturnType<typeof taStep.ema>;
+
+interface SsmRun extends BarRunState<Record<string, never>> {
+  fast: Ema;
+  slow: Ema;
+  smooth: Ema;
+  signal: Ema;
+  hist: number[];
+  macdData: Point[];
+  sigData: Point[];
+  histData: Point[];
+}
+
+function study(inputs: Partial<SuperSmoothedMACDInputs>): BarStudy<SsmRun, IndicatorResult> {
   const { fastLength, slowLength, signalLength, smoothLength, src } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
-
-  const fastEMA = ta.ema(source, fastLength);
-  const slowEMA = ta.ema(source, slowLength);
-  const rawMacd = fastEMA.sub(slowEMA);
-
-  // Extra smoothing pass
-  const smoothedMacd = ta.ema(rawMacd, smoothLength);
-  const signalLine = ta.ema(smoothedMacd, signalLength);
-  const histogram = smoothedMacd.sub(signalLine);
-
-  const macdArr = smoothedMacd.toArray();
-  const sigArr = signalLine.toArray();
-  const histArr = histogram.toArray();
-
+  const value = barSource(src);
   const warmup = slowLength + smoothLength;
-
-  const toPlot = (arr: (number | null)[]) =>
-    arr.map((v, i) => ({ time: bars[i].time, value: (i < warmup || v == null) ? NaN : v }));
-
-  const histPlot = histArr.map((v, i) => {
-    if (i < warmup || v == null) return { time: bars[i].time, value: NaN };
-    const prev = i > 0 ? (histArr[i - 1] ?? NaN) : NaN;
-    let color: string;
-    if (v >= 0) {
-      color = v > prev ? '#00E676' : '#26A69A';
-    } else {
-      color = v < prev ? '#FF5252' : '#EF5350';
-    }
-    return { time: bars[i].time, value: v, color };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(macdArr), 'plot1': toPlot(sigArr), 'plot2': histPlot },
-    hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed', title: 'Zero' } }],
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const fast = taStep.ema(fastLength);
+      const slow = taStep.ema(slowLength);
+      // Extra smoothing pass
+      const smooth = taStep.ema(smoothLength);
+      const signal = taStep.ema(signalLength);
+      const s: SsmRun = {
+        fast, slow, smooth, signal, hist: [], macdData: [], sigData: [], histData: [],
+        steps: [fast, slow, smooth, signal], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.hist, s.macdData, s.sigData, s.histData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const time = b.time as number;
+      const v0 = value(b);
+      const rawMacd = s.fast.step(v0) - s.slow.step(v0);
+      const smoothedMacd = s.smooth.step(rawMacd);
+      const signalLine = s.signal.step(smoothedMacd);
+      const v = smoothedMacd - signalLine;
+      s.hist[i] = v;
+      s.macdData[i] = { time, value: i < warmup ? NaN : smoothedMacd };
+      s.sigData[i] = { time, value: i < warmup ? NaN : signalLine };
+      if (i < warmup) {
+        s.histData[i] = { time, value: NaN };
+        return;
+      }
+      const prev = i > 0 ? s.hist[i - 1]! : NaN;
+      let color: string;
+      if (v >= 0) {
+        color = v > prev ? '#00E676' : '#26A69A';
+      } else {
+        color = v < prev ? '#FF5252' : '#EF5350';
+      }
+      s.histData[i] = { time, value: v, color };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.macdData.slice(), 'plot1': s.sigData.slice(), 'plot2': s.histData.slice() },
+        hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed', title: 'Zero' } }],
+      };
+    },
   };
 }
 
-export const SuperSmoothedMACD = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SuperSmoothedMACDInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SuperSmoothedMACDInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const SuperSmoothedMACD = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

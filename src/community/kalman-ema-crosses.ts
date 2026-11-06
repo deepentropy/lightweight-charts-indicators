@@ -12,7 +12,9 @@
  * Original notice: © JTCapitalNL. Credits for the kalman function goes to @Backquant
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface KalmanEmaCrossesInputs {
   src: SourceType;
@@ -83,98 +85,136 @@ function kalmanStep(k: KalmanState, source: number, proc: number, measure: numbe
 }
 
 /**
- * One `ta.ema(x, len)` call fed bar by bar (the same recursion as oakscriptjs ta.ema: the SMA of the first `len`
- * finite values as seed, then (x - ema) * 2 / (len + 1) + ema; an na value gives na on its bar and the next bar
- * continues from the last value). Needed because the EMA input of the next bar depends on this bar's EMA (shared
- * Kalman state).
+ * The state of one `ta.ema(x, len)` call fed bar by bar (the same recursion as oakscriptjs ta.ema: the SMA of the
+ * first `len` finite values as seed, then (x - ema) * 2 / (len + 1) + ema; an na value gives na on its bar and the
+ * next bar continues from the last value). Needed because the EMA input of the next bar depends on this bar's EMA
+ * (shared Kalman state).
  */
-function emaStepper(length: number): (x: number) => number {
-  const len = Math.floor(length);
-  const mult = 2 / (len + 1);
-  let count = 0;
-  let sum = 0;
-  let value = NaN;
-  return (x: number) => {
-    if (!Number.isFinite(x)) return NaN;
-    if (count < len) {
-      sum += x;
-      count++;
-      if (count < len) return NaN;
-      value = sum / len;
-      return value;
-    }
-    value = (x - value) * mult + value;
-    return value;
-  };
+interface EmaState {
+  count: number;
+  sum: number;
+  value: number;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<KalmanEmaCrossesInputs> = {}): IndicatorResult {
+function emaStep(e: EmaState, len: number, mult: number, x: number): number {
+  if (!Number.isFinite(x)) return NaN;
+  if (e.count < len) {
+    e.sum += x;
+    e.count++;
+    if (e.count < len) return NaN;
+    e.value = e.sum / len;
+    return e.value;
+  }
+  e.value = (x - e.value) * mult + e.value;
+  return e.value;
+}
+
+type Point = { time: number; value: number; color: string };
+
+interface KalmanVars {
+  k1: KalmanState;
+  k2: KalmanState;
+  e1: EmaState;
+  e2: EmaState;
+  /** var trend = 0 */
+  trend: number;
+}
+
+interface KalmanRun extends BarRunState<KalmanVars> {
+  up: ReturnType<typeof taStep.crossover>;
+  down: ReturnType<typeof taStep.crossover>;
+  plot0: Point[];
+  plot1: Point[];
+  fillColors: string[];
+}
+
+function study(inputs: Partial<KalmanEmaCrossesInputs>): BarStudy<KalmanRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = A(getSourceSeries(bars, cfg.src));
+  const value = barSource(cfg.src);
   const { proc, measure, kalmanusage } = cfg;
-
-  // var float[] state = array.new_float(1, na), error = array.new_float(1, 100.0) (and state2 / error2)
-  const k1: KalmanState = { state: NaN, error: 100.0 };
-  const k2: KalmanState = { state: NaN, error: 100.0 };
-  const ema1Step = emaStepper(cfg.ema1len);
-  const ema2Step = emaStepper(cfg.ema2len);
-
-  const ema1kalman: number[] = new Array(n);
-  const ema2kalman: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    if (kalmanusage === 1) kalmanInit(k1, src[i]);
-    if (kalmanusage === 2) kalmanInit(k2, src[i]);
-    // pricekalman = kalmanusage == 1 ? f_kalman(src) : kalmanusage == 2 ? f_kalman2(src) : na
-    const pricekalman = kalmanusage === 1 ? kalmanStep(k1, src[i], proc, measure)
-      : kalmanusage === 2 ? kalmanStep(k2, src[i], proc, measure) : NaN;
-    const ema1 = ema1Step(pricekalman);
-    const ema2 = ema2Step(pricekalman);
-    // f_init(ema1); f_init2(ema2); ema1kalman = f_kalman(ema1); ema2kalman = f_kalman2(ema2)
-    kalmanInit(k1, ema1);
-    kalmanInit(k2, ema2);
-    ema1kalman[i] = kalmanStep(k1, ema1, proc, measure);
-    ema2kalman[i] = kalmanStep(k2, ema2, proc, measure);
-  }
-
-  // var trend = 0; ta.crossover(ema1kalman, ema2kalman) -> 1; ta.crossover(ema2kalman, ema1kalman) -> -1
-  // (exact comparisons with the last bar where both values were not na)
-  const S1 = Series.fromArray(bars, ema1kalman);
-  const S2 = Series.fromArray(bars, ema2kalman);
-  const up = A(ta.crossover(S1, S2));
-  const down = A(ta.crossover(S2, S1));
-  const trend: number[] = new Array(n);
-  let tr = 0;
-  for (let i = 0; i < n; i++) {
-    if (up[i] === 1) tr = 1;
-    if (down[i] === 1) tr = -1;
-    trend[i] = tr;
-  }
-
-  // color = trend > 0 ? BullColor : trend < 0 ? Bearcolor : color.gray
-  const lineColor = (i: number) => (trend[i] > 0 ? BULL : trend[i] < 0 ? BEAR : color.gray);
+  const len1 = Math.floor(cfg.ema1len);
+  const mult1 = 2 / (len1 + 1);
+  const len2 = Math.floor(cfg.ema2len);
+  const mult2 = 2 / (len2 + 1);
   // fill color = trend > 0 ? color.rgb(49, 133, 228, 30) : trend < 0 ? color.rgb(132, 3, 158, 30) : color.gray
   const bullFill = String(color.rgb(49, 133, 228, 30));
   const bearFill = String(color.rgb(132, 3, 158, 30));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot1 = plot(ema1kalman, color = ..., linewidth = 2)
-      plot0: bars.map((b, i) => ({ time: b.time, value: ema1kalman[i], color: lineColor(i) })),
-      // plot2 = plot(ema2kalman, color = ..., linewidth = 2)
-      plot1: bars.map((b, i) => ({ time: b.time, value: ema2kalman[i], color: lineColor(i) })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const up = taStep.crossover();
+      const down = taStep.crossover();
+      const s: KalmanRun = {
+        up, down, plot0: [], plot1: [], fillColors: [], steps: [up, down],
+        // var float[] state = array.new_float(1, na), error = array.new_float(1, 100.0) (and state2 / error2)
+        vars: {
+          k1: { state: NaN, error: 100.0 }, k2: { state: NaN, error: 100.0 },
+          e1: { count: 0, sum: 0, value: NaN }, e2: { count: 0, sum: 0, value: NaN }, trend: 0,
+        },
+        lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1, s.fillColors];
+      return s;
     },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Plots Background' },
-        colors: trend.map((t) => (t > 0 ? bullFill : t < 0 ? bearFill : color.gray)) },
-    ],
+    bar(s, i, bars) {
+      const v = s.vars;
+      const { k1, k2 } = v;
+      const src = value(bars[i]);
+      if (kalmanusage === 1) kalmanInit(k1, src);
+      if (kalmanusage === 2) kalmanInit(k2, src);
+      // pricekalman = kalmanusage == 1 ? f_kalman(src) : kalmanusage == 2 ? f_kalman2(src) : na
+      const pricekalman = kalmanusage === 1 ? kalmanStep(k1, src, proc, measure)
+        : kalmanusage === 2 ? kalmanStep(k2, src, proc, measure) : NaN;
+      const ema1 = emaStep(v.e1, len1, mult1, pricekalman);
+      const ema2 = emaStep(v.e2, len2, mult2, pricekalman);
+      // f_init(ema1); f_init2(ema2); ema1kalman = f_kalman(ema1); ema2kalman = f_kalman2(ema2)
+      kalmanInit(k1, ema1);
+      kalmanInit(k2, ema2);
+      const ema1kalman = kalmanStep(k1, ema1, proc, measure);
+      const ema2kalman = kalmanStep(k2, ema2, proc, measure);
+
+      // var trend = 0; ta.crossover(ema1kalman, ema2kalman) -> 1; ta.crossover(ema2kalman, ema1kalman) -> -1
+      // (exact comparisons with the last bar where both values were not na)
+      const up = s.up.step(ema1kalman, ema2kalman);
+      const down = s.down.step(ema2kalman, ema1kalman);
+      if (up) v.trend = 1;
+      if (down) v.trend = -1;
+      const tr = v.trend;
+
+      // color = trend > 0 ? BullColor : trend < 0 ? Bearcolor : color.gray
+      const lineColor = tr > 0 ? BULL : tr < 0 ? BEAR : color.gray;
+      const time = bars[i].time;
+      // plot1 = plot(ema1kalman, color = ..., linewidth = 2)
+      s.plot0[i] = { time, value: ema1kalman, color: lineColor };
+      // plot2 = plot(ema2kalman, color = ..., linewidth = 2)
+      s.plot1[i] = { time, value: ema2kalman, color: lineColor };
+      s.fillColors[i] = tr > 0 ? bullFill : tr < 0 ? bearFill : color.gray;
+    },
+    copyVars: (v) => ({ k1: { ...v.k1 }, k2: { ...v.k2 }, e1: { ...v.e1 }, e2: { ...v.e2 }, trend: v.trend }),
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Plots Background' }, colors: s.fillColors.slice() },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<KalmanEmaCrossesInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<KalmanEmaCrossesInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const KalmanEmaCrosses = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

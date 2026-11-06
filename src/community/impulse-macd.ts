@@ -12,8 +12,10 @@
  * Reference: "Impulse MACD" by LazyBear
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ImpulseMACDInputs {
   lengthMA: number;
@@ -46,93 +48,100 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ImpulseMACDInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
+
+interface ImpulseRun extends BarRunState<Record<string, never>> {
+  hi: ReturnType<typeof taStep.rma>;
+  lo: ReturnType<typeof taStep.rma>;
+  ema1: ReturnType<typeof taStep.ema>;
+  ema2: ReturnType<typeof taStep.ema>;
+  mdArr: number[];
+  mdPlot: Point[];
+  sbPlot: Point[];
+  shPlot: Point[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<ImpulseMACDInputs>): BarStudy<ImpulseRun, Result> {
   const { lengthMA, lengthSignal, ebc } = { ...defaultInputs, ...inputs };
-
-  const hlc3 = getSourceSeries(bars, 'hlc3');
-  const highSeries = getSourceSeries(bars, 'high');
-  const lowSeries = getSourceSeries(bars, 'low');
-
-  // SMMA = RMA in oakscriptjs
-  const hi = ta.rma(highSeries, lengthMA);
-  const lo = ta.rma(lowSeries, lengthMA);
-
-  // ZLEMA = EMA + (EMA - EMA(EMA))
-  const ema1 = ta.ema(hlc3, lengthMA);
-  const ema2 = ta.ema(ema1, lengthMA);
-  const mi = ema1.add(ema1.sub(ema2)); // zlema = ema1 + (ema1 - ema2)
-
-  // Impulse: above hi channel = bullish, below lo channel = bearish, else 0
-  const miArr = mi.toArray();
-  const hiArr = hi.toArray();
-  const loArr = lo.toArray();
-
-  const mdArr: number[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const m = miArr[i] ?? NaN;
-    const h = hiArr[i] ?? NaN;
-    const l = loArr[i] ?? NaN;
-    if (isNaN(m) || isNaN(h) || isNaN(l)) {
-      mdArr.push(NaN);
-    } else if (m > h) {
-      mdArr.push(m - h);
-    } else if (m < l) {
-      mdArr.push(m - l);
-    } else {
-      mdArr.push(0);
-    }
-  }
-
-  // Signal = SMA of md
-  // We need to compute SMA manually since md is a plain array
-  const sbArr: number[] = [];
-  for (let i = 0; i < mdArr.length; i++) {
-    if (i < lengthSignal - 1 || isNaN(mdArr[i])) {
-      sbArr.push(NaN);
-    } else {
-      let sum = 0;
-      let count = 0;
-      for (let j = 0; j < lengthSignal; j++) {
-        const v = mdArr[i - j];
-        if (!isNaN(v)) { sum += v; count++; }
-      }
-      sbArr.push(count > 0 ? sum / count : NaN);
-    }
-  }
-
-  const shArr = mdArr.map((md, i) => {
-    const sb = sbArr[i];
-    return isNaN(md) || isNaN(sb) ? NaN : md - sb;
-  });
-
-  const toPlot = (arr: number[]) =>
-    arr.map((value, i) => ({ time: bars[i].time, value: isNaN(value) ? NaN : value }));
-
-  // plot(md, color=mdc): mdc = src>mi ? src>hi ? lime : green : src<lo ? red : orange (the original's colours; na
-  // compares false)
-  const hlc3Src = hlc3.toArray();
-  const mdPlot = mdArr.map((value, i) => {
-    const v = isNaN(value) ? NaN : value;
-    const s = hlc3Src[i] ?? NaN;
-    const m = miArr[i] ?? NaN;
-    const h = hiArr[i] ?? NaN;
-    const l = loArr[i] ?? NaN;
-    const color = s > m ? (s > h ? '#00FF00' : '#008000') : (s < l ? '#FF0000' : '#FF7F00');
-    return { time: bars[i].time, value: v, color };
-  });
-
-  // barcolor(ebc ? mdc : na): mdc = src>mi?src>hi?lime:green:src<lo?red:orange (never na: na compares false)
-  const barColors: BarColorData[] = [];
-  if (ebc) {
-    for (let i = 0; i < bars.length; i++) barColors.push({ id: 'barcolor0', time: bars[i].time, color: mdPlot[i].color });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': mdPlot, 'plot1': toPlot(sbArr), 'plot2': toPlot(shArr) },
-    hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'solid', title: 'Zero' } }],
-    barColors,
+    init() {
+      // SMMA = RMA in oakscriptjs
+      const hi = taStep.rma(lengthMA);
+      const lo = taStep.rma(lengthMA);
+      const ema1 = taStep.ema(lengthMA);
+      const ema2 = taStep.ema(lengthMA);
+      const s: ImpulseRun = {
+        hi, lo, ema1, ema2, mdArr: [], mdPlot: [], sbPlot: [], shPlot: [], barColors: [],
+        steps: [hi, lo, ema1, ema2], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.mdArr, s.mdPlot, s.sbPlot, s.shPlot, s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const src = (b.high + b.low + b.close) / 3;
+      const h = s.hi.step(b.high);
+      const l = s.lo.step(b.low);
+      // ZLEMA = EMA + (EMA - EMA(EMA))
+      const e1 = s.ema1.step(src);
+      const e2 = s.ema2.step(e1);
+      const m = e1 + (e1 - e2); // zlema = ema1 + (ema1 - ema2)
+
+      // Impulse: above hi channel = bullish, below lo channel = bearish, else 0
+      let md: number;
+      if (isNaN(m) || isNaN(h) || isNaN(l)) md = NaN;
+      else if (m > h) md = m - h;
+      else if (m < l) md = m - l;
+      else md = 0;
+      s.mdArr[i] = md;
+
+      // Signal = SMA of md
+      // We need to compute SMA manually since md is a plain array
+      let sb: number;
+      if (i < lengthSignal - 1 || isNaN(md)) {
+        sb = NaN;
+      } else {
+        let sum = 0;
+        let count = 0;
+        for (let j = 0; j < lengthSignal; j++) {
+          const v = s.mdArr[i - j];
+          if (!isNaN(v)) { sum += v; count++; }
+        }
+        sb = count > 0 ? sum / count : NaN;
+      }
+      const sh = isNaN(md) || isNaN(sb) ? NaN : md - sb;
+
+      // plot(md, color=mdc): mdc = src>mi ? src>hi ? lime : green : src<lo ? red : orange (the original's colours; na
+      // compares false)
+      const color = src > m ? (src > h ? '#00FF00' : '#008000') : (src < l ? '#FF0000' : '#FF7F00');
+      s.mdPlot[i] = { time, value: isNaN(md) ? NaN : md, color };
+      s.sbPlot[i] = { time, value: isNaN(sb) ? NaN : sb };
+      s.shPlot[i] = { time, value: isNaN(sh) ? NaN : sh };
+
+      // barcolor(ebc ? mdc : na): mdc = src>mi?src>hi?lime:green:src<lo?red:orange (never na: na compares false)
+      if (ebc) s.barColors[i] = { id: 'barcolor0', time, color };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.mdPlot.slice(), 'plot1': s.sbPlot.slice(), 'plot2': s.shPlot.slice() },
+        hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'solid', title: 'Zero' } }],
+        barColors: ebc ? s.barColors.slice() : [],
+      };
+    },
   };
 }
 
-export const ImpulseMACD = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ImpulseMACDInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ImpulseMACDInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const ImpulseMACD = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

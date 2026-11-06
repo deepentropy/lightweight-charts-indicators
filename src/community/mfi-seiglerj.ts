@@ -10,9 +10,11 @@
  */
 
 import {
-  math, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar,
+  color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar,
 } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MfiSeiglerjInputs {
   /** Bars of the two money flow sums */
@@ -82,62 +84,76 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MfiSeiglerjInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } {
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+
+interface MfiRun extends BarRunState<Record<string, never>> {
+  upperSum: WindowSum;
+  lowerSum: WindowSum;
+  plot0: { time: number; value: number }[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<MfiSeiglerjInputs>): BarStudy<MfiRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const length = Math.trunc(cfg.length);
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // upper_s = sum(volume * (change(source) <= 0 ? 0 : source), length)
-  // lower_s = sum(volume * (change(source) >= 0 ? 0 : source), length)
-  const up: number[] = new Array(n);
-  const down: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const source = (bars[i].high + bars[i].low + bars[i].close) / 3;
-    const change = i > 0 ? source - (bars[i - 1].high + bars[i - 1].low + bars[i - 1].close) / 3 : NaN;
-    const volume = bars[i].volume ?? NaN;
-    up[i] = volume * (le(change, 0) ? 0 : source);
-    down[i] = volume * (ge(change, 0) ? 0 : source);
-  }
-  const upperSum = A(math.sum(S(up), length) as Series);
-  const lowerSum = A(math.sum(S(down), length) as Series);
-
-  // mf = rsi(upper_s, lower_s): with two series, 100 - 100 / (1 + upper_s / lower_s)
-  const mf: number[] = new Array(n);
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    mf[i] = 100 - 100 / (1 + upperSum[i] / lowerSum[i]);
-    // b_color = (mf > upper) ? color(red, 70) : (mf < lower) ? color(green, 60) : na
-    if (cfg.highlightBreaches) {
-      if (gt(mf[i], cfg.upper)) bgColors.push({ time: bars[i].time as number, color: OVERBOUGHT });
-      else if (lt(mf[i], cfg.lower)) bgColors.push({ time: bars[i].time as number, color: OVERSOLD });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: Number.isFinite(mf[i]) ? mf[i] : NaN })),
+    init() {
+      const upperSum = new WindowSum(length);
+      const lowerSum = new WindowSum(length);
+      const s: MfiRun = { upperSum, lowerSum, plot0: [], bgColors: [], steps: [upperSum, lowerSum], vars: {}, lists: [], series: [] };
+      s.lists = [s.bgColors];
+      s.series = [s.plot0];
+      return s;
     },
-    hlines: [
-      { value: cfg.upper, options: { title: 'Level', color: LEVEL, linestyle: 'dashed' } },
-      { value: cfg.lower, options: { title: 'Level', color: LEVEL, linestyle: 'dashed' } },
-      { value: 0, options: { title: 'Level', color: EDGE, linestyle: 'dashed' } },
-      { value: 100, options: { title: 'Level', color: EDGE, linestyle: 'dashed' } },
-    ],
-    fills: [
-      { plot1: 'hline_0', plot2: 'hline_1', options: { title: 'Hlines Background', color: BACKGROUND } },
-    ],
-    bgColors,
+    bar(s, i, bars) {
+      // upper_s = sum(volume * (change(source) <= 0 ? 0 : source), length)
+      // lower_s = sum(volume * (change(source) >= 0 ? 0 : source), length)
+      const source = (bars[i].high + bars[i].low + bars[i].close) / 3;
+      const change = i > 0 ? source - (bars[i - 1].high + bars[i - 1].low + bars[i - 1].close) / 3 : NaN;
+      const volume = bars[i].volume ?? NaN;
+      const upperSum = s.upperSum.step(volume * (le(change, 0) ? 0 : source));
+      const lowerSum = s.lowerSum.step(volume * (ge(change, 0) ? 0 : source));
+
+      // mf = rsi(upper_s, lower_s): with two series, 100 - 100 / (1 + upper_s / lower_s)
+      const mf = 100 - 100 / (1 + upperSum / lowerSum);
+      // b_color = (mf > upper) ? color(red, 70) : (mf < lower) ? color(green, 60) : na
+      if (cfg.highlightBreaches) {
+        if (gt(mf, cfg.upper)) s.bgColors.push({ time: bars[i].time as number, color: OVERBOUGHT });
+        else if (lt(mf, cfg.lower)) s.bgColors.push({ time: bars[i].time as number, color: OVERSOLD });
+      }
+      s.plot0[i] = { time: bars[i].time, value: Number.isFinite(mf) ? mf : NaN };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        hlines: [
+          { value: cfg.upper, options: { title: 'Level', color: LEVEL, linestyle: 'dashed' } },
+          { value: cfg.lower, options: { title: 'Level', color: LEVEL, linestyle: 'dashed' } },
+          { value: 0, options: { title: 'Level', color: EDGE, linestyle: 'dashed' } },
+          { value: 100, options: { title: 'Level', color: EDGE, linestyle: 'dashed' } },
+        ],
+        fills: [
+          { plot1: 'hline_0', plot2: 'hline_1', options: { title: 'Hlines Background', color: BACKGROUND } },
+        ],
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MfiSeiglerjInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MfiSeiglerjInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MfiSeiglerj = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

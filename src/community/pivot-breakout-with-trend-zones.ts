@@ -12,7 +12,9 @@
  * Original notice: ©author dreamaker7
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { MarkerData, PlotCandleData } from '../types';
 import { barInterval, barTime } from '../bar-time';
 
@@ -72,90 +74,124 @@ const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<PivotBreakoutWithTrendZonesInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const ph = A(ta.pivothigh(Series.fromArray(bars, bars.map((b) => b.high)), cfg.leftLenH, cfg.rightLenH));
-  const pl = A(ta.pivotlow(Series.fromArray(bars, bars.map((b) => b.low)), cfg.leftLenL, cfg.rightLenL));
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> };
 
+interface PivotBreakoutVars {
+  /** var float trailHigh = na, var float trailLow = na */
+  trailHigh: number;
+  trailLow: number;
+  breachedHigh: boolean;
+  breachedLow: boolean;
+  inUptrend: boolean;
+  /** var color candleColor = na */
+  candleColor: string;
+}
+
+interface PivotBreakoutRun extends BarRunState<PivotBreakoutVars> {
+  phStep: PivotStep;
+  plStep: PivotStep;
+  trailHighArr: number[];
+  trailLowArr: number[];
+  candles: PlotCandleData[];
+}
+
+function study(inputs: Partial<PivotBreakoutWithTrendZonesInputs>): BarStudy<PivotBreakoutRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const defaultUpColor = '#26A69A';
   const defaultDownColor = '#EF5350';
   const breakoutHigh = color.white;
   const breakoutLow = color.black;
-
-  const trailHighArr: number[] = new Array(n);
-  const trailLowArr: number[] = new Array(n);
-  const candles: PlotCandleData[] = [];
-  let trailHigh = NaN; // var float trailHigh = na
-  let trailLow = NaN;
-  let breachedHigh = false;
-  let breachedLow = false;
-  let inUptrend = false;
-  let candleColor = 'transparent'; // var color candleColor = na
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    if (!isNaN(ph[i])) trailHigh = ph[i];
-    if (!isNaN(pl[i])) trailLow = pl[i];
-    trailHighArr[i] = trailHigh;
-    trailLowArr[i] = trailLow;
-
-    // Reset the breakout status on a new pivot
-    if (!isNaN(trailHigh) && eq(ph[i], trailHigh)) breachedHigh = false;
-    if (!isNaN(trailLow) && eq(pl[i], trailLow)) breachedLow = false;
-
-    const breakHigh = !isNaN(trailHigh) && gt(b.close, trailHigh) && !breachedHigh;
-    const breakLow = !isNaN(trailLow) && lt(b.close, trailLow) && !breachedLow;
-    if (breakHigh) {
-      breachedHigh = true;
-      inUptrend = true;
-    }
-    if (breakLow) {
-      breachedLow = true;
-      inUptrend = false;
-    }
-
-    if (cfg.showColorFill) {
-      if (breakHigh) candleColor = breakoutHigh;
-      else if (breakLow) candleColor = breakoutLow;
-      else candleColor = inUptrend ? defaultUpColor : defaultDownColor;
-    } else {
-      candleColor = 'transparent';
-    }
-    // plotcandle(open, high, low, close, color = candleColor, wickcolor = na, bordercolor = na)
-    candles.push({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: candleColor,
-      wickColor: 'transparent', borderColor: 'transparent' });
-  }
-
-  // plot(..., offset = lineOffset): the value of bar i is drawn on bar i + lineOffset
-  const interval = barInterval(bars);
-  const off = cfg.lineOffset;
-  const shifted = (vals: number[], c: string): Point[] => {
-    const out: Point[] = [];
-    for (let i = 0; i < n; i++) {
-      const j = i + off;
-      if (j < 0) continue;
-      out.push({ time: barTime(bars, j, interval), value: vals[i], color: c });
-    }
-    return out;
-  };
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: shifted(trailHighArr, HIGH_COL),
-      plot1: shifted(trailLowArr, LOW_COL),
+    init() {
+      const phStep = new PivotStep(cfg.leftLenH, cfg.rightLenH, true);
+      const plStep = new PivotStep(cfg.leftLenL, cfg.rightLenL, false);
+      const s: PivotBreakoutRun = {
+        phStep, plStep, trailHighArr: [], trailLowArr: [], candles: [],
+        steps: [phStep, plStep],
+        vars: { trailHigh: NaN, trailLow: NaN, breachedHigh: false, breachedLow: false, inUptrend: false, candleColor: 'transparent' },
+        lists: [], series: [],
+      };
+      s.series = [s.trailHighArr, s.trailLowArr, s.candles];
+      return s;
     },
-    markers: [],
-    plotCandles: { plotcandle0: candles },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      // ta.pivothigh(high, leftLenH, rightLenH), ta.pivotlow(low, leftLenL, rightLenL)
+      const ph = s.phStep.step(i, b.high);
+      const pl = s.plStep.step(i, b.low);
+      if (!isNaN(ph)) v.trailHigh = ph;
+      if (!isNaN(pl)) v.trailLow = pl;
+      const trailHigh = v.trailHigh;
+      const trailLow = v.trailLow;
+      s.trailHighArr[i] = trailHigh;
+      s.trailLowArr[i] = trailLow;
+
+      // Reset the breakout status on a new pivot
+      if (!isNaN(trailHigh) && eq(ph, trailHigh)) v.breachedHigh = false;
+      if (!isNaN(trailLow) && eq(pl, trailLow)) v.breachedLow = false;
+
+      const breakHigh = !isNaN(trailHigh) && gt(b.close, trailHigh) && !v.breachedHigh;
+      const breakLow = !isNaN(trailLow) && lt(b.close, trailLow) && !v.breachedLow;
+      if (breakHigh) {
+        v.breachedHigh = true;
+        v.inUptrend = true;
+      }
+      if (breakLow) {
+        v.breachedLow = true;
+        v.inUptrend = false;
+      }
+
+      if (cfg.showColorFill) {
+        if (breakHigh) v.candleColor = breakoutHigh;
+        else if (breakLow) v.candleColor = breakoutLow;
+        else v.candleColor = v.inUptrend ? defaultUpColor : defaultDownColor;
+      } else {
+        v.candleColor = 'transparent';
+      }
+      // plotcandle(open, high, low, close, color = candleColor, wickcolor = na, bordercolor = na)
+      s.candles[i] = { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: v.candleColor,
+        wickColor: 'transparent', borderColor: 'transparent' };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // plot(..., offset = lineOffset): the value of bar i is drawn on bar i + lineOffset
+      const interval = barInterval(bars);
+      const off = cfg.lineOffset;
+      const shifted = (vals: number[], c: string): Point[] => {
+        const out: Point[] = [];
+        for (let i = 0; i < n; i++) {
+          const j = i + off;
+          if (j < 0) continue;
+          out.push({ time: barTime(bars, j, interval), value: vals[i], color: c });
+        }
+        return out;
+      };
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: shifted(s.trailHighArr, HIGH_COL),
+          plot1: shifted(s.trailLowArr, LOW_COL),
+        },
+        markers: [],
+        plotCandles: { plotcandle0: s.candles.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PivotBreakoutWithTrendZonesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PivotBreakoutWithTrendZonesInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PivotBreakoutWithTrendZones = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

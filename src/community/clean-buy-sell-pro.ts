@@ -11,9 +11,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CleanBuySellProInputs {
   /** Fast EMA length */
@@ -58,64 +60,103 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface CbspVars {
+  /** buyCondition[1] / sellCondition[1] */
+  buyPrev: boolean;
+  sellPrev: boolean;
+}
+
+interface CbspRun extends BarRunState<CbspVars> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  rsi: ReturnType<typeof taStep.rsi>;
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<CleanBuySellProInputs>): BarStudy<CbspRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const fast = taStep.ema(cfg.fastLength);
+      const slow = taStep.ema(cfg.slowLength);
+      const rsi = taStep.rsi(cfg.rsiLength);
+      const s: CbspRun = {
+        fast, slow, rsi, markers: [], flags: [[], []], times: [[], []],
+        steps: [fast, slow, rsi], vars: { buyPrev: false, sellPrev: false }, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const v = s.vars;
+      const c = b.close;
+      const fastEMA = s.fast.step(c);
+      const slowEMA = s.slow.step(c);
+      const rsiValue = s.rsi.step(c);
+      const bullTrend = gt(fastEMA, slowEMA);
+      const bearTrend = lt(fastEMA, slowEMA);
+      const bullMomentum = gt(rsiValue, 50);
+      const bearMomentum = lt(rsiValue, 50);
+
+      let buyCondition = bullTrend && gt(c, fastEMA);
+      let sellCondition = bearTrend && lt(c, fastEMA);
+      if (cfg.useRSI) {
+        buyCondition = buyCondition && bullMomentum;
+        sellCondition = sellCondition && bearMomentum;
+      }
+
+      // buySignal = buyCondition and not buyCondition[1] (a bool history before bar 0 is false)
+      const buySignal = buyCondition && !v.buyPrev;
+      const sellSignal = sellCondition && !v.sellPrev;
+      v.buyPrev = buyCondition;
+      v.sellPrev = sellCondition;
+      s.flags[0]![i] = buySignal;
+      s.flags[1]![i] = sellSignal;
+      if (buySignal) s.times[0]!.push(b.time as number);
+      if (sellSignal) s.times[1]!.push(b.time as number);
+
+      // plotshape(showLabels and buySignal, "BUY", shape.labelup, location.belowbar, color.lime, text = "BUY",
+      //   textcolor = color.black, size = size.tiny)
+      if (cfg.showLabels && buySignal) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.lime, text: 'BUY',
+          textColor: color.black, size: 'tiny' });
+      }
+      // plotshape(showLabels and sellSignal, "SELL", shape.labeldown, location.abovebar, color.red, text = "SELL",
+      //   textcolor = color.white, size = size.tiny)
+      if (cfg.showLabels && sellSignal) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
+          textColor: color.white, size: 'tiny' });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        // alertcondition(buySignal, "BUY Signal") / alertcondition(sellSignal, "SELL Signal")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CleanBuySellProInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<CleanBuySellProInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-  const fastEMA = A(ta.ema(close, cfg.fastLength));
-  const slowEMA = A(ta.ema(close, cfg.slowLength));
-  const rsiValue = A(ta.rsi(close, cfg.rsiLength));
-
-  const markers: MarkerData[] = [];
-  const buyFlags: boolean[] = [], sellFlags: boolean[] = [];
-  let buyPrev = false;
-  let sellPrev = false;
-  for (let i = 0; i < bars.length; i++) {
-    const c = bars[i].close;
-    const bullTrend = gt(fastEMA[i], slowEMA[i]);
-    const bearTrend = lt(fastEMA[i], slowEMA[i]);
-    const bullMomentum = gt(rsiValue[i], 50);
-    const bearMomentum = lt(rsiValue[i], 50);
-
-    let buyCondition = bullTrend && gt(c, fastEMA[i]);
-    let sellCondition = bearTrend && lt(c, fastEMA[i]);
-    if (cfg.useRSI) {
-      buyCondition = buyCondition && bullMomentum;
-      sellCondition = sellCondition && bearMomentum;
-    }
-
-    // buySignal = buyCondition and not buyCondition[1] (a bool history before bar 0 is false)
-    const buySignal = buyCondition && !buyPrev;
-    const sellSignal = sellCondition && !sellPrev;
-    buyPrev = buyCondition;
-    sellPrev = sellCondition;
-    buyFlags.push(buySignal);
-    sellFlags.push(sellSignal);
-
-    // plotshape(showLabels and buySignal, "BUY", shape.labelup, location.belowbar, color.lime, text = "BUY",
-    //   textcolor = color.black, size = size.tiny)
-    if (cfg.showLabels && buySignal) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: color.lime, text: 'BUY',
-        textColor: color.black, size: 'tiny' });
-    }
-    // plotshape(showLabels and sellSignal, "SELL", shape.labeldown, location.abovebar, color.red, text = "SELL",
-    //   textcolor = color.white, size = size.tiny)
-    if (cfg.showLabels && sellSignal) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
-        textColor: color.white, size: 'tiny' });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    // alertcondition(buySignal, "BUY Signal") / alertcondition(sellSignal, "SELL Signal")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
-  };
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -124,4 +165,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'SELL Signal', message: 'Clean Buy Sell Pro: SELL signal detected.' },
 ];
 
-export const CleanBuySellPro = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const CleanBuySellPro = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

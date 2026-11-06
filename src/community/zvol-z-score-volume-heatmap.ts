@@ -11,7 +11,9 @@
  * Original notice: Open Source | Designed by Adrian Dyer for "The Leading Indicator", Engineered by PineForge Laboratory  (2025)
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { BgColorData } from '../types';
 
 export interface ZvolZScoreVolumeHeatmapInputs {
@@ -81,21 +83,23 @@ export const metadata = {
 const lt = (a: number, b: number) => b - a > 1e-10;
 const gt = (a: number, b: number) => a - b > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ZvolZScoreVolumeHeatmapInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+
+interface ZvolRun extends BarRunState<Record<string, never>> {
+  ma: WindowSma;
+  dev: WindowStdev;
+  ema21: ReturnType<typeof taStep.ema>;
+  ema34: ReturnType<typeof taStep.ema>;
+  volumePlot: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  fillColors: string[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<ZvolZScoreVolumeHeatmapInputs>): BarStudy<ZvolRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const vol = bars.map((b) => b.volume ?? NaN);
-  const volS = Series.fromArray(bars, vol);
-
-  const volMA = A(ta.sma(volS, cfg.maLen));
-  const volStdev = A(ta.stdev(volS, cfg.stdLen));
-  const ema21 = A(ta.ema(volS, 21));
-  const ema34 = A(ta.ema(volS, 34));
-
   const bgByZone = [
     'transparent',
     String(color.new(cfg.colLow, 65)),
@@ -106,39 +110,64 @@ export function calculate(
   const zoneCol = [cfg.colLow, cfg.colMed, cfg.colHigh, cfg.colExtreme, cfg.colExtreme];
   const fillUp = String(color.new('#b5feed', cfg.ribbonOpacity));
   const fillDown = String(color.new('#06706d', cfg.ribbonOpacity));
-
-  const volumePlot: { time: number; value: number; color: string }[] = [];
-  const bgColors: BgColorData[] = [];
-  const fillColors: string[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // A plain division: x / 0 is +-infinity (0 / 0 NaN); the comparisons use the infinite value, na compares false
-    const z = (vol[i] - volMA[i]) / volStdev[i];
-    const zone = lt(z, cfg.thresholdLow) ? 0 : lt(z, cfg.thresholdMed) ? 1 : lt(z, cfg.thresholdHigh) ? 2
-      : lt(z, cfg.thresholdExtreme) ? 3 : 4;
-    // bgcolor(showBG ? bgCol : na)
-    if (cfg.showBG && zone > 0) bgColors.push({ time: t, color: bgByZone[zone] });
-    volumePlot.push({ time: t, value: vol[i], color: zoneCol[zone] });
-    fillColors[i] = gt(ema21[i], ema34[i]) ? fillUp : fillDown;
-  }
-
   return {
-    metadata: {
-      title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay,
-      precision: metadata.precision, format: metadata.format,
+    init() {
+      const ma = new WindowSma(cfg.maLen);
+      const dev = new WindowStdev(cfg.stdLen);
+      const ema21 = taStep.ema(21);
+      const ema34 = taStep.ema(34);
+      const s: ZvolRun = {
+        ma, dev, ema21, ema34, volumePlot: [], plot1: [], plot2: [], fillColors: [], bgColors: [],
+        steps: [ma, dev, ema21, ema34], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.bgColors];
+      s.series = [s.volumePlot, s.plot1, s.plot2, s.fillColors];
+      return s;
     },
-    plots: {
-      plot0: volumePlot,
-      plot1: bars.map((b, i) => ({ time: b.time, value: ema21[i], color: EMA21_COL })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: ema34[i], color: EMA34_COL })),
+    bar(s, i, bars) {
+      const t = bars[i].time;
+      const vol = bars[i].volume ?? NaN;
+      const volMA = s.ma.step(vol);
+      const volStdev = s.dev.step(vol);
+      const ema21 = s.ema21.step(vol);
+      const ema34 = s.ema34.step(vol);
+      // A plain division: x / 0 is +-infinity (0 / 0 NaN); the comparisons use the infinite value, na compares false
+      const z = (vol - volMA) / volStdev;
+      const zone = lt(z, cfg.thresholdLow) ? 0 : lt(z, cfg.thresholdMed) ? 1 : lt(z, cfg.thresholdHigh) ? 2
+        : lt(z, cfg.thresholdExtreme) ? 3 : 4;
+      // bgcolor(showBG ? bgCol : na)
+      if (cfg.showBG && zone > 0) s.bgColors.push({ time: t, color: bgByZone[zone] });
+      s.volumePlot[i] = { time: t, value: vol, color: zoneCol[zone] };
+      s.plot1[i] = { time: t, value: ema21, color: EMA21_COL };
+      s.plot2[i] = { time: t, value: ema34, color: EMA34_COL };
+      s.fillColors[i] = gt(ema21, ema34) ? fillUp : fillDown;
     },
-    fills: [{ plot1: 'plot1', plot2: 'plot2', options: { title: 'EMA Fill' }, colors: fillColors }],
-    bgColors,
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay,
+          precision: metadata.precision, format: metadata.format,
+        },
+        plots: { plot0: s.volumePlot.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        fills: [{ plot1: 'plot1', plot2: 'plot2', options: { title: 'EMA Fill' }, colors: s.fillColors.slice() }],
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ZvolZScoreVolumeHeatmapInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ZvolZScoreVolumeHeatmapInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const ZvolZScoreVolumeHeatmap = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

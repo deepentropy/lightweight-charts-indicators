@@ -11,10 +11,12 @@
  */
 
 import {
-  ta, Series, color, getSourceSeries,
+  color,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface Tasc202509TheContinuationIndexInputs {
   /** Source */
@@ -65,78 +67,118 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const nz = (x: number) => (Number.isFinite(x) ? x : 0);
 
-/** UltimateSmoother of the TASC 2024.04 article: the source itself on the first 4 bars */
-function ultimateSmoother(src: number[], period: number): number[] {
-  const a1 = Math.exp((-1.414 * Math.PI) / period);
-  const c2 = 2.0 * a1 * Math.cos((1.414 * Math.PI) / period);
-  const c3 = -a1 * a1;
-  const c1 = (1.0 + c2 - c3) / 4.0;
-  const us: number[] = new Array(src.length);
-  for (let i = 0; i < src.length; i++) {
-    us[i] = src[i];
-    if (i >= 4) {
-      us[i] = (1.0 - c1) * src[i] + (2.0 * c1 - c2) * src[i - 1] - (c1 + c3) * src[i - 2]
-        + c2 * nz(us[i - 1]) + c3 * nz(us[i - 2]);
-    }
+/** UltimateSmoother of the TASC 2024.04 article (one bar at a time): the source itself on the first 4 bars */
+class UltimateSmoother {
+  private readonly c1: number;
+  private readonly c2: number;
+  private readonly c3: number;
+
+  constructor(period: number) {
+    const a1 = Math.exp((-1.414 * Math.PI) / period);
+    this.c2 = 2.0 * a1 * Math.cos((1.414 * Math.PI) / period);
+    this.c3 = -a1 * a1;
+    this.c1 = (1.0 + this.c2 - this.c3) / 4.0;
   }
-  return us;
+
+  /** The value of bar `i` from the source values `src` and the values `us` of the earlier bars */
+  value(src: number[], us: number[], i: number): number {
+    const { c1, c2, c3 } = this;
+    if (i < 4) return src[i];
+    return (1.0 - c1) * src[i] + (2.0 * c1 - c2) * src[i - 1] - (c1 + c3) * src[i - 2]
+      + c2 * nz(us[i - 1]) + c3 * nz(us[i - 2]);
+  }
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<Tasc202509TheContinuationIndexInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
+interface CiVars {
+  /** var matrix lg (order x 2, 0.0): column 0 = current, 1 = previous */
+  cur: number[];
+  prev: number[];
+}
+
+interface CiRun extends BarRunState<CiVars> {
+  sma: WindowSma;
+  src: number[];
+  us: number[];
+  first: number[];
+  plot0: { time: number; value: number; color: string }[];
+  barColors: BarColorData[];
+}
+
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+function study(inputs: Partial<Tasc202509TheContinuationIndexInputs>): BarStudy<CiRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { gamma, order, length } = cfg;
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.source).toArray().map((v) => v ?? NaN);
-
-  // us = ultimateSmoother(src, int(length / 2))
-  const us = ultimateSmoother(src, Math.trunc(length / 2));
-  // laguerreFilter(src, gamma, order, length): var matrix lg (order x 2, 0.0); column 0 = current, 1 = previous
-  const first = ultimateSmoother(src, length);
-  const cur: number[] = new Array(order).fill(0.0);
-  const prev: number[] = new Array(order).fill(0.0);
-  const lg: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    prev[0] = cur[0];
-    cur[0] = first[i];
-    let fir = cur[0];
-    for (let k = 1; k < order; k++) {
-      prev[k] = cur[k];
-      cur[k] = gamma * (prev[k] - prev[k - 1]) + prev[k - 1];
-      fir += cur[k];
-    }
-    lg[i] = fir / order;
-  }
-  const diff = bars.map((_b, i) => us[i] - lg[i]);
-  const avgAbs = ta.sma(Series.fromArray(bars, diff.map((d) => Math.abs(d))), length).toArray().map((v) => v ?? NaN);
-
+  const source = barSource(cfg.source);
+  // us = ultimateSmoother(src, int(length / 2)); the first Laguerre term: ultimateSmoother(src, length)
+  const usSmoother = new UltimateSmoother(Math.trunc(length / 2));
+  const firstSmoother = new UltimateSmoother(length);
   const gray = color.gray;
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    // A plain division: x / 0 is +-infinity (0 / 0 NaN); nz() makes both 0
-    const ref = nz((2.0 * diff[i]) / avgAbs[i]);
-    const ci = (Math.exp(2.0 * ref) - 1.0) / (Math.exp(2.0 * ref) + 1.0);
-    const c = gt(ci, 0.5)
-      ? color.from_gradient(ci, 0.5, 1.0, gray, cfg.upColor)
-      : lt(ci, -0.5)
-        ? color.from_gradient(ci, -0.5, -1.0, cfg.downColor, gray)
-        : gray;
-    plot0.push({ time: bars[i].time, value: Number.isFinite(ci) ? ci : NaN, color: c });
-    barColors.push({ time: bars[i].time, color: c });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    barColors,
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const sma = new WindowSma(length);
+      const s: CiRun = {
+        sma, src: [], us: [], first: [], plot0: [], barColors: [],
+        steps: [sma], vars: { cur: new Array(order).fill(0.0), prev: new Array(order).fill(0.0) }, lists: [], series: [],
+      };
+      s.series = [s.src, s.us, s.first, s.plot0, s.barColors];
+      return s;
+    },
+    copyVars: (v) => ({ cur: v.cur.slice(), prev: v.prev.slice() }),
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      s.src[i] = source(bars[i]);
+      const us = usSmoother.value(s.src, s.us, i);
+      s.us[i] = us;
+      const first = firstSmoother.value(s.src, s.first, i);
+      s.first[i] = first;
+      // laguerreFilter(src, gamma, order, length): changed in place (copied by copyVars)
+      const { cur, prev } = s.vars;
+      prev[0] = cur[0];
+      cur[0] = first;
+      let fir = cur[0];
+      for (let k = 1; k < order; k++) {
+        prev[k] = cur[k];
+        cur[k] = gamma * (prev[k] - prev[k - 1]) + prev[k - 1];
+        fir += cur[k];
+      }
+      const lg = fir / order;
+      const diff = us - lg;
+      const avgAbs = s.sma.step(Math.abs(diff));
+      // A plain division: x / 0 is +-infinity (0 / 0 NaN); nz() makes both 0
+      const ref = nz((2.0 * diff) / avgAbs);
+      const ci = (Math.exp(2.0 * ref) - 1.0) / (Math.exp(2.0 * ref) + 1.0);
+      const c = gt(ci, 0.5)
+        ? color.from_gradient(ci, 0.5, 1.0, gray, cfg.upColor)
+        : lt(ci, -0.5)
+          ? color.from_gradient(ci, -0.5, -1.0, cfg.downColor, gray)
+          : gray;
+      s.plot0[i] = { time, value: Number.isFinite(ci) ? ci : NaN, color: c };
+      s.barColors[i] = { time, color: c };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<Tasc202509TheContinuationIndexInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<Tasc202509TheContinuationIndexInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const Tasc202509TheContinuationIndex = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

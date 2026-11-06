@@ -9,7 +9,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BuySellImtiazhV2Inputs {
   /** Breakout threshold above the 30-bar average volume (%) */
@@ -43,33 +45,62 @@ const EPS = 1e-10;
 const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <= EPS;
 const fin = (x: number) => (Number.isFinite(x) ? x : NaN);
 
-export function calculate(bars: Bar[], inputs: Partial<BuySellImtiazhV2Inputs> = {}): IndicatorResult {
+type Point = { time: any; value: number };
+
+interface BuySellRun extends BarRunState<Record<string, never>> {
+  avg: WindowSma;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<BuySellImtiazhV2Inputs>): BarStudy<BuySellRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const threshold = cfg.breakoutThreshold / 100.0;
-  const volume = bars.map((b) => b.volume ?? NaN);
-
-  // buyVolume = (high == low) ? 0 : volume * (close - low) / (high - low)
-  const buyVolume = bars.map((b, i) => (eq(b.high, b.low) ? 0 : (volume[i] * (b.close - b.low)) / (b.high - b.low)));
-  // buyPercent = buyVolume / volume * 100 (plain division: 0 / 0 is na)
-  const buyPercent = buyVolume.map((v, i) => (v / volume[i]) * 100);
-  const avgVolume30 = ta.sma(Series.fromArray(bars, volume), 30).toArray().map((v) => v ?? NaN);
-  const breakoutVolume = avgVolume30.map((v) => v * (1 + threshold));
-
-  const t = (i: number) => bars[i].time;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((_b, i) => ({ time: t(i), value: fin(volume[i]) })),
-      plot1: bars.map((_b, i) => ({ time: t(i), value: fin(buyVolume[i]) })),
-      plot2: bars.map((_b, i) => ({ time: t(i), value: fin(buyPercent[i]) })),
-      plot3: bars.map((_b, i) => ({ time: t(i), value: fin(avgVolume30[i]) })),
-      plot4: bars.map((_b, i) => ({ time: t(i), value: fin(breakoutVolume[i]) })),
+    init() {
+      const avg = new WindowSma(30);
+      const s: BuySellRun = { avg, plots: [[], [], [], [], []], steps: [avg], vars: {}, lists: [], series: [] };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = b.volume ?? NaN;
+      // buyVolume = (high == low) ? 0 : volume * (close - low) / (high - low)
+      const buyVolume = eq(b.high, b.low) ? 0 : (volume * (b.close - b.low)) / (b.high - b.low);
+      // buyPercent = buyVolume / volume * 100 (plain division: 0 / 0 is na)
+      const buyPercent = (buyVolume / volume) * 100;
+      const avgVolume30 = s.avg.step(volume) ?? NaN;
+      const breakoutVolume = avgVolume30 * (1 + threshold);
+      const time = b.time;
+      const [p0, p1, p2, p3, p4] = s.plots;
+      p0[i] = { time, value: fin(volume) };
+      p1[i] = { time, value: fin(buyVolume) };
+      p2[i] = { time, value: fin(buyPercent) };
+      p3[i] = { time, value: fin(avgVolume30) };
+      p4[i] = { time, value: fin(breakoutVolume) };
+    },
+    result(s) {
+      const [plot0, plot1, plot2, plot3, plot4] = s.plots.map((p) => p.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0, plot1, plot2, plot3, plot4 },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BuySellImtiazhV2Inputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BuySellImtiazhV2Inputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const BuySellImtiazhV2 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

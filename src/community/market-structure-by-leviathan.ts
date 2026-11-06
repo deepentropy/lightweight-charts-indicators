@@ -18,10 +18,11 @@
  * Original notice: © Leviathan. Swing point generation inspired by @BacktestRookies
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { LabelData, LineDrawingData } from '../types';
-import { barInterval, barTime } from '../bar-time';
+import { barTime } from '../bar-time';
 import { foregroundColorOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type LineStyleOption = 'Solid' | 'Dashed' | 'Dotted';
 
@@ -93,141 +94,178 @@ const ge = (a: number, b: number) => a - b >= -EPS;
 const lineStyle = (x: LineStyleOption): 'solid' | 'dashed' | 'dotted' =>
   x === 'Dashed' ? 'dashed' : x === 'Dotted' ? 'dotted' : 'solid';
 
-/** Pine drawing limit: when a creation brings the count above max + 5, the oldest are deleted until max remain */
-function push<T>(list: T[], item: T): void {
-  list.push(item);
-  if (list.length > MAX_OBJECTS + 5) list.splice(0, list.length - MAX_OBJECTS);
+/**
+ * Pine drawing limit: when a creation brings the count above max + 5, the oldest are deleted until max remain. The
+ * run keeps every drawing; the result shows the ones the limit leaves after `count` creations (the newest).
+ */
+function kept<T>(list: T[]): T[] {
+  const count = list.length;
+  const keep = count <= MAX_OBJECTS + 5 ? count : MAX_OBJECTS + ((count - MAX_OBJECTS - 6) % 6);
+  return list.slice(count - keep);
+}
+
+type Result = Omit<IndicatorResult, 'labels' | 'lines'> & { labels: LabelData[]; lines: LineDrawingData[] };
+
+interface LeviathanVars {
+  prevHigh: number;
+  prevLow: number;
+  prevHighIndex: number;
+  prevLowIndex: number;
+  highActive: boolean;
+  lowActive: boolean;
+  /** HH = 2, LH = 1, HL = -1, LL = -2 */
+  prevSwing: number;
+  prevBreakoutDir: number;
+}
+
+interface LeviathanRun extends BarRunState<LeviathanVars> {
+  pivHi: PivotStep;
+  pivLo: PivotStep;
+  lines: LineDrawingData[];
+  labels: LabelData[];
+}
+
+function study(inputs: Partial<MarketStructureByLeviathanInputs>): BarStudy<LeviathanRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const swingSize = Math.trunc(cfg.swingSize);
+  const byClose = cfg.bosConfType === 'Candle Close';
+  let CHART_FG = '';
+  return {
+    init(_bars, chart) {
+      // chart.fg_color
+      CHART_FG = foregroundColorOf(chart);
+      const pivHi = new PivotStep(swingSize, swingSize, true);
+      const pivLo = new PivotStep(swingSize, swingSize, false);
+      const s: LeviathanRun = {
+        pivHi, pivLo, lines: [], labels: [],
+        steps: [pivHi, pivLo],
+        vars: {
+          prevHigh: NaN, prevLow: NaN, prevHighIndex: NaN, prevLowIndex: NaN, highActive: false, lowActive: false,
+          prevSwing: 0, prevBreakoutDir: 0,
+        },
+        lists: [], series: [],
+      };
+      s.lists = [s.lines, s.labels];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const bar = bars[i];
+      // the drawings are on this bar or on earlier ones (a swing bar): their times are bar times
+      const T = (index: number) => barTime(bars, index);
+      const newLine = (x1: number, x2: number, y: number, col: string, style: LineStyleOption, width: number) => {
+        s.lines.push({ time1: T(x1), price1: y, time2: T(x2), price2: y, color: col, style: lineStyle(style), width });
+      };
+      const pivHi = s.pivHi.step(i, bar.high);
+      const pivLo = s.pivLo.step(i, bar.low);
+      const prevSwing1 = v.prevSwing; // prevSwing[1]
+      let hh = false;
+      let lh = false;
+      let hl = false;
+      let ll = false;
+
+      if (!isNaN(pivHi)) {
+        if (ge(pivHi, v.prevHigh)) {
+          hh = true;
+          v.prevSwing = 2;
+        } else {
+          lh = true;
+          v.prevSwing = 1;
+        }
+        v.prevHigh = pivHi;
+        v.highActive = true;
+        v.prevHighIndex = i - swingSize;
+      }
+      if (!isNaN(pivLo)) {
+        if (ge(pivLo, v.prevLow)) {
+          hl = true;
+          v.prevSwing = -1;
+        } else {
+          ll = true;
+          v.prevSwing = -2;
+        }
+        v.prevLow = pivLo;
+        v.lowActive = true;
+        v.prevLowIndex = i - swingSize;
+      }
+
+      let highBroken = false;
+      let lowBroken = false;
+      if (gt(byClose ? bar.close : bar.high, v.prevHigh) && v.highActive) {
+        highBroken = true;
+        v.highActive = false;
+      }
+      if (lt(byClose ? bar.close : bar.low, v.prevLow) && v.lowActive) {
+        lowBroken = true;
+        v.lowActive = false;
+      }
+
+      // Swing labels
+      const swingLabel = (price: number, text: string, style: 'label_down' | 'label_up') => {
+        s.labels.push({ time: T(i - swingSize), price, text, color: CLEAR, textColor: CHART_FG, style });
+      };
+      if (hh && cfg.showSwing) {
+        swingLabel(pivHi, 'HH', 'label_down');
+        if (prevSwing1 === -1 && cfg.showHalf) {
+          newLine(v.prevLowIndex, i - swingSize, (v.prevLow + pivHi) / 2, cfg.halfColor, cfg.halfStyle, cfg.halfWidth);
+        }
+      }
+      if (lh && cfg.showSwing) swingLabel(pivHi, 'LH', 'label_down');
+      if (hl && cfg.showSwing) swingLabel(pivLo, 'HL', 'label_up');
+      if (ll && cfg.showSwing) {
+        swingLabel(pivLo, 'LL', 'label_up');
+        if (prevSwing1 === 1 && cfg.showHalf) {
+          newLine(v.prevHighIndex, i - swingSize, (v.prevHigh + pivLo) / 2, cfg.halfColor, cfg.halfStyle, cfg.halfWidth);
+        }
+      }
+
+      // Break of structure lines
+      if (highBroken) {
+        newLine(v.prevHighIndex, i, v.prevHigh, cfg.bosColor, cfg.bosStyle, cfg.bosWidth);
+        s.labels.push({
+          time: T(Math.floor(i - (i - v.prevHighIndex) / 2)), price: v.prevHigh,
+          text: v.prevBreakoutDir === -1 && cfg.choch ? 'CHoCH' : 'BOS',
+          color: CLEAR, textColor: cfg.bosColor, style: 'label_down', size: 'tiny',
+        });
+        v.prevBreakoutDir = 1;
+      }
+      if (lowBroken) {
+        newLine(v.prevLowIndex, i, v.prevLow, cfg.bosColor, cfg.bosStyle, cfg.bosWidth);
+        s.labels.push({
+          time: T(Math.floor(i - (i - v.prevLowIndex) / 2)), price: v.prevLow,
+          text: v.prevBreakoutDir === 1 && cfg.choch ? 'CHoCH' : 'BOS',
+          color: CLEAR, textColor: cfg.bosColor, style: 'label_up', size: 'tiny',
+        });
+        v.prevBreakoutDir = -1;
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        lines: kept(s.lines),
+        labels: kept(s.labels),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MarketStructureByLeviathanInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(
   bars: Bar[],
   inputs: Partial<MarketStructureByLeviathanInputs> = {},
   chart?: ChartContext,
-): Omit<IndicatorResult, 'labels' | 'lines'> & { labels: LabelData[]; lines: LineDrawingData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  // chart.fg_color
-  const CHART_FG = foregroundColorOf(chart);
-  const swingSize = Math.trunc(cfg.swingSize);
-  const byClose = cfg.bosConfType === 'Candle Close';
-
-  const pivHiArr = ta.pivothigh(new Series(bars, (b) => b.high), swingSize, swingSize).toArray();
-  const pivLoArr = ta.pivotlow(new Series(bars, (b) => b.low), swingSize, swingSize).toArray();
-
-  const interval = barInterval(bars);
-  const T = (index: number) => barTime(bars, index, interval);
-  const lines: LineDrawingData[] = [];
-  const labels: LabelData[] = [];
-  const newLine = (x1: number, x2: number, y: number, col: string, style: LineStyleOption, width: number) => {
-    push(lines, { time1: T(x1), price1: y, time2: T(x2), price2: y, color: col, style: lineStyle(style), width });
-  };
-
-  let prevHigh = NaN;
-  let prevLow = NaN;
-  let prevHighIndex = NaN;
-  let prevLowIndex = NaN;
-  let highActive = false;
-  let lowActive = false;
-  // HH = 2, LH = 1, HL = -1, LL = -2
-  let prevSwing = 0;
-  let prevBreakoutDir = 0;
-
-  for (let i = 0; i < n; i++) {
-    const bar = bars[i];
-    const pivHi = pivHiArr[i] ?? NaN;
-    const pivLo = pivLoArr[i] ?? NaN;
-    const prevSwing1 = prevSwing; // prevSwing[1]
-    let hh = false;
-    let lh = false;
-    let hl = false;
-    let ll = false;
-
-    if (!isNaN(pivHi)) {
-      if (ge(pivHi, prevHigh)) {
-        hh = true;
-        prevSwing = 2;
-      } else {
-        lh = true;
-        prevSwing = 1;
-      }
-      prevHigh = pivHi;
-      highActive = true;
-      prevHighIndex = i - swingSize;
-    }
-    if (!isNaN(pivLo)) {
-      if (ge(pivLo, prevLow)) {
-        hl = true;
-        prevSwing = -1;
-      } else {
-        ll = true;
-        prevSwing = -2;
-      }
-      prevLow = pivLo;
-      lowActive = true;
-      prevLowIndex = i - swingSize;
-    }
-
-    let highBroken = false;
-    let lowBroken = false;
-    if (gt(byClose ? bar.close : bar.high, prevHigh) && highActive) {
-      highBroken = true;
-      highActive = false;
-    }
-    if (lt(byClose ? bar.close : bar.low, prevLow) && lowActive) {
-      lowBroken = true;
-      lowActive = false;
-    }
-
-    // Swing labels
-    const swingLabel = (price: number, text: string, style: 'label_down' | 'label_up') => {
-      push(labels, { time: T(i - swingSize), price, text, color: CLEAR, textColor: CHART_FG, style });
-    };
-    if (hh && cfg.showSwing) {
-      swingLabel(pivHi, 'HH', 'label_down');
-      if (prevSwing1 === -1 && cfg.showHalf) {
-        newLine(prevLowIndex, i - swingSize, (prevLow + pivHi) / 2, cfg.halfColor, cfg.halfStyle, cfg.halfWidth);
-      }
-    }
-    if (lh && cfg.showSwing) swingLabel(pivHi, 'LH', 'label_down');
-    if (hl && cfg.showSwing) swingLabel(pivLo, 'HL', 'label_up');
-    if (ll && cfg.showSwing) {
-      swingLabel(pivLo, 'LL', 'label_up');
-      if (prevSwing1 === 1 && cfg.showHalf) {
-        newLine(prevHighIndex, i - swingSize, (prevHigh + pivLo) / 2, cfg.halfColor, cfg.halfStyle, cfg.halfWidth);
-      }
-    }
-
-    // Break of structure lines
-    if (highBroken) {
-      newLine(prevHighIndex, i, prevHigh, cfg.bosColor, cfg.bosStyle, cfg.bosWidth);
-      push(labels, {
-        time: T(Math.floor(i - (i - prevHighIndex) / 2)), price: prevHigh,
-        text: prevBreakoutDir === -1 && cfg.choch ? 'CHoCH' : 'BOS',
-        color: CLEAR, textColor: cfg.bosColor, style: 'label_down', size: 'tiny',
-      });
-      prevBreakoutDir = 1;
-    }
-    if (lowBroken) {
-      newLine(prevLowIndex, i, prevLow, cfg.bosColor, cfg.bosStyle, cfg.bosWidth);
-      push(labels, {
-        time: T(Math.floor(i - (i - prevLowIndex) / 2)), price: prevLow,
-        text: prevBreakoutDir === 1 && cfg.choch ? 'CHoCH' : 'BOS',
-        color: CLEAR, textColor: cfg.bosColor, style: 'label_up', size: 'tiny',
-      });
-      prevBreakoutDir = -1;
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    lines,
-    labels,
-  };
+): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 export const MarketStructureByLeviathan = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

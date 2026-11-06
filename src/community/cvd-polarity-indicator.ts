@@ -11,7 +11,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CvdPolarityIndicatorInputs {
   /** Number of bars of the rolling CVD sum */
@@ -53,48 +55,86 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(bars: Bar[], inputs: Partial<CvdPolarityIndicatorInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface CvdRun extends BarRunState<Record<string, never>> {
+  cvdCumStep: ReturnType<typeof taStep.cum>;
+  polarityCumStep: ReturnType<typeof taStep.cum>;
+  ema: ReturnType<typeof taStep.ema>;
+  cvdCum: number[];
+  cvd: number[];
+  polarityCum: number[];
+  plot0: Point[];
+  plot1: Point[];
+}
+
+// nz(x[len], 0): 0 before bar len (and for an na value)
+const nzBack = (a: number[], i: number, len: number) => (i - len >= 0 && !isNaN(a[i - len]) ? a[i - len] : 0);
+
+function study(inputs: Partial<CvdPolarityIndicatorInputs>): BarStudy<CvdRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const vol = bars.map((b) => b.volume ?? NaN);
-  // nz(x[len], 0): 0 before bar len (and for an na value)
-  const nzBack = (a: number[], i: number, len: number) => (i - len >= 0 && !isNaN(a[i - len]) ? a[i - len] : 0);
-
-  // volDelta = close - open >= 0 ? volume : -volume; cvd = cum(volDelta) - nz(cum(volDelta)[cumulationLength], 0)
-  const volDelta = bars.map((b, i) => (ge(b.close - b.open, 0) ? vol[i] : -vol[i]));
-  const cvdCum = A(ta.cum(S(volDelta)));
-  const cvd = cvdCum.map((v, i) => v - nzBack(cvdCum, i, cfg.cumulationLength));
-
-  // Per-bar polarity
-  const polarity: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const cvdChange = i > 0 ? cvd[i] - cvd[i - 1] : NaN;
-    const barDir = bars[i].close - bars[i].open;
-    if (gt(barDir, 0) && gt(cvdChange, 0)) polarity[i] = vol[i];
-    else if (lt(barDir, 0) && lt(cvdChange, 0)) polarity[i] = -vol[i];
-    else if (gt(barDir, 0) && lt(cvdChange, 0)) polarity[i] = -vol[i];
-    else if (lt(barDir, 0) && gt(cvdChange, 0)) polarity[i] = vol[i];
-    else polarity[i] = 0.0;
-  }
-
-  // polaritySmoothed = cum(polarity) - nz(cum(polarity)[polarityLength], 0); EMA of it
-  const polarityCum = A(ta.cum(S(polarity)));
-  const smoothed = polarityCum.map((v, i) => v - nzBack(polarityCum, i, cfg.polarityLength));
-  const emaLine = A(ta.ema(S(smoothed), cfg.emaLength));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: smoothed[i], color: POLARITY_COLOR })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: emaLine[i], color: color.orange })),
+    init() {
+      const cvdCumStep = taStep.cum();
+      const polarityCumStep = taStep.cum();
+      const ema = taStep.ema(cfg.emaLength);
+      const s: CvdRun = {
+        cvdCumStep, polarityCumStep, ema, cvdCum: [], cvd: [], polarityCum: [], plot0: [], plot1: [],
+        steps: [cvdCumStep, polarityCumStep, ema], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.cvdCum, s.cvd, s.polarityCum, s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const vol = b.volume ?? NaN;
+      // volDelta = close - open >= 0 ? volume : -volume; cvd = cum(volDelta) - nz(cum(volDelta)[cumulationLength], 0)
+      const volDelta = ge(b.close - b.open, 0) ? vol : -vol;
+      s.cvdCum[i] = s.cvdCumStep.step(volDelta);
+      const cvd = s.cvdCum[i] - nzBack(s.cvdCum, i, cfg.cumulationLength);
+      s.cvd[i] = cvd;
+
+      // Per-bar polarity
+      const cvdChange = i > 0 ? cvd - s.cvd[i - 1] : NaN;
+      const barDir = b.close - b.open;
+      let polarity: number;
+      if (gt(barDir, 0) && gt(cvdChange, 0)) polarity = vol;
+      else if (lt(barDir, 0) && lt(cvdChange, 0)) polarity = -vol;
+      else if (gt(barDir, 0) && lt(cvdChange, 0)) polarity = -vol;
+      else if (lt(barDir, 0) && gt(cvdChange, 0)) polarity = vol;
+      else polarity = 0.0;
+
+      // polaritySmoothed = cum(polarity) - nz(cum(polarity)[polarityLength], 0); EMA of it
+      s.polarityCum[i] = s.polarityCumStep.step(polarity);
+      const smoothed = s.polarityCum[i] - nzBack(s.polarityCum, i, cfg.polarityLength);
+      const emaLine = s.ema.step(smoothed);
+      s.plot0[i] = { time: b.time, value: smoothed, color: POLARITY_COLOR };
+      s.plot1[i] = { time: b.time, value: emaLine, color: color.orange };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plot0.slice(),
+          plot1: s.plot1.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CvdPolarityIndicatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CvdPolarityIndicatorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const CvdPolarityIndicator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

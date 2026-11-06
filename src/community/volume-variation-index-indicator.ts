@@ -9,7 +9,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeVariationIndexIndicatorInputs {
   /** Show the average variation line */
@@ -51,45 +53,78 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
 
-export function calculate(bars: Bar[], inputs: Partial<VolumeVariationIndexIndicatorInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface VviRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  top: number[];
+  bottom: number[];
+}
+
+function study(inputs: Partial<VolumeVariationIndexIndicatorInputs>): BarStudy<VviRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const active = cfg.activeAvg === 'YES';
-
-  // vol_var = volume[1] - volume
-  const volVar = bars.map((b, i) => (i > 0 ? (bars[i - 1].volume ?? NaN) - (b.volume ?? NaN) : NaN));
-  const avg = ta.sma(Series.fromArray(bars, volVar), cfg.avgPeriod).toArray().map((v) => v ?? NaN);
-  const average = avg.map((v) => (active ? fin(v) : NaN));
-
-  const t = (i: number) => bars[i].time;
-  const plot0 = volVar.map((v, i) => ({ time: t(i), value: gt(v, 0) ? v : 0, color: GREEN }));
-  const plot1 = volVar.map((v, i) => ({ time: t(i), value: lt(v, 0) ? v : 0, color: RED }));
-  const plot2 = average.map((v, i) => ({ time: t(i), value: v, color: '#ffffff' }));
-  const plot3 = bars.map((_b, i) => ({ time: t(i), value: 0, color: ZERO_COLOR }));
-
-  // fill(pLine, pZero, top_color, bottom_color) without top_value / bottom_value: the gradient goes from the upper
-  // plot (top_color) to the lower plot (bottom_color)
-  const same = (c: string) => new Array<string | null>(n).fill(c);
-  const top = average.map((v) => (isNaN(v) ? NaN : Math.max(v, 0)));
-  const bottom = average.map((v) => (isNaN(v) ? NaN : Math.min(v, 0)));
-  const fills = [
-    { plot1: 'plot2', plot2: 'plot3', options: { title: 'Gradient +' }, gradient: {
-      topValue: top.slice(), bottomValue: bottom.slice(),
-      topColor: same(String(color.new(color.green, 50))), bottomColor: same(String(color.new(color.green, 90))) } },
-    { plot1: 'plot2', plot2: 'plot3', options: { title: 'Gradient -' }, gradient: {
-      topValue: top.slice(), bottomValue: bottom.slice(),
-      topColor: same(String(color.new(color.red, 90))), bottomColor: same(String(color.new(color.red, 50))) } },
-  ];
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
-    fills,
+    init() {
+      const sma = new WindowSma(cfg.avgPeriod);
+      const s: VviRun = {
+        sma, plot0: [], plot1: [], plot2: [], plot3: [], top: [], bottom: [], steps: [sma], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1, s.plot2, s.plot3, s.top, s.bottom];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      // vol_var = volume[1] - volume
+      const v = i > 0 ? (bars[i - 1].volume ?? NaN) - (b.volume ?? NaN) : NaN;
+      const avg = s.sma.step(v);
+      const average = active ? fin(avg) : NaN;
+      s.plot0[i] = { time: t, value: gt(v, 0) ? v : 0, color: GREEN };
+      s.plot1[i] = { time: t, value: lt(v, 0) ? v : 0, color: RED };
+      s.plot2[i] = { time: t, value: average, color: '#ffffff' };
+      s.plot3[i] = { time: t, value: 0, color: ZERO_COLOR };
+      s.top[i] = isNaN(average) ? NaN : Math.max(average, 0);
+      s.bottom[i] = isNaN(average) ? NaN : Math.min(average, 0);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // fill(pLine, pZero, top_color, bottom_color) without top_value / bottom_value: the gradient goes from the upper
+      // plot (top_color) to the lower plot (bottom_color)
+      const same = (c: string) => new Array<string | null>(n).fill(c);
+      const fills = [
+        { plot1: 'plot2', plot2: 'plot3', options: { title: 'Gradient +' }, gradient: {
+          topValue: s.top.slice(), bottomValue: s.bottom.slice(),
+          topColor: same(String(color.new(color.green, 50))), bottomColor: same(String(color.new(color.green, 90))) } },
+        { plot1: 'plot2', plot2: 'plot3', options: { title: 'Gradient -' }, gradient: {
+          topValue: s.top.slice(), bottomValue: s.bottom.slice(),
+          topColor: same(String(color.new(color.red, 90))), bottomColor: same(String(color.new(color.red, 50))) } },
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+        fills,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeVariationIndexIndicatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolumeVariationIndexIndicatorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const VolumeVariationIndexIndicator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

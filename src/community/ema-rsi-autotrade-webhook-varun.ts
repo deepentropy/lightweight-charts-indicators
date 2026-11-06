@@ -10,9 +10,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EmaRsiAutotradeWebhookVarunInputs {
   /** Fast EMA length */
@@ -58,57 +60,95 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number };
+
+interface ErVars {
+  /** The values of the last bar where both EMAs were not na */
+  prevA: number;
+  prevB: number;
+}
+
+interface ErRun extends BarRunState<ErVars> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  rsi: ReturnType<typeof taStep.rsi>;
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<EmaRsiAutotradeWebhookVarunInputs>): BarStudy<ErRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const fast = taStep.ema(cfg.emaFast);
+      const slow = taStep.ema(cfg.emaSlow);
+      const rsi = taStep.rsi(cfg.rsiLength);
+      const s: ErRun = {
+        fast, slow, rsi, plot0: [], plot1: [], markers: [], flags: [[], []], times: [[], []],
+        steps: [fast, slow, rsi], vars: { prevA: NaN, prevB: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.plot0, s.plot1, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const bar = bars[i]!;
+      const v = s.vars;
+      const c = bar.close;
+      const a = s.fast.step(c);
+      const b = s.slow.step(c);
+      const rsi = s.rsi.step(c);
+      // ta.crossover / ta.crossunder compare exactly, with the last bar where both values were not na
+      const valid = !isNaN(a) && !isNaN(b);
+      const bullCross = valid && !isNaN(v.prevA) && a > b && v.prevA <= v.prevB;
+      const bearCross = valid && !isNaN(v.prevA) && a < b && v.prevA >= v.prevB;
+      if (valid) {
+        v.prevA = a;
+        v.prevB = b;
+      }
+      // longEntry = bullCross and rsi > rsi_long; shortEntry = bearCross and rsi < rsi_short
+      const longEntry = bullCross && gt(rsi, cfg.rsiLong);
+      const shortEntry = bearCross && gt(cfg.rsiShort, rsi);
+      s.flags[0]![i] = longEntry;
+      s.flags[1]![i] = shortEntry;
+      if (longEntry) {
+        s.times[0]!.push(bar.time as number);
+        s.markers.push({ time: bar.time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'small' });
+      }
+      if (shortEntry) {
+        s.times[1]!.push(bar.time as number);
+        s.markers.push({ time: bar.time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'small' });
+      }
+      s.plot0[i] = { time: bar.time as number, value: a };
+      s.plot1[i] = { time: bar.time as number, value: b };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        // alertcondition(longEntry, "LONG Entry") / alertcondition(shortEntry, "SHORT Entry")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EmaRsiAutotradeWebhookVarunInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<EmaRsiAutotradeWebhookVarunInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-  const emaF = A(ta.ema(close, cfg.emaFast));
-  const emaS = A(ta.ema(close, cfg.emaSlow));
-  const rsi = A(ta.rsi(close, cfg.rsiLength));
-
-  const markers: MarkerData[] = [];
-  const longFlags: boolean[] = [];
-  const shortFlags: boolean[] = [];
-  // ta.crossover / ta.crossunder compare exactly, with the last bar where both values were not na
-  let prevA = NaN;
-  let prevB = NaN;
-  for (let i = 0; i < n; i++) {
-    const a = emaF[i];
-    const b = emaS[i];
-    const valid = !isNaN(a) && !isNaN(b);
-    const bullCross = valid && !isNaN(prevA) && a > b && prevA <= prevB;
-    const bearCross = valid && !isNaN(prevA) && a < b && prevA >= prevB;
-    if (valid) {
-      prevA = a;
-      prevB = b;
-    }
-    // longEntry = bullCross and rsi > rsi_long; shortEntry = bearCross and rsi < rsi_short
-    const longEntry = bullCross && gt(rsi[i], cfg.rsiLong);
-    const shortEntry = bearCross && gt(cfg.rsiShort, rsi[i]);
-    longFlags.push(longEntry);
-    shortFlags.push(shortEntry);
-    if (longEntry) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'small' });
-    }
-    if (shortEntry) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'small' });
-    }
-  }
-
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: emaF[i] }));
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: emaS[i] }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    markers,
-    // alertcondition(longEntry, "LONG Entry") / alertcondition(shortEntry, "SHORT Entry")
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags]),
-  };
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -119,6 +159,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const EmaRsiAutotradeWebhookVarun = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

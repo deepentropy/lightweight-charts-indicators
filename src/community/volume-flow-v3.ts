@@ -8,7 +8,9 @@
  * Reference: "Volume Flow v3" by DepthHouse / oh92 (community)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeFlowV3Inputs {
   maType: string;
@@ -44,132 +46,141 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VolumeFlowV3Inputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+type Ma = { step(v: number): number; commit(): void };
+
+interface Vf3Run extends BarRunState<Record<string, never>> {
+  bullMa: Ma;
+  bearMa: Ma;
+  bullma: number[];
+  bearma: number[];
+  volumePlot: Point[];
+  bullMaPlot: Point[];
+  bearMaPlot: Point[];
+  bullSpikePlot: Point[];
+  bearSpikePlot: Point[];
+  diffPlot: Point[];
+  diffZero: Point[];
+  diffFillColors: string[];
+}
+
+/** One bull / bear average: SMA, EMA or DEMA = 2 * EMA - EMA(EMA) */
+function maStep(maType: string, length: number): Ma {
+  if (maType === 'Exponential') return taStep.ema(length);
+  if (maType === 'Double Exponential') {
+    const e1 = taStep.ema(length);
+    const e2 = taStep.ema(length);
+    return {
+      step: (v) => {
+        const a = e1.step(v);
+        // the warm-up of the first EMA is na: the second EMA skips it
+        return 2 * a - e2.step(a);
+      },
+      commit: () => { e1.commit(); e2.commit(); },
+    };
+  }
+  const m = new WindowSma(length);
+  return { step: (v) => m.step(v), commit: () => m.commit() };
+}
+
+function study(inputs: Partial<VolumeFlowV3Inputs>): BarStudy<Vf3Run, IndicatorResult> {
   const { maType, length, factor } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  // Basic volume split: bull = close > open ? vol : 0, bear = open > close ? vol : 0
-  const bullArr: number[] = new Array(n);
-  const bearArr: number[] = new Array(n);
-  const volArr: number[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    const vol = bars[i].volume ?? 0;
-    volArr[i] = vol;
-    bullArr[i] = bars[i].close > bars[i].open ? vol : 0;
-    bearArr[i] = bars[i].open > bars[i].close ? vol : 0;
-  }
-
-  // MA function selection
-  const bullSeries = new Series(bars, (_b, i) => bullArr[i]);
-  const bearSeries = new Series(bars, (_b, i) => bearArr[i]);
-
-  let bullmaArr: (number | null)[];
-  let bearmaArr: (number | null)[];
-
-  if (maType === 'Exponential') {
-    bullmaArr = ta.ema(bullSeries, length).toArray();
-    bearmaArr = ta.ema(bearSeries, length).toArray();
-  } else if (maType === 'Double Exponential') {
-    // DEMA = 2 * EMA - EMA(EMA)
-    const bullEma1 = ta.ema(bullSeries, length).toArray();
-    const bullEma1Series = new Series(bars, (_b, i) => bullEma1[i] ?? 0);
-    const bullEma2 = ta.ema(bullEma1Series, length).toArray();
-    bullmaArr = bullEma1.map((v, i) => v != null && bullEma2[i] != null ? 2 * v - (bullEma2[i] ?? 0) : null);
-
-    const bearEma1 = ta.ema(bearSeries, length).toArray();
-    const bearEma1Series = new Series(bars, (_b, i) => bearEma1[i] ?? 0);
-    const bearEma2 = ta.ema(bearEma1Series, length).toArray();
-    bearmaArr = bearEma1.map((v, i) => v != null && bearEma2[i] != null ? 2 * v - (bearEma2[i] ?? 0) : null);
-  } else {
-    bullmaArr = ta.sma(bullSeries, length).toArray();
-    bearmaArr = ta.sma(bearSeries, length).toArray();
-  }
-
   const warmup = maType === 'Double Exponential' ? length * 2 : length;
-
-  // Volume spikes: crossover(bull, bullma * factor) ? vol : na
-  const volumePlot: { time: number; value: number; color?: string }[] = [];
-  const bullMaPlot: { time: number; value: number }[] = [];
-  const bearMaPlot: { time: number; value: number }[] = [];
-  const bullSpikePlot: { time: number; value: number }[] = [];
-  const bearSpikePlot: { time: number; value: number }[] = [];
-  const diffPlot: { time: number; value: number; color?: string }[] = [];
-
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    if (i < warmup) {
-      volumePlot.push({ time: t, value: NaN });
-      bullMaPlot.push({ time: t, value: NaN });
-      bearMaPlot.push({ time: t, value: NaN });
-      bullSpikePlot.push({ time: t, value: NaN });
-      bearSpikePlot.push({ time: t, value: NaN });
-      diffPlot.push({ time: t, value: NaN });
-      continue;
-    }
-
-    const bma = bullmaArr[i] ?? 0;
-    const bema = bearmaArr[i] ?? 0;
-
-    // Volume colored by direction
-    const vClr = bars[i].close > bars[i].open ? '#5AA650' : '#FF510D';
-    volumePlot.push({ time: t, value: volArr[i], color: vClr });
-
-    // Bull/Bear MA * 2 (Pine plots bullma*2 and bearma*2)
-    bullMaPlot.push({ time: t, value: bma * 2 });
-    bearMaPlot.push({ time: t, value: bema * 2 });
-
-    // Volume spikes: crossover detection
-    const prevBull = i > 0 ? bullArr[i - 1] : 0;
-    const prevBullThresh = i > 0 ? (bullmaArr[i - 1] ?? 0) * factor : 0;
-    const gsig = prevBull <= prevBullThresh && bullArr[i] > bma * factor;
-    bullSpikePlot.push({ time: t, value: gsig ? volArr[i] : NaN });
-
-    const prevBear = i > 0 ? bearArr[i - 1] : 0;
-    const prevBearThresh = i > 0 ? (bearmaArr[i - 1] ?? 0) * factor : 0;
-    const rsig = prevBear <= prevBearThresh && bearArr[i] > bema * factor;
-    bearSpikePlot.push({ time: t, value: rsig ? volArr[i] : NaN });
-
-    // Difference: |bullma - bearma| / 2.5, colored by direction
-    const vfDif = bma - bema;
-    const vfAbsolute = Math.abs(vfDif);
-    const dClr = vfDif > 0 ? '#5AA650' : '#FF510D';
-    diffPlot.push({ time: t, value: vfAbsolute / 2.5, color: dClr });
-  }
-
-  // Zero line for fill-to-zero (approximates area style)
-  const diffZero = bars.map((b, i) => ({
-    time: b.time,
-    value: i < warmup ? NaN : 0,
-  }));
-
-  // Dynamic fill colors matching diffValue direction
-  const diffFillColors: string[] = [];
-  for (let i = 0; i < n; i++) {
-    if (i < warmup) {
-      diffFillColors.push('rgba(0,0,0,0)');
-    } else {
-      const bma = bullmaArr[i] ?? 0;
-      const bema = bearmaArr[i] ?? 0;
-      diffFillColors.push(bma - bema > 0 ? 'rgba(90,166,80,0.3)' : 'rgba(255,81,13,0.3)');
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      volume: volumePlot,
-      bullMa: bullMaPlot,
-      bearMa: bearMaPlot,
-      bullSpike: bullSpikePlot,
-      bearSpike: bearSpikePlot,
-      diffValue: diffPlot,
-      diffZero: diffZero,
+    init() {
+      const bullMa = maStep(maType, length);
+      const bearMa = maStep(maType, length);
+      const s: Vf3Run = {
+        bullMa, bearMa, bullma: [], bearma: [], volumePlot: [], bullMaPlot: [], bearMaPlot: [], bullSpikePlot: [],
+        bearSpikePlot: [], diffPlot: [], diffZero: [], diffFillColors: [],
+        steps: [bullMa, bearMa], vars: {}, lists: [], series: [],
+      };
+      s.series = [
+        s.bullma, s.bearma, s.volumePlot, s.bullMaPlot, s.bearMaPlot, s.bullSpikePlot, s.bearSpikePlot, s.diffPlot,
+        s.diffZero, s.diffFillColors,
+      ];
+      return s;
     },
-    fills: [
-      { plot1: 'diffValue', plot2: 'diffZero', options: { color: 'rgba(90,166,80,0.3)' }, colors: diffFillColors },
-    ],
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      // Basic volume split: bull = close > open ? vol : 0, bear = open > close ? vol : 0
+      const vol = b.volume ?? 0;
+      const bull = b.close > b.open ? vol : 0;
+      const bear = b.open > b.close ? vol : 0;
+      const bma = s.bullMa.step(bull);
+      const bema = s.bearMa.step(bear);
+      s.bullma[i] = bma;
+      s.bearma[i] = bema;
+      // Zero line for fill-to-zero (approximates area style)
+      s.diffZero[i] = { time: t, value: i < warmup ? NaN : 0 };
+      if (i < warmup) {
+        s.volumePlot[i] = { time: t, value: NaN };
+        s.bullMaPlot[i] = { time: t, value: NaN };
+        s.bearMaPlot[i] = { time: t, value: NaN };
+        s.bullSpikePlot[i] = { time: t, value: NaN };
+        s.bearSpikePlot[i] = { time: t, value: NaN };
+        s.diffPlot[i] = { time: t, value: NaN };
+        s.diffFillColors[i] = 'rgba(0,0,0,0)';
+        return;
+      }
+
+      // Volume colored by direction
+      const vClr = b.close > b.open ? '#5AA650' : '#FF510D';
+      s.volumePlot[i] = { time: t, value: vol, color: vClr };
+
+      // Bull/Bear MA * 2 (Pine plots bullma*2 and bearma*2)
+      s.bullMaPlot[i] = { time: t, value: bma * 2 };
+      s.bearMaPlot[i] = { time: t, value: bema * 2 };
+
+      // Volume spikes: crossover(bull, bullma * factor) ? vol : na
+      const pb = i > 0 ? bars[i - 1] : null;
+      const pvol = pb ? pb.volume ?? 0 : 0;
+      const prevBull = pb ? (pb.close > pb.open ? pvol : 0) : 0;
+      const prevBullThresh = i > 0 ? s.bullma[i - 1] * factor : 0;
+      const gsig = prevBull <= prevBullThresh && bull > bma * factor;
+      s.bullSpikePlot[i] = { time: t, value: gsig ? vol : NaN };
+
+      const prevBear = pb ? (pb.open > pb.close ? pvol : 0) : 0;
+      const prevBearThresh = i > 0 ? s.bearma[i - 1] * factor : 0;
+      const rsig = prevBear <= prevBearThresh && bear > bema * factor;
+      s.bearSpikePlot[i] = { time: t, value: rsig ? vol : NaN };
+
+      // Difference: |bullma - bearma| / 2.5, colored by direction
+      const vfDif = bma - bema;
+      const vfAbsolute = Math.abs(vfDif);
+      const dClr = vfDif > 0 ? '#5AA650' : '#FF510D';
+      s.diffPlot[i] = { time: t, value: vfAbsolute / 2.5, color: dClr };
+      // Dynamic fill colors matching diffValue direction
+      s.diffFillColors[i] = bma - bema > 0 ? 'rgba(90,166,80,0.3)' : 'rgba(255,81,13,0.3)';
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          volume: s.volumePlot.slice(),
+          bullMa: s.bullMaPlot.slice(),
+          bearMa: s.bearMaPlot.slice(),
+          bullSpike: s.bullSpikePlot.slice(),
+          bearSpike: s.bearSpikePlot.slice(),
+          diffValue: s.diffPlot.slice(),
+          diffZero: s.diffZero.slice(),
+        },
+        fills: [
+          { plot1: 'diffValue', plot2: 'diffZero', options: { color: 'rgba(90,166,80,0.3)' }, colors: s.diffFillColors.slice() },
+        ],
+      };
+    },
   };
 }
 
-export const VolumeFlowV3 = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeFlowV3Inputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolumeFlowV3Inputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const VolumeFlowV3 = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

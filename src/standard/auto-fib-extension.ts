@@ -25,6 +25,7 @@
 import { color, str, type Bar, type IndicatorResult, type InputConfig, type PlotConfig } from 'oakscriptjs';
 import type { AlertCall, LabelData, LineDrawingData, LinefillData } from '../types';
 import { mintickOf, tickerOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** Keys of the 22 levels, in the order of their inputs */
 const LEVEL_KEYS = [
@@ -183,24 +184,15 @@ interface Point {
   price: number;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AutoFibExtensionInputs> = {},
-  chart?: ChartContext,
-): AutoFibExtensionResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const tick = mintickOf(chart);
-  const empty: AutoFibExtensionResult = {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    lines: [],
-    labels: [],
-    linefills: [],
-    alertCalls: [],
-  };
-  if (n === 0) return empty;
+interface FibVars {
+  pivotsH: Point[];
+  pivotsL: Point[];
+}
 
+type FibRun = BarRunState<FibVars>;
+
+function study(inputs: Partial<AutoFibExtensionInputs>): BarStudy<FibRun, AutoFibExtensionResult> {
+  const cfg = { ...defaultInputs, ...inputs };
   const extending = cfg.extendLeft && cfg.extendRight ? 'both' : cfg.extendLeft ? 'left' : cfg.extendRight ? 'right' : 'none';
 
   // pivots(src, depth / 2, isHigh): the division keeps its fraction (5.5 for a depth of 11); the history index is
@@ -208,151 +200,182 @@ export function calculate(
   const half = cfg.depth / 2;
   const back = Math.trunc(half);
   const span = half * 2;
-  const pivotAt = (i: number, isHigh: boolean): Point | null => {
+  const pivotAt = (bars: Bar[], i: number, isHigh: boolean): Point | null => {
     if (!(i >= half)) return null;
-    const src = (k: number) => (isHigh ? bars[i - k].high : bars[i - k].low);
-    const raw = src(back);
+    const raw = isHigh ? bars[i - back].high : bars[i - back].low;
     const price = Number.isNaN(raw) ? 0 : raw;
     for (let k = 0; k <= span; k++) {
       if (k > i) continue; // src[k] is na
-      if (isHigh ? gt(src(k), price) : lt(src(k), price)) return null;
+      if (isHigh ? gt(bars[i - k].high, price) : lt(bars[i - k].low, price)) return null;
     }
     return { time: bars[i - back].time, price };
   };
-
-  const pivotsH: Point[] = [];
-  const pivotsL: Point[] = [];
-  let isHighLast = false;
-  let startPrice = NaN;
-  let endPrice = NaN;
-  let lineLastHL: LineDrawingData | null = null;
-  let lineLastLH: LineDrawingData | null = null;
-  let lineLast: LineDrawingData | null = null;
   const leg = (a: Point, b: Point, css: string): LineDrawingData => ({
     time1: a.time, price1: a.price, time2: b.time, price2: b.price, color: css, width: 1, style: 'dashed',
   });
 
-  for (let i = 0; i < n; i++) {
-    let H = pivotAt(i, true);
-    let L = pivotAt(i, false);
-    if (pivotsH.length > 0 && pivotsL.length > 0) {
-      const lastH = pivotsH[pivotsH.length - 1];
-      const lastL = pivotsL[pivotsL.length - 1];
-      isHighLast = lastH.time > lastL.time;
-      if (isHighLast) {
-        if (H) {
-          if (gt(H.price, lastH.price)) pivotsH[pivotsH.length - 1] = H;
-          H = null;
+  return {
+    init() {
+      return { steps: [], lists: [], series: [], vars: { pivotsH: [], pivotsL: [] } };
+    },
+    bar(s, i, bars) {
+      const pivotsH = s.vars.pivotsH;
+      const pivotsL = s.vars.pivotsL;
+      let H = pivotAt(bars, i, true);
+      let L = pivotAt(bars, i, false);
+      if (pivotsH.length > 0 && pivotsL.length > 0) {
+        const lastH = pivotsH[pivotsH.length - 1];
+        const lastL = pivotsL[pivotsL.length - 1];
+        const isHighLast = lastH.time > lastL.time;
+        if (isHighLast) {
+          if (H) {
+            if (gt(H.price, lastH.price)) pivotsH[pivotsH.length - 1] = H;
+            H = null;
+          }
+        } else if (L) {
+          if (lt(L.price, lastL.price)) pivotsL[pivotsL.length - 1] = L;
+          L = null;
         }
-      } else if (L) {
-        if (lt(L.price, lastL.price)) pivotsL[pivotsL.length - 1] = L;
-        L = null;
       }
-    }
-    if (H) pivotsH.push(H);
-    if (L) pivotsL.push(L);
-  }
+      if (H) pivotsH.push(H);
+      if (L) pivotsL.push(L);
+    },
+    copyVars: (v) => ({ pivotsH: v.pivotsH.slice(), pivotsL: v.pivotsL.slice() }),
+    result(s, bars, chart) {
+      const n = bars.length;
+      const tick = mintickOf(chart);
+      const empty: AutoFibExtensionResult = {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        lines: [],
+        labels: [],
+        linefills: [],
+        alertCalls: [],
+      };
+      if (n === 0) return empty;
+      const { pivotsH, pivotsL } = s.vars;
+      let isHighLast = false;
+      let startPrice = NaN;
+      let endPrice = NaN;
+      let lineLastHL: LineDrawingData | null = null;
+      let lineLastLH: LineDrawingData | null = null;
+      let lineLast: LineDrawingData | null = null;
 
-  // Last bar: the last swing whose retracement is between the two thresholds
-  const upperThreshold = 0.236;
-  const lowerThreshold = 1.0;
-  if (pivotsH.length > 0 && pivotsL.length > 0) {
-    const hCopy = pivotsH.slice();
-    const lCopy = pivotsL.slice();
-    while (hCopy.length > 0 && lCopy.length > 0) {
-      let lastH = hCopy.pop()!;
-      const lastL = lCopy.pop()!;
-      isHighLast = lastH.time > lastL.time;
-      let pivots = isHighLast ? hCopy : lCopy;
-      // for i = size - 1 to 0: each pass removes the last element (pop or remove(i) with i the last index)
-      for (let k = pivots.length - 1; k >= 0; k--) {
-        const p = pivots[k];
-        if (p.time < lastL.time) break;
-        if (gt(p.price, lastH.price)) lastH = pivots.pop()!;
-        else pivots.splice(k, 1);
-      }
-      if (hCopy.length === 0 || lCopy.length === 0) break;
+      // Last bar: the last swing whose retracement is between the two thresholds
+      const upperThreshold = 0.236;
+      const lowerThreshold = 1.0;
+      if (pivotsH.length > 0 && pivotsL.length > 0) {
+        const hCopy = pivotsH.slice();
+        const lCopy = pivotsL.slice();
+        while (hCopy.length > 0 && lCopy.length > 0) {
+          let lastH = hCopy.pop()!;
+          const lastL = lCopy.pop()!;
+          isHighLast = lastH.time > lastL.time;
+          let pivots = isHighLast ? hCopy : lCopy;
+          // for i = size - 1 to 0: each pass removes the last element (pop or remove(i) with i the last index)
+          for (let k = pivots.length - 1; k >= 0; k--) {
+            const p = pivots[k];
+            if (p.time < lastL.time) break;
+            if (gt(p.price, lastH.price)) lastH = pivots.pop()!;
+            else pivots.splice(k, 1);
+          }
+          if (hCopy.length === 0 || lCopy.length === 0) break;
 
-      isHighLast = lastH.time > lastL.time;
-      pivots = isHighLast ? hCopy : lCopy;
-      const prevPivot = pivots[pivots.length - 1];
-      startPrice = prevPivot.price;
-      if (isHighLast) {
-        endPrice = lastL.price;
-        const diff = Math.abs(startPrice - endPrice);
-        if (gt(lastH.price, endPrice + diff * lowerThreshold) || lt(lastH.price, endPrice + diff * upperThreshold)) {
-          lCopy.push(lastL);
-          continue;
+          isHighLast = lastH.time > lastL.time;
+          pivots = isHighLast ? hCopy : lCopy;
+          const prevPivot = pivots[pivots.length - 1];
+          startPrice = prevPivot.price;
+          if (isHighLast) {
+            endPrice = lastL.price;
+            const diff = Math.abs(startPrice - endPrice);
+            if (gt(lastH.price, endPrice + diff * lowerThreshold) || lt(lastH.price, endPrice + diff * upperThreshold)) {
+              lCopy.push(lastL);
+              continue;
+            }
+            lineLastHL = leg(prevPivot, lastL, RED);
+            lineLastLH = leg(lastL, lastH, GREEN);
+            lineLast = lineLastLH;
+          } else {
+            endPrice = lastH.price;
+            const diff = Math.abs(startPrice - endPrice);
+            if (lt(lastL.price, endPrice - diff * lowerThreshold) || gt(lastL.price, endPrice - diff * upperThreshold)) {
+              hCopy.push(lastH);
+              continue;
+            }
+            lineLastLH = leg(prevPivot, lastH, RED);
+            lineLastHL = leg(lastH, lastL, GREEN);
+            lineLast = lineLastHL;
+          }
+          break;
         }
-        lineLastHL = leg(prevPivot, lastL, RED);
-        lineLastLH = leg(lastL, lastH, GREEN);
-        lineLast = lineLastLH;
-      } else {
-        endPrice = lastH.price;
-        const diff = Math.abs(startPrice - endPrice);
-        if (lt(lastL.price, endPrice - diff * lowerThreshold) || gt(lastL.price, endPrice - diff * upperThreshold)) {
-          hCopy.push(lastH);
-          continue;
-        }
-        lineLastLH = leg(prevPivot, lastH, RED);
-        lineLastHL = leg(lastH, lastL, GREEN);
-        lineLast = lineLastHL;
       }
-      break;
-    }
-  }
-  if (!lineLast || !lineLastHL || !lineLastLH) throw new Error(NOT_ENOUGH_DATA);
+      if (!lineLast || !lineLastHL || !lineLastLH) throw new Error(NOT_ENOUGH_DATA);
 
-  const diff = (isHighLast ? -1 : 1) * Math.abs(startPrice - endPrice);
-  let offset = isHighLast ? lineLastLH.price1 - lineLastLH.price2 : lineLastHL.price1 - lineLastHL.price2;
-  offset = (isHighLast ? -1 : 1) * Math.abs(offset);
-  const base = endPrice - offset;
+      const diff = (isHighLast ? -1 : 1) * Math.abs(startPrice - endPrice);
+      let offset = isHighLast ? lineLastLH.price1 - lineLastLH.price2 : lineLastHL.price1 - lineLastHL.price2;
+      offset = (isHighLast ? -1 : 1) * Math.abs(offset);
+      const base = endPrice - offset;
 
-  const lines: LineDrawingData[] = [lineLastHL, lineLastLH];
-  const labels: LabelData[] = [];
-  const linefills: LinefillData[] = [];
-  const left = cfg.labelsPosition === 'Left';
-  const lastTime = bars[n - 1].time;
-  const labelTime = left ? lineLast.time1 : !cfg.extendRight ? lineLast.time2 : lastTime;
-  const fmt = (v: number) => str.tostring(v, 'mintick', tick);
-  const alertCalls: AlertCall[] = [];
-  const ticker = tickerOf(chart);
-  const c0 = bars[n - 1].close;
-  const c1 = n > 1 ? bars[n - 2].close : NaN;
+      const lines: LineDrawingData[] = [lineLastHL, lineLastLH];
+      const labels: LabelData[] = [];
+      const linefills: LinefillData[] = [];
+      const left = cfg.labelsPosition === 'Left';
+      const lastTime = bars[n - 1].time;
+      const labelTime = left ? lineLast.time1 : !cfg.extendRight ? lineLast.time2 : lastTime;
+      const fmt = (v: number) => str.tostring(v, 'mintick', tick);
+      const alertCalls: AlertCall[] = [];
+      const ticker = tickerOf(chart);
+      const c0 = bars[n - 1].close;
+      const c1 = n > 1 ? bars[n - 2].close : NaN;
 
-  let other: LineDrawingData | null = null;
-  for (const k of PROCESS_ORDER) {
-    if (!cfg[`show_${k}`]) continue;
-    const m = cfg[`value_${k}`];
-    const css = cfg[`color_${k}`];
-    const r = base + (cfg.reverse ? -1 : 1) * diff * m;
-    // _crossing_level(close, r): the level between the last close and the one before
-    if ((gt(r, c0) && gt(c1, r)) || (gt(c0, r) && gt(r, c1))) {
-      alertCalls.push({ time: bars[n - 1].time, message: 'Autofib: ' + ticker + ' crossing level ' + str.tostring(m), freq: 'once_per_bar' });
-    }
-    // _draw_line: the line spans the last leg at the level price
-    const id: LineDrawingData = {
-      time1: lineLast.time1, price1: r, time2: lineLast.time2, price2: r, color: css, width: 1, extend: extending,
-    };
-    lines.push(id);
-    if (!Number.isNaN(r)) {
-      const l = cfg.levelsFormat === 'Values' ? str.tostring(m) : str.tostring(m * 100) + '%';
-      const txt = (cfg.levels ? l : '') + (cfg.prices ? '(' + fmt(r) + ')' : '');
-      labels.push({
-        time: labelTime,
-        price: r,
-        text: (left ? txt : '       ' + txt) + LABEL_PAD,
-        color: '#00000000',
-        textColor: css,
-        style: left ? 'label_right' : 'label_left',
-        textAlign: left ? 'right' : 'left',
-      });
-    }
-    if (other) linefills.push({ line1: id, line2: other, color: color.new(css, cfg.backgroundTransparency) });
-    other = id;
-  }
+      let other: LineDrawingData | null = null;
+      for (const k of PROCESS_ORDER) {
+        if (!cfg[`show_${k}`]) continue;
+        const m = cfg[`value_${k}`];
+        const css = cfg[`color_${k}`];
+        const r = base + (cfg.reverse ? -1 : 1) * diff * m;
+        // _crossing_level(close, r): the level between the last close and the one before
+        if ((gt(r, c0) && gt(c1, r)) || (gt(c0, r) && gt(r, c1))) {
+          alertCalls.push({ time: bars[n - 1].time, message: 'Autofib: ' + ticker + ' crossing level ' + str.tostring(m), freq: 'once_per_bar' });
+        }
+        // _draw_line: the line spans the last leg at the level price
+        const id: LineDrawingData = {
+          time1: lineLast.time1, price1: r, time2: lineLast.time2, price2: r, color: css, width: 1, extend: extending,
+        };
+        lines.push(id);
+        if (!Number.isNaN(r)) {
+          const l = cfg.levelsFormat === 'Values' ? str.tostring(m) : str.tostring(m * 100) + '%';
+          const txt = (cfg.levels ? l : '') + (cfg.prices ? '(' + fmt(r) + ')' : '');
+          labels.push({
+            time: labelTime,
+            price: r,
+            text: (left ? txt : '       ' + txt) + LABEL_PAD,
+            color: '#00000000',
+            textColor: css,
+            style: left ? 'label_right' : 'label_left',
+            textAlign: left ? 'right' : 'left',
+          });
+        }
+        if (other) linefills.push({ line1: id, line2: other, color: color.new(css, cfg.backgroundTransparency) });
+        other = id;
+      }
 
-  return { ...empty, lines, labels, linefills, alertCalls };
+      return { ...empty, lines, labels, linefills, alertCalls };
+    },
+  };
 }
 
-export const AutoFibExtension = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hasAlertFunction: true };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AutoFibExtensionInputs> = {}, chart: ChartContext = {}): IndicatorRun<AutoFibExtensionResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<AutoFibExtensionInputs> = {},
+  chart?: ChartContext,
+): AutoFibExtensionResult {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const AutoFibExtension = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hasAlertFunction: true };

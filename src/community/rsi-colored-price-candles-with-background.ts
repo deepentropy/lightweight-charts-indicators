@@ -8,7 +8,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { PlotCandleData, BgColorData } from '../types';
 
 export interface RSIColoredPriceCandlesInputs {
@@ -52,46 +54,68 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RSIColoredPriceCandlesInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]>; bgColors: BgColorData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]>; bgColors: BgColorData[] };
+
+interface RsiCandlesRun extends BarRunState<Record<string, never>> {
+  change: ReturnType<typeof taStep.change>;
+  up: ReturnType<typeof taStep.rma>;
+  down: ReturnType<typeof taStep.rma>;
+  candles: PlotCandleData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<RSIColoredPriceCandlesInputs>): BarStudy<RsiCandlesRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = A(getSourceSeries(bars, cfg.src));
-  const n = bars.length;
-
-  // change = ta.change(src); math.max / math.min with na give na
-  const change = src.map((v, i) => (i > 0 ? v - src[i - 1] : NaN));
-  const up = A(ta.rma(Series.fromArray(bars, change.map((c) => (isNaN(c) ? NaN : Math.max(c, 0)))), cfg.rsiLength));
-  const down = A(ta.rma(Series.fromArray(bars, change.map((c) => (isNaN(c) ? NaN : -Math.min(c, 0)))), cfg.rsiLength));
-
+  const value = barSource(cfg.src);
   const bull = String(color.new(color.lime, 0));
   const bear = String(color.new(color.red, 0));
   const obCol = String(color.new(color.green, 90));
   const osCol = String(color.new(color.red, 90));
-
-  const candles: PlotCandleData[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    // rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
-    const rsi = eq(down[i], 0) ? 100 : eq(up[i], 0) ? 0 : 100 - 100 / (1 + up[i] / down[i]);
-    // rsiColor = rsi >= 50 ? lime : red (na RSI: red)
-    const col = ge(rsi, 50) ? bull : bear;
-    const b = bars[i];
-    candles.push({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: col, wickColor: col, borderColor: col });
-    if (cfg.showBackground) {
-      if (gt(rsi, 70)) bgColors.push({ time: b.time, color: obCol });
-      else if (lt(rsi, 30)) bgColors.push({ time: b.time, color: osCol });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    plotCandles: { candles },
-    bgColors,
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const change = taStep.change();
+      const up = taStep.rma(cfg.rsiLength);
+      const down = taStep.rma(cfg.rsiLength);
+      const s: RsiCandlesRun = { change, up, down, candles: [], bgColors: [], steps: [change, up, down], vars: {}, lists: [], series: [] };
+      s.lists = [s.bgColors];
+      s.series = [s.candles];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // change = ta.change(src); math.max / math.min with na give na
+      const c = s.change.step(value(b));
+      const up = s.up.step(isNaN(c) ? NaN : Math.max(c, 0));
+      const down = s.down.step(isNaN(c) ? NaN : -Math.min(c, 0));
+      // rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+      const rsi = eq(down, 0) ? 100 : eq(up, 0) ? 0 : 100 - 100 / (1 + up / down);
+      // rsiColor = rsi >= 50 ? lime : red (na RSI: red)
+      const col = ge(rsi, 50) ? bull : bear;
+      s.candles[i] = { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: col, wickColor: col, borderColor: col };
+      if (cfg.showBackground) {
+        if (gt(rsi, 70)) s.bgColors.push({ time: b.time, color: obCol });
+        else if (lt(rsi, 30)) s.bgColors.push({ time: b.time, color: osCol });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        plotCandles: { candles: s.candles.slice() },
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
 }
 
-export const RSIColoredPriceCandles = { calculate, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RSIColoredPriceCandlesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RSIColoredPriceCandlesInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const RSIColoredPriceCandles = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig };

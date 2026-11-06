@@ -25,6 +25,7 @@ import { timeframe, time as pineTime, type IndicatorResult, type InputConfig, ty
 import type { BgColorData } from '../types';
 import { sessionHoursOf, timezoneOf, type ChartContext } from '../chart-context';
 import { chartTimeframe } from '../anchor-period';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CMTimeLinesInputs {
   show1: boolean;
@@ -79,12 +80,22 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<CMTimeLinesInputs> = {}, chart?: ChartContext): Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] };
+type Window = { show: boolean; session: string; color: string };
+
+interface TimeLinesRun extends BarRunState<Record<string, never>> {
+  windows: Window[];
+  timezone: string;
+  barMs: number | undefined;
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<CMTimeLinesInputs>): BarStudy<TimeLinesRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
 
   // Pine session colors: yellow, orange, aqua, fuchsia, maroon, lime (all transp=40 => 0.60 alpha)
   // In Pine, 6 independent bgcolor() calls evaluated in order; later ones paint over earlier.
-  const sessions: { show: boolean; session: string; color: string }[] = [
+  const sessions: Window[] = [
     { show: cfg.show1, session: cfg.session1, color: 'rgba(255,255,0,0.60)' },    // yellow
     { show: cfg.show2, session: cfg.session2, color: 'rgba(255,165,0,0.60)' },    // orange
     { show: cfg.show3, session: cfg.session3, color: 'rgba(0,255,255,0.60)' },    // aqua
@@ -92,37 +103,53 @@ export function calculate(bars: Bar[], inputs: Partial<CMTimeLinesInputs> = {}, 
     { show: cfg.show5, session: cfg.session5, color: 'rgba(128,0,0,0.60)' },      // maroon
     { show: cfg.show6, session: cfg.session6, color: 'rgba(0,255,0,0.60)' },      // lime
   ];
-
-  // time(period, session): the session test in the exchange time zone, with the bar duration for the days around a
-  // clock change
-  const timezone = timezoneOf(chart);
-  const tf = chartTimeframe(bars, chart);
-  const barMs = tf === '' ? undefined : timeframe.in_seconds(tf) * 1000;
-  // an empty session string: the session of the symbol (none without the context)
-  const symbolSession = sessionHoursOf(chart);
-  const windows = sessions.map((s) => ({ ...s, session: s.session.trim() === '' ? symbolSession : s.session }));
-
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const t = bars[i].time;
-    // Evaluate all 6 sessions independently; last matching session wins (Pine layering order)
-    let matchColor: string | null = null;
-    for (const s of windows) {
-      if (!s.show || s.session === '') continue;
-      if (pineTime.inSession(t * 1000, s.session, timezone, barMs)) {
-        matchColor = s.color;
-      }
-    }
-    if (matchColor !== null) {
-      bgColors.push({ time: t, color: matchColor });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    bgColors,
+    // the chart timeframe read from the bar gaps
+    key: (bars, chart) => chartTimeframe(bars, chart),
+    init(bars, chart) {
+      // time(period, session): the session test in the exchange time zone, with the bar duration for the days around a
+      // clock change
+      const timezone = timezoneOf(chart);
+      const tf = chartTimeframe(bars, chart);
+      const barMs = tf === '' ? undefined : timeframe.in_seconds(tf) * 1000;
+      // an empty session string: the session of the symbol (none without the context)
+      const symbolSession = sessionHoursOf(chart);
+      const windows = sessions.map((s) => ({ ...s, session: s.session.trim() === '' ? symbolSession : s.session }));
+      const s: TimeLinesRun = { windows, timezone, barMs, bgColors: [], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.bgColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i]!.time;
+      // Evaluate all 6 sessions independently; last matching session wins (Pine layering order)
+      let matchColor: string | null = null;
+      for (const w of s.windows) {
+        if (!w.show || w.session === '') continue;
+        if (pineTime.inSession(t * 1000, w.session, s.timezone, s.barMs)) {
+          matchColor = w.color;
+        }
+      }
+      if (matchColor !== null) {
+        s.bgColors.push({ time: t, color: matchColor });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
 }
 
-export const CMTimeLines = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CMTimeLinesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CMTimeLinesInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const CMTimeLines = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

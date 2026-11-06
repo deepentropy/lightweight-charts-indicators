@@ -17,10 +17,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { color, type BarColorConfig, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, timeframe, type BarColorConfig, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
 import type { ChartContext } from '../chart-context';
-import { securityStarts } from '../anchor-period';
+import { hasCalendar, securityStarts } from '../anchor-period';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VwapMtfInputs {
   /** Timeframe of the VWAP periods */
@@ -64,45 +65,173 @@ export const metadata = {
 /** Pine float comparison: a > b only when a - b > 1e-10 (na compares false) */
 const gt = (a: number, b: number) => a - b > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<VwapMtfInputs> = {},
-  chart?: ChartContext,
-): IndicatorResult & { barColors: BarColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  // start = security(tickerid, TimeFrame, time); newSession = change(start) (na on the first bar: no new session)
-  const start = securityStarts(bars, cfg.timeFrame, chart);
+const DAY = 86400000;
+const WEEK = 7 * DAY;
 
-  const prevPlot: { time: number; value: number; color: string }[] = [];
-  const vwapPlot: { time: number; value: number; color: string }[] = [];
-  const barColors: BarColorData[] = [];
-  let vwapsum = NaN;
-  let volumesum = NaN;
-  let prevwap = NaN;
-  let prevVwap = NaN; // myvwap[1]
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const newSession = i > 0 && start[i] !== start[i - 1];
-    const hl2 = (b.high + b.low) / 2;
-    const vol = b.volume ?? NaN;
-    vwapsum = newSession ? hl2 * vol : vwapsum + hl2 * vol;
-    volumesum = newSession ? vol : volumesum + vol;
-    const myvwap = vwapsum / volumesum;
-    const coloring = gt(b.close, myvwap) ? GREEN : RED;
-    if (newSession) prevwap = prevVwap;
-    prevVwap = myvwap;
-    const prevValue = cfg.showPrevVWAP ? prevwap : NaN;
-    prevPlot.push({ time: b.time, value: Number.isFinite(prevValue) ? prevValue : NaN, color: gt(b.close, prevwap) ? GREEN : RED });
-    vwapPlot.push({ time: b.time, value: Number.isFinite(myvwap) ? myvwap : NaN, color: coloring });
-    if (cfg.showBcol) barColors.push({ id: 'barcolor0', time: b.time, color: coloring });
+/** Start (UNIX ms, UTC) of the D / W / M calendar period of the day `day` (the UTC rule of `periodStarts`) */
+function calendarPeriodStart(day: number, info: ReturnType<typeof timeframe.info>): number {
+  const n = info.multiplier;
+  const d = new Date(day);
+  const year = d.getUTCFullYear();
+  if (info.isdaily) {
+    if (n === 1) return day;
+    const jan1 = Date.UTC(year, 0, 1);
+    return jan1 + Math.floor((day - jan1) / DAY / n) * n * DAY;
   }
+  if (info.isweekly) {
+    const monday = day - ((d.getUTCDay() + 6) % 7) * DAY;
+    if (n === 1) return monday;
+    const jan1 = Date.UTC(new Date(monday).getUTCFullYear(), 0, 1);
+    const firstMonday = jan1 + ((8 - new Date(jan1).getUTCDay()) % 7) * DAY;
+    return firstMonday + Math.floor((monday - firstMonday) / WEEK / n) * n * WEEK;
+  }
+  return Date.UTC(year, Math.floor(d.getUTCMonth() / n) * n, 1);
+}
 
+const weekend = (t: number) => {
+  const wd = new Date(t).getUTCDay();
+  return wd === 0 || wd === 6;
+};
+/** The bars trade every day (a bar on a Saturday or a Sunday, UTC): the days of `periodStarts` start at 00:00 UTC */
+const someWeekend = (bars: Bar[], ms: boolean) => bars.some((b) => weekend(ms ? b.time : b.time * 1000));
+
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+interface VwapVars {
+  vwapsum: number;
+  volumesum: number;
+  prevwap: number;
+  /** myvwap[1] */
+  prevVwap: number;
+  // periodStarts state (the UTC rule, one bar at a time)
+  prevDay: number;
+  sessionStart: number;
+  prevKey: number;
+  start: number;
+  tradingYear: number;
+  tradingDays: number;
+  prevTradingDay: number;
+}
+
+interface VwapRun extends BarRunState<VwapVars> {
+  /** The period start of each bar */
+  starts: number[];
+  prevPlot: Point[];
+  vwapPlot: Point[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<VwapMtfInputs>): BarStudy<VwapRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const tf = cfg.timeFrame;
+  /** 'chart': each bar is its own period; 'utc': the UTC rule of periodStarts; 'pre': the starts of the whole set */
+  let mode: 'chart' | 'utc' | 'pre' = 'chart';
+  let pre: number[] = [];
+  let info: ReturnType<typeof timeframe.info> | null = null;
+  let len = 0;
+  let inMs = false;
+  let everyDay = false;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: prevPlot, plot1: vwapPlot },
-    barColors,
+    // the UTC periods read the time unit of the first bar and the days of the whole bar set (bars on a weekend)
+    key: (bars) => {
+      const ms = bars.length > 0 && bars[0].time >= 1e12;
+      return `${ms}|${someWeekend(bars, ms)}`;
+    },
+    // with the exchange calendar the periods come from the calendar of the whole bar set
+    fullRunReason: (chart) => (hasCalendar(chart) ? 'exchange calendar periods' : null),
+    init(bars, chart) {
+      inMs = bars.length > 0 && bars[0].time >= 1e12;
+      everyDay = someWeekend(bars, inMs);
+      // start = security(tickerid, TimeFrame, time); newSession = change(start) (na on the first bar: no new session)
+      if (hasCalendar(chart)) {
+        mode = 'pre';
+        pre = securityStarts(bars, tf, chart);
+      } else if (tf.trim() === '') {
+        mode = 'chart';
+      } else {
+        info = timeframe.info(tf);
+        if (info.isticks) throw new RangeError(`Unsupported timeframe "${tf}"`);
+        len = info.isintraday ? timeframe.in_seconds(tf) * 1000 : 0;
+        mode = 'utc';
+      }
+      const s: VwapRun = {
+        starts: [], prevPlot: [], vwapPlot: [], barColors: [], steps: [],
+        vars: {
+          vwapsum: NaN, volumesum: NaN, prevwap: NaN, prevVwap: NaN, prevDay: NaN, sessionStart: NaN, prevKey: NaN,
+          start: NaN, tradingYear: NaN, tradingDays: -1, prevTradingDay: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.lists = [s.barColors];
+      s.series = [s.starts, s.prevPlot, s.vwapPlot];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      let start: number;
+      if (mode === 'pre') start = pre[i];
+      else if (mode === 'chart') start = b.time;
+      else {
+        const inf = info!;
+        const t = inMs ? b.time : b.time * 1000;
+        const day = Math.floor(t / DAY) * DAY;
+        if (day !== v.prevDay) v.sessionStart = everyDay ? day : t;
+        v.prevDay = day;
+        if (inf.isintraday) {
+          v.start = len >= DAY ? v.sessionStart : v.sessionStart + Math.floor((t - v.sessionStart) / len) * len;
+        } else if (inf.isdaily && inf.multiplier > 1 && !everyDay) {
+          // n trading days (UTC days with bars) counted from the first trading day of the year
+          const year = new Date(day).getUTCFullYear();
+          if (year !== v.tradingYear) {
+            v.tradingYear = year;
+            v.tradingDays = -1;
+          }
+          if (day !== v.prevTradingDay) {
+            v.tradingDays++;
+            v.prevTradingDay = day;
+            if (v.tradingDays % inf.multiplier === 0) v.start = t;
+          }
+        } else {
+          const key = calendarPeriodStart(day, inf);
+          if (key !== v.prevKey) v.start = everyDay ? key : t;
+          v.prevKey = key;
+        }
+        start = inMs ? v.start : Math.floor(v.start / 1000);
+      }
+      s.starts[i] = start;
+      const newSession = i > 0 && start !== s.starts[i - 1];
+      const hl2 = (b.high + b.low) / 2;
+      const vol = b.volume ?? NaN;
+      v.vwapsum = newSession ? hl2 * vol : v.vwapsum + hl2 * vol;
+      v.volumesum = newSession ? vol : v.volumesum + vol;
+      const myvwap = v.vwapsum / v.volumesum;
+      const coloring = gt(b.close, myvwap) ? GREEN : RED;
+      if (newSession) v.prevwap = v.prevVwap;
+      v.prevVwap = myvwap;
+      const prevValue = cfg.showPrevVWAP ? v.prevwap : NaN;
+      s.prevPlot[i] = { time: b.time, value: Number.isFinite(prevValue) ? prevValue : NaN, color: gt(b.close, v.prevwap) ? GREEN : RED };
+      s.vwapPlot[i] = { time: b.time, value: Number.isFinite(myvwap) ? myvwap : NaN, color: coloring };
+      if (cfg.showBcol) s.barColors.push({ id: 'barcolor0', time: b.time, color: coloring });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.prevPlot.slice(), plot1: s.vwapPlot.slice() },
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const VwapMtf = { calculate, metadata, defaultInputs, inputConfig, plotConfig, barColorConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VwapMtfInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VwapMtfInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const VwapMtf = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, barColorConfig };

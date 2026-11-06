@@ -22,8 +22,9 @@
  */
 
 import { color, timeframe, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { securityStarts, chartTimeframe } from '../anchor-period';
+import { securityStarts, chartTimeframe, hasCalendar } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PivotPointHpotterInputs {
   /** Line width of the plots */
@@ -56,54 +57,116 @@ export const metadata = {
   overlay: true,
 };
 
+/** One day in milliseconds */
+const DAY = 86400000;
+
+type Point = { time: number; value: number };
+
+interface PpVars {
+  /** The high, low and close of the previous day */
+  prevHigh: number;
+  prevLow: number;
+  prevClose: number;
+  /** The high, low and close of the day so far */
+  dayHigh: number;
+  dayLow: number;
+  dayClose: number;
+}
+
+interface PpRun extends BarRunState<PpVars> {
+  /** The period starts of the exchange calendar (null: UTC days of the bars, found bar by bar) */
+  starts: number[] | null;
+  /** Bar times in milliseconds */
+  ms: boolean;
+  plots: Point[][];
+}
+
 /**
  * security(tickerid, "D", x[1]) for x = high, low, close: the high, low and close of the previous day on every
  * chart bar of a day (version 1 rule: no gaps, each chart bar of a period shows the value of that period).
  */
-function previousDay(bars: Bar[], context?: ChartContext): { high: number[]; low: number[]; close: number[] } {
-  const chart = chartTimeframe(bars, context);
-  if (chart !== '' && timeframe.in_seconds(chart) > timeframe.in_seconds('D')) {
-    throw new Error(`Pivot Point: the daily timeframe is lower than the chart timeframe "${chart}": the bars do not carry that data.`);
-  }
-  const starts = securityStarts(bars, 'D', context);
-  const high: number[] = [];
-  const low: number[] = [];
-  const close: number[] = [];
-  let prev = { high: NaN, low: NaN, close: NaN };
-  let day = { high: NaN, low: NaN, close: NaN };
-  bars.forEach((b, i) => {
-    if (i === 0 || starts[i] !== starts[i - 1]) {
-      prev = day;
-      day = { high: b.high, low: b.low, close: b.close };
-    } else {
-      day.high = Math.max(day.high, b.high);
-      day.low = Math.min(day.low, b.low);
-      day.close = b.close;
-    }
-    high.push(prev.high);
-    low.push(prev.low);
-    close.push(prev.close);
-  });
-  return { high, low, close };
-}
-
-export function calculate(bars: Bar[], _inputs: Partial<PivotPointHpotterInputs> = {}, chart?: ChartContext): IndicatorResult {
-  const { high: xHigh, low: xLow, close: xClose } = previousDay(bars, chart);
-
-  const vPP = bars.map((_b, i) => (xHigh[i] + xLow[i] + xClose[i]) / 3);
-  const series = (value: (i: number) => number) => bars.map((b, i) => ({ time: b.time, value: value(i) }));
-
+function study(_inputs: Partial<PivotPointHpotterInputs>): BarStudy<PpRun, IndicatorResult> {
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: series((i) => vPP[i] - (xHigh[i] - vPP[i])),
-      plot1: series((i) => vPP[i] - (xHigh[i] - xLow[i])),
-      plot2: series((i) => xLow[i] - 2 * (xHigh[i] - vPP[i])),
-      plot3: series((i) => vPP[i] + (vPP[i] - xLow[i])),
-      plot4: series((i) => vPP[i] + (xHigh[i] - xLow[i])),
-      plot5: series((i) => xHigh[i] + 2 * (vPP[i] - xLow[i])),
+    // the chart timeframe from the bar gaps and the unit of the bar times
+    key: (bars, chart) => `${chartTimeframe(bars, chart)}|${bars.length > 0 && bars[0].time >= 1e12}`,
+    // the exchange calendar: the periods of the whole bar set (securityStarts)
+    fullRunReason: (chart) => (hasCalendar(chart) ? 'exchange calendar periods' : null),
+    init(bars, context) {
+      const chart = chartTimeframe(bars, context);
+      if (chart !== '' && timeframe.in_seconds(chart) > timeframe.in_seconds('D')) {
+        throw new Error(`Pivot Point: the daily timeframe is lower than the chart timeframe "${chart}": the bars do not carry that data.`);
+      }
+      const s: PpRun = {
+        starts: hasCalendar(context) ? securityStarts(bars, 'D', context) : null,
+        ms: bars.length > 0 && bars[0].time >= 1e12,
+        plots: [[], [], [], [], [], []],
+        steps: [],
+        vars: { prevHigh: NaN, prevLow: NaN, prevClose: NaN, dayHigh: NaN, dayLow: NaN, dayClose: NaN },
+        lists: [], series: [],
+      };
+      s.series = [...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      // a new day: the UTC day of the bar differs from the one of the bar before (periodStarts rule)
+      let newDay: boolean;
+      if (i === 0) newDay = true;
+      else if (s.starts) newDay = s.starts[i] !== s.starts[i - 1];
+      else {
+        const unit = s.ms ? 1 : 1000;
+        newDay = Math.floor((b.time * unit) / DAY) !== Math.floor((bars[i - 1].time * unit) / DAY);
+      }
+      if (newDay) {
+        v.prevHigh = v.dayHigh;
+        v.prevLow = v.dayLow;
+        v.prevClose = v.dayClose;
+        v.dayHigh = b.high;
+        v.dayLow = b.low;
+        v.dayClose = b.close;
+      } else {
+        v.dayHigh = Math.max(v.dayHigh, b.high);
+        v.dayLow = Math.min(v.dayLow, b.low);
+        v.dayClose = b.close;
+      }
+      const xHigh = v.prevHigh;
+      const xLow = v.prevLow;
+      const xClose = v.prevClose;
+      const vPP = (xHigh + xLow + xClose) / 3;
+      const time = b.time;
+      const p = s.plots;
+      p[0][i] = { time, value: vPP - (xHigh - vPP) };
+      p[1][i] = { time, value: vPP - (xHigh - xLow) };
+      p[2][i] = { time, value: xLow - 2 * (xHigh - vPP) };
+      p[3][i] = { time, value: vPP + (vPP - xLow) };
+      p[4][i] = { time, value: vPP + (xHigh - xLow) };
+      p[5][i] = { time, value: xHigh + 2 * (vPP - xLow) };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(),
+          plot1: p[1].slice(),
+          plot2: p[2].slice(),
+          plot3: p[3].slice(),
+          plot4: p[4].slice(),
+          plot5: p[5].slice(),
+        },
+      };
     },
   };
 }
 
-export const PivotPointHpotter = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PivotPointHpotterInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], _inputs: Partial<PivotPointHpotterInputs> = {}, chart?: ChartContext): IndicatorResult {
+  return fullResult(createRun(_inputs, chart).update(bars));
+}
+
+export const PivotPointHpotter = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

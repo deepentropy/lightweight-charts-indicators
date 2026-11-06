@@ -7,7 +7,9 @@
  * Based on the standard Fisher Transform indicator.
  */
 
-import { Series, ta, type Bar, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig } from 'oakscriptjs';
+import { type Bar, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface FisherTransformInputs {
   /** Lookback period for highest/lowest calculation */
@@ -46,6 +48,72 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Point = { time: number; value: number };
+
+interface FisherVars {
+  value: number;
+  fish1: number;
+}
+
+interface FisherRun extends BarRunState<FisherVars> {
+  high: WindowExtreme;
+  low: WindowExtreme;
+  fisher: number[];
+  plotData0: Point[];
+  plotData1: Point[];
+}
+
+function study(inputs: Partial<FisherTransformInputs>): BarStudy<FisherRun, IndicatorResult> {
+  const { length } = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const high = new WindowExtreme(false, length);
+      const low = new WindowExtreme(true, length);
+      const s: FisherRun = {
+        high, low, fisher: [], plotData0: [], plotData1: [],
+        steps: [high, low], vars: { value: NaN, fish1: NaN }, lists: [], series: [],
+      };
+      s.series = [s.fisher, s.plotData0, s.plotData1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const hl2 = (b.high + b.low) / 2;
+      const high_ = s.high.step(hl2);
+      const low_ = s.low.step(hl2);
+      const nzValue = Number.isNaN(v.value) ? 0 : v.value;
+      const nzFish1 = Number.isNaN(v.fish1) ? 0 : v.fish1;
+      // A plain division: 0 / 0 is NaN (na), x / 0 is +-infinity
+      const raw = 0.66 * ((hl2 - low_) / (high_ - low_) - 0.5) + 0.67 * nzValue;
+      v.value = gt(raw, 0.99) ? 0.999 : lt(raw, -0.99) ? -0.999 : raw;
+      v.fish1 = 0.5 * Math.log((1 + v.value) / (1 - v.value)) + 0.5 * nzFish1;
+      s.fisher[i] = v.fish1;
+      s.plotData0[i] = { time: b.time, value: Number.isFinite(v.fish1) ? v.fish1 : NaN };
+      const prev = i > 0 ? s.fisher[i - 1] : NaN;
+      s.plotData1[i] = { time: b.time, value: Number.isFinite(prev) ? prev : NaN };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.plotData0.slice(),
+          'plot1': s.plotData1.slice(),
+        },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FisherTransformInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
 /**
  * Calculate Fisher Transform
  *
@@ -57,50 +125,12 @@ const lt = (a: number, b: number) => b - a > EPS;
  * A flat window (high_ == low_) gives 0 / 0 = na: value and fish1 are na on that bar and count as 0 on the next.
  */
 export function calculate(bars: Bar[], inputs: Partial<FisherTransformInputs> = {}): IndicatorResult {
-  const { length } = { ...defaultInputs, ...inputs };
-  const hl2 = Series.fromArray(bars, bars.map((b) => (b.high + b.low) / 2));
-  const hl2Arr = hl2.toArray().map((v) => v ?? NaN);
-  const highArr = ta.highest(hl2, length).toArray().map((v) => v ?? NaN);
-  const lowArr = ta.lowest(hl2, length).toArray().map((v) => v ?? NaN);
-
-  const fisher: number[] = new Array(bars.length);
-  let value = NaN;
-  let fish1 = NaN;
-  for (let i = 0; i < bars.length; i++) {
-    const nzValue = Number.isNaN(value) ? 0 : value;
-    const nzFish1 = Number.isNaN(fish1) ? 0 : fish1;
-    // A plain division: 0 / 0 is NaN (na), x / 0 is +-infinity
-    const raw = 0.66 * ((hl2Arr[i] - lowArr[i]) / (highArr[i] - lowArr[i]) - 0.5) + 0.67 * nzValue;
-    value = gt(raw, 0.99) ? 0.999 : lt(raw, -0.99) ? -0.999 : raw;
-    fish1 = 0.5 * Math.log((1 + value) / (1 - value)) + 0.5 * nzFish1;
-    fisher[i] = fish1;
-  }
-
-  const plotData0 = fisher.map((v, i) => ({
-    time: bars[i].time,
-    value: Number.isFinite(v) ? v : NaN,
-  }));
-
-  const plotData1 = fisher.map((_v, i) => {
-    const prev = i > 0 ? fisher[i - 1] : NaN;
-    return { time: bars[i].time, value: Number.isFinite(prev) ? prev : NaN };
-  });
-
-  return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
-    },
-    plots: {
-      'plot0': plotData0,
-      'plot1': plotData1,
-    },
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const FisherTransform = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

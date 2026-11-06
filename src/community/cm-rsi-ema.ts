@@ -7,7 +7,9 @@
  * Reference: "CM_RSI Plus EMA" by ChrisMoody
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CMRSIPlusEMAInputs {
   rsiLen: number;
@@ -40,53 +42,73 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<CMRSIPlusEMAInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface CmRsiRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  emaArr: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+}
+
+function study(inputs: Partial<CMRSIPlusEMAInputs>): BarStudy<CmRsiRun, IndicatorResult> {
   const { rsiLen, emaLen, src } = { ...defaultInputs, ...inputs };
-
-  const source = getSourceSeries(bars, src);
-  const rsi = ta.rsi(source, rsiLen);
-  const rsiArr = rsi.toArray();
-
-  // EMA of RSI computed bar-by-bar
+  const value = barSource(src);
   const alpha = 2 / (emaLen + 1);
-  const emaArr: number[] = new Array(bars.length);
-  for (let i = 0; i < bars.length; i++) {
-    const r = rsiArr[i];
-    if (r == null) {
-      emaArr[i] = NaN;
-    } else if (i === 0 || isNaN(emaArr[i - 1])) {
-      emaArr[i] = r;
-    } else {
-      emaArr[i] = alpha * r + (1 - alpha) * emaArr[i - 1];
-    }
-  }
-
   const warmup = rsiLen;
-
-  const plot0 = rsiArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (v == null || i < warmup) ? NaN : v,
-  }));
-
-  const plot1 = emaArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (isNaN(v) || i < warmup) ? NaN : v,
-  }));
-
-  const plot2 = bars.map((b) => ({ time: b.time, value: 80 }));
-  const plot3 = bars.map((b) => ({ time: b.time, value: 20 }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
-    hlines: [
-      { value: 80, options: { color: '#EF5350', linestyle: 'dashed' as const, title: 'Upper Line' } },
-      { value: 20, options: { color: '#00E676', linestyle: 'dashed' as const, title: 'Lower Line' } },
-    ],
-    fills: [
-      { plot1: 'plot2', plot2: 'plot3', options: { color: 'rgba(126,87,194,0.1)' } },
-    ],
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const rsi = taStep.rsi(rsiLen);
+      const s: CmRsiRun = {
+        rsi, emaArr: [], plot0: [], plot1: [], plot2: [], plot3: [], steps: [rsi], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.emaArr, s.plot0, s.plot1, s.plot2, s.plot3];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const r = s.rsi.step(value(b));
+      const emaArr = s.emaArr;
+      // EMA of RSI computed bar-by-bar
+      if (r == null) {
+        emaArr[i] = NaN;
+      } else if (i === 0 || isNaN(emaArr[i - 1])) {
+        emaArr[i] = r;
+      } else {
+        emaArr[i] = alpha * r + (1 - alpha) * emaArr[i - 1];
+      }
+      const v = emaArr[i];
+      s.plot0[i] = { time: b.time, value: (r == null || i < warmup) ? NaN : r };
+      s.plot1[i] = { time: b.time, value: (isNaN(v) || i < warmup) ? NaN : v };
+      s.plot2[i] = { time: b.time, value: 80 };
+      s.plot3[i] = { time: b.time, value: 20 };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice(), 'plot2': s.plot2.slice(), 'plot3': s.plot3.slice() },
+        hlines: [
+          { value: 80, options: { color: '#EF5350', linestyle: 'dashed' as const, title: 'Upper Line' } },
+          { value: 20, options: { color: '#00E676', linestyle: 'dashed' as const, title: 'Lower Line' } },
+        ],
+        fills: [
+          { plot1: 'plot2', plot2: 'plot3', options: { color: 'rgba(126,87,194,0.1)' } },
+        ],
+      };
+    },
   };
 }
 
-export const CMRSIPlusEMA = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CMRSIPlusEMAInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CMRSIPlusEMAInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const CMRSIPlusEMA = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

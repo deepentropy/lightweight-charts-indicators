@@ -10,8 +10,10 @@
  * Reference: "Tops/Bottoms" (community)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TopsBottomsInputs {
   length: number;
@@ -42,59 +44,86 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TopsBottomsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface TbVars {
+  prevBull1: boolean;
+  prevBear1: boolean;
+}
+
+interface TbRun extends BarRunState<TbVars> {
+  valC: WindowSma;
+  atr: ReturnType<typeof taStep.atr>;
+  vol: WindowSma;
+  bullLine: Point[];
+  bearLine: Point[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<TopsBottomsInputs>): BarStudy<TbRun, Result> {
   const { length, bull, bear } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const markers: MarkerData[] = [];
-
-  // Pine: ValC = sma(hl2, length)
-  const hl2Series = new Series(bars, (b) => (b.high + b.low) / 2);
-  const valC = ta.sma(hl2Series, length).toArray();
-
-  // Pine: vol = sma(atr(length), length)
-  const atrArr = ta.atr(bars, length).toArray();
-  const volArr = ta.sma(new Series(bars, (_b, i) => atrArr[i] ?? NaN), length).toArray();
   const sqrtLen = Math.sqrt(length);
-
-  // Pine: plot(bull, color=green) and plot(bear, color=red) -- constant threshold lines
-  const bullLine: { time: number; value: number }[] = [];
-  const bearLine: { time: number; value: number }[] = [];
-
-  let prevBull1 = false;
-  let prevBear1 = false;
-
-  for (let i = 0; i < n; i++) {
-    bullLine.push({ time: bars[i].time, value: bull });
-    bearLine.push({ time: bars[i].time, value: bear });
-
-    const v = volArr[i];
-    if (v == null || isNaN(v) || v === 0) continue;
-    const vc = valC[i];
-    if (vc == null || isNaN(vc)) continue;
-
-    // Pine: cvi = (close - ValC) / (vol * sqrt(length))
-    const cvi = (bars[i].close - vc) / (v * sqrtLen);
-    const bull1 = cvi <= bull;
-    const bear1 = cvi >= bear;
-
-    // Pine: bull2 = bull1[1] and not bull1 (exited bullish zone)
-    if (prevBull1 && !bull1) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'circle', color: '#00E676', text: '*' });
-    }
-    // Pine: bear2 = bear1[1] and not bear1 (exited bearish zone)
-    if (prevBear1 && !bear1) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'circle', color: '#EF5350', text: '*' });
-    }
-
-    prevBull1 = bull1;
-    prevBear1 = bear1;
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': bullLine, 'plot1': bearLine },
-    markers,
+    init() {
+      // Pine: ValC = sma(hl2, length)
+      const valC = new WindowSma(length);
+      // Pine: vol = sma(atr(length), length)
+      const atr = taStep.atr(length);
+      const vol = new WindowSma(length);
+      const s: TbRun = {
+        valC, atr, vol, bullLine: [], bearLine: [], markers: [],
+        steps: [valC, atr, vol], vars: { prevBull1: false, prevBear1: false }, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.bullLine, s.bearLine];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const vc = s.valC.step((b.high + b.low) / 2);
+      const v = s.vol.step(s.atr.step(b.high, b.low, b.close));
+      // Pine: plot(bull, color=green) and plot(bear, color=red) -- constant threshold lines
+      s.bullLine[i] = { time: b.time, value: bull };
+      s.bearLine[i] = { time: b.time, value: bear };
+
+      if (v == null || isNaN(v) || v === 0) return;
+      if (vc == null || isNaN(vc)) return;
+
+      // Pine: cvi = (close - ValC) / (vol * sqrt(length))
+      const cvi = (b.close - vc) / (v * sqrtLen);
+      const bull1 = cvi <= bull;
+      const bear1 = cvi >= bear;
+
+      // Pine: bull2 = bull1[1] and not bull1 (exited bullish zone)
+      if (s.vars.prevBull1 && !bull1) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'circle', color: '#00E676', text: '*' });
+      }
+      // Pine: bear2 = bear1[1] and not bear1 (exited bearish zone)
+      if (s.vars.prevBear1 && !bear1) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'circle', color: '#EF5350', text: '*' });
+      }
+
+      s.vars.prevBull1 = bull1;
+      s.vars.prevBear1 = bear1;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.bullLine.slice(), 'plot1': s.bearLine.slice() },
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const TopsBottoms = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TopsBottomsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TopsBottomsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const TopsBottoms = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

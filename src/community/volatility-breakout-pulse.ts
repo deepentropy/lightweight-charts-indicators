@@ -10,9 +10,11 @@
  * Original notice: © JohnsonForexTrader
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { BgColorData, MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
 
 export interface VolatilityBreakoutPulseInputs {
   /** Lookback period of the highest high / lowest low */
@@ -54,57 +56,96 @@ const lt = (a: number, b: number) => b - a > EPS;
 /** Pine default plotshape text colour */
 const TEXT_COLOR = '#2962FF';
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<VolatilityBreakoutPulseInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const high = Series.fromArray(bars, bars.map((b) => b.high));
-  const low = Series.fromArray(bars, bars.map((b) => b.low));
-  const highestHigh = A(ta.highest(high, cfg.len));
-  const lowestLow = A(ta.lowest(low, cfg.len));
-  const atrVal = A(ta.atr(bars, 14));
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color?: string };
 
+interface VbpRun extends BarRunState<Record<string, never>> {
+  hh: WindowExtreme;
+  ll: WindowExtreme;
+  atr: ReturnType<typeof taStep.atr>;
+  highestHigh: number[];
+  lowestLow: number[];
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<VolatilityBreakoutPulseInputs>): BarStudy<VbpRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const bgUp = String(color.new(color.green, 85));
   const bgDn = String(color.new(color.red, 85));
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  const buyFlags: boolean[] = [], sellFlags: boolean[] = [];
-  bars.forEach((b, i) => {
-    const priceRange = highestHigh[i] - lowestLow[i];
-    const volatility = atrVal[i] * cfg.mult;
-    const breakUp = i > 0 && gt(b.close, highestHigh[i - 1]);
-    const breakDn = i > 0 && lt(b.close, lowestLow[i - 1]);
-    const buySignal = breakUp && gt(priceRange, volatility);
-    const sellSignal = breakDn && gt(priceRange, volatility);
-    buyFlags.push(buySignal);
-    sellFlags.push(sellSignal);
-
-    if (cfg.showZones && breakUp) bgColors.push({ time: b.time, color: bgUp });
-    else if (cfg.showZones && breakDn) bgColors.push({ time: b.time, color: bgDn });
-
-    if (buySignal) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.lime, text: 'BUY',
-        textColor: TEXT_COLOR });
-    }
-    if (sellSignal) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
-        textColor: TEXT_COLOR });
-    }
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: highestHigh[i], color: color.red })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: lowestLow[i], color: color.green })),
+    init() {
+      const hh = new WindowExtreme(false, cfg.len);
+      const ll = new WindowExtreme(true, cfg.len);
+      const atr = taStep.atr(14);
+      const s: VbpRun = {
+        hh, ll, atr, highestHigh: [], lowestLow: [], plot0: [], plot1: [], markers: [], bgColors: [],
+        flags: [[], []], times: [[], []], steps: [hh, ll, atr], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.bgColors, ...s.times];
+      s.series = [s.highestHigh, s.lowestLow, s.plot0, s.plot1, ...s.flags];
+      return s;
     },
-    markers,
-    bgColors,
-    // alertcondition(buySignal, "BUY ALERT") / alertcondition(sellSignal, "SELL ALERT")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const highestHigh = s.hh.step(b.high);
+      const lowestLow = s.ll.step(b.low);
+      const atrVal = s.atr.step(b.high, b.low, b.close);
+      s.highestHigh[i] = highestHigh;
+      s.lowestLow[i] = lowestLow;
+      const priceRange = highestHigh - lowestLow;
+      const volatility = atrVal * cfg.mult;
+      const breakUp = i > 0 && gt(b.close, s.highestHigh[i - 1]);
+      const breakDn = i > 0 && lt(b.close, s.lowestLow[i - 1]);
+      const buySignal = breakUp && gt(priceRange, volatility);
+      const sellSignal = breakDn && gt(priceRange, volatility);
+      s.flags[0][i] = buySignal;
+      s.flags[1][i] = sellSignal;
+      if (buySignal) s.times[0].push(b.time as number);
+      if (sellSignal) s.times[1].push(b.time as number);
+
+      if (cfg.showZones && breakUp) s.bgColors.push({ time: b.time, color: bgUp });
+      else if (cfg.showZones && breakDn) s.bgColors.push({ time: b.time, color: bgDn });
+
+      if (buySignal) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.lime, text: 'BUY',
+          textColor: TEXT_COLOR });
+      }
+      if (sellSignal) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
+          textColor: TEXT_COLOR });
+      }
+      s.plot0[i] = { time: b.time, value: highestHigh, color: color.red };
+      s.plot1[i] = { time: b.time, value: lowestLow, color: color.green };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plot0.slice(),
+          plot1: s.plot1.slice(),
+        },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        // alertcondition(buySignal, "BUY ALERT") / alertcondition(sellSignal, "SELL ALERT")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolatilityBreakoutPulseInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolatilityBreakoutPulseInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -115,6 +156,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const VolatilityBreakoutPulse = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -6,7 +6,9 @@
  * Optional smoothing MA of the OBV (None by default), with Bollinger Bands for 'SMA + Bollinger Bands'.
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowStdev, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface OBVInputs {
   maType: 'None' | 'SMA' | 'SMA + Bollinger Bands' | 'EMA' | 'SMMA (RMA)' | 'WMA' | 'VWMA';
@@ -39,53 +41,86 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<OBVInputs> = {}): IndicatorResult {
+type Point = { time: any; value: number };
+type Ma = { step(v: number, volume: number): number; commit(): void };
+
+interface ObvRun extends BarRunState<Record<string, never>> {
+  change: ReturnType<typeof taStep.change>;
+  cum: ReturnType<typeof taStep.cum>;
+  ma: Ma | null;
+  dev: WindowStdev | null;
+  plotData: Point[];
+  maData: Point[];
+  bbUpperData: Point[];
+  bbLowerData: Point[];
+}
+
+function study(inputs: Partial<OBVInputs>): BarStudy<ObvRun, IndicatorResult> {
   const { maType, maLength, bbMult } = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = new Series(bars, (bar) => bar.close);
-  const volume = new Series(bars, (bar) => bar.volume ?? NaN);
-  const volumeArr = A(volume);
-
-  // obv = ta.cum(math.sign(ta.change(src)) * volume)
-  const change = A(ta.change(close));
-  const obvSeries = ta.cum(Series.fromArray(bars, change.map((c, i) => Math.sign(c) * volumeArr[i])));
-  const obvArr = A(obvSeries);
-  const plotData = obvArr.map((value, i) => ({ time: bars[i].time, value }));
-
   const enableMA = maType !== 'None';
   const isBB = maType === 'SMA + Bollinger Bands';
-  let maData = bars.map(b => ({ time: b.time, value: NaN }));
-  let bbUpperData = bars.map(b => ({ time: b.time, value: NaN }));
-  let bbLowerData = bars.map(b => ({ time: b.time, value: NaN }));
-  const fills: FillData[] = [];
-
-  if (enableMA) {
-    let maSeries: Series;
+  const maStep = (): Ma | null => {
+    if (!enableMA) return null;
     switch (maType) {
-      case 'EMA': maSeries = ta.ema(obvSeries, maLength); break;
-      case 'SMMA (RMA)': maSeries = ta.rma(obvSeries, maLength); break;
-      case 'WMA': maSeries = ta.wma(obvSeries, maLength); break;
-      case 'VWMA': maSeries = ta.vwma(obvSeries, maLength, volume); break;
-      default: maSeries = ta.sma(obvSeries, maLength); break;
+      case 'EMA': { const m = taStep.ema(maLength); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'SMMA (RMA)': { const m = taStep.rma(maLength); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, maLength), commit: () => m.commit() }; }
+      case 'VWMA': { const m = new WindowVwma(maLength); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+      default: { const m = new WindowSma(maLength); return { step: (v) => m.step(v), commit: () => m.commit() }; }
     }
-    const maArr = A(maSeries);
-    maData = maArr.map((v, i) => ({ time: bars[i].time, value: v }));
-
-    if (isBB) {
-      // smoothingStDev = ta.stdev(obv, maLengthInput) * bbMultInput
-      const stdevArr = A(ta.stdev(obvSeries, maLength));
-      bbUpperData = maArr.map((v, i) => ({ time: bars[i].time, value: v + stdevArr[i] * bbMult }));
-      bbLowerData = maArr.map((v, i) => ({ time: bars[i].time, value: v - stdevArr[i] * bbMult }));
-      // color.new(color.green, 90)
-      fills.push({ plot1: 'plot2', plot2: 'plot3', options: { color: '#4CAF501A', title: 'Bollinger Bands Background Fill' } });
-    }
-  }
-
+  };
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plotData, 'plot1': maData, 'plot2': bbUpperData, 'plot3': bbLowerData },
-    fills,
+    init() {
+      const change = taStep.change();
+      const cum = taStep.cum();
+      const ma = maStep();
+      const dev = enableMA && isBB ? new WindowStdev(maLength) : null;
+      const s: ObvRun = {
+        change, cum, ma, dev, plotData: [], maData: [], bbUpperData: [], bbLowerData: [],
+        steps: [change, cum, ...(ma ? [ma] : []), ...(dev ? [dev] : [])], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.plotData, s.maData, s.bbUpperData, s.bbLowerData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const vol = b.volume ?? NaN;
+      // obv = ta.cum(math.sign(ta.change(src)) * volume)
+      const obv = s.cum.step(Math.sign(s.change.step(b.close)) * vol);
+      s.plotData[i] = { time, value: obv };
+      const ma = s.ma ? s.ma.step(obv, vol) : NaN;
+      s.maData[i] = { time, value: ma };
+      if (s.dev) {
+        // smoothingStDev = ta.stdev(obv, maLengthInput) * bbMultInput
+        const sd = s.dev.step(obv);
+        s.bbUpperData[i] = { time, value: ma + sd * bbMult };
+        s.bbLowerData[i] = { time, value: ma - sd * bbMult };
+      } else {
+        s.bbUpperData[i] = { time, value: NaN };
+        s.bbLowerData[i] = { time, value: NaN };
+      }
+    },
+    result(s) {
+      const fills: FillData[] = [];
+      // color.new(color.green, 90)
+      if (enableMA && isBB) fills.push({ plot1: 'plot2', plot2: 'plot3', options: { color: '#4CAF501A', title: 'Bollinger Bands Background Fill' } });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plotData.slice(), 'plot1': s.maData.slice(), 'plot2': s.bbUpperData.slice(), 'plot3': s.bbLowerData.slice() },
+        fills,
+      };
+    },
   };
 }
 
-export const OBV = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<OBVInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<OBVInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const OBV = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

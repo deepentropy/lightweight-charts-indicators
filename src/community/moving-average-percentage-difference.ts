@@ -12,8 +12,10 @@
  */
 
 import {
-  ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar,
+  taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar,
 } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type MapdMaType = 'SMA' | 'EMA' | 'VWMA' | 'RMA' | 'WMA' | 'HMA' | 'SWMA';
 
@@ -97,82 +99,126 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(bars: Bar[], inputs: Partial<MovingAveragePercentageDifferenceInputs> = {}): IndicatorResult {
+type Point = { time: any; value: number; color?: string };
+type Ma = { step(close: number, volume: number): number; commit(): void };
+
+interface MapdRun extends BarRunState<Record<string, never>> {
+  ma: Ma | null;
+  maValue: number[];
+  maDiff: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  zeroFill: string[];
+}
+
+function study(inputs: Partial<MovingAveragePercentageDifferenceInputs>): BarStudy<MapdRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
   const len = cfg.maLength;
-
+  // ta.hma(x, 1) calls ta.wma(x, 0): a Pine runtime error
+  const hmaError = cfg.maType === 'HMA' && Math.floor(len / 2) < 1;
   // calcMA(_type, _src, _len): only the branch of the selected type runs
-  let maValue: number[];
-  switch (cfg.maType) {
-    case 'SMA': maValue = A(ta.sma(close, len)); break;
-    case 'VWMA': maValue = A(ta.vwma(close, len, S(bars.map((b) => b.volume ?? NaN)))); break;
-    case 'RMA': maValue = A(ta.rma(close, len)); break;
-    case 'WMA': maValue = A(ta.wma(close, len)); break;
-    case 'HMA':
-      // ta.hma(x, 1) calls ta.wma(x, 0): a Pine runtime error
-      if (Math.floor(len / 2) < 1 && n > 0) {
-        throw new Error("Invalid value of the 'length' argument (0.0) in the 'wma' function. It must be > 0.");
+  const maStep = (): Ma | null => {
+    switch (cfg.maType) {
+      case 'SMA': { const m = new WindowSma(len); return { step: (c) => m.step(c), commit: () => m.commit() }; }
+      case 'VWMA': { const m = new WindowVwma(len); return { step: (c, v) => m.step(c, v), commit: () => m.commit() }; }
+      case 'RMA': { const m = taStep.rma(len); return { step: (c) => m.step(c), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (c) => m.step(c, len), commit: () => m.commit() }; }
+      case 'HMA': {
+        if (hmaError) return null;
+        const m = taStep.hma(len);
+        return { step: (c) => m.step(c), commit: () => m.commit() };
       }
-      maValue = A(ta.hma(close, len));
-      break;
-    case 'SWMA': maValue = A(ta.swma(close)); break;
-    case 'EMA':
-    default: maValue = A(ta.ema(close, len)); break;
-  }
-
-  // maDiff = 100 * (maValue / maValue[1] - 1): a plain division (x / 0 is +-infinity, plots show na)
-  const maDiff = maValue.map((v, i) => (i > 0 ? 100 * (v / maValue[i - 1] - 1) : NaN));
-  const prev = (i: number) => (i > 0 ? maDiff[i - 1] : NaN);
-  const maColor = (i: number) => (gt(maDiff[i], prev(i)) ? cfg.maIncreaseColor : cfg.maDecreaseColor);
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: fin(maDiff[i]), color: maColor(i) }));
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: cfg.plotMAOnChart ? fin(maValue[i]) : NaN, color: maColor(i) }));
-  const plot2 = bars.map((b) => ({ time: b.time, value: cfg.showFill ? 0 : NaN }));
-
-  // zeroFillColor = maDiff > 0 ? increase : decrease; transparency 80 when the change moves away from zero, else 90
-  const zeroFill = bars.map((_b, i) => {
-    const d = maDiff[i];
-    const c = gt(d, 0) ? cfg.maIncreaseColor : cfg.maDecreaseColor;
-    const away = (gt(d, 0) && gt(d, prev(i))) || (le(d, 0) && lt(d, prev(i)));
-    return String(color.new(c, away ? 80 : 90));
-  });
-
-  const twilight = cfg.showTwilightZone ? cfg.twilightLength : NaN;
-  const hlines: NonNullable<IndicatorResult['hlines']> = [
-    { value: 0, options: { title: 'Level', color: '#787B86', linestyle: 'dashed' } },
-  ];
-  if (cfg.showTwilightZone) {
-    hlines.push(
-      { value: twilight, options: { title: 'Twilight Upper Limit', color: cfg.twilightColor, linestyle: 'dashed' } },
-      { value: -1 * twilight, options: { title: 'Twilight Lower Limit', color: cfg.twilightColor, linestyle: 'dashed' } },
-    );
-  }
-
-  // fill(twilightUpper, twilightLower, color.new(twilightColor, 85)): the hlines are na when the zone is off, so
-  // nothing is drawn (transparent here)
-  const twilightFill = cfg.showTwilightZone ? String(color.new(cfg.twilightColor, 85)) : 'transparent';
-  const fills: NonNullable<IndicatorResult['fills']> = [
-    // fill(maDiffPlot, zeroLineForFill, color.new(zeroFillColor, zeroFillTransparency))
-    { plot1: 'plot0', plot2: 'plot2', options: { title: 'Zero Fill' }, colors: zeroFill },
-    { plot1: 'hline_twilight_upper', plot2: 'hline_twilight_lower', options: { title: 'Twilight' },
-      colors: new Array<string>(n).fill(twilightFill) },
-  ];
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, format: metadata.format },
-    plots: { plot0, plot1, plot2 },
-    hlines,
-    fills,
+      // ta.swma(close): from the closes of the bars
+      case 'SWMA': return null;
+      case 'EMA':
+      default: { const m = taStep.ema(len); return { step: (c) => m.step(c), commit: () => m.commit() }; }
+    }
   };
+  const prev = (s: MapdRun, i: number) => (i > 0 ? s.maDiff[i - 1] : NaN);
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+  return {
+    init(bars) {
+      // with no bar, the error of the library's ta.hma
+      if (hmaError && bars.length === 0) throw new Error("Error on bar 0: Invalid value of the 'length' argument (0.0) in the 'wma' function. It must be > 0.");
+      const ma = maStep();
+      const s: MapdRun = {
+        ma, maValue: [], maDiff: [], plot0: [], plot1: [], plot2: [], zeroFill: [],
+        steps: ma ? [ma] : [], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.maValue, s.maDiff, s.plot0, s.plot1, s.plot2, s.zeroFill];
+      return s;
+    },
+    bar(s, i, bars) {
+      if (hmaError) throw new Error("Invalid value of the 'length' argument (0.0) in the 'wma' function. It must be > 0.");
+      const b = bars[i];
+      const { maValue, maDiff } = s;
+      let v: number;
+      if (s.ma) v = s.ma.step(b.close, b.volume ?? NaN);
+      else v = i < 3 ? NaN : (b.close + 2 * bars[i - 1].close + 2 * bars[i - 2].close + bars[i - 3].close) / 6;
+      maValue[i] = v ?? NaN;
+
+      // maDiff = 100 * (maValue / maValue[1] - 1): a plain division (x / 0 is +-infinity, plots show na)
+      const d = i > 0 ? 100 * (maValue[i] / maValue[i - 1] - 1) : NaN;
+      maDiff[i] = d;
+      const p = prev(s, i);
+      const maColor = gt(d, p) ? cfg.maIncreaseColor : cfg.maDecreaseColor;
+      s.plot0[i] = { time: b.time, value: fin(d), color: maColor };
+      s.plot1[i] = { time: b.time, value: cfg.plotMAOnChart ? fin(maValue[i]) : NaN, color: maColor };
+      s.plot2[i] = { time: b.time, value: cfg.showFill ? 0 : NaN };
+
+      // zeroFillColor = maDiff > 0 ? increase : decrease; transparency 80 when the change moves away from zero, else 90
+      const c = gt(d, 0) ? cfg.maIncreaseColor : cfg.maDecreaseColor;
+      const away = (gt(d, 0) && gt(d, p)) || (le(d, 0) && lt(d, p));
+      s.zeroFill[i] = String(color.new(c, away ? 80 : 90));
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const twilight = cfg.showTwilightZone ? cfg.twilightLength : NaN;
+      const hlines: NonNullable<IndicatorResult['hlines']> = [
+        { value: 0, options: { title: 'Level', color: '#787B86', linestyle: 'dashed' } },
+      ];
+      if (cfg.showTwilightZone) {
+        hlines.push(
+          { value: twilight, options: { title: 'Twilight Upper Limit', color: cfg.twilightColor, linestyle: 'dashed' } },
+          { value: -1 * twilight, options: { title: 'Twilight Lower Limit', color: cfg.twilightColor, linestyle: 'dashed' } },
+        );
+      }
+
+      // fill(twilightUpper, twilightLower, color.new(twilightColor, 85)): the hlines are na when the zone is off, so
+      // nothing is drawn (transparent here)
+      const twilightFill = cfg.showTwilightZone ? String(color.new(cfg.twilightColor, 85)) : 'transparent';
+      const fills: NonNullable<IndicatorResult['fills']> = [
+        // fill(maDiffPlot, zeroLineForFill, color.new(zeroFillColor, zeroFillTransparency))
+        { plot1: 'plot0', plot2: 'plot2', options: { title: 'Zero Fill' }, colors: s.zeroFill.slice() },
+        { plot1: 'hline_twilight_upper', plot2: 'hline_twilight_lower', options: { title: 'Twilight' },
+          colors: new Array<string>(n).fill(twilightFill) },
+      ];
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, format: metadata.format },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        hlines,
+        fills,
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(
+  inputs: Partial<MovingAveragePercentageDifferenceInputs> = {}, chart: ChartContext = {},
+): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MovingAveragePercentageDifferenceInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MovingAveragePercentageDifference = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

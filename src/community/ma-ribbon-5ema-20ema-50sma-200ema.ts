@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType, type Series } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MaRibbon5ema20ema50sma200emaInputs {
   /** Source of the four averages */
@@ -76,39 +78,95 @@ export const metadata = {
   overlay: true,
 };
 
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+
+interface RibbonRun extends BarRunState<Record<string, never>> {
+  e5: ReturnType<typeof taStep.ema>;
+  e20: ReturnType<typeof taStep.ema>;
+  s50: WindowSma;
+  e200: ReturnType<typeof taStep.ema>;
+  srcArr: number[];
+  ema5: number[];
+  ema20: number[];
+  ema200: number[];
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<MaRibbon5ema20ema50sma200emaInputs>): BarStudy<RibbonRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const e5 = taStep.ema(5);
+      const e20 = taStep.ema(20);
+      const s50 = new WindowSma(50);
+      const e200 = taStep.ema(200);
+      const s: RibbonRun = {
+        e5, e20, s50, e200, srcArr: [], ema5: [], ema20: [], ema200: [], plots: [[], [], [], []],
+        flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [e5, e20, s50, e200], vars: {}, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.srcArr, s.ema5, s.ema20, s.ema200, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const src = value(b);
+      const ema5 = s.e5.step(src);
+      const ema20 = s.e20.step(src);
+      const sma50 = s.s50.step(src);
+      const ema200 = s.e200.step(src);
+      s.srcArr[i] = src;
+      s.ema5[i] = ema5;
+      s.ema20[i] = ema20;
+      s.ema200[i] = ema200;
+      // plot(showX ? x : na, title, color = colX, linewidth = widthX)
+      s.plots[0][i] = { time: t, value: cfg.show5ema ? ema5 : NaN, color: cfg.col5ema };
+      s.plots[1][i] = { time: t, value: cfg.show20ema ? ema20 : NaN, color: cfg.col20ema };
+      s.plots[2][i] = { time: t, value: cfg.show50sma ? sma50 : NaN, color: cfg.col50sma };
+      s.plots[3][i] = { time: t, value: cfg.show200ema ? ema200 : NaN, color: cfg.col200ema };
+      const ps = i > 0 ? s.srcArr[i - 1] : NaN;
+      const p200 = i > 0 ? s.ema200[i - 1] : NaN;
+      const p5 = i > 0 ? s.ema5[i - 1] : NaN;
+      const p20 = i > 0 ? s.ema20[i - 1] : NaN;
+      const flags = [
+        src > ema200 && ps <= p200, // ta.crossover(src, ema200)
+        src < ema200 && ps >= p200, // ta.crossunder(src, ema200)
+        ema5 > ema20 && p5 <= p20, // ta.crossover(ema5, ema20)
+        ema5 < ema20 && p5 >= p20, // ta.crossunder(ema5, ema20)
+      ];
+      for (let k = 0; k < 4; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MaRibbon5ema20ema50sma200emaInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<MaRibbon5ema20ema50sma200emaInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = getSourceSeries(bars, cfg.src);
-
-  const ema5 = A(ta.ema(src, 5));
-  const ema20 = A(ta.ema(src, 20));
-  const sma50 = A(ta.sma(src, 50));
-  const ema200 = A(ta.ema(src, 200));
-
-  // plot(showX ? x : na, title, color = colX, linewidth = widthX)
-  const line = (show: boolean, vals: number[], col: string) =>
-    bars.map((b, i) => ({ time: b.time, value: show ? vals[i] : NaN, color: col }));
-
-  const srcArr = A(src);
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(cfg.show5ema, ema5, cfg.col5ema),
-      plot1: line(cfg.show20ema, ema20, cfg.col20ema),
-      plot2: line(cfg.show50sma, sma50, cfg.col50sma),
-      plot3: line(cfg.show200ema, ema200, cfg.col200ema),
-    },
-    alerts: alertStates(alertConditions, bars, [
-      crossedOver(srcArr, ema200), // ta.crossover(src, ema200)
-      crossedUnder(srcArr, ema200), // ta.crossunder(src, ema200)
-      crossedOver(ema5, ema20), // ta.crossover(ema5, ema20)
-      crossedUnder(ema5, ema20), // ta.crossunder(ema5, ema20)
-    ]),
-  };
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -121,6 +179,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const MaRibbon5ema20ema50sma200ema = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

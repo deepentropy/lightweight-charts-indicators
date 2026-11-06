@@ -14,10 +14,12 @@
  * Original notice: © UnderwearMillionaire
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type UmSourceOption = 'Close' | 'Open' | 'High' | 'Low' | 'OHLC4';
 export type UmMaMethod = 'EMA' | 'SMA' | 'WMA' | 'HMA';
@@ -86,18 +88,27 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
 type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Ma = { step(v: number): number; commit(): void };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<UmEmaSmaWmaHmaWithDirectionalColorChangeInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+interface UmRun extends BarRunState<Record<string, never>> {
+  ma: Ma;
+  smooth: Ma;
+  src: number[];
+  out: number[];
+  smoothingLine: number[];
+  up: boolean[];
+  maFill: string[];
+  priceFill: string[];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<UmEmaSmaWmaHmaWithDirectionalColorChangeInputs>): BarStudy<UmRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series | number[]) => (Array.isArray(s) ? s : s.toArray()).map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
   // src = switch srcOption
-  const src = bars.map((b) => {
+  const source = (b: Bar): number => {
     switch (cfg.srcOption) {
       case 'Close': return b.close;
       case 'Open': return b.open;
@@ -105,13 +116,15 @@ export function calculate(
       case 'Low': return b.low;
       default: return (b.open + b.high + b.low + b.close) / 4;
     }
-  });
-
+  };
   // ma(source, length, type): the type is an input, so the taken switch branch runs on every bar
-  const ma = (source: number[], length: number): number[] => {
+  const maStep = (length: number): Ma => {
     switch (cfg.typeMA) {
-      case 'SMA': return A(ta.sma(S(source), length));
-      case 'WMA': return A(ta.wma(S(source), length));
+      case 'SMA': return new WindowSma(length);
+      case 'WMA': {
+        const m = taStep.wma();
+        return { step: (v) => m.step(v, length), commit: () => m.commit() };
+      }
       case 'HMA': {
         // ta.wma(2 * ta.wma(source, length / 2) - ta.wma(source, length), math.round(math.sqrt(length))):
         // length / 2 keeps the fraction in Pine v6, ta.wma truncates it; length 1 gives ta.wma(source, 0.5): a Pine
@@ -119,72 +132,107 @@ export function calculate(
         if (Math.floor(length / 2) < 1) {
           throw new Error("Error on bar 0: Invalid value of the 'length' argument (0.0) in the 'wma' function. It must be > 0.");
         }
-        const half = A(ta.wma(S(source), length / 2));
-        const full = A(ta.wma(S(source), length));
-        return A(ta.wma(S(half.map((h, i) => 2 * h - full[i])), Math.round(Math.sqrt(length))));
+        const half = taStep.wma();
+        const full = taStep.wma();
+        const hull = taStep.wma();
+        const sqrtLength = Math.round(Math.sqrt(length));
+        return {
+          step: (v) => hull.step(2 * half.step(v, length / 2) - full.step(v, length), sqrtLength),
+          commit: () => { half.commit(); full.commit(); hull.commit(); },
+        };
       }
-      default: return A(ta.ema(S(source), length));
+      default: return taStep.ema(length);
     }
   };
-  const out = ma(src, cfg.len);
-  const smoothingLine = ma(out, cfg.smoothingLength);
   const isHMA = cfg.typeMA === 'HMA';
-
-  // outCurrColor = isHMA ? (out < smoothingLine ? green : red) : (out > smoothingLine ? green : red)
-  const up = out.map((o, i) => (isHMA ? lt(o, smoothingLine[i]) : gt(o, smoothingLine[i])));
-  const currColor = up.map((u) => (u ? color.green : color.red));
-
-  const interval = barInterval(bars);
-  const k = cfg.offset;
-  // plot(..., offset = k): the value (and colour) of bar i is drawn on bar i + k
-  const shifted = (values: number[], colorAt: (i: number) => string): Point[] => {
-    const pts: Point[] = [];
-    for (let i = 0; i < n; i++) {
-      if (i + k < 0) continue;
-      pts.push({ time: barTime(bars, i + k, interval), value: Number.isFinite(values[i]) ? values[i] : NaN, color: colorAt(i) });
-    }
-    return pts;
-  };
-
-  const markers: MarkerData[] = [];
-  const maFill: string[] = new Array(n);
-  const priceFill: string[] = new Array(n);
-  const longFlags: boolean[] = [];
-  const shortFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    // plotLong = outPrevColor == red and outCurrColor == green (outPrevColor: the same test on bar i - 1, red on bar 0)
-    const prevUp = i > 0 && up[i - 1];
-    const plotLong = !prevUp && up[i];
-    const plotShort = prevUp && !up[i];
-    longFlags.push(plotLong && cfg.enableAlerts);
-    shortFlags.push(plotShort && cfg.enableAlerts);
-    if (cfg.showArrows && plotLong) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: color.green });
-    }
-    if (cfg.showArrows && plotShort) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: color.red });
-    }
-    // fill(emaPlot, smoothingPlot, color = out > smoothingLine ? color.new(green, 80) : color.new(red, 80))
-    maFill[i] = gt(out[i], smoothingLine[i]) ? FILL_UP_80 : FILL_DN_80;
-    // fill(pricePlot, emaPlot, color = out > out[1] ? color.new(green, 90) : color.new(red, 90))
-    priceFill[i] = i > 0 && gt(out[i], out[i - 1]) ? FILL_UP_90 : FILL_DN_90;
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: shifted(out, (i) => currColor[i]),
-      plot1: shifted(smoothingLine, (i) => currColor[i]),
-      plot2: shifted(src, () => PRICE_COL),
+    init() {
+      const ma = maStep(cfg.len);
+      const smooth = maStep(cfg.smoothingLength);
+      const s: UmRun = {
+        ma, smooth, src: [], out: [], smoothingLine: [], up: [], maFill: [], priceFill: [], flags: [[], []],
+        times: [[], []], markers: [], steps: [ma, smooth], vars: {}, lists: [], series: [],
+      };
+      s.lists = [...s.times, s.markers];
+      s.series = [s.src, s.out, s.smoothingLine, s.up, s.maFill, s.priceFill, ...s.flags];
+      return s;
     },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', colors: maFill },
-      { plot1: 'plot2', plot2: 'plot0', colors: priceFill },
-    ],
-    markers,
-    // alertcondition(plotLong and enableAlerts) / alertcondition(plotShort and enableAlerts)
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const src = source(b);
+      const out = s.ma.step(src);
+      const smoothingLine = s.smooth.step(out);
+      s.src[i] = src;
+      s.out[i] = out;
+      s.smoothingLine[i] = smoothingLine;
+      // outCurrColor = isHMA ? (out < smoothingLine ? green : red) : (out > smoothingLine ? green : red)
+      const up = isHMA ? lt(out, smoothingLine) : gt(out, smoothingLine);
+      s.up[i] = up;
+      // plotLong = outPrevColor == red and outCurrColor == green (outPrevColor: the same test on bar i - 1, red on bar 0)
+      const prevUp = i > 0 && s.up[i - 1];
+      const plotLong = !prevUp && up;
+      const plotShort = prevUp && !up;
+      const long = plotLong && cfg.enableAlerts;
+      const short = plotShort && cfg.enableAlerts;
+      s.flags[0][i] = long;
+      s.flags[1][i] = short;
+      if (long) s.times[0].push(b.time as number);
+      if (short) s.times[1].push(b.time as number);
+      if (cfg.showArrows && plotLong) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.green });
+      }
+      if (cfg.showArrows && plotShort) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.red });
+      }
+      // fill(emaPlot, smoothingPlot, color = out > smoothingLine ? color.new(green, 80) : color.new(red, 80))
+      s.maFill[i] = gt(out, smoothingLine) ? FILL_UP_80 : FILL_DN_80;
+      // fill(pricePlot, emaPlot, color = out > out[1] ? color.new(green, 90) : color.new(red, 90))
+      s.priceFill[i] = i > 0 && gt(out, s.out[i - 1]) ? FILL_UP_90 : FILL_DN_90;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // the times of the shifted points follow the bar count (future bars after the last one)
+      const interval = barInterval(bars);
+      const k = cfg.offset;
+      // plot(..., offset = k): the value (and colour) of bar i is drawn on bar i + k
+      const shifted = (values: number[], colorAt: (i: number) => string): Point[] => {
+        const pts: Point[] = [];
+        for (let i = 0; i < n; i++) {
+          if (i + k < 0) continue;
+          pts.push({ time: barTime(bars, i + k, interval), value: Number.isFinite(values[i]) ? values[i] : NaN, color: colorAt(i) });
+        }
+        return pts;
+      };
+      const colorOf = (i: number) => (s.up[i] ? color.green : color.red);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: shifted(s.out, colorOf),
+          plot1: shifted(s.smoothingLine, colorOf),
+          plot2: shifted(s.src, () => PRICE_COL),
+        },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', colors: s.maFill.slice() },
+          { plot1: 'plot2', plot2: 'plot0', colors: s.priceFill.slice() },
+        ],
+        markers: s.markers.slice(),
+        // alertcondition(plotLong and enableAlerts) / alertcondition(plotShort and enableAlerts)
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(
+  inputs: Partial<UmEmaSmaWmaHmaWithDirectionalColorChangeInputs> = {},
+  chart: ChartContext = {},
+): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<UmEmaSmaWmaHmaWithDirectionalColorChangeInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -195,6 +243,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const UmEmaSmaWmaHmaWithDirectionalColorChange = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -8,7 +8,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 // The Pine script has no inputs
 export interface GhostEmaCloudInputs {}
@@ -38,37 +40,68 @@ export const metadata = {
 /** Pine a > b: a - b > 1e-10 (false with na) */
 const gt = (a: number, b: number) => a - b > 1e-10;
 
-export function calculate(bars: Bar[], _inputs: Partial<GhostEmaCloudInputs> = {}): IndicatorResult {
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-  const e9 = A(ta.ema(close, 9));
-  const e14 = A(ta.ema(close, 14));
-  const e5 = A(ta.ema(close, 5));
-  const e12 = A(ta.ema(close, 12));
+type Point = { time: any; value: number; color: string };
 
-  // bullishColor = color.new(#66bb6a, 55), bearishColor = color.new(#f23645, 55)
-  const bullish = String(color.new('#66bb6a', 55));
-  const bearish = String(color.new('#f23645', 55));
-  const line = (v: number[], c: string) => bars.map((b, i) => ({ time: b.time, value: v[i], color: c }));
+interface GhostRun extends BarRunState<Record<string, never>> {
+  emas: ReturnType<typeof taStep.ema>[];
+  plots: Point[][];
+  fillColors: string[];
+}
 
+// bullishColor = color.new(#66bb6a, 55), bearishColor = color.new(#f23645, 55)
+const bullish = String(color.new('#66bb6a', 55));
+const bearish = String(color.new('#f23645', 55));
+
+function study(_inputs: Partial<GhostEmaCloudInputs>): BarStudy<GhostRun, IndicatorResult> {
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(e9, C9),
-      plot1: line(e14, C14),
-      plot2: line(e12, C12),
-      plot3: line(e5, C5),
+    init() {
+      const emas = [taStep.ema(9), taStep.ema(14), taStep.ema(12), taStep.ema(5)];
+      const s: GhostRun = { emas, plots: [[], [], [], []], fillColors: [], steps: emas, vars: {}, lists: [], series: [] };
+      s.series = [...s.plots, s.fillColors];
+      return s;
     },
-    fills: [
-      // fill(plot9, plot14, color = e9 > e14 ? bullishColor : bearishColor)
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Plots Background' },
-        colors: bars.map((_b, i) => (gt(e9[i], e14[i]) ? bullish : bearish)) },
-    ],
+    bar(s, i, bars) {
+      const b = bars[i];
+      const e9 = s.emas[0].step(b.close) ?? NaN;
+      const e14 = s.emas[1].step(b.close) ?? NaN;
+      const e12 = s.emas[2].step(b.close) ?? NaN;
+      const e5 = s.emas[3].step(b.close) ?? NaN;
+      s.plots[0][i] = { time: b.time, value: e9, color: C9 };
+      s.plots[1][i] = { time: b.time, value: e14, color: C14 };
+      s.plots[2][i] = { time: b.time, value: e12, color: C12 };
+      s.plots[3][i] = { time: b.time, value: e5, color: C5 };
+      s.fillColors[i] = gt(e9, e14) ? bullish : bearish;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(),
+          plot1: s.plots[1].slice(),
+          plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(),
+        },
+        fills: [
+          // fill(plot9, plot14, color = e9 > e14 ? bullishColor : bearishColor)
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Plots Background' }, colors: s.fillColors.slice() },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GhostEmaCloudInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<GhostEmaCloudInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const GhostEmaCloud = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

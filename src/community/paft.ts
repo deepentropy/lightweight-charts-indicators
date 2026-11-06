@@ -12,7 +12,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PaftInputs {
   /** EMA length */
@@ -61,64 +63,95 @@ const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(bars: Bar[], inputs: Partial<PaftInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface PaftVars {
+  score: number;
+  maskAboveEarly: boolean;
+  maskBelowEarly: boolean;
+}
+
+interface PaftRun extends BarRunState<PaftVars> {
+  ema: ReturnType<typeof taStep.ema>;
+  up: ReturnType<typeof taStep.crossover>;
+  down: ReturnType<typeof taStep.crossunder>;
+  plot0: Point[];
+}
+
+function study(inputs: Partial<PaftInputs>): BarStudy<PaftRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const closeS = Series.fromArray(bars, bars.map((b) => b.close));
-
-  const emaS = ta.ema(closeS, cfg.emaLen);
-  const ema = A(emaS);
-  // ta.crossover / ta.crossunder compare exactly
-  const crossUp = ta.crossover(closeS, emaS).toArray().map((v) => !!v);
-  const crossDown = ta.crossunder(closeS, emaS).toArray().map((v) => !!v);
   const gray = String(color.new(color.gray, 45));
-
-  let score = 0.0;
-  let maskAboveEarly = false;
-  let maskBelowEarly = false;
-  const plot0 = [];
-  for (let i = 0; i < n; i++) {
-    const { open, close } = bars[i];
-    const resetBar = (crossUp[i] && gt(close, ema[i])) || (crossDown[i] && lt(close, ema[i]));
-    const ready = !cfg.useWarmup || i >= cfg.emaLen;
-    if (!ready) {
-      score = 0.0;
-      maskAboveEarly = false;
-      maskBelowEarly = false;
-    } else if (resetBar) {
-      if (crossUp[i]) {
-        score = 1.0;
-        maskAboveEarly = true;
-        maskBelowEarly = false;
-      } else if (crossDown[i]) {
-        score = -1.0;
-        maskBelowEarly = true;
-        maskAboveEarly = false;
-      }
-    } else {
-      const candleDelta = eq(close, open) || eq(close, ema[i]) ? 0.0 : lt(close, open) ? -1.0 : 1.0;
-      score = score + candleDelta;
-    }
-    if (ready) {
-      if (maskAboveEarly && ge(score, 2.0)) maskAboveEarly = false;
-      if (maskBelowEarly && le(score, -2.0)) maskBelowEarly = false;
-    }
-    const weakHidden = cfg.hideWeakAfterCross && ready
-      && ((maskAboveEarly && lt(score, 2.0)) || (maskBelowEarly && gt(score, -2.0)));
-    const c = gt(close, ema[i]) ? cfg.colAboveEma : lt(close, ema[i]) ? cfg.colBelowEma : gray;
-    plot0.push({ time: bars[i].time, value: weakHidden ? NaN : score, color: c });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    hlines: [{ value: 0, options: { title: 'Zero', color: String(color.new(color.gray, 50)), linestyle: 'dotted' } }],
+    init() {
+      const ema = taStep.ema(cfg.emaLen);
+      // ta.crossover / ta.crossunder compare exactly
+      const up = taStep.crossover();
+      const down = taStep.crossunder();
+      const s: PaftRun = {
+        ema, up, down, plot0: [],
+        steps: [ema, up, down], vars: { score: 0.0, maskAboveEarly: false, maskBelowEarly: false }, lists: [], series: [],
+      };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const { open, close } = bars[i]!;
+      const ema = s.ema.step(close);
+      const crossUp = !!s.up.step(close, ema);
+      const crossDown = !!s.down.step(close, ema);
+      const resetBar = (crossUp && gt(close, ema)) || (crossDown && lt(close, ema));
+      const ready = !cfg.useWarmup || i >= cfg.emaLen;
+      if (!ready) {
+        v.score = 0.0;
+        v.maskAboveEarly = false;
+        v.maskBelowEarly = false;
+      } else if (resetBar) {
+        if (crossUp) {
+          v.score = 1.0;
+          v.maskAboveEarly = true;
+          v.maskBelowEarly = false;
+        } else if (crossDown) {
+          v.score = -1.0;
+          v.maskBelowEarly = true;
+          v.maskAboveEarly = false;
+        }
+      } else {
+        const candleDelta = eq(close, open) || eq(close, ema) ? 0.0 : lt(close, open) ? -1.0 : 1.0;
+        v.score = v.score + candleDelta;
+      }
+      const score = v.score;
+      if (ready) {
+        if (v.maskAboveEarly && ge(score, 2.0)) v.maskAboveEarly = false;
+        if (v.maskBelowEarly && le(score, -2.0)) v.maskBelowEarly = false;
+      }
+      const weakHidden = cfg.hideWeakAfterCross && ready
+        && ((v.maskAboveEarly && lt(score, 2.0)) || (v.maskBelowEarly && gt(score, -2.0)));
+      const c = gt(close, ema) ? cfg.colAboveEma : lt(close, ema) ? cfg.colBelowEma : gray;
+      s.plot0[i] = { time: bars[i]!.time as number, value: weakHidden ? NaN : score, color: c };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        hlines: [{ value: 0, options: { title: 'Zero', color: String(color.new(color.gray, 50)), linestyle: 'dotted' } }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PaftInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PaftInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const Paft = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

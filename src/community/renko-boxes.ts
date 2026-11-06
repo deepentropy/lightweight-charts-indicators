@@ -13,7 +13,9 @@
  * Original notice: © LuxAlgo
  */
 
-import { ta, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RenkoBoxesInputs {
   atrLength: number;
@@ -60,94 +62,135 @@ const gt = (a: number, b: number) => a - b > EPS;
 /** Pine a != b: false when a or b is na */
 const ne = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<RenkoBoxesInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const atr = ta.atr(bars, cfg.atrLength).toArray().map((v) => v ?? NaN);
+type Point = { time: number; value: number; color?: string };
 
-  const upper: number[] = new Array(n);
-  const lower: number[] = new Array(n);
-  const dir: number[] = new Array(n);
-  let renkoUpper = NaN; // var float renkoUpper = na
-  let renkoLower = NaN;
-  let direction = 0; // var int direction = 0
-  for (let i = 0; i < n; i++) {
-    const close = bars[i].close;
-    const brickSize = atr[i] * cfg.atrMult;
-    // if bar_index > atrLengthInput (bar_index: bars from the first bar of the data)
-    if (i > cfg.atrLength) {
-      if (isNaN(renkoUpper)) {
-        renkoUpper = close;
-        renkoLower = close - brickSize;
-        direction = 1;
-      } else {
-        const upThreshold = renkoUpper + brickSize;
-        const downThreshold = renkoLower - brickSize;
-        const up = () => {
-          const numBricks = Math.floor((close - renkoUpper) / brickSize);
-          renkoLower = renkoUpper + (numBricks - 1) * brickSize;
-          renkoUpper = renkoUpper + numBricks * brickSize;
-        };
-        const down = () => {
-          const numBricks = Math.floor((renkoLower - close) / brickSize);
-          renkoUpper = renkoLower - (numBricks - 1) * brickSize;
-          renkoLower = renkoLower - numBricks * brickSize;
-        };
-        if (direction === 1) {
-          if (gt(close, upThreshold)) up();
-          else if (gt(downThreshold, close)) {
-            down();
-            direction = -1;
-          }
-        } else if (gt(downThreshold, close)) {
-          down();
-        } else if (gt(close, upThreshold)) {
-          up();
+interface RenkoVars {
+  /** var float renkoUpper = na, var float renkoLower = na, var int direction = 0 */
+  renkoUpper: number;
+  renkoLower: number;
+  direction: number;
+}
+
+interface RenkoRun extends BarRunState<RenkoVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  upper: number[];
+  lower: number[];
+  dir: number[];
+  avgData: Point[];
+  dotData: Point[];
+  upperData: Point[];
+  lowerData: Point[];
+  fillColors: string[];
+}
+
+function study(inputs: Partial<RenkoBoxesInputs>): BarStudy<RenkoRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const atr = taStep.atr(cfg.atrLength);
+      const s: RenkoRun = {
+        atr, upper: [], lower: [], dir: [], avgData: [], dotData: [], upperData: [], lowerData: [], fillColors: [],
+        steps: [atr], vars: { renkoUpper: NaN, renkoLower: NaN, direction: 0 }, lists: [], series: [],
+      };
+      s.series = [s.upper, s.lower, s.dir, s.avgData, s.dotData, s.upperData, s.lowerData, s.fillColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const close = b.close;
+      const brickSize = s.atr.step(b.high, b.low, b.close) * cfg.atrMult;
+      let renkoUpper = v.renkoUpper;
+      let renkoLower = v.renkoLower;
+      let direction = v.direction;
+      // if bar_index > atrLengthInput (bar_index: bars from the first bar of the data)
+      if (i > cfg.atrLength) {
+        if (isNaN(renkoUpper)) {
+          renkoUpper = close;
+          renkoLower = close - brickSize;
           direction = 1;
+        } else {
+          const upThreshold = renkoUpper + brickSize;
+          const downThreshold = renkoLower - brickSize;
+          const up = () => {
+            const numBricks = Math.floor((close - renkoUpper) / brickSize);
+            renkoLower = renkoUpper + (numBricks - 1) * brickSize;
+            renkoUpper = renkoUpper + numBricks * brickSize;
+          };
+          const down = () => {
+            const numBricks = Math.floor((renkoLower - close) / brickSize);
+            renkoUpper = renkoLower - (numBricks - 1) * brickSize;
+            renkoLower = renkoLower - numBricks * brickSize;
+          };
+          if (direction === 1) {
+            if (gt(close, upThreshold)) up();
+            else if (gt(downThreshold, close)) {
+              down();
+              direction = -1;
+            }
+          } else if (gt(downThreshold, close)) {
+            down();
+          } else if (gt(close, upThreshold)) {
+            up();
+            direction = 1;
+          }
         }
       }
-    }
-    upper[i] = renkoUpper;
-    lower[i] = renkoLower;
-    dir[i] = direction;
-  }
+      v.renkoUpper = renkoUpper;
+      v.renkoLower = renkoLower;
+      v.direction = direction;
+      s.upper[i] = renkoUpper;
+      s.lower[i] = renkoLower;
+      s.dir[i] = direction;
 
-  const avg: number[] = new Array(n);
-  const plotColor: string[] = new Array(n);
-  const changed: boolean[] = new Array(n);
-  const reversed: boolean[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    // isChanged = renkoUpper != renkoUpper[1] or renkoLower != renkoLower[1]
-    changed[i] = i > 0 && (ne(upper[i], upper[i - 1]) || ne(lower[i], lower[i - 1]));
-    // isReversed = ta.change(direction) != 0 (na on the first bar)
-    reversed[i] = i > 0 && dir[i] !== dir[i - 1];
-    avg[i] = (upper[i] + lower[i]) / 2.0;
-    plotColor[i] = dir[i] === 1 ? cfg.bullColor : cfg.bearColor;
-  }
-  // finalColor = isChanged ? na : plotColor
-  const finalColor = (i: number) => (changed[i] ? 'transparent' : plotColor[i]);
-
-  const time = (i: number) => bars[i].time;
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((_b, i) => ({ time: time(i), value: avg[i], color: plotColor[i] })),
-      plot1: bars.map((_b, i) => ({ time: time(i), value: reversed[i] ? avg[i] : NaN, color: plotColor[i] })),
-      plot2: bars.map((_b, i) => ({ time: time(i), value: upper[i], color: finalColor(i) })),
-      plot3: bars.map((_b, i) => ({ time: time(i), value: lower[i], color: finalColor(i) })),
+      // isChanged = renkoUpper != renkoUpper[1] or renkoLower != renkoLower[1]
+      const changed = i > 0 && (ne(renkoUpper, s.upper[i - 1]) || ne(renkoLower, s.lower[i - 1]));
+      // isReversed = ta.change(direction) != 0 (na on the first bar)
+      const reversed = i > 0 && direction !== s.dir[i - 1];
+      const avg = (renkoUpper + renkoLower) / 2.0;
+      const plotColor = direction === 1 ? cfg.bullColor : cfg.bearColor;
+      // finalColor = isChanged ? na : plotColor
+      const finalColor = changed ? 'transparent' : plotColor;
+      const time = b.time;
+      s.avgData[i] = { time, value: avg, color: plotColor };
+      s.dotData[i] = { time, value: reversed ? avg : NaN, color: plotColor };
+      s.upperData[i] = { time, value: renkoUpper, color: finalColor };
+      s.lowerData[i] = { time, value: renkoLower, color: finalColor };
+      // fill(p1, p2, isChanged ? na : color.new(plotColor, fillTransp), "Renko Box Fill")
+      s.fillColors[i] = changed ? 'transparent' : String(color.new(plotColor, cfg.fillTransp));
     },
-    // fill(p1, p2, isChanged ? na : color.new(plotColor, fillTransp), "Renko Box Fill")
-    fills: [{
-      plot1: 'plot2',
-      plot2: 'plot3',
-      options: { title: 'Renko Box Fill' },
-      colors: bars.map((_b, i) => (changed[i] ? 'transparent' : String(color.new(plotColor[i], cfg.fillTransp)))),
-    }],
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.avgData.slice(),
+          plot1: s.dotData.slice(),
+          plot2: s.upperData.slice(),
+          plot3: s.lowerData.slice(),
+        },
+        fills: [{
+          plot1: 'plot2',
+          plot2: 'plot3',
+          options: { title: 'Renko Box Fill' },
+          colors: s.fillColors.slice(),
+        }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RenkoBoxesInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RenkoBoxesInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RenkoBoxes = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

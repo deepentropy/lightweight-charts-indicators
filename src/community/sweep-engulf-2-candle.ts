@@ -17,7 +17,9 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall, MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SweepEngulf2CandleInputs {
   showBullish: boolean;
@@ -52,48 +54,78 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<SweepEngulf2CandleInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alerts: AlertConditionState[]; alertCalls: AlertCall[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alerts: AlertConditionState[]; alertCalls: AlertCall[] };
+
+interface SweepRun extends BarRunState<{ bull: boolean; bear: boolean }> {
+  markers: MarkerData[];
+  times: number[][];
+  alertCalls: AlertCall[];
+}
+
+function study(inputs: Partial<SweepEngulf2CandleInputs>): BarStudy<SweepRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const green = String(color.green);
   const red = String(color.red);
-  const markers: MarkerData[] = [];
-  const n = bars.length;
-  // first bar: low < low[1] / high > high[1] with na is false
-  const bullFlags: boolean[] = new Array(n).fill(false);
-  const bearFlags: boolean[] = new Array(n).fill(false);
-  const alertCalls: AlertCall[] = [];
-  for (let i = 1; i < bars.length; i++) {
-    const b = bars[i];
-    const p = bars[i - 1];
-    const bullishEngulfing = lt(b.low, p.low)
-      && ((gt(b.close, p.open) && lt(p.close, p.open)) || (gt(b.close, p.close) && gt(p.close, p.open)));
-    const bearishEngulfing = gt(b.high, p.high)
-      && ((lt(b.close, p.close) && lt(p.close, p.open)) || (lt(b.close, p.open) && gt(p.close, p.open)));
-    if (cfg.showBullish && bullishEngulfing) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: green, size: 'tiny' });
-    }
-    if (cfg.showBearish && bearishEngulfing) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: red, size: 'tiny' });
-    }
-    // alertcondition(showBullish and bullishEngulfing, ...) / alertcondition(showBearish and bearishEngulfing, ...)
-    bullFlags[i] = cfg.showBullish && bullishEngulfing;
-    bearFlags[i] = cfg.showBearish && bearishEngulfing;
-    // if enableAlert: if bullishEngulfing alert(...); if bearishEngulfing alert(...) (alert.freq_once_per_bar_close)
-    if (cfg.enableAlert) {
-      if (bullishEngulfing) alertCalls.push({ time: b.time, message: 'Bullish Engulfing Terbentuk!', freq: 'once_per_bar_close' });
-      if (bearishEngulfing) alertCalls.push({ time: b.time, message: 'Bearish Engulfing Terbentuk!', freq: 'once_per_bar_close' });
-    }
-  }
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags]),
-    alertCalls,
+    init() {
+      const s: SweepRun = { markers: [], times: [[], []], alertCalls: [], steps: [], vars: { bull: false, bear: false }, lists: [], series: [] };
+      s.lists = [s.markers, ...s.times, s.alertCalls];
+      return s;
+    },
+    bar(s, i, bars) {
+      // first bar: low < low[1] / high > high[1] with na is false
+      if (i === 0) {
+        s.vars.bull = false;
+        s.vars.bear = false;
+        return;
+      }
+      const { markers, alertCalls } = s;
+      const b = bars[i];
+      const p = bars[i - 1];
+      const bullishEngulfing = lt(b.low, p.low)
+        && ((gt(b.close, p.open) && lt(p.close, p.open)) || (gt(b.close, p.close) && gt(p.close, p.open)));
+      const bearishEngulfing = gt(b.high, p.high)
+        && ((lt(b.close, p.close) && lt(p.close, p.open)) || (lt(b.close, p.open) && gt(p.close, p.open)));
+      if (cfg.showBullish && bullishEngulfing) {
+        markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: green, size: 'tiny' });
+      }
+      if (cfg.showBearish && bearishEngulfing) {
+        markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: red, size: 'tiny' });
+      }
+      // alertcondition(showBullish and bullishEngulfing, ...) / alertcondition(showBearish and bearishEngulfing, ...)
+      const bull = cfg.showBullish && bullishEngulfing;
+      const bear = cfg.showBearish && bearishEngulfing;
+      // the flags of the last bar calculated (the alert states of the last bar)
+      s.vars.bull = bull;
+      s.vars.bear = bear;
+      if (bull) s.times[0].push(b.time as number);
+      if (bear) s.times[1].push(b.time as number);
+      // if enableAlert: if bullishEngulfing alert(...); if bearishEngulfing alert(...) (alert.freq_once_per_bar_close)
+      if (cfg.enableAlert) {
+        if (bullishEngulfing) alertCalls.push({ time: b.time, message: 'Bullish Engulfing Terbentuk!', freq: 'once_per_bar_close' });
+        if (bearishEngulfing) alertCalls.push({ time: b.time, message: 'Bearish Engulfing Terbentuk!', freq: 'once_per_bar_close' });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, [n > 0 && s.vars.bull, n > 0 && s.vars.bear]),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SweepEngulf2CandleInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SweepEngulf2CandleInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -104,4 +136,4 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const hasAlertFunction = true;
 
-export const SweepEngulf2Candle = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions, hasAlertFunction };
+export const SweepEngulf2Candle = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions, hasAlertFunction };
