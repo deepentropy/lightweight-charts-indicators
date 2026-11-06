@@ -18,6 +18,7 @@ import {
   type IChartApi,
   type ISeriesApi,
   type ISeriesPrimitive,
+  type IPanePrimitive,
   type SeriesAttachedParameter,
   type Logical,
   type ISeriesMarkersPluginApi,
@@ -163,6 +164,16 @@ type PlotPoint = { time: number; value: number; color?: string };
 
 const LINE_STYLES: Record<string, LineStyle> = { solid: LineStyle.Solid, dashed: LineStyle.Dashed, dotted: LineStyle.Dotted };
 
+/**
+ * Never attached: detaching it from a pane makes the chart draw its panes again without laying them out (a light
+ * update). A primitive's requestUpdate is a full update (the panes laid out again, then a second paint), and a series'
+ * applyOptions recolours every bar of that series (#27).
+ */
+const NEVER_ATTACHED: IPanePrimitive<Time> = {};
+
+type MarkersEntry = { series: ISeriesApi<SeriesType, Time>; plugin: ISeriesMarkersPluginApi<Time>; key: string };
+type TableEntry = { table: TableData; pane: number; el: HTMLElement; key: string };
+
 export class IndicatorRenderer {
   private readonly opts: IndicatorRendererOptions;
   private readonly grid = new BarGrid();
@@ -173,10 +184,21 @@ export class IndicatorRenderer {
   private attached: Array<{ series: ISeriesApi<SeriesType, Time>; primitive: PrimitiveSlot }> = [];
   /** The previous render's attached slots a reuseSeries render can take again (by attach order); null = taken */
   private slotPool: Array<{ series: ISeriesApi<SeriesType, Time>; primitive: PrimitiveSlot } | null> = [];
-  private markerPlugins: Array<ISeriesMarkersPluginApi<Time>> = [];
-  private tables: Array<{ table: TableData; pane: number; el: HTMLElement }> = [];
+  private markerPlugins: MarkersEntry[] = [];
+  /** The previous render's markers plugins a reuseSeries render can take again (by order); null = taken */
+  private markerPool: Array<MarkersEntry | null> = [];
+  private tables: TableEntry[] = [];
+  /** The previous render's tables a reuseSeries render can take again (by order); null = taken */
+  private tablePool: Array<TableEntry | null> = [];
   private tableObserver: ResizeObserver | null = null;
   private tableFrame = 0;
+  /** A drawing asked for an update during the render: one light update when it ends */
+  private rendering = false;
+  private lightPending = false;
+  private readonly lightUpdate = (): void => {
+    if (this.rendering) this.lightPending = true;
+    else this.chart.panes()[0]?.detachPrimitive(NEVER_ATTACHED);
+  };
   private renderOpts: RenderOptions = {};
   /** Series of this render in creation order, with their type (series definition or custom pane view class) */
   private created: Array<{ series: ISeriesApi<SeriesType, Time>; kind: unknown }> = [];
@@ -221,6 +243,7 @@ export class IndicatorRenderer {
     const paneApi = pane > 0 ? this.chart.panes()[pane] : undefined;
     const preserved = paneApi?.preserveEmptyPane();
     paneApi?.setPreserveEmptyPane(true);
+    this.rendering = true;
     try {
       this.clearOwned(options.reuseSeries === true);
       this.renderOpts = options;
@@ -233,6 +256,14 @@ export class IndicatorRenderer {
       // primitives and series of the previous render not taken again
       for (const p of this.slotPool.splice(0)) if (p) p.series.detachPrimitive(p.primitive);
       for (const p of this.pool.splice(0)) if (p) this.chart.removeSeries(p.series);
+      for (const m of this.markerPool.splice(0)) m?.plugin.detach();
+      for (const t of this.tablePool.splice(0)) t?.el.remove();
+      if (!this.tables.length) this.stopTables();
+      this.rendering = false;
+      if (this.lightPending) {
+        this.lightPending = false;
+        this.lightUpdate();
+      }
       if (paneApi && !this.opts.preserveEmptyPane) paneApi.setPreserveEmptyPane(preserved ?? false);
     }
   }
@@ -281,7 +312,8 @@ export class IndicatorRenderer {
     if (keepSeries) this.slotPool = this.attached;
     else for (const { series, primitive } of this.attached) series.detachPrimitive(primitive);
     this.attached = [];
-    for (const p of this.markerPlugins) p.detach();
+    if (keepSeries) this.markerPool = this.markerPlugins;
+    else for (const m of this.markerPlugins) m.plugin.detach();
     this.markerPlugins = [];
     if (keepSeries) this.pool = this.created;
     else for (const s of this.series()) this.chart.removeSeries(s);
@@ -289,12 +321,12 @@ export class IndicatorRenderer {
     this.reused.clear();
     this.plotSeries = [];
     this.otherSeries = [];
-    for (const { el } of this.tables) el.remove();
+    if (keepSeries) this.tablePool = this.tables;
+    else {
+      for (const { el } of this.tables) el.remove();
+      this.stopTables();
+    }
     this.tables = [];
-    this.tableObserver?.disconnect();
-    this.tableObserver = null;
-    if (this.tableFrame) cancelAnimationFrame(this.tableFrame);
-    this.tableFrame = 0;
   }
 
   // ─── Series helpers ──────────────────────────────────────────────────────
@@ -447,7 +479,7 @@ export class IndicatorRenderer {
       this.attached.push(kept);
       return;
     }
-    const fresh = new PrimitiveSlot(primitive);
+    const fresh = new PrimitiveSlot(primitive, this.lightUpdate);
     series.attachPrimitive(fresh);
     this.attached.push({ series, primitive: fresh });
   }
@@ -839,7 +871,7 @@ export class IndicatorRenderer {
     if (onPrice.native.length || onPrice.extended.length) {
       const target = main ?? (this.anchor(0, false) as unknown as ISeriesApi<SeriesType, Time>);
       if (!main) this.setData(target, anchorData(this.grid.bars.map((b) => ({ time: b.time, value: b.close })), this.grid));
-      if (onPrice.native.length) this.markerPlugins.push(createSeriesMarkers(target, onPrice.native));
+      if (onPrice.native.length) this.nativeMarkers(target, onPrice.native);
       if (onPrice.extended.length) {
         const primitive = new ExtendedMarkerPrimitive(this.grid);
         this.attach(target, primitive as ISeriesPrimitive<Time>);
@@ -853,13 +885,33 @@ export class IndicatorRenderer {
       const parts = split(paneMarkers, true);
       const anchor = this.anchor(pane);
       this.setData(anchor, anchorData(paneMarkers.map((m) => ({ time: m.time, value: m.price! })), this.grid));
-      if (parts.native.length) this.markerPlugins.push(createSeriesMarkers(anchor, parts.native));
+      if (parts.native.length) this.nativeMarkers(anchor as unknown as ISeriesApi<SeriesType, Time>, parts.native);
       if (parts.extended.length) {
         const primitive = new ExtendedMarkerPrimitive(this.grid);
         this.attach(anchor as unknown as ISeriesApi<SeriesType, Time>, primitive as ISeriesPrimitive<Time>);
         primitive.setMarkers(parts.extended);
       }
     }
+  }
+
+  /**
+   * Native markers on `series`. A reuseSeries render takes the previous render's plugin of the same series again (by
+   * order) and sets its markers only when they changed: creating, detaching or setting a plugin is a full update.
+   */
+  private nativeMarkers(series: ISeriesApi<SeriesType, Time>, markers: SeriesMarker<Time>[]): void {
+    const key = JSON.stringify(markers);
+    const at = this.markerPlugins.length;
+    const kept = this.markerPool[at];
+    if (kept && kept.series === series) {
+      this.markerPool[at] = null;
+      if (kept.key !== key) {
+        kept.plugin.setMarkers(markers);
+        kept.key = key;
+      }
+      this.markerPlugins.push(kept);
+      return;
+    }
+    this.markerPlugins.push({ series, plugin: createSeriesMarkers(series, markers), key });
   }
 
   /** plotarrow arrows, one group per plotarrow id (minheight / maxheight / forceOverlay / display of arrowConfig) */
@@ -1037,17 +1089,46 @@ export class IndicatorRenderer {
    */
   private drawTables(tables: TableData[], pane: number): void {
     const host = this.chart.chartElement();
-    if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
+    let changed = false;
     for (const table of tables) {
+      const at = table.forceOverlay ? 0 : pane;
+      const key = JSON.stringify(table);
+      // a reuseSeries render keeps the previous render's element: it is laid out again when its table changed
+      const kept = this.tablePool[this.tables.length];
+      if (kept) {
+        this.tablePool[this.tables.length] = null;
+        if (kept.key !== key || kept.pane !== at) {
+          Object.assign(kept, { table, pane: at, key });
+          changed = true;
+        }
+        this.tables.push(kept);
+        continue;
+      }
+      if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
       const el = document.createElement('div');
       el.className = 'chart-table-overlay';
       el.style.cssText = 'position:absolute;z-index:10;pointer-events:none;visibility:hidden';
       host.appendChild(el);
-      this.tables.push({ table, pane: table.forceOverlay ? 0 : pane, el });
+      this.tables.push({ table, pane: at, el, key });
+      changed = true;
     }
-    this.tableObserver = new ResizeObserver(() => this.scheduleTableLayout());
-    this.tableObserver.observe(host);
-    this.scheduleTableLayout();
+    if (!this.tableObserver) {
+      // the chart or one of its panes resized (a pane separator dragged): the tables are laid out again
+      this.tableObserver = new ResizeObserver(() => this.scheduleTableLayout());
+      this.tableObserver.observe(host);
+      for (const p of this.chart.panes()) {
+        const el = p.getHTMLElement();
+        if (el) this.tableObserver.observe(el);
+      }
+    }
+    if (changed) this.scheduleTableLayout();
+  }
+
+  private stopTables(): void {
+    this.tableObserver?.disconnect();
+    this.tableObserver = null;
+    if (this.tableFrame) cancelAnimationFrame(this.tableFrame);
+    this.tableFrame = 0;
   }
 
   /** Lay out the tables after the chart has laid out its panes */
@@ -1084,12 +1165,12 @@ export class IndicatorRenderer {
 /**
  * A primitive attached to a series that another one of the same kind can take the place of: attaching or detaching a
  * primitive makes the chart lay its panes out again and paint a second time, so a live render keeps the slot and
- * swaps its content (a light update of its series).
+ * swaps its content. Its drawings ask for a light update instead of the chart's full one (#27).
  */
 class PrimitiveSlot implements ISeriesPrimitive<Time> {
   private param: SeriesAttachedParameter<Time> | null = null;
 
-  constructor(private inner: ISeriesPrimitive<Time>) {}
+  constructor(private inner: ISeriesPrimitive<Time>, private readonly lightUpdate: () => void) {}
 
   /** `next` is of the kind this slot holds */
   holds(next: ISeriesPrimitive<Time>): boolean {
@@ -1101,14 +1182,12 @@ class PrimitiveSlot implements ISeriesPrimitive<Time> {
     this.inner = next;
     if (!this.param) return;
     next.attached?.(this.param);
-    // A light update of the series (its pane is drawn again): requestUpdate is a full one, which lays the panes out
-    // again and paints a second time (#26)
-    this.param.series.applyOptions({});
+    this.lightUpdate();
   }
 
   attached(param: SeriesAttachedParameter<Time>): void {
-    this.param = param;
-    this.inner.attached?.(param);
+    this.param = { ...param, requestUpdate: this.lightUpdate };
+    this.inner.attached?.(this.param);
   }
 
   detached(): void {

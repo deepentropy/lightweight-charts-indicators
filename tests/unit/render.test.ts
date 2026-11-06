@@ -69,6 +69,8 @@ function fakeChart() {
     setPreserveEmptyPane: (v: boolean) => preserve.set(i, v),
     paneIndex: () => i,
     getHTMLElement: () => null,
+    // as the library: detaching a pane primitive is a light update
+    detachPrimitive: () => {},
   });
   const chart = {
     addSeries: (_def: unknown, options: Record<string, unknown>, paneIndex = 0) => make(options, paneIndex),
@@ -246,7 +248,7 @@ describe('IndicatorRenderer', () => {
       expect(attached.length).toBeGreaterThan(0);
       const next = tick(bars);
       r.render(bb, bb.calculate(next, {}), next, { reuseSeries: true });
-      // the same slots stay attached (no layout of the chart again), with a light update of their series only
+      // the same slots stay attached (no layout of the chart again), and their drawings ask for no full update
       expect([...f.series].flatMap((s) => [...s.primitives])).toEqual(attached);
       expect([...f.series].reduce((n, s) => n + s.fullUpdates, 0)).toBe(0);
       // and hold the new fill: the same as a fresh render's
