@@ -13,9 +13,11 @@
  * Original notice: © AlgoCollective
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VulkanProfitInputs {
   fastWmaPeriod: number;
@@ -77,76 +79,125 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Wma = ReturnType<typeof taStep.wma>;
+type Ema = ReturnType<typeof taStep.ema>;
+
+interface VulkanVars {
+  prevBullish: boolean;
+  prevBearish: boolean;
+  signalState: number;
+}
+
+interface VulkanRun extends BarRunState<VulkanVars> {
+  fastWma: Wma;
+  mediumWma: Wma;
+  fastEma: Ema;
+  slowEma: Ema;
+  atr: ReturnType<typeof taStep.atr>;
+  signalLine: Point[];
+  ma: Point[][];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+const bullColor = String(color.new(BULL, 0));
+const bearColor = String(color.new(BEAR, 0));
+const neutralColor = String(color.new(NEUTRAL, 0));
+const MA_COLORS = [String(color.new('#1E88E5', 0)), String(color.new('#42A5F5', 0)), String(color.new('#FFA726', 0)), String(color.new('#FF7043', 0))];
+
+function study(inputs: Partial<VulkanProfitInputs>): BarStudy<VulkanRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const fastWma = taStep.wma();
+      const mediumWma = taStep.wma();
+      const fastEma = taStep.ema(cfg.fastEmaPeriod);
+      const slowEma = taStep.ema(cfg.slowEmaPeriod);
+      const atr = taStep.atr(14);
+      const s: VulkanRun = {
+        fastWma, mediumWma, fastEma, slowEma, atr, signalLine: [], ma: [[], [], [], []], markers: [],
+        flags: [[], []], times: [[], []],
+        steps: [fastWma, mediumWma, fastEma, slowEma, atr],
+        vars: { prevBullish: false, prevBearish: false, signalState: 0 }, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.signalLine, ...s.ma, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const fastWma = s.fastWma.step(b.close, cfg.fastWmaPeriod);
+      const mediumWma = s.mediumWma.step(b.close, cfg.mediumWmaPeriod);
+      const fastEma = s.fastEma.step(b.close);
+      const slowEma = s.slowEma.step(b.close);
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const v = s.vars;
+      // math.min / math.max give na when an argument is na
+      const minShort = Math.min(fastWma, mediumWma);
+      const maxShort = Math.max(fastWma, mediumWma);
+      const minLong = Math.min(fastEma, slowEma);
+      const maxLong = Math.max(fastEma, slowEma);
+      const bullish = gt(minShort, maxLong);
+      const bearish = gt(minLong, maxShort);
+      const buy = bullish && !v.prevBullish;
+      const sell = bearish && !v.prevBearish;
+      v.prevBullish = bullish;
+      v.prevBearish = bearish;
+      s.flags[0][i] = buy;
+      s.flags[1][i] = sell;
+      if (buy) s.times[0].push(t as number);
+      if (sell) s.times[1].push(t as number);
+      if (buy) v.signalState = 1;
+      else if (sell) v.signalState = -1;
+      else if (bullish && v.signalState !== 1) v.signalState = 1;
+      else if (bearish && v.signalState !== -1) v.signalState = -1;
+
+      const c = v.signalState === 1 ? bullColor : v.signalState === -1 ? bearColor : neutralColor;
+      const pos = b.low - atr * cfg.lineOffset;
+      s.signalLine[i] = { time: t, value: cfg.showColoredLine ? pos : NaN, color: c };
+
+      if (cfg.showSignals && buy) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: bullColor, size: 'normal' });
+      }
+      if (cfg.showSignals && sell) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: bearColor, size: 'normal' });
+      }
+      const mas = [fastWma, mediumWma, fastEma, slowEma];
+      for (let k = 0; k < 4; k++) s.ma[k][i] = { time: t, value: cfg.showMas ? mas[k] : NaN, color: MA_COLORS[k] };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.signalLine.slice(),
+          plot1: s.ma[0].slice(),
+          plot2: s.ma[1].slice(),
+          plot3: s.ma[2].slice(),
+          plot4: s.ma[3].slice(),
+        },
+        markers: s.markers.slice(),
+        // alertcondition(buy_signal, ...) / alertcondition(sell_signal, ...)
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VulkanProfitInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<VulkanProfitInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-
-  const fastWma = A(ta.wma(close, cfg.fastWmaPeriod));
-  const mediumWma = A(ta.wma(close, cfg.mediumWmaPeriod));
-  const fastEma = A(ta.ema(close, cfg.fastEmaPeriod));
-  const slowEma = A(ta.ema(close, cfg.slowEmaPeriod));
-  const atr = A(ta.atr(bars, 14));
-
-  const bullColor = String(color.new(BULL, 0));
-  const bearColor = String(color.new(BEAR, 0));
-  const neutralColor = String(color.new(NEUTRAL, 0));
-
-  const signalLine: { time: number; value: number; color: string }[] = [];
-  const markers: MarkerData[] = [];
-  const buyFlags: boolean[] = [], sellFlags: boolean[] = [];
-  let prevBullish = false;
-  let prevBearish = false;
-  let signalState = 0;
-  for (let i = 0; i < n; i++) {
-    // math.min / math.max give na when an argument is na
-    const minShort = Math.min(fastWma[i], mediumWma[i]);
-    const maxShort = Math.max(fastWma[i], mediumWma[i]);
-    const minLong = Math.min(fastEma[i], slowEma[i]);
-    const maxLong = Math.max(fastEma[i], slowEma[i]);
-    const bullish = gt(minShort, maxLong);
-    const bearish = gt(minLong, maxShort);
-    const buy = bullish && !prevBullish;
-    const sell = bearish && !prevBearish;
-    prevBullish = bullish;
-    prevBearish = bearish;
-    buyFlags.push(buy);
-    sellFlags.push(sell);
-    if (buy) signalState = 1;
-    else if (sell) signalState = -1;
-    else if (bullish && signalState !== 1) signalState = 1;
-    else if (bearish && signalState !== -1) signalState = -1;
-
-    const c = signalState === 1 ? bullColor : signalState === -1 ? bearColor : neutralColor;
-    const pos = bars[i].low - atr[i] * cfg.lineOffset;
-    signalLine.push({ time: bars[i].time, value: cfg.showColoredLine ? pos : NaN, color: c });
-
-    if (cfg.showSignals && buy) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: bullColor, size: 'normal' });
-    }
-    if (cfg.showSignals && sell) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: bearColor, size: 'normal' });
-    }
-  }
-
-  const ma = (arr: number[], c: string) => arr.map((v, i) => ({ time: bars[i].time, value: cfg.showMas ? v : NaN, color: c }));
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: signalLine,
-      plot1: ma(fastWma, String(color.new('#1E88E5', 0))),
-      plot2: ma(mediumWma, String(color.new('#42A5F5', 0))),
-      plot3: ma(fastEma, String(color.new('#FFA726', 0))),
-      plot4: ma(slowEma, String(color.new('#FF7043', 0))),
-    },
-    markers,
-    // alertcondition(buy_signal, ...) / alertcondition(sell_signal, ...)
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -157,6 +208,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const VulkanProfit = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

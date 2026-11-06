@@ -8,7 +8,9 @@
  * Reference: "Range Identifier [LazyBear]"
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RangeIdentifierInputs {
   emaLength: number;
@@ -35,95 +37,99 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RangeIdentifierInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface RangeIdRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  rangeUp: number[];
+  rangeDn: number[];
+  plots: Point[][];
+  fillUpColors: string[];
+  fillDownColors: string[];
+}
+
+function study(inputs: Partial<RangeIdentifierInputs>): BarStudy<RangeIdRun, IndicatorResult> {
   const { emaLength } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
+  const warmup = emaLength;
+  return {
+    init() {
+      const ema = taStep.ema(emaLength);
+      const s: RangeIdRun = {
+        ema, rangeUp: [], rangeDn: [], plots: [[], [], [], []], fillUpColors: [], fillDownColors: [],
+        steps: [ema], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.rangeUp, s.rangeDn, ...s.plots, s.fillUpColors, s.fillDownColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const { rangeUp, rangeDn } = s;
+      const high = bars[i].high;
+      const low = bars[i].low;
+      const close = bars[i].close;
+      const emaV = s.ema.step(close);
 
-  const closeSeries = new Series(bars, (b) => b.close);
-  const emaArr = ta.ema(closeSeries, emaLength).toArray();
-
-  const rangeUp: number[] = new Array(n);
-  const rangeDn: number[] = new Array(n);
-  const mid: number[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    const high = bars[i].high;
-    const low = bars[i].low;
-    const close = bars[i].close;
-
-    if (i === 0) {
-      rangeUp[i] = high;
-      rangeDn[i] = low;
-    } else {
-      const prevUp = rangeUp[i - 1];
-      const prevDn = rangeDn[i - 1];
-
-      if (close >= prevDn && close <= prevUp) {
-        // Inside range — expand
-        rangeUp[i] = Math.max(prevUp, high);
-        rangeDn[i] = Math.min(prevDn, low);
-      } else {
-        // Breakout — reset
+      if (i === 0) {
         rangeUp[i] = high;
         rangeDn[i] = low;
+      } else {
+        const prevUp = rangeUp[i - 1];
+        const prevDn = rangeDn[i - 1];
+
+        if (close >= prevDn && close <= prevUp) {
+          // Inside range — expand
+          rangeUp[i] = Math.max(prevUp, high);
+          rangeDn[i] = Math.min(prevDn, low);
+        } else {
+          // Breakout — reset
+          rangeUp[i] = high;
+          rangeDn[i] = low;
+        }
       }
-    }
 
-    mid[i] = (rangeUp[i] + rangeDn[i]) / 2;
-  }
-
-  const warmup = emaLength;
-  // fill(ul, dummy, lime) / fill(dummy, ll, red) with dummy = close > ema ? down : up (a hidden plot, not ported):
-  // the first fill covers the range when the close is above the EMA, the second one when it is not
-  const fillUpColors: string[] = [];
-  const fillDownColors: string[] = [];
-
-  const upperPlot = rangeUp.map((v, i) => {
-    if (i < warmup) return { time: bars[i].time, value: NaN };
-    const ema = emaArr[i] ?? 0;
-    const bullish = bars[i].close > ema;
-    const color = bullish ? '#26A69A' : '#EF5350';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  const lowerPlot = rangeDn.map((v, i) => {
-    if (i < warmup) return { time: bars[i].time, value: NaN };
-    const ema = emaArr[i] ?? 0;
-    const bullish = bars[i].close > ema;
-    const color = bullish ? '#26A69A' : '#EF5350';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  const midPlot = mid.map((v, i) => {
-    if (i < warmup) return { time: bars[i].time, value: NaN };
-    return { time: bars[i].time, value: v };
-  });
-
-  for (let i = 0; i < n; i++) {
-    if (i < warmup) {
-      fillUpColors.push('transparent');
-      fillDownColors.push('transparent');
-      continue;
-    }
-    const ema = emaArr[i] ?? 0;
-    const bullish = bars[i].close > ema;
-    fillUpColors.push(bullish ? '#26A69A40' : 'transparent');
-    fillDownColors.push(bullish ? 'transparent' : '#EF535040');
-  }
-
-  const emaPlot = emaArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (v == null || i < warmup) ? NaN : v,
-  }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': upperPlot, 'plot1': lowerPlot, 'plot2': midPlot, 'plot3': emaPlot },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Plots Background' }, colors: fillUpColors },
-      { plot1: 'plot1', plot2: 'plot0', options: { title: 'Plots Background' }, colors: fillDownColors },
-    ],
+      const mid = (rangeUp[i] + rangeDn[i]) / 2;
+      const time = bars[i].time;
+      const p = s.plots;
+      // fill(ul, dummy, lime) / fill(dummy, ll, red) with dummy = close > ema ? down : up (a hidden plot, not ported):
+      // the first fill covers the range when the close is above the EMA, the second one when it is not
+      if (i < warmup) {
+        p[0][i] = { time, value: NaN };
+        p[1][i] = { time, value: NaN };
+        p[2][i] = { time, value: NaN };
+        s.fillUpColors[i] = 'transparent';
+        s.fillDownColors[i] = 'transparent';
+      } else {
+        const ema = emaV ?? 0;
+        const bullish = close > ema;
+        const color = bullish ? '#26A69A' : '#EF5350';
+        p[0][i] = { time, value: rangeUp[i], color };
+        p[1][i] = { time, value: rangeDn[i], color };
+        p[2][i] = { time, value: mid };
+        s.fillUpColors[i] = bullish ? '#26A69A40' : 'transparent';
+        s.fillDownColors[i] = bullish ? 'transparent' : '#EF535040';
+      }
+      p[3][i] = { time, value: (emaV == null || i < warmup) ? NaN : emaV };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': p[0].slice(), 'plot1': p[1].slice(), 'plot2': p[2].slice(), 'plot3': p[3].slice() },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Plots Background' }, colors: s.fillUpColors.slice() },
+          { plot1: 'plot1', plot2: 'plot0', options: { title: 'Plots Background' }, colors: s.fillDownColors.slice() },
+        ],
+      };
+    },
   };
 }
 
-export const RangeIdentifier = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RangeIdentifierInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RangeIdentifierInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const RangeIdentifier = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

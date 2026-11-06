@@ -10,7 +10,9 @@
  * Original notice: created by Buff DORMEIER; author: KIVANC @fr3762 on twitter
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeWeightedMacdV2VwmacdV2ByKivanInputs {
   /** Fast period */
@@ -49,36 +51,74 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VolumeWeightedMacdV2VwmacdV2ByKivanInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const vc = new Series(bars, (b) => (b.volume ?? NaN) * b.close);
-  const vol = new Series(bars, (b) => b.volume ?? NaN);
-  // plain divisions: 0 / 0 is na, as Pine
-  const vwma = (len: number) => {
-    const num = A(ta.ema(vc, len));
-    const den = A(ta.ema(vol, len));
-    return num.map((v, i) => v / den[i]);
-  };
-  const fastMA = vwma(cfg.fastperiod);
-  const slowMA = vwma(cfg.slowperiod);
-  const vwmacd = fastMA.map((v, i) => v - slowMA[i]);
-  const signal = A(ta.ema(Series.fromArray(bars, vwmacd), cfg.signalperiod));
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+type Point = { time: number; value: number };
+type Ema = ReturnType<typeof taStep.ema>;
 
+interface VwmacdRun extends BarRunState<Record<string, never>> {
+  fastNum: Ema;
+  fastDen: Ema;
+  slowNum: Ema;
+  slowDen: Ema;
+  sig: Ema;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+}
+
+const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+
+function study(inputs: Partial<VolumeWeightedMacdV2VwmacdV2ByKivanInputs>): BarStudy<VwmacdRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: fin(vwmacd[i]) })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: fin(signal[i]) })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: fin(vwmacd[i] - signal[i]) })),
-      plot3: bars.map((b) => ({ time: b.time, value: 0 })),
+    init() {
+      const fastNum = taStep.ema(cfg.fastperiod);
+      const fastDen = taStep.ema(cfg.fastperiod);
+      const slowNum = taStep.ema(cfg.slowperiod);
+      const slowDen = taStep.ema(cfg.slowperiod);
+      const sig = taStep.ema(cfg.signalperiod);
+      const s: VwmacdRun = {
+        fastNum, fastDen, slowNum, slowDen, sig, plot0: [], plot1: [], plot2: [], plot3: [],
+        steps: [fastNum, fastDen, slowNum, slowDen, sig], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1, s.plot2, s.plot3];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const vol = b.volume ?? NaN;
+      const vc = vol * b.close;
+      // plain divisions: 0 / 0 is na, as Pine
+      const fastMA = (s.fastNum.step(vc) ?? NaN) / (s.fastDen.step(vol) ?? NaN);
+      const slowMA = (s.slowNum.step(vc) ?? NaN) / (s.slowDen.step(vol) ?? NaN);
+      const vwmacd = fastMA - slowMA;
+      const signal = s.sig.step(vwmacd) ?? NaN;
+      s.plot0[i] = { time: b.time, value: fin(vwmacd) };
+      s.plot1[i] = { time: b.time, value: fin(signal) };
+      s.plot2[i] = { time: b.time, value: fin(vwmacd - signal) };
+      s.plot3[i] = { time: b.time, value: 0 };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeWeightedMacdV2VwmacdV2ByKivanInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolumeWeightedMacdV2VwmacdV2ByKivanInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const VolumeWeightedMacdV2VwmacdV2ByKivan = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

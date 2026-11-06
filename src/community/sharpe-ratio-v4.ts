@@ -10,7 +10,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SharpeRatioV4Inputs {
   /** Lookback length of the rate of change and of its standard deviation */
@@ -46,31 +48,60 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SharpeRatioV4Inputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface SharpeRun extends BarRunState<Record<string, never>> {
+  roc: ReturnType<typeof taStep.roc>;
+  dev: WindowStdev;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+}
+
+function study(inputs: Partial<SharpeRatioV4Inputs>): BarStudy<SharpeRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-
-  // averageReturn = ta.roc(close, lookbackLength); stdev = ta.stdev(averageReturn, lookbackLength)
-  const averageReturn = A(ta.roc(S(bars.map((b) => b.close)), cfg.lookbackLength));
-  const stdev = A(ta.stdev(S(averageReturn), cfg.lookbackLength));
-  // sharpe = averageReturn / stdev: a plain division (x / 0 is +-infinity, shown as na)
-  const sharpe = averageReturn.map((r, i) => r / stdev[i]);
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: fin(averageReturn[i]), color: color.red })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: fin(stdev[i]), color: color.orange })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: fin(sharpe[i]), color: color.blue })),
+    init() {
+      const roc = taStep.roc(cfg.lookbackLength);
+      const dev = new WindowStdev(cfg.lookbackLength);
+      const s: SharpeRun = { roc, dev, plot0: [], plot1: [], plot2: [], steps: [roc, dev], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1, s.plot2];
+      return s;
     },
-    hlines: [{ value: 0, options: { title: 'Level', color: '#787B86', linestyle: 'dashed', linewidth: 1 } }],
+    bar(s, i, bars) {
+      const b = bars[i];
+      // averageReturn = ta.roc(close, lookbackLength); stdev = ta.stdev(averageReturn, lookbackLength)
+      const averageReturn = s.roc.step(b.close);
+      const stdev = s.dev.step(averageReturn);
+      // sharpe = averageReturn / stdev: a plain division (x / 0 is +-infinity, shown as na)
+      const sharpe = averageReturn / stdev;
+      s.plot0[i] = { time: b.time, value: fin(averageReturn), color: color.red };
+      s.plot1[i] = { time: b.time, value: fin(stdev), color: color.orange };
+      s.plot2[i] = { time: b.time, value: fin(sharpe), color: color.blue };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        hlines: [{ value: 0, options: { title: 'Level', color: '#787B86', linestyle: 'dashed', linewidth: 1 } }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SharpeRatioV4Inputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SharpeRatioV4Inputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const SharpeRatioV4 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

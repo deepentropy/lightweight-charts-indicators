@@ -9,7 +9,9 @@
  * Reference: "Waddah Attar Explosion V2 [SHK]" by LazyBear/ShayanKM
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface WaddahAttarExplosionInputs {
   sensitivity: number;
@@ -48,61 +50,97 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<WaddahAttarExplosionInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface WaeVars {
+  /** t1 of the previous bar */
+  prevT1: number;
+  /** MACD of the previous bar (0 before the first bar) */
+  prevMacd: number;
+}
+
+interface WaeRun extends BarRunState<WaeVars> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  basis: WindowSma;
+  dev: WindowStdev;
+  dead: ReturnType<typeof taStep.atr>;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+}
+
+function study(inputs: Partial<WaddahAttarExplosionInputs>): BarStudy<WaeRun, IndicatorResult> {
   const { sensitivity, fastLength, slowLength, channelLength, bbMult } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const close = new Series(bars, (b) => b.close);
-
-  // MACD = fastEMA - slowEMA
-  const fastEma = ta.ema(close, fastLength).toArray();
-  const slowEma = ta.ema(close, slowLength).toArray();
-
-  // BB width
-  const [, bbUpper, bbLower] = ta.bb(close, channelLength, bbMult);
-  const bbUpperArr = bbUpper.toArray();
-  const bbLowerArr = bbLower.toArray();
-
   // Dead zone = nz(rma(tr(true), 100)) * 3.7 (tr(true): high - low on the first bar)
   const deadZonePeriod = 100;
-  const deadZoneArr = ta.rma(ta.tr(bars, true), deadZonePeriod).toArray();
-
   const warmup = Math.max(slowLength, channelLength, deadZonePeriod);
-
-  const plot0: Array<{ time: number; value: number; color?: string }> = [];
-  const plot1: Array<{ time: number; value: number; color?: string }> = [];
-  const plot2: Array<{ time: number; value: number }> = [];
-  const plot3: Array<{ time: number; value: number }> = [];
-
-  let prevT1 = 0;
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const w = i < warmup;
-
-    const macd = (fastEma[i] ?? 0) - (slowEma[i] ?? 0);
-    const prevMacd = i > 0 ? ((fastEma[i - 1] ?? 0) - (slowEma[i - 1] ?? 0)) : 0;
-    const t1 = (macd - prevMacd) * sensitivity;
-    const e1 = (bbUpperArr[i] ?? 0) - (bbLowerArr[i] ?? 0);
-    const dz = (deadZoneArr[i] ?? 0) * 3.7;
-
-    const upVal = w ? NaN : (t1 >= 0 ? t1 : 0);
-    const dnVal = w ? NaN : (t1 < 0 ? -t1 : 0);
-
-    // Dynamic colors: lime/green for up, orange/red for down (fading = decreasing)
-    const upColor = t1 < prevT1 ? '#00FF00' : '#008000';
-    const dnColor = -t1 < -prevT1 ? '#FFA500' : '#FF0000';
-
-    plot0.push({ time: t, value: upVal, color: w ? undefined : upColor });
-    plot1.push({ time: t, value: dnVal, color: w ? undefined : dnColor });
-    plot2.push({ time: t, value: w ? NaN : e1 });
-    plot3.push({ time: t, value: w ? NaN : dz });
-    prevT1 = t1;
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
+    init() {
+      // MACD = fastEMA - slowEMA
+      const fast = taStep.ema(fastLength);
+      const slow = taStep.ema(slowLength);
+      // BB width
+      // ta.bb(close, channelLength, bbMult): sma +- mult * stdev (the length check of ta.bb, then the faster window steps)
+      taStep.bb(channelLength, bbMult);
+      const basis = new WindowSma(channelLength);
+      const dev = new WindowStdev(channelLength);
+      const dead = taStep.atr(deadZonePeriod);
+      const s: WaeRun = {
+        fast, slow, basis, dev, dead, plot0: [], plot1: [], plot2: [], plot3: [],
+        steps: [fast, slow, basis, dev, dead], vars: { prevT1: 0, prevMacd: 0 }, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1, s.plot2, s.plot3];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time as number;
+      const w = i < warmup;
+      const v = s.vars;
+
+      const macd = (s.fast.step(b.close) ?? 0) - (s.slow.step(b.close) ?? 0);
+      const prevMacd = i > 0 ? v.prevMacd : 0;
+      const t1 = (macd - prevMacd) * sensitivity;
+      const bbBasis = s.basis.step(b.close);
+      const bbDev = s.dev.step(b.close);
+      const bbUpper = bbBasis + bbMult * bbDev;
+      const bbLower = bbBasis - bbMult * bbDev;
+      const e1 = (bbUpper ?? 0) - (bbLower ?? 0);
+      const dz = (s.dead.step(b.high, b.low, b.close) ?? 0) * 3.7;
+
+      const upVal = w ? NaN : (t1 >= 0 ? t1 : 0);
+      const dnVal = w ? NaN : (t1 < 0 ? -t1 : 0);
+
+      // Dynamic colors: lime/green for up, orange/red for down (fading = decreasing)
+      const prevT1 = v.prevT1;
+      const upColor = t1 < prevT1 ? '#00FF00' : '#008000';
+      const dnColor = -t1 < -prevT1 ? '#FFA500' : '#FF0000';
+
+      s.plot0[i] = { time: t, value: upVal, color: w ? undefined : upColor };
+      s.plot1[i] = { time: t, value: dnVal, color: w ? undefined : dnColor };
+      s.plot2[i] = { time: t, value: w ? NaN : e1 };
+      s.plot3[i] = { time: t, value: w ? NaN : dz };
+      v.prevT1 = t1;
+      v.prevMacd = macd;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice(), 'plot2': s.plot2.slice(), 'plot3': s.plot3.slice() },
+      };
+    },
   };
 }
 
-export const WaddahAttarExplosion = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WaddahAttarExplosionInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<WaddahAttarExplosionInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const WaddahAttarExplosion = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

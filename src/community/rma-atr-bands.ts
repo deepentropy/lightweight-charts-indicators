@@ -12,9 +12,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RMAATRBandsInputs {
   /** Source of the RMA trend line */
@@ -74,79 +76,119 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RMAATRBandsInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface RmaAtrVars {
+  /** var int trend = 0 */
+  trend: number;
+  /** trend[1] (na on the first bar) */
+  prevTrend: number;
+}
+
+interface RmaAtrRun extends BarRunState<RmaAtrVars> {
+  ma: ReturnType<typeof taStep.rma>;
+  atr: ReturnType<typeof taStep.atr>;
+  maPlot: Point[];
+  upperPlot: Point[];
+  lowerPlot: Point[];
+  fillColors: string[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<RMAATRBandsInputs>): BarStudy<RmaAtrRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  // ma = ta.rma(maSrc, maLength); atr = ta.atr(atrLength)
-  const ma = ta.rma(getSourceSeries(bars, cfg.maSrc), cfg.maLength).toArray().map((v) => v ?? NaN);
-  const atr = ta.atr(bars, cfg.atrLength).toArray().map((v) => v ?? NaN);
-
+  const value = barSource(cfg.maSrc);
   // longColor = color.rgb(57, 255, 20); shortColor = color.rgb(138, 43, 226)
   const longColor = '#39FF14';
   const shortColor = '#8A2BE2';
-
-  const maPlot: { time: number; value: number; color: string }[] = [];
-  const upperPlot: { time: number; value: number; color: string }[] = [];
-  const lowerPlot: { time: number; value: number; color: string }[] = [];
-  const fillColors: string[] = [];
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const longFlags: boolean[] = [], shortFlags: boolean[] = [];
-
-  let trend = 0; // var int trend = 0
-  let prevTrend = NaN; // trend[1] (na on the first bar)
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const upperLine = ma[i] + atr[i] * cfg.upperMult;
-    const lowerLine = ma[i] - atr[i] * cfg.lowerMult;
-
-    // long = close > upperLine; short = close < lowerLine (na compares false)
-    if (gt(bars[i].close, upperLine)) trend = 1;
-    if (lt(bars[i].close, lowerLine)) trend = -1;
-
-    // longSignal = trend == 1 and trend[1] != 1 (trend[1] na on the first bar: na != 1 is false)
-    const longSignal = trend === 1 && !isNaN(prevTrend) && prevTrend !== 1;
-    const shortSignal = trend === -1 && !isNaN(prevTrend) && prevTrend !== -1;
-    prevTrend = trend;
-    longFlags.push(longSignal);
-    shortFlags.push(shortSignal);
-
-    const bandColor = trend === 1 ? longColor : trend === -1 ? shortColor : color.gray;
-    maPlot.push({ time: t, value: ma[i], color: bandColor });
-    upperPlot.push({ time: t, value: cfg.showATRBands ? upperLine : NaN, color: bandColor });
-    lowerPlot.push({ time: t, value: cfg.showATRBands ? lowerLine : NaN, color: bandColor });
-    fillColors.push(cfg.showATRBands ? String(color.new(bandColor, 88)) : 'transparent');
-
-    // plotshape(showSignals and longSignal, triangleup, belowbar, longColor, size.small, "LONG", textcolor white)
-    if (cfg.showSignals && longSignal) {
-      markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: longColor, text: 'LONG',
-        textColor: color.white, size: 'small' });
-    }
-    if (cfg.showSignals && shortSignal) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: shortColor, text: 'SHORT',
-        textColor: color.white, size: 'small' });
-    }
-    // barcolor(colorBars ? bandColor : na)
-    if (cfg.colorBars) barColors.push({ time: t, color: bandColor });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: maPlot, plot1: upperPlot, plot2: lowerPlot },
-    // fill(maPlot, upperPlot / lowerPlot, color = showATRBands ? color.new(bandColor, 88) : na)
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Upper Fill' }, colors: fillColors },
-      { plot1: 'plot0', plot2: 'plot2', options: { title: 'Lower Fill' }, colors: [...fillColors] },
-    ],
-    markers,
-    barColors,
-    // alertcondition(longSignal, "RMA ATR Bands Long") / alertcondition(shortSignal, "RMA ATR Bands Short")
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags]),
+    fullRunReason: () => (isBarSource(cfg.maSrc) ? null : 'source of another study'),
+    init() {
+      // ma = ta.rma(maSrc, maLength); atr = ta.atr(atrLength)
+      const ma = taStep.rma(cfg.maLength);
+      const atr = taStep.atr(cfg.atrLength);
+      const s: RmaAtrRun = {
+        ma, atr, maPlot: [], upperPlot: [], lowerPlot: [], fillColors: [], markers: [], barColors: [],
+        flags: [[], []], times: [[], []], steps: [ma, atr], vars: { trend: 0, prevTrend: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.barColors, ...s.times];
+      s.series = [s.maPlot, s.upperPlot, s.lowerPlot, s.fillColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const t = b.time;
+      const ma = s.ma.step(value(b));
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const upperLine = ma + atr * cfg.upperMult;
+      const lowerLine = ma - atr * cfg.lowerMult;
+
+      // long = close > upperLine; short = close < lowerLine (na compares false)
+      let trend = v.trend;
+      if (gt(b.close, upperLine)) trend = 1;
+      if (lt(b.close, lowerLine)) trend = -1;
+      v.trend = trend;
+
+      // longSignal = trend == 1 and trend[1] != 1 (trend[1] na on the first bar: na != 1 is false)
+      const prevTrend = v.prevTrend;
+      const longSignal = trend === 1 && !isNaN(prevTrend) && prevTrend !== 1;
+      const shortSignal = trend === -1 && !isNaN(prevTrend) && prevTrend !== -1;
+      v.prevTrend = trend;
+      const flags = [longSignal, shortSignal];
+      for (let k = 0; k < 2; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+
+      const bandColor = trend === 1 ? longColor : trend === -1 ? shortColor : color.gray;
+      s.maPlot[i] = { time: t, value: ma, color: bandColor };
+      s.upperPlot[i] = { time: t, value: cfg.showATRBands ? upperLine : NaN, color: bandColor };
+      s.lowerPlot[i] = { time: t, value: cfg.showATRBands ? lowerLine : NaN, color: bandColor };
+      s.fillColors[i] = cfg.showATRBands ? String(color.new(bandColor, 88)) : 'transparent';
+
+      // plotshape(showSignals and longSignal, triangleup, belowbar, longColor, size.small, "LONG", textcolor white)
+      if (cfg.showSignals && longSignal) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: longColor, text: 'LONG',
+          textColor: color.white, size: 'small' });
+      }
+      if (cfg.showSignals && shortSignal) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: shortColor, text: 'SHORT',
+          textColor: color.white, size: 'small' });
+      }
+      // barcolor(colorBars ? bandColor : na)
+      if (cfg.colorBars) s.barColors.push({ time: t, color: bandColor });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.maPlot.slice(), plot1: s.upperPlot.slice(), plot2: s.lowerPlot.slice() },
+        // fill(maPlot, upperPlot / lowerPlot, color = showATRBands ? color.new(bandColor, 88) : na)
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Upper Fill' }, colors: s.fillColors.slice() },
+          { plot1: 'plot0', plot2: 'plot2', options: { title: 'Lower Fill' }, colors: s.fillColors.slice() },
+        ],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        // alertcondition(longSignal, "RMA ATR Bands Long") / alertcondition(shortSignal, "RMA ATR Bands Short")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RMAATRBandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RMAATRBandsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -157,6 +199,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const RMAATRBands = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

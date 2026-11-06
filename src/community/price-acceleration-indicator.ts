@@ -11,7 +11,9 @@
  * Original notice: Phi Capital Investments
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PriceAccelerationIndicatorInputs {
   src: SourceType;
@@ -54,43 +56,76 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
 
-export function calculate(bars: Bar[], inputs: Partial<PriceAccelerationIndicatorInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface PaiRun extends BarRunState<Record<string, never>> {
+  velocity: ReturnType<typeof taStep.change>;
+  acceleration: ReturnType<typeof taStep.change>;
+  ema: ReturnType<typeof taStep.ema>;
+  highest: WindowExtreme;
+  lowest: WindowExtreme;
+  smoothed: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+}
+
+function study(inputs: Partial<PriceAccelerationIndicatorInputs>): BarStudy<PaiRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: { toArray(): (number | null | undefined)[] }) => s.toArray().map((v) => v ?? NaN);
-
-  const src = getSourceSeries(bars, cfg.src);
-  const velocity = ta.change(src);
-  const acceleration = ta.change(velocity);
-  const smoothedS = ta.ema(acceleration, cfg.smoothLen);
-  const smoothed = A(smoothedS);
-  const highest = A(ta.highest(smoothedS, cfg.lookback));
-  const lowest = A(ta.lowest(smoothedS, cfg.lookback));
-
-  const plot0 = [];
-  const plot1 = [];
-  const plot2 = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const s = smoothed[i];
-    const prev = i > 0 ? smoothed[i - 1] : NaN;
-    // smoothed_acc > 0 ? (smoothed_acc > smoothed_acc[1] ? #00ff00 : #006400)
-    //                  : (smoothed_acc < smoothed_acc[1] ? #ff0000 : #8b0000)
-    const c = gt(s, 0) ? (gt(s, prev) ? '#00ff00' : '#006400') : lt(s, prev) ? '#ff0000' : '#8b0000';
-    plot0.push({ time: t, value: fin(s), color: c });
-    plot1.push({ time: t, value: fin(highest[i] * 0.3), color: UPPER_COLOR });
-    plot2.push({ time: t, value: fin(lowest[i] * 0.3), color: LOWER_COLOR });
-  }
-
+  const value = barSource(cfg.src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    hlines: [{ value: 0, options: { title: 'Zero Median', color: color.gray, linestyle: 'solid', linewidth: 1 } }],
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const velocity = taStep.change();
+      const acceleration = taStep.change();
+      const ema = taStep.ema(cfg.smoothLen);
+      const highest = new WindowExtreme(false, cfg.lookback);
+      const lowest = new WindowExtreme(true, cfg.lookback);
+      const s: PaiRun = {
+        velocity, acceleration, ema, highest, lowest, smoothed: [], plot0: [], plot1: [], plot2: [],
+        steps: [velocity, acceleration, ema, highest, lowest], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.smoothed, s.plot0, s.plot1, s.plot2];
+      return s;
+    },
+    bar(st, i, bars) {
+      const t = bars[i].time;
+      const velocity = st.velocity.step(value(bars[i]));
+      const acceleration = st.acceleration.step(velocity);
+      const s = st.ema.step(acceleration) ?? NaN;
+      st.smoothed[i] = s;
+      const highest = st.highest.step(s) ?? NaN;
+      const lowest = st.lowest.step(s) ?? NaN;
+      const prev = i > 0 ? st.smoothed[i - 1] : NaN;
+      // smoothed_acc > 0 ? (smoothed_acc > smoothed_acc[1] ? #00ff00 : #006400)
+      //                  : (smoothed_acc < smoothed_acc[1] ? #ff0000 : #8b0000)
+      const c = gt(s, 0) ? (gt(s, prev) ? '#00ff00' : '#006400') : lt(s, prev) ? '#ff0000' : '#8b0000';
+      st.plot0[i] = { time: t, value: fin(s), color: c };
+      st.plot1[i] = { time: t, value: fin(highest * 0.3), color: UPPER_COLOR };
+      st.plot2[i] = { time: t, value: fin(lowest * 0.3), color: LOWER_COLOR };
+    },
+    result(st) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: st.plot0.slice(), plot1: st.plot1.slice(), plot2: st.plot2.slice() },
+        hlines: [{ value: 0, options: { title: 'Zero Median', color: color.gray, linestyle: 'solid', linewidth: 1 } }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PriceAccelerationIndicatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PriceAccelerationIndicatorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PriceAccelerationIndicator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

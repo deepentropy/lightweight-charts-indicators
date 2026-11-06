@@ -10,7 +10,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, taCore, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, WindowSum, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export type SourceAlignedOscType = 'RSI' | 'ROC' | 'Momentum' | 'MACD' | 'CMO' | 'Stoch RSI';
 export type SourceAlignedSrcMode = 'Close' | 'HL2' | 'HLC3' | 'OHLC4' | 'High/Low Split' | 'Body High/Low Split';
@@ -102,11 +104,55 @@ export const metadata = {
 /** Pine a != b: false when the values are within 1e-10 or one is na */
 const ne = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) > 1e-10;
 
-export function calculate(bars: Bar[], inputs: Partial<SourceAlignedOscillatorsInputs> = {}): IndicatorResult {
+type Osc = Committable & { step(v: number): number };
+type Point = { time: number; value: number; color: string };
+
+/**
+ * `ta.cmo(source, length)` one bar at a time: mom = ta.change(src), 100 * (sm1 - sm2) / (sm1 + sm2) of the math.sum of
+ * the gains and losses (the doubles of the oakscriptjs array function; an na change adds 0 to sm1 and na to sm2)
+ */
+class CmoStep implements Committable {
+  private readonly up: WindowSum;
+  private readonly down: WindowSum;
+  private prev = NaN;
+  private pending = NaN;
+  private stepped = false;
+
+  constructor(length: number) {
+    // the length check of ta.cmo (the same runtime error)
+    taCore.cmo([], length);
+    this.up = new WindowSum(length);
+    this.down = new WindowSum(length);
+  }
+
+  step(value: number): number {
+    this.stepped = true;
+    this.pending = value;
+    const mom = value - this.prev;
+    const s1 = this.up.step(mom >= 0 ? mom : 0);
+    const s2 = this.down.step(mom >= 0 ? 0 : -mom);
+    return (100 * (s1 - s2)) / (s1 + s2);
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.prev = this.pending;
+    this.up.commit();
+    this.down.commit();
+  }
+}
+
+interface SaoRun extends BarRunState<Record<string, never>> {
+  bullOsc: Osc;
+  bearOsc: Osc;
+  bullD: WindowSma | null;
+  bearD: WindowSma | null;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<SourceAlignedOscillatorsInputs>): BarStudy<SaoRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
 
   const isSplitSource = cfg.srcMode === 'High/Low Split' || cfg.srcMode === 'Body High/Low Split';
   const pick = (b: Bar, split: 'bull' | 'bear'): number => {
@@ -121,71 +167,114 @@ export function calculate(bars: Bar[], inputs: Partial<SourceAlignedOscillatorsI
   };
 
   // f_get_osc(_src): the oscillator type is fixed for the run, so each ta.* call runs on every bar
-  const getOsc = (srcArr: number[]): number[] => {
-    const src = S(srcArr);
+  const getOsc = (): Osc => {
     switch (cfg.oscType) {
-      case 'RSI': return A(ta.rsi(src, cfg.rsiLen));
-      case 'ROC': return A(ta.roc(src, cfg.rocLen));
-      case 'Momentum': return A(ta.mom(src, cfg.momLen));
+      case 'RSI': return taStep.rsi(cfg.rsiLen);
+      case 'ROC': return taStep.roc(cfg.rocLen);
+      case 'Momentum': return taStep.mom(cfg.momLen);
       case 'MACD': {
-        const fast = A(ta.ema(src, cfg.macdFast));
-        const slow = A(ta.ema(src, cfg.macdSlow));
-        const macdLine = fast.map((f, i) => f - slow[i]);
-        const signalLine = A(ta.ema(S(macdLine), cfg.macdSignal));
-        return macdLine.map((m, i) => m - signalLine[i]);
+        const fast = taStep.ema(cfg.macdFast);
+        const slow = taStep.ema(cfg.macdSlow);
+        const signal = taStep.ema(cfg.macdSignal);
+        return {
+          step: (v) => {
+            const macdLine = fast.step(v) - slow.step(v);
+            return macdLine - signal.step(macdLine);
+          },
+          commit: () => { fast.commit(); slow.commit(); signal.commit(); },
+        };
       }
-      case 'CMO': return A(ta.cmo(src, cfg.cmoLen));
+      case 'CMO': return new CmoStep(cfg.cmoLen);
       case 'Stoch RSI': {
-        const rsiValue = A(ta.rsi(src, cfg.rsiLen));
-        const lowestRsi = A(ta.lowest(S(rsiValue), cfg.stochLen));
-        const highestRsi = A(ta.highest(S(rsiValue), cfg.stochLen));
-        // rawK = highestRsi != lowestRsi ? 100 * (rsiValue - lowestRsi) / (highestRsi - lowestRsi) : na
-        const rawK = rsiValue.map((r, i) => (ne(highestRsi[i], lowestRsi[i])
-          ? (100 * (r - lowestRsi[i])) / (highestRsi[i] - lowestRsi[i]) : NaN));
-        return A(ta.sma(S(rawK), cfg.smoothK));
+        const rsi = taStep.rsi(cfg.rsiLen);
+        const lowest = new WindowExtreme(true, cfg.stochLen);
+        const highest = new WindowExtreme(false, cfg.stochLen);
+        const k = new WindowSma(cfg.smoothK);
+        return {
+          step: (v) => {
+            const rsiValue = rsi.step(v);
+            const lowestRsi = lowest.step(rsiValue);
+            const highestRsi = highest.step(rsiValue);
+            // rawK = highestRsi != lowestRsi ? 100 * (rsiValue - lowestRsi) / (highestRsi - lowestRsi) : na
+            const rawK = ne(highestRsi, lowestRsi) ? (100 * (rsiValue - lowestRsi)) / (highestRsi - lowestRsi) : NaN;
+            return k.step(rawK);
+          },
+          commit: () => { rsi.commit(); lowest.commit(); highest.commit(); k.commit(); },
+        };
       }
-      default: return new Array(n).fill(NaN);
+      default: return { step: () => NaN, commit: () => {} };
     }
   };
 
-  const bullOsc = getOsc(bars.map((b) => pick(b, 'bull')));
-  const bearOsc = getOsc(bars.map((b) => pick(b, 'bear')));
   const isStoch = cfg.oscType === 'Stoch RSI';
-  const stochBullD = isStoch ? A(ta.sma(S(bullOsc), cfg.smoothD)) : new Array(n).fill(NaN);
-  const stochBearD = isStoch ? A(ta.sma(S(bearOsc), cfg.smoothD)) : new Array(n).fill(NaN);
-
   const isRsiFamily = cfg.oscType === 'RSI' || isStoch;
   const isCMO = cfg.oscType === 'CMO';
   const isZeroBased = cfg.oscType === 'ROC' || cfg.oscType === 'Momentum' || cfg.oscType === 'MACD' || isCMO;
   const midValue = isZeroBased ? 0.0 : 50.0;
 
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const line = (col: string, f: (i: number) => number) => bars.map((b, i) => ({ time: b.time, value: fin(f(i)), color: col }));
   const showOsc = !isSplitSource && cfg.showBull;
   const showBullLine = isSplitSource && cfg.showBull;
   const showBearLine = isSplitSource && cfg.showBear;
   const showD = isStoch && cfg.showStochD;
+  const colors = [MID_COL, RSI_LEVEL_COL, RSI_LEVEL_COL, CMO_LEVEL_COL, CMO_LEVEL_COL, OSC_COL, BULL_COL, BEAR_COL, D_COL, D_BULL_COL, D_BEAR_COL];
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(MID_COL, () => midValue),
-      plot1: line(RSI_LEVEL_COL, () => (isRsiFamily ? 70 : NaN)),
-      plot2: line(RSI_LEVEL_COL, () => (isRsiFamily ? 30 : NaN)),
-      plot3: line(CMO_LEVEL_COL, () => (isCMO ? 50 : NaN)),
-      plot4: line(CMO_LEVEL_COL, () => (isCMO ? -50 : NaN)),
-      plot5: line(OSC_COL, (i) => (showOsc ? bullOsc[i] : NaN)),
-      plot6: line(BULL_COL, (i) => (showBullLine ? bullOsc[i] : NaN)),
-      plot7: line(BEAR_COL, (i) => (showBearLine ? bearOsc[i] : NaN)),
-      plot8: line(D_COL, (i) => (showD && !isSplitSource && cfg.showBull ? stochBullD[i] : NaN)),
-      plot9: line(D_BULL_COL, (i) => (showD && isSplitSource && cfg.showBull ? stochBullD[i] : NaN)),
-      plot10: line(D_BEAR_COL, (i) => (showD && isSplitSource && cfg.showBear ? stochBearD[i] : NaN)),
+    init() {
+      const bullOsc = getOsc();
+      const bearOsc = getOsc();
+      const bullD = isStoch ? new WindowSma(cfg.smoothD) : null;
+      const bearD = isStoch ? new WindowSma(cfg.smoothD) : null;
+      const s: SaoRun = {
+        bullOsc, bearOsc, bullD, bearD, plots: colors.map(() => []),
+        steps: [bullOsc, bearOsc, ...(bullD ? [bullD] : []), ...(bearD ? [bearD] : [])], vars: {}, lists: [], series: [],
+      };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const bullOsc = s.bullOsc.step(pick(b, 'bull'));
+      const bearOsc = s.bearOsc.step(pick(b, 'bear'));
+      const stochBullD = s.bullD ? s.bullD.step(bullOsc) : NaN;
+      const stochBearD = s.bearD ? s.bearD.step(bearOsc) : NaN;
+      const put = (k: number, v: number) => { s.plots[k][i] = { time, value: fin(v), color: colors[k] }; };
+      put(0, midValue);
+      put(1, isRsiFamily ? 70 : NaN);
+      put(2, isRsiFamily ? 30 : NaN);
+      put(3, isCMO ? 50 : NaN);
+      put(4, isCMO ? -50 : NaN);
+      put(5, showOsc ? bullOsc : NaN);
+      put(6, showBullLine ? bullOsc : NaN);
+      put(7, showBearLine ? bearOsc : NaN);
+      put(8, showD && !isSplitSource && cfg.showBull ? stochBullD : NaN);
+      put(9, showD && isSplitSource && cfg.showBull ? stochBullD : NaN);
+      put(10, showD && isSplitSource && cfg.showBear ? stochBearD : NaN);
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SourceAlignedOscillatorsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SourceAlignedOscillatorsInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const SourceAlignedOscillators = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

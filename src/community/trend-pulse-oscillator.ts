@@ -13,9 +13,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrendPulseOscillatorInputs {
   src: SourceType;
@@ -114,66 +116,118 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+type Ema = ReturnType<typeof taStep.ema>;
+
+interface TpoRun extends BarRunState<Record<string, never>> {
+  fast: Ema;
+  slow: Ema;
+  atr: ReturnType<typeof taStep.atr>;
+  sigMa: Ema;
+  osc: number[];
+  sig: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  fillColors: string[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<TrendPulseOscillatorInputs>): BarStudy<TpoRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  const fillBull = String(color.new(cfg.bullCol, cfg.fillOpacity));
+  const fillBear = String(color.new(cfg.bearCol, cfg.fillOpacity));
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const fast = taStep.ema(cfg.fastLen);
+      const slow = taStep.ema(cfg.slowLen);
+      const atr = taStep.atr(cfg.atrLen);
+      const sigMa = taStep.ema(cfg.sigLen);
+      const s: TpoRun = {
+        fast, slow, atr, sigMa, osc: [], sig: [], plot0: [], plot1: [], plot2: [], fillColors: [], barColors: [],
+        flags: [[], [], [], [], [], []], times: [[], [], [], [], [], []],
+        steps: [fast, slow, atr, sigMa], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.barColors, ...s.times];
+      s.series = [s.osc, s.sig, s.plot0, s.plot1, s.plot2, s.fillColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const v = value(b);
+      const fast = s.fast.step(v);
+      const slow = s.slow.step(v);
+      const atr = s.atr.step(b.high, b.low, b.close);
+
+      // norm = atr > 0 ? spread / atr : 0.0 (an na ATR gives 0); osc = 50 + 50 * (2 / pi) * atan(norm * speed)
+      const spread = fast - slow;
+      const norm = gt(atr, 0) ? spread / atr : 0.0;
+      const osc = 50.0 + 50.0 * (2.0 / Math.PI) * Math.atan(norm * cfg.speed);
+      const sig = s.sigMa.step(osc);
+      s.osc[i] = osc;
+      s.sig[i] = sig;
+      const pulse = osc - sig;
+
+      // osc >= sig (na compares false: bear colour)
+      const bull = ge(osc, sig);
+      const dirColor = bull ? cfg.bullCol : cfg.bearCol;
+      if (cfg.showBars) s.barColors.push({ time: t, color: dirColor });
+
+      s.plot0[i] = { time: t, value: osc, color: cfg.oscCol };
+      s.plot1[i] = { time: t, value: sig, color: cfg.sigCol };
+      s.plot2[i] = { time: t, value: cfg.showHist ? pulse : NaN, color: dirColor };
+      s.fillColors[i] = cfg.showFill ? (bull ? fillBull : fillBear) : 'transparent';
+
+      // alertcondition(ta.crossover(osc, sig)) / crossunder(osc, sig) / crossover(osc, 50) / crossunder(osc, 50) /
+      // crossover(osc, ob) / crossunder(osc, os)
+      const po = i > 0 ? s.osc[i - 1] : NaN;
+      const ps = i > 0 ? s.sig[i - 1] : NaN;
+      const pl = i > 0 ? 50 : NaN;
+      const pob = i > 0 ? cfg.ob : NaN;
+      const pos = i > 0 ? cfg.os : NaN;
+      const flags = [
+        osc > sig && po <= ps, osc < sig && po >= ps, osc > 50 && po <= pl, osc < 50 && po >= pl,
+        osc > cfg.ob && po <= pob, osc < cfg.os && po >= pos,
+      ];
+      for (let k = 0; k < 6; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        hlines: [
+          { value: 50, options: { title: 'Mid', color: String(color.new(color.gray, 60)), linestyle: 'dashed' } },
+          { value: cfg.ob, options: { title: 'Overbought', color: String(color.new(color.gray, 70)), linestyle: 'dashed' } },
+          { value: cfg.os, options: { title: 'Oversold', color: String(color.new(color.gray, 70)), linestyle: 'dashed' } },
+        ],
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Osc/Signal Fill' }, colors: s.fillColors.slice() }],
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrendPulseOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<TrendPulseOscillatorInputs> = {},
 ): IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const src = getSourceSeries(bars, cfg.src);
-  const fast = A(ta.ema(src, cfg.fastLen));
-  const slow = A(ta.ema(src, cfg.slowLen));
-  const atr = A(ta.atr(bars, cfg.atrLen));
-
-  // norm = atr > 0 ? spread / atr : 0.0 (an na ATR gives 0); osc = 50 + 50 * (2 / pi) * atan(norm * speed)
-  const osc = bars.map((_b, i) => {
-    const spread = fast[i] - slow[i];
-    const norm = gt(atr[i], 0) ? spread / atr[i] : 0.0;
-    return 50.0 + 50.0 * (2.0 / Math.PI) * Math.atan(norm * cfg.speed);
-  });
-  const sig = A(ta.ema(S(osc), cfg.sigLen));
-  const pulse = osc.map((v, i) => v - sig[i]);
-
-  // osc >= sig (na compares false: bear colour)
-  const bull = osc.map((v, i) => ge(v, sig[i]));
-  const dirColor = (i: number) => (bull[i] ? cfg.bullCol : cfg.bearCol);
-  const fillBull = String(color.new(cfg.bullCol, cfg.fillOpacity));
-  const fillBear = String(color.new(cfg.bearCol, cfg.fillOpacity));
-
-  const barColors: BarColorData[] = [];
-  if (cfg.showBars) {
-    for (let i = 0; i < n; i++) barColors.push({ time: bars[i].time, color: dirColor(i) });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: osc[i], color: cfg.oscCol })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: sig[i], color: cfg.sigCol })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: cfg.showHist ? pulse[i] : NaN, color: dirColor(i) })),
-    },
-    hlines: [
-      { value: 50, options: { title: 'Mid', color: String(color.new(color.gray, 60)), linestyle: 'dashed' } },
-      { value: cfg.ob, options: { title: 'Overbought', color: String(color.new(color.gray, 70)), linestyle: 'dashed' } },
-      { value: cfg.os, options: { title: 'Oversold', color: String(color.new(color.gray, 70)), linestyle: 'dashed' } },
-    ],
-    fills: [
-      {
-        plot1: 'plot0', plot2: 'plot1', options: { title: 'Osc/Signal Fill' },
-        colors: bars.map((_b, i) => (cfg.showFill ? (bull[i] ? fillBull : fillBear) : 'transparent')),
-      },
-    ],
-    barColors,
-    // alertcondition(ta.crossover(osc, sig)) / crossunder(osc, sig) / crossover(osc, 50) / crossunder(osc, 50) /
-    // crossover(osc, ob) / crossunder(osc, os)
-    alerts: alertStates(alertConditions, bars, [
-      crossedOver(osc, sig), crossedUnder(osc, sig), crossedOver(osc, 50), crossedUnder(osc, 50),
-      crossedOver(osc, cfg.ob), crossedUnder(osc, cfg.os),
-    ]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -188,6 +242,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const TrendPulseOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

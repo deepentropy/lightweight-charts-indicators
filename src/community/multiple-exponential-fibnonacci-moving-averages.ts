@@ -8,7 +8,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MultipleExponentialFibnonacciMovingAveragesInputs {
   /** Source */
@@ -66,35 +68,68 @@ export const metadata = {
   overlay: true,
 };
 
+type Point = { time: number; value: number; color: string };
+
+interface MefmaRun extends BarRunState<Record<string, never>> {
+  mas: Array<{ step(v: number): number; commit(): void }>;
+  lines: Point[][];
+}
+
+function study(inputs: Partial<MultipleExponentialFibnonacciMovingAveragesInputs>): BarStudy<MefmaRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      // pema1..pema6: ta.ema, except pema5 = ta.sma(src, ema5)
+      const mas = [
+        taStep.ema(cfg.ema1),
+        taStep.ema(cfg.ema2),
+        taStep.ema(cfg.ema3),
+        taStep.ema(cfg.ema4),
+        new WindowSma(cfg.ema5),
+        taStep.ema(cfg.ema6),
+      ];
+      const s: MefmaRun = { mas, lines: mas.map(() => []), steps: mas, vars: {}, lists: [], series: [] };
+      s.series = s.lines;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = value(b);
+      for (let k = 0; k < 6; k++) s.lines[k][i] = { time: b.time as number, value: s.mas[k].step(v) ?? NaN, color: COLORS[k] };
+    },
+    result(s) {
+      const plots: IndicatorResult['plots'] = {};
+      s.lines.forEach((line, k) => {
+        plots[`plot${k}`] = line.slice();
+      });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(
+  inputs: Partial<MultipleExponentialFibnonacciMovingAveragesInputs> = {},
+  chart: ChartContext = {},
+): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<MultipleExponentialFibnonacciMovingAveragesInputs> = {},
 ): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const src = getSourceSeries(bars, cfg.src);
-  // pema1..pema6: ta.ema, except pema5 = ta.sma(src, ema5)
-  const lines = [
-    ta.ema(src, cfg.ema1),
-    ta.ema(src, cfg.ema2),
-    ta.ema(src, cfg.ema3),
-    ta.ema(src, cfg.ema4),
-    ta.sma(src, cfg.ema5),
-    ta.ema(src, cfg.ema6),
-  ].map((s) => s.toArray().map((v) => v ?? NaN));
-
-  const plots: IndicatorResult['plots'] = {};
-  lines.forEach((vals, k) => {
-    plots[`plot${k}`] = bars.map((b, i) => ({ time: b.time, value: vals[i], color: COLORS[k] }));
-  });
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MultipleExponentialFibnonacciMovingAverages = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

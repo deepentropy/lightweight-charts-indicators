@@ -16,9 +16,11 @@
  * Reference: "Profit Maximizer PMax"
  */
 
-import { taCore, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ProfitMaximizerInputs {
   src: SourceType;
@@ -87,156 +89,276 @@ export const metadata = {
 
 const fin = (v: number | undefined) => v !== undefined && Number.isFinite(v);
 
-function sourceOf(bars: Bar[], src: SourceType): number[] {
-  return bars.map((b) => {
-    switch (src) {
-      case 'open': return b.open;
-      case 'high': return b.high;
-      case 'low': return b.low;
-      case 'hl2': return (b.high + b.low) / 2;
-      case 'hlc3': return (b.high + b.low + b.close) / 3;
-      case 'ohlc4': return (b.open + b.high + b.low + b.close) / 4;
-      case 'hlcc4': return (b.high + b.low + b.close + b.close) / 4;
-      default: return b.close;
-    }
-  });
+/** The source of one bar (the original's sources; any other is the close) */
+function sourceOf(b: Bar, src: SourceType): number {
+  switch (src) {
+    case 'open': return b.open;
+    case 'high': return b.high;
+    case 'low': return b.low;
+    case 'hl2': return (b.high + b.low) / 2;
+    case 'hlc3': return (b.high + b.low + b.close) / 3;
+    case 'ohlc4': return (b.open + b.high + b.low + b.close) / 4;
+    case 'hlcc4': return (b.high + b.low + b.close + b.close) / 4;
+    default: return b.close;
+  }
+}
+
+/** One moving average of the source, one bar at a time: `src` holds the source of the bars up to bar `i` */
+interface MaStep {
+  step(src: number[], i: number): number;
+  commit(): void;
+}
+
+/** A moving average with its own value of the previous bar (VAR, WWMA) */
+abstract class RecursiveMa implements MaStep {
+  protected prev = NaN;
+  private pending = NaN;
+  private stepped = false;
+
+  protected abstract value(src: number[], i: number): number;
+
+  step(src: number[], i: number): number {
+    this.stepped = true;
+    this.pending = this.value(src, i);
+    return this.pending;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.prev = this.pending;
+  }
+}
+
+/** VAR: vud1 / vdd1, the up / down moves (0 on the first bar), summed over 9 bars; VAR uses |CMO| * alpha */
+class VarMa extends RecursiveMa {
+  /** vud1 / vdd1 of the bars, indexed by bar */
+  private readonly vud1: number[] = [];
+  private readonly vdd1: number[] = [];
+
+  constructor(private readonly valpha: number) {
+    super();
+  }
+
+  private static sum9(a: number[], i: number): number {
+    if (i < 8) return NaN;
+    let s = 0;
+    for (let k = i - 8; k <= i; k++) s += a[k];
+    return s;
+  }
+
+  protected value(src: number[], i: number): number {
+    const v = src[i];
+    this.vud1[i] = i > 0 && v > src[i - 1] ? v - src[i - 1] : 0;
+    this.vdd1[i] = i > 0 && v < src[i - 1] ? src[i - 1] - v : 0;
+    const vUD = VarMa.sum9(this.vud1, i);
+    const vDD = VarMa.sum9(this.vdd1, i);
+    const cmoRaw = (vUD - vDD) / (vUD + vDD);
+    const cmo = fin(cmoRaw) ? cmoRaw : 0;
+    const a = this.valpha * Math.abs(cmo);
+    const term = a * v;
+    return (fin(term) ? term : 0) + (1 - a) * (fin(this.prev) ? this.prev : 0);
+  }
+}
+
+/** WWMA: a * src + (1 - a) * nz(WWMA[1]), a = 1 / length */
+class WwmaMa extends RecursiveMa {
+  constructor(private readonly a: number) {
+    super();
+  }
+
+  protected value(src: number[], i: number): number {
+    return this.a * src[i] + (1 - this.a) * (fin(this.prev) ? this.prev : 0);
+  }
 }
 
 /** getMA(src, length) of the original */
-function movingAverage(src: number[], length: number, type: string): number[] {
-  const n = src.length;
+function movingAverage(length: number, type: string): MaStep {
   switch (type) {
-    case 'SMA': return taCore.sma(src, length);
-    case 'WMA': return taCore.wma(src, length);
-    case 'TMA': return taCore.sma(taCore.sma(src, Math.ceil(length / 2)), Math.floor(length / 2) + 1);
-    case 'VAR': {
-      // vud1 / vdd1: the up / down moves (0 on the first bar), summed over 9 bars; VAR uses |CMO| * alpha
-      const valpha = 2 / (length + 1);
-      const vud1 = src.map((v, i) => (i > 0 && v > src[i - 1] ? v - src[i - 1] : 0));
-      const vdd1 = src.map((v, i) => (i > 0 && v < src[i - 1] ? src[i - 1] - v : 0));
-      const sum9 = (a: number[]) => a.map((_, i) => {
-        if (i < 8) return NaN;
-        let s = 0;
-        for (let k = i - 8; k <= i; k++) s += a[k];
-        return s;
-      });
-      const vUD = sum9(vud1);
-      const vDD = sum9(vdd1);
-      const out: number[] = new Array(n);
-      let prev = NaN;
-      for (let i = 0; i < n; i++) {
-        const cmoRaw = (vUD[i] - vDD[i]) / (vUD[i] + vDD[i]);
-        const cmo = fin(cmoRaw) ? cmoRaw : 0;
-        const a = valpha * Math.abs(cmo);
-        const term = a * src[i];
-        prev = (fin(term) ? term : 0) + (1 - a) * (fin(prev) ? prev : 0);
-        out[i] = prev;
-      }
-      return out;
+    case 'SMA': {
+      const m = new WindowSma(length);
+      return { step: (src, i) => m.step(src[i]), commit: () => m.commit() };
     }
-    case 'WWMA': {
-      const a = 1 / length;
-      const out: number[] = new Array(n);
-      let prev = NaN;
-      for (let i = 0; i < n; i++) {
-        prev = a * src[i] + (1 - a) * (fin(prev) ? prev : 0);
-        out[i] = prev;
-      }
-      return out;
+    case 'WMA': {
+      const m = taStep.wma();
+      return { step: (src, i) => m.step(src[i], length), commit: () => m.commit() };
     }
+    case 'TMA': {
+      const m1 = new WindowSma(Math.ceil(length / 2));
+      const m2 = new WindowSma(Math.floor(length / 2) + 1);
+      return { step: (src, i) => m2.step(m1.step(src[i])), commit: () => { m1.commit(); m2.commit(); } };
+    }
+    case 'VAR': return new VarMa(2 / (length + 1));
+    case 'WWMA': return new WwmaMa(1 / length);
     case 'ZLEMA': {
       const lag = length / 2 === Math.round(length / 2) ? length / 2 : (length - 1) / 2;
-      const data = src.map((v, i) => (i - lag >= 0 ? v + (v - src[i - lag]) : NaN));
-      return taCore.ema(data, length);
+      const m = taStep.ema(length);
+      return {
+        step: (src, i) => m.step(i - lag >= 0 ? src[i] + (src[i] - src[i - lag]) : NaN),
+        commit: () => m.commit(),
+      };
     }
     case 'TSF': {
-      const lrc = taCore.linreg(src, length, 0);
-      const lrc1 = taCore.linreg(src, length, 1);
-      return lrc.map((v, i) => v + (v - lrc1[i]));
+      const lrc = taStep.linreg(length, 0);
+      const lrc1 = taStep.linreg(length, 1);
+      return {
+        step: (src, i) => {
+          const v = lrc.step(src[i]);
+          return v + (v - lrc1.step(src[i]));
+        },
+        commit: () => { lrc.commit(); lrc1.commit(); },
+      };
     }
-    default: return taCore.ema(src, length);
+    default: {
+      const m = taStep.ema(length);
+      return { step: (src, i) => m.step(src[i]), commit: () => m.commit() };
+    }
   }
+}
+
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface PmaxVars {
+  longStopLast: number;
+  shortStopLast: number;
+  dir: number;
+}
+
+interface PmaxRun extends BarRunState<PmaxVars> {
+  atr: { step(high: number, low: number, close: number): number; commit(): void };
+  ma: MaStep;
+  src: number[];
+  maVals: number[];
+  pmaxVals: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  upFillColors: string[];
+  downFillColors: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+/** crossedOver / crossedUnder of one bar: the values of the bar and of the bar before (na compares false) */
+const over = (v: number, w: number, pv: number, pw: number) => v > w && pv <= pw;
+const under = (v: number, w: number, pv: number, pw: number) => v < w && pv >= pw;
+
+function study(inputs: Partial<ProfitMaximizerInputs>): BarStudy<PmaxRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { atrPeriod, atrMult, maLength, normalize } = cfg;
+  const maType = String(cfg.maType).toUpperCase();
+  const num = (v: number) => (fin(v) ? v : NaN);
+  return {
+    init() {
+      // atr = changeATR ? atr(Periods) : sma(tr, Periods) (tr is na on the first bar)
+      let atr: PmaxRun['atr'];
+      if (cfg.changeATR) {
+        atr = taStep.atr(atrPeriod);
+      } else {
+        const tr = taStep.tr(false);
+        const sma = new WindowSma(atrPeriod);
+        atr = { step: (h, l, c) => sma.step(tr.step(h, l, c)), commit: () => { tr.commit(); sma.commit(); } };
+      }
+      const ma = movingAverage(maLength, maType);
+      const s: PmaxRun = {
+        atr, ma, src: [], maVals: [], pmaxVals: [], plot0: [], plot1: [], plot2: [], upFillColors: [], downFillColors: [],
+        markers: [], flags: alertConditions.map(() => []), times: alertConditions.map(() => []),
+        steps: [atr, ma], vars: { longStopLast: NaN, shortStopLast: NaN, dir: 1 }, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [
+        s.src, s.maVals, s.pmaxVals, s.plot0, s.plot1, s.plot2, s.upFillColors, s.downFillColors, ...s.flags,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const v = s.vars;
+      const srcV = sourceOf(b, cfg.src);
+      s.src[i] = srcV;
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const m = s.ma.step(s.src, i);
+
+      const band = normalize ? atrMult * atr / b.close : atrMult * atr;
+      let longStop = m - band;
+      const longStopPrev = fin(v.longStopLast) ? v.longStopLast : longStop;
+      longStop = m > longStopPrev ? Math.max(longStop, longStopPrev) : longStop;
+      let shortStop = m + band;
+      const shortStopPrev = fin(v.shortStopLast) ? v.shortStopLast : shortStop;
+      shortStop = m < shortStopPrev ? Math.min(shortStop, shortStopPrev) : shortStop;
+      v.dir = v.dir === -1 && m > shortStopPrev ? 1 : v.dir === 1 && m < longStopPrev ? -1 : v.dir;
+      const pmax = v.dir === 1 ? longStop : shortStop;
+      v.longStopLast = longStop;
+      v.shortStopLast = shortStop;
+
+      const p = num(pmax);
+      const mv = num(m);
+      s.pmaxVals[i] = p;
+      s.maVals[i] = mv;
+
+      const pm = i > 0 ? s.maVals[i - 1] : NaN;
+      const pp = i > 0 ? s.pmaxVals[i - 1] : NaN;
+      const ps = i > 0 ? s.src[i - 1] ?? NaN : NaN;
+      const sv = srcV ?? NaN;
+      const maOver = over(mv, p, pm, pp), maUnder = under(mv, p, pm, pp);
+      const pxOver = over(sv, p, ps, pp), pxUnder = under(sv, p, ps, pp);
+
+      if (cfg.showSignalsK && maOver) {
+        s.markers.push({ id: 'shape0', time: t, position: 'atPriceBottom', price: p * 0.995, shape: 'labelUp', color: GREEN, text: 'Buy', textColor: '#FFFFFF', size: 'tiny' });
+      }
+      if (cfg.showSignalsK && maUnder) {
+        s.markers.push({ id: 'shape1', time: t, position: 'atPriceTop', price: p * 1.005, shape: 'labelDown', color: RED, text: 'Sell', textColor: '#FFFFFF', size: 'tiny' });
+      }
+      if (cfg.showSignalsC && pxOver) {
+        s.markers.push({ id: 'shape2', time: t, position: 'atPriceBottom', price: p * 0.995, shape: 'labelUp', color: BLUE_LABEL, text: 'Buy', textColor: '#FFFFFF', size: 'tiny' });
+      }
+      if (cfg.showSignalsC && pxUnder) {
+        s.markers.push({ id: 'shape3', time: t, position: 'atPriceTop', price: p * 1.005, shape: 'labelDown', color: BLUE_LABEL, text: 'Sell', textColor: '#FFFFFF', size: 'tiny' });
+      }
+
+      // fill(mPlot, pALL): ohlc4 to PMax; green when MAvg > PMax, red when MAvg < PMax (na: no fill)
+      s.upFillColors[i] = cfg.highlighting && mv > p ? UP_FILL : NO_FILL;
+      s.downFillColors[i] = cfg.highlighting && mv < p ? DOWN_FILL : NO_FILL;
+
+      s.plot0[i] = { time: t, value: p };
+      s.plot1[i] = { time: t, value: cfg.showSupport ? mv : NaN };
+      s.plot2[i] = { time: t, value: (b.open + b.high + b.low + b.close) / 4 };
+
+      const flags = [maOver || maUnder, maOver, maUnder, pxOver || pxUnder, pxOver, pxUnder];
+      for (let k = 0; k < 6; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice(), 'plot2': s.plot2.slice() },
+        fills: [
+          { plot1: 'plot2', plot2: 'plot0', options: { title: 'UpTrend Highligter', color: UP_FILL }, colors: s.upFillColors.slice() },
+          { plot1: 'plot2', plot2: 'plot0', options: { title: 'DownTrend Highligter', color: DOWN_FILL }, colors: s.downFillColors.slice() },
+        ],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => !!f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ProfitMaximizerInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(
   bars: Bar[],
   inputs: Partial<ProfitMaximizerInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const { atrPeriod, atrMult, maLength, normalize } = cfg;
-  const maType = String(cfg.maType).toUpperCase();
-  const n = bars.length;
-  const high = bars.map((b) => b.high), low = bars.map((b) => b.low), close = bars.map((b) => b.close);
-
-  const src = sourceOf(bars, cfg.src);
-  // atr = changeATR ? atr(Periods) : sma(tr, Periods) (tr is na on the first bar)
-  const atr = cfg.changeATR
-    ? taCore.atr(atrPeriod, high, low, close)
-    : taCore.sma(taCore.tr(false, high, low, close), atrPeriod);
-  const ma = movingAverage(src, maLength, maType);
-
-  const pmax: number[] = new Array(n);
-  let longStopLast = NaN, shortStopLast = NaN, dir = 1;
-  for (let i = 0; i < n; i++) {
-    const m = ma[i];
-    const band = normalize ? atrMult * atr[i] / close[i] : atrMult * atr[i];
-    let longStop = m - band;
-    const longStopPrev = fin(longStopLast) ? longStopLast : longStop;
-    longStop = m > longStopPrev ? Math.max(longStop, longStopPrev) : longStop;
-    let shortStop = m + band;
-    const shortStopPrev = fin(shortStopLast) ? shortStopLast : shortStop;
-    shortStop = m < shortStopPrev ? Math.min(shortStop, shortStopPrev) : shortStop;
-    dir = dir === -1 && m > shortStopPrev ? 1 : dir === 1 && m < longStopPrev ? -1 : dir;
-    pmax[i] = dir === 1 ? longStop : shortStop;
-    longStopLast = longStop;
-    shortStopLast = shortStop;
-  }
-  const num = (v: number) => (fin(v) ? v : NaN);
-  const pmaxVals = pmax.map(num);
-  const maVals = ma.map(num);
-
-  const maOver = crossedOver(maVals, pmaxVals), maUnder = crossedUnder(maVals, pmaxVals);
-  const pxOver = crossedOver(src, pmaxVals), pxUnder = crossedUnder(src, pmaxVals);
-
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const p = pmaxVals[i];
-    if (cfg.showSignalsK && maOver[i]) {
-      markers.push({ id: 'shape0', time: t, position: 'atPriceBottom', price: p * 0.995, shape: 'labelUp', color: GREEN, text: 'Buy', textColor: '#FFFFFF', size: 'tiny' });
-    }
-    if (cfg.showSignalsK && maUnder[i]) {
-      markers.push({ id: 'shape1', time: t, position: 'atPriceTop', price: p * 1.005, shape: 'labelDown', color: RED, text: 'Sell', textColor: '#FFFFFF', size: 'tiny' });
-    }
-    if (cfg.showSignalsC && pxOver[i]) {
-      markers.push({ id: 'shape2', time: t, position: 'atPriceBottom', price: p * 0.995, shape: 'labelUp', color: BLUE_LABEL, text: 'Buy', textColor: '#FFFFFF', size: 'tiny' });
-    }
-    if (cfg.showSignalsC && pxUnder[i]) {
-      markers.push({ id: 'shape3', time: t, position: 'atPriceTop', price: p * 1.005, shape: 'labelDown', color: BLUE_LABEL, text: 'Sell', textColor: '#FFFFFF', size: 'tiny' });
-    }
-  }
-
-  // fill(mPlot, pALL): ohlc4 to PMax; green when MAvg > PMax, red when MAvg < PMax (na: no fill)
-  const upFillColors = maVals.map((m, i) => (cfg.highlighting && m > pmaxVals[i] ? UP_FILL : NO_FILL));
-  const downFillColors = maVals.map((m, i) => (cfg.highlighting && m < pmaxVals[i] ? DOWN_FILL : NO_FILL));
-
-  const plot0 = pmaxVals.map((v, i) => ({ time: bars[i].time, value: v }));
-  const plot1 = maVals.map((v, i) => ({ time: bars[i].time, value: cfg.showSupport ? v : NaN }));
-  const plot2 = bars.map((b) => ({ time: b.time, value: (b.open + b.high + b.low + b.close) / 4 }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
-    fills: [
-      { plot1: 'plot2', plot2: 'plot0', options: { title: 'UpTrend Highligter', color: UP_FILL }, colors: upFillColors },
-      { plot1: 'plot2', plot2: 'plot0', options: { title: 'DownTrend Highligter', color: DOWN_FILL }, colors: downFillColors },
-    ],
-    markers,
-    alerts: alertStates(alertConditions, bars, [
-      maOver.map((v, i) => v || maUnder[i]), maOver, maUnder,
-      pxOver.map((v, i) => v || pxUnder[i]), pxOver, pxUnder,
-    ]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -249,4 +371,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert5', title: 'Price Crossunder Alarm', message: 'PRICE UNDER PMax - SELL SIGNAL!' },
 ];
 
-export const ProfitMaximizer = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const ProfitMaximizer = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

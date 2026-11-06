@@ -13,9 +13,11 @@
  */
 
 import {
-  ta, Series, color,
+  taStep, color,
   type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar,
 } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type L2RiskAssessmentForTrendStrengthInputs = Record<string, never>;
 
@@ -60,46 +62,81 @@ export const metadata = {
 const EPS = 1e-10;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
+type Point = { time: number; value: number; color?: string };
+
+interface L2Run extends BarRunState<Record<string, never>> {
+  low33: WindowExtreme;
+  high21: WindowExtreme;
+  ema10: ReturnType<typeof taStep.ema>;
+  ema1: ReturnType<typeof taStep.ema>;
+  var4: number[];
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(): BarStudy<L2Run, IndicatorResult> {
+  return {
+    init() {
+      const low33 = new WindowExtreme(true, 33);
+      const high21 = new WindowExtreme(false, 21);
+      const ema10 = taStep.ema(10);
+      const ema1 = taStep.ema(1);
+      const s: L2Run = {
+        low33, high21, ema10, ema1, var4: [], plot0: [], plot1: [],
+        steps: [low33, high21, ema10, ema1], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.var4, s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const var2 = s.low33.step(b.low);
+      const var3 = s.high21.step(b.high);
+      // A plain division: x / 0 is +-infinity (0 / 0 NaN); ta.ema skips both like na
+      const raw = ((b.close - var2) / (var3 - var2)) * 100;
+      const v = s.ema10.step(raw) * -1 + 100;
+      s.var4[i] = v;
+      // get_last_valid_value(var4, 1): var4, or var4[1] when var4 is na
+      const last = !isNaN(v) ? v : i > 0 ? s.var4[i - 1]! : NaN;
+      const emaCombined = s.ema1.step(0.191 * last + 0.809 * v);
+      s.plot0[i] = { time: b.time as number, value: emaCombined };
+      const ts = 100 - emaCombined;
+      const c = ge(ts, 80) ? color.fuchsia : ge(ts, 50) ? color.red : ge(ts, 20) ? color.yellow : color.green;
+      s.plot1[i] = { time: b.time as number, value: ts, color: c };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const zone = (k: number) => new Array<string>(n).fill(ZONE_COLORS[k]);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: hlineConfig.map((h) => ({
+          value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle },
+        })),
+        fills: fillConfig.map((f, k) => ({ plot1: f.plot1, plot2: f.plot2, colors: zone(k) })),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(
+  _inputs: Partial<L2RiskAssessmentForTrendStrengthInputs> = {},
+  chart: ChartContext = {},
+): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(), chart);
+}
+
 export function calculate(
   bars: Bar[],
-  _inputs: Partial<L2RiskAssessmentForTrendStrengthInputs> = {},
+  inputs: Partial<L2RiskAssessmentForTrendStrengthInputs> = {},
 ): IndicatorResult {
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const var2 = A(ta.lowest(S(bars.map((b) => b.low)), 33));
-  const var3 = A(ta.highest(S(bars.map((b) => b.high)), 21));
-  // A plain division: x / 0 is +-infinity (0 / 0 NaN); ta.ema skips both like na
-  const raw = bars.map((b, i) => ((b.close - var2[i]) / (var3[i] - var2[i])) * 100);
-  const var4 = A(ta.ema(S(raw), 10)).map((v) => v * -1 + 100);
-  // get_last_valid_value(var4, 1): var4, or var4[1] when var4 is na
-  const combined = var4.map((v, i) => {
-    const last = !isNaN(v) ? v : i > 0 ? var4[i - 1] : NaN;
-    return 0.191 * last + 0.809 * v;
-  });
-  const emaCombined = A(ta.ema(S(combined), 1));
-
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: emaCombined[i] }));
-  const plot1 = bars.map((b, i) => {
-    const ts = 100 - emaCombined[i];
-    const c = ge(ts, 80) ? color.fuchsia : ge(ts, 50) ? color.red : ge(ts, 20) ? color.yellow : color.green;
-    return { time: b.time, value: ts, color: c };
-  });
-
-  const zone = (k: number) => new Array<string>(n).fill(ZONE_COLORS[k]);
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    hlines: hlineConfig.map((h) => ({
-      value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle },
-    })),
-    fills: fillConfig.map((f, k) => ({ plot1: f.plot1, plot2: f.plot2, colors: zone(k) })),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const L2RiskAssessmentForTrendStrength = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

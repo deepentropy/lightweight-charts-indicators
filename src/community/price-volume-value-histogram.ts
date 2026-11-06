@@ -11,8 +11,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PriceVolumeValueHistogramInputs {
   /** Number of points averaged */
@@ -62,70 +64,103 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => b - a <= EPS;
 const ne = (a: number, b: number) => Math.abs(a - b) > EPS;
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
+
+interface PvvhVars {
+  /** var float[] points_array (changed in place: copied by copyVars) */
+  points: number[];
+}
+
+interface PvvhRun extends BarRunState<PvvhVars> {
+  ema: ReturnType<typeof taStep.ema> | null;
+  plot0: { time: number; value: number; color: string }[];
+  plot1: { time: number; value: number; color: string }[];
+  plot2: { time: number; value: number }[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<PriceVolumeValueHistogramInputs>): BarStudy<PvvhRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  // reducedPercent := 1.0 - (percent_factor_vol / 100.0) (set on the first bar)
+  const reducedPercent = 1.0 - cfg.percentFactorVol / 100.0;
+  const orange = String(color.new(color.orange, 0));
+  return {
+    init() {
+      const ema = cfg.emaSmooth ? taStep.ema(cfg.emaLength) : null;
+      const s: PvvhRun = {
+        ema, plot0: [], plot1: [], plot2: [], barColors: [],
+        steps: ema ? [ema] : [], vars: { points: [] }, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1, s.plot2, s.barColors];
+      return s;
+    },
+    copyVars: (v) => ({ points: v.points.slice() }),
+    bar(s, i, bars) {
+      const points = s.vars.points;
+      const b = bars[i];
+      const close = b.close;
+      const volume = b.volume ?? NaN;
+      const close1 = i > 0 ? bars[i - 1].close : NaN;
+      const volume1 = i > 0 ? bars[i - 1].volume ?? NaN : NaN;
+      const priceUp = gt(close, close1);
+      const priceDown = lt(close, close1);
+      const volUp = gt(volume, volume1);
+      // ratioClose = close[1] != 0 ? close / close[1] : 1; ratioVol = volume[1] != 0 ? volume / volume[1] : 1
+      const ratioClose = ne(close1, 0) ? close / close1 : 1;
+      const ratioVol = ne(volume1, 0) ? volume / volume1 : 1;
+      // volumeFactor = math.max(1, math.min(ratioVol, 2) * reducedPercent) (na when ratioVol is na)
+      const volumeFactor = isNaN(ratioVol) ? NaN : Math.max(1, Math.min(ratioVol, 2) * reducedPercent);
+
+      if (priceUp) {
+        points.push(volUp ? ratioClose * volumeFactor : ratioClose);
+        if (points.length > cfg.lookBack) points.shift();
+      } else if (priceDown) {
+        points.push(volUp ? -(1 / ratioClose) * volumeFactor : -(1 / ratioClose));
+        if (points.length > cfg.lookBack) points.shift();
+      }
+      // sum_total = array.avg(points_array) (na while the array is empty)
+      const sumTotal = points.length ? points.reduce((sum, v) => sum + v, 0) / points.length : NaN;
+
+      // plot_result = emaSmooth ? ta.ema(sum_total, emaLength) : sum_total
+      const plotResult = s.ema ? s.ema.step(sumTotal) : sumTotal;
+
+      // histColor = plot_result >= 0 ? color.lime : color.red (red when plot_result is na)
+      const histColor = ge(plotResult, 0) ? color.lime : color.red;
+      // barcolor(color = colorBars ? histColor : na)
+      if (cfg.colorBars) s.barColors[i] = { time: b.time, color: histColor };
+      // plot(0, color = color.new(color.orange, 0))
+      s.plot0[i] = { time: b.time, value: 0, color: orange };
+      // plot(plot_result, color = histColor, style = plot.style_columns, linewidth = 5)
+      s.plot1[i] = { time: b.time, value: plotResult, color: histColor };
+      // plot(plot_result > 0 ? 1 : -1, '[External Indicator 1 or -1]', display = display.none, editable = false)
+      s.plot2[i] = { time: b.time, value: gt(plotResult, 0) ? 1 : -1 };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        markers: [],
+        barColors: cfg.colorBars ? s.barColors.slice() : [],
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PriceVolumeValueHistogramInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<PriceVolumeValueHistogramInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  // reducedPercent := 1.0 - (percent_factor_vol / 100.0) (set on the first bar)
-  const reducedPercent = 1.0 - cfg.percentFactorVol / 100.0;
-  const points: number[] = []; // var float[] points_array
-  const sumTotal: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const close = bars[i].close;
-    const volume = bars[i].volume ?? NaN;
-    const close1 = i > 0 ? bars[i - 1].close : NaN;
-    const volume1 = i > 0 ? bars[i - 1].volume ?? NaN : NaN;
-    const priceUp = gt(close, close1);
-    const priceDown = lt(close, close1);
-    const volUp = gt(volume, volume1);
-    // ratioClose = close[1] != 0 ? close / close[1] : 1; ratioVol = volume[1] != 0 ? volume / volume[1] : 1
-    const ratioClose = ne(close1, 0) ? close / close1 : 1;
-    const ratioVol = ne(volume1, 0) ? volume / volume1 : 1;
-    // volumeFactor = math.max(1, math.min(ratioVol, 2) * reducedPercent) (na when ratioVol is na)
-    const volumeFactor = isNaN(ratioVol) ? NaN : Math.max(1, Math.min(ratioVol, 2) * reducedPercent);
-
-    if (priceUp) {
-      points.push(volUp ? ratioClose * volumeFactor : ratioClose);
-      if (points.length > cfg.lookBack) points.shift();
-    } else if (priceDown) {
-      points.push(volUp ? -(1 / ratioClose) * volumeFactor : -(1 / ratioClose));
-      if (points.length > cfg.lookBack) points.shift();
-    }
-    // sum_total = array.avg(points_array) (na while the array is empty)
-    sumTotal[i] = points.length ? points.reduce((s, v) => s + v, 0) / points.length : NaN;
-  }
-
-  // plot_result = emaSmooth ? ta.ema(sum_total, emaLength) : sum_total
-  const plotResult = cfg.emaSmooth
-    ? ta.ema(Series.fromArray(bars, sumTotal), cfg.emaLength).toArray().map((v) => v ?? NaN)
-    : sumTotal;
-
-  // histColor = plot_result >= 0 ? color.lime : color.red (red when plot_result is na)
-  const histColor = plotResult.map((v) => (ge(v, 0) ? color.lime : color.red));
-  const barColors: BarColorData[] = [];
-  // barcolor(color = colorBars ? histColor : na)
-  if (cfg.colorBars) for (let i = 0; i < n; i++) barColors.push({ time: bars[i].time, color: histColor[i] });
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(0, color = color.new(color.orange, 0))
-      plot0: bars.map((b) => ({ time: b.time, value: 0, color: String(color.new(color.orange, 0)) })),
-      // plot(plot_result, color = histColor, style = plot.style_columns, linewidth = 5)
-      plot1: bars.map((b, i) => ({ time: b.time, value: plotResult[i], color: histColor[i] })),
-      // plot(plot_result > 0 ? 1 : -1, '[External Indicator 1 or -1]', display = display.none, editable = false)
-      plot2: bars.map((b, i) => ({ time: b.time, value: gt(plotResult[i], 0) ? 1 : -1 })),
-    },
-    markers: [],
-    barColors,
-  };
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PriceVolumeValueHistogram = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

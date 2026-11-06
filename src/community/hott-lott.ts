@@ -11,9 +11,11 @@
  * Reference: "HOTT-LOTT" by KivancOzbilgic
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface HottLottInputs {
   ottPeriod: number;
@@ -47,144 +49,167 @@ export const metadata = {
   overlay: true,
 };
 
-/** Compute a selectable MA over a plain number array, returning a plain number array. */
-function computeMA(bars: Bar[], srcArr: number[], length: number, maType: string): number[] {
-  const n = srcArr.length;
-  const srcSeries = new Series(bars, (_b, i) => srcArr[i]);
+/** A selectable MA stepped bar by bar (`i`: the bar); `arr` gives an array indexed by bar (a series of the run) */
+interface MaStep {
+  step(v: number, i: number): number;
+  commit(): void;
+}
 
+function maStep(length: number, maType: string, arr: () => number[]): MaStep {
   switch (maType) {
-    case 'SMA':
-      return ta.sma(srcSeries, length).toArray().map(v => v ?? NaN);
+    case 'SMA': {
+      const m = new WindowSma(length);
+      return { step: (v) => m.step(v), commit: () => m.commit() };
+    }
 
-    case 'EMA':
-      return ta.ema(srcSeries, length).toArray().map(v => v ?? NaN);
+    case 'EMA': {
+      const m = taStep.ema(length);
+      return { step: (v) => m.step(v), commit: () => m.commit() };
+    }
 
-    case 'WMA':
-      return ta.wma(srcSeries, length).toArray().map(v => v ?? NaN);
+    case 'WMA': {
+      const m = taStep.wma();
+      return { step: (v) => m.step(v, length), commit: () => m.commit() };
+    }
 
     case 'DEMA': {
-      const ema1 = ta.ema(srcSeries, length);
-      const ema2 = ta.ema(ema1, length);
-      const e1 = ema1.toArray();
-      const e2 = ema2.toArray();
-      return e1.map((v, i) => {
-        const a = v ?? NaN;
-        const b = e2[i] ?? NaN;
-        return isNaN(a) || isNaN(b) ? NaN : 2 * a - b;
-      });
+      const ema1 = taStep.ema(length);
+      const ema2 = taStep.ema(length);
+      return {
+        step: (v) => {
+          const a = ema1.step(v);
+          const b = ema2.step(a);
+          return isNaN(a) || isNaN(b) ? NaN : 2 * a - b;
+        },
+        commit: () => { ema1.commit(); ema2.commit(); },
+      };
     }
 
     case 'TMA': {
       const halfLen = Math.ceil(length / 2);
-      const sma1 = ta.sma(srcSeries, halfLen);
+      const sma1 = new WindowSma(halfLen);
       const sma2Len = Math.floor(length / 2) + 1;
-      return ta.sma(sma1, sma2Len).toArray().map(v => v ?? NaN);
+      const sma2 = new WindowSma(sma2Len);
+      return { step: (v) => sma2.step(sma1.step(v)), commit: () => { sma1.commit(); sma2.commit(); } };
     }
 
     case 'VAR': {
       const valpha = 2 / (length + 1);
-      const result: number[] = new Array(n);
-      const vud1: number[] = new Array(n);
-      const vdd1: number[] = new Array(n);
-      const vUD: number[] = new Array(n);
-      const vDD: number[] = new Array(n);
+      const srcArr = arr();
+      const result = arr();
+      const vud1 = arr();
+      const vdd1 = arr();
 
       // Var_Func: vud1 = src > src[1] ? src - src[1] : 0 (na compares false); vUD = math.sum(vud1, 9) (na before 9
       // bars); vCMO = nz((vUD - vDD) / (vUD + vDD));
       // VAR := nz(valpha * abs(vCMO) * src) + (1 - valpha * abs(vCMO)) * nz(VAR[1])
       const nz = (v: number) => (Number.isFinite(v) ? v : 0);
-      for (let i = 0; i < n; i++) {
-        const s = srcArr[i];
-        const s1 = i > 0 ? srcArr[i - 1] : NaN;
+      return {
+        step: (s, i) => {
+          srcArr[i] = s;
+          const s1 = i > 0 ? srcArr[i - 1] : NaN;
 
-        vud1[i] = s > s1 ? s - s1 : 0;
-        vdd1[i] = s < s1 ? s1 - s : 0;
+          vud1[i] = s > s1 ? s - s1 : 0;
+          vdd1[i] = s < s1 ? s1 - s : 0;
 
-        let sumUD = NaN;
-        let sumDD = NaN;
-        if (i >= 8) {
-          sumUD = 0;
-          sumDD = 0;
-          for (let j = 0; j < 9; j++) {
-            sumUD += vud1[i - j];
-            sumDD += vdd1[i - j];
+          let sumUD = NaN;
+          let sumDD = NaN;
+          if (i >= 8) {
+            sumUD = 0;
+            sumDD = 0;
+            for (let j = 0; j < 9; j++) {
+              sumUD += vud1[i - j];
+              sumDD += vdd1[i - j];
+            }
           }
-        }
-        vUD[i] = sumUD;
-        vDD[i] = sumDD;
 
-        const vCMO = nz((vUD[i] - vDD[i]) / (vUD[i] + vDD[i]));
-        const prev = i > 0 ? result[i - 1] : NaN;
-        result[i] = nz(valpha * Math.abs(vCMO) * s) + (1 - valpha * Math.abs(vCMO)) * nz(prev);
-      }
-      return result;
+          const vCMO = nz((sumUD - sumDD) / (sumUD + sumDD));
+          const prev = i > 0 ? result[i - 1] : NaN;
+          result[i] = nz(valpha * Math.abs(vCMO) * s) + (1 - valpha * Math.abs(vCMO)) * nz(prev);
+          return result[i];
+        },
+        commit: () => {},
+      };
     }
 
     case 'WWMA': {
       const alpha = 1 / length;
-      const result: number[] = new Array(n);
-      for (let i = 0; i < n; i++) {
-        if (i === 0) {
-          result[i] = srcArr[i];
-        } else {
-          result[i] = alpha * srcArr[i] + (1 - alpha) * result[i - 1];
-        }
-      }
-      return result;
+      const result = arr();
+      return {
+        step: (v, i) => {
+          if (i === 0) {
+            result[i] = v;
+          } else {
+            result[i] = alpha * v + (1 - alpha) * result[i - 1];
+          }
+          return result[i];
+        },
+        commit: () => {},
+      };
     }
 
     case 'ZLEMA': {
       const lag = Math.floor((length - 1) / 2);
-      const zSeries = new Series(bars, (_b, i) => {
-        const s = srcArr[i];
-        const lagged = i >= lag ? srcArr[i - lag] : srcArr[0];
-        return s + (s - lagged);
-      });
-      return ta.ema(zSeries, length).toArray().map(v => v ?? NaN);
+      const srcArr = arr();
+      const m = taStep.ema(length);
+      return {
+        step: (s, i) => {
+          srcArr[i] = s;
+          const lagged = i >= lag ? srcArr[i - lag] : srcArr[0];
+          return m.step(s + (s - lagged));
+        },
+        commit: () => m.commit(),
+      };
     }
 
     case 'TSF': {
-      const lr0 = ta.linreg(srcSeries, length, 0).toArray();
-      const lr1 = ta.linreg(srcSeries, length, 1).toArray();
-      return lr0.map((v, i) => {
-        const a = v ?? NaN;
-        const b = lr1[i] ?? NaN;
-        return isNaN(a) || isNaN(b) ? NaN : a + (a - b);
-      });
+      const lr0 = taStep.linreg(length, 0);
+      const lr1 = taStep.linreg(length, 1);
+      return {
+        step: (v) => {
+          const a = lr0.step(v);
+          const b = lr1.step(v);
+          return isNaN(a) || isNaN(b) ? NaN : a + (a - b);
+        },
+        commit: () => { lr0.commit(); lr1.commit(); },
+      };
     }
 
     case 'HULL': {
       const halfLen = Math.max(1, Math.floor(length / 2));
       const sqrtLen = Math.max(1, Math.round(Math.sqrt(length)));
-      const wmaHalf = ta.wma(srcSeries, halfLen);
-      const wmaFull = ta.wma(srcSeries, length);
-      const diff = wmaHalf.mul(2).sub(wmaFull);
-      return ta.wma(diff, sqrtLen).toArray().map(v => v ?? NaN);
+      const wmaHalf = taStep.wma();
+      const wmaFull = taStep.wma();
+      const wmaDiff = taStep.wma();
+      return {
+        step: (v) => {
+          const diff = wmaHalf.step(v, halfLen) * 2 - wmaFull.step(v, length);
+          return wmaDiff.step(diff, sqrtLen);
+        },
+        commit: () => { wmaHalf.commit(); wmaFull.commit(); wmaDiff.commit(); },
+      };
     }
 
-    default:
-      return ta.ema(srcSeries, length).toArray().map(v => v ?? NaN);
+    default: {
+      const m = taStep.ema(length);
+      return { step: (v) => m.step(v), commit: () => m.commit() };
+    }
   }
 }
 
-/** Compute OTT from a MA array, returning the OTT values. */
-function computeOTT(maArr: number[], percent: number): number[] {
-  const n = maArr.length;
-  const longStop: number[] = new Array(n);
-  const shortStop: number[] = new Array(n);
-  const dir: number[] = new Array(n);
-  const MT: number[] = new Array(n);
-  const OTT: number[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    const ma = maArr[i];
+/** OTT of a MA, bar by bar: its value on bar `i` (the arrays are series of the run) */
+function ottStep(percent: number, arr: () => number[]): (ma: number, i: number) => number {
+  const maArr = arr();
+  const longStop = arr();
+  const shortStop = arr();
+  const dir = arr();
+  return (ma, i) => {
+    maArr[i] = ma;
     if (isNaN(ma)) {
       longStop[i] = NaN;
       shortStop[i] = NaN;
       dir[i] = i > 0 ? dir[i - 1] : 1;
-      MT[i] = NaN;
-      OTT[i] = NaN;
-      continue;
+      return NaN;
     }
 
     const fark = ma * percent * 0.01;
@@ -216,80 +241,131 @@ function computeOTT(maArr: number[], percent: number): number[] {
       dir[i] = dir[i - 1];
     }
 
-    MT[i] = dir[i] === 1 ? longStop[i] : shortStop[i];
-    OTT[i] = ma > MT[i] ? MT[i] * (200 + percent) / 200 : MT[i] * (200 - percent) / 200;
-  }
+    const MT = dir[i] === 1 ? longStop[i] : shortStop[i];
+    return ma > MT ? MT * (200 + percent) / 200 : MT * (200 - percent) / 200;
+  };
+}
 
-  return OTT;
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface HottLottRun extends BarRunState<Record<string, never>> {
+  hh: WindowExtreme;
+  ll: WindowExtreme;
+  maHigh: MaStep;
+  maLow: MaStep;
+  ottHigh: (ma: number, i: number) => number;
+  ottLow: (ma: number, i: number) => number;
+  hottRaw: number[];
+  lottRaw: number[];
+  hottPlot: Point[];
+  lottPlot: Point[];
+  fillColors: string[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<HottLottInputs>): BarStudy<HottLottRun, Result> {
+  const { ottPeriod, percent, hlLength, maType } = { ...defaultInputs, ...inputs };
+  const warmup = Math.max(hlLength, ottPeriod) + 2;
+  return {
+    init() {
+      const series: unknown[][] = [];
+      const arr = (): number[] => {
+        const a: number[] = [];
+        series.push(a);
+        return a;
+      };
+      // Highest high and lowest low over hlLength
+      const hh = new WindowExtreme(false, hlLength);
+      const ll = new WindowExtreme(true, hlLength);
+      // Apply MA to both
+      const maHigh = maStep(ottPeriod, maType, arr);
+      const maLow = maStep(ottPeriod, maType, arr);
+      // Apply OTT to both
+      const ottHigh = ottStep(percent, arr);
+      const ottLow = ottStep(percent, arr);
+      const s: HottLottRun = {
+        hh, ll, maHigh, maLow, ottHigh, ottLow, hottRaw: [], lottRaw: [], hottPlot: [], lottPlot: [], fillColors: [],
+        barColors: [], flags: [[], []], times: [[], []],
+        steps: [hh, ll, maHigh, maLow], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.barColors, ...s.times];
+      s.series = [...series, s.hottRaw, s.lottRaw, s.hottPlot, s.lottPlot, s.fillColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const hottRaw = s.hottRaw;
+      const lottRaw = s.lottRaw;
+      hottRaw[i] = s.ottHigh(s.maHigh.step(s.hh.step(b.high), i), i);
+      lottRaw[i] = s.ottLow(s.maLow.step(s.ll.step(b.low), i), i);
+
+      // 2-bar delay: nz(HOTT[2]), nz(LOTT[2])
+      if (i < warmup + 2) {
+        s.hottPlot[i] = { time: t, value: NaN };
+        s.lottPlot[i] = { time: t, value: NaN };
+      } else {
+        const h = hottRaw[i - 2];
+        const l = lottRaw[i - 2];
+        s.hottPlot[i] = { time: t, value: isNaN(h) ? NaN : h };
+        s.lottPlot[i] = { time: t, value: isNaN(l) ? NaN : l };
+      }
+
+      // Fill between HOTT and LOTT
+      s.fillColors[i] = i < warmup + 2 ? 'transparent' : 'rgba(153,21,255,0.2)';
+
+      // Bar colors: close > HOTT[2] -> cyan, close < LOTT[2] -> magenta
+      if (i >= warmup + 2) {
+        const h2 = hottRaw[i - 2];
+        const l2 = lottRaw[i - 2];
+        if (!isNaN(h2) && !isNaN(l2)) {
+          if (b.close > h2) {
+            s.barColors.push({ time: t as number, color: '#00FFFF' });
+          } else if (b.close < l2) {
+            s.barColors.push({ time: t as number, color: '#FF00FF' });
+          }
+        }
+      }
+
+      // alertcondition(ta.crossover(close, HOTT[2])) / alertcondition(ta.crossunder(close, LOTT[2]))
+      const hott2 = i >= 2 ? hottRaw[i - 2] : NaN;
+      const lott2 = i >= 2 ? lottRaw[i - 2] : NaN;
+      const pc = i > 0 ? bars[i - 1].close : NaN;
+      const ph = i >= 3 ? hottRaw[i - 3] : NaN;
+      const pl = i >= 3 ? lottRaw[i - 3] : NaN;
+      const over = b.close > hott2 && pc <= ph;
+      const under = b.close < lott2 && pc >= pl;
+      s.flags[0][i] = over;
+      s.flags[1][i] = under;
+      if (over) s.times[0].push(t as number);
+      if (under) s.times[1].push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { hott: s.hottPlot.slice(), lott: s.lottPlot.slice() },
+        fills: [{ plot1: 'hott', plot2: 'lott', options: { color: 'rgba(153,21,255,0.5)' }, colors: s.fillColors.slice() }],
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HottLottInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(
   bars: Bar[],
   inputs: Partial<HottLottInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
-  const { ottPeriod, percent, hlLength, maType } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  // Highest high and lowest low over hlLength
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-  const srcHigh = ta.highest(highSeries, hlLength).toArray().map(v => v ?? NaN);
-  const srcLow = ta.lowest(lowSeries, hlLength).toArray().map(v => v ?? NaN);
-
-  // Apply MA to both
-  const maHigh = computeMA(bars, srcHigh, ottPeriod, maType);
-  const maLow = computeMA(bars, srcLow, ottPeriod, maType);
-
-  // Apply OTT to both
-  const hottRaw = computeOTT(maHigh, percent);
-  const lottRaw = computeOTT(maLow, percent);
-
-  const warmup = Math.max(hlLength, ottPeriod) + 2;
-
-  // 2-bar delay: nz(HOTT[2]), nz(LOTT[2])
-  const hottPlot = bars.map((b, i) => {
-    if (i < warmup + 2) return { time: b.time, value: NaN };
-    const v = hottRaw[i - 2];
-    return { time: b.time, value: isNaN(v) ? NaN : v };
-  });
-
-  const lottPlot = bars.map((b, i) => {
-    if (i < warmup + 2) return { time: b.time, value: NaN };
-    const v = lottRaw[i - 2];
-    return { time: b.time, value: isNaN(v) ? NaN : v };
-  });
-
-  // Fill between HOTT and LOTT
-  const fillColors = bars.map((_b, i) => {
-    if (i < warmup + 2) return 'transparent';
-    return 'rgba(153,21,255,0.2)';
-  });
-
-  // Bar colors: close > HOTT[2] → cyan, close < LOTT[2] → magenta
-  const barColors: BarColorData[] = [];
-  for (let i = warmup + 2; i < n; i++) {
-    const h2 = hottRaw[i - 2];
-    const l2 = lottRaw[i - 2];
-    if (isNaN(h2) || isNaN(l2)) continue;
-    if (bars[i].close > h2) {
-      barColors.push({ time: bars[i].time as number, color: '#00FFFF' });
-    } else if (bars[i].close < l2) {
-      barColors.push({ time: bars[i].time as number, color: '#FF00FF' });
-    }
-  }
-
-  // alertcondition(ta.crossover(close, HOTT[2])) / alertcondition(ta.crossunder(close, LOTT[2]))
-  const closes = bars.map((b) => b.close);
-  const hott2 = hottRaw.map((_v, i) => (i >= 2 ? hottRaw[i - 2] : NaN));
-  const lott2 = lottRaw.map((_v, i) => (i >= 2 ? lottRaw[i - 2] : NaN));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { hott: hottPlot, lott: lottPlot },
-    fills: [{ plot1: 'hott', plot2: 'lott', options: { color: 'rgba(153,21,255,0.5)' }, colors: fillColors }],
-    barColors,
-    alerts: alertStates(alertConditions, bars, [crossedOver(closes, hott2), crossedUnder(closes, lott2)]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -298,4 +374,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'Price Crossunder Alarm', message: 'PRICE UNDER LOTT - SELL SIGNAL!' },
 ];
 
-export const HottLott = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const HottLott = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

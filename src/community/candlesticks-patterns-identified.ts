@@ -14,10 +14,12 @@
  */
 
 import {
-  ta, Series, color,
+  color,
   type Bar, type IndicatorResult, type InputConfig, type PlotConfig, type ShapeConfig,
 } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CandlesticksPatternsIdentifiedInputs {
   /** Trend in bars: the open this many bars back is compared with the open */
@@ -73,60 +75,82 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CandlesticksPatternsIdentifiedInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface CandlesRun extends BarRunState<Record<string, never>> {
+  low10: WindowExtreme;
+  lowest10: number[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<CandlesticksPatternsIdentifiedInputs>): BarStudy<CandlesRun, Result> {
   const { trend, dojiSize } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  // lowest(10): lowest low of 10 bars
-  const lowest10 = ta.lowest(new Series(bars, (b) => b.low), 10).toArray().map((v) => v ?? NaN);
-
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const { open, high, low, close, time } = bars[i];
-    const p1 = i >= 1 ? bars[i - 1] : null;
-    const open1 = p1 ? p1.open : NaN;
-    const close1 = p1 ? p1.close : NaN;
-    const high1 = p1 ? p1.high : NaN;
-    const low1 = p1 ? p1.low : NaN;
-    const openT = i >= trend ? bars[i - trend].open : NaN; // open[trend]
-    const shape = (k: number, bull: boolean, text: string, on: boolean) => {
-      if (!on) return;
-      markers.push(bull
-        ? { id: `shape${k}`, time, position: 'belowBar', shape: 'arrowUp', color: LIME, text, textColor: TEXT, size: 'auto' }
-        : { id: `shape${k}`, time, position: 'aboveBar', shape: 'arrowDown', color: RED, text, textColor: TEXT, size: 'auto' });
-    };
-
-    // plotchar(data, title="Doji", text='Doji', color=white): default char and location.abovebar
-    if (le(Math.abs(open - close), (high - low) * dojiSize)) {
-      markers.push({ id: 'char0', time, position: 'aboveBar', shape: 'circle', char: STAR, color: WHITE, text: 'Doji', textColor: TEXT, size: 'auto' });
-    }
-
-    shape(0, false, 'Bearish\nHarami', gt(close1, open1) && gt(open, close) && le(open, close1) && le(open1, close)
-      && lt(open - close, close1 - open1) && lt(openT, open));
-    shape(1, true, 'Bullish\nHarami', gt(open1, close1) && gt(close, open) && le(close, open1) && le(close1, open)
-      && lt(close - open, open1 - close1) && gt(openT, open));
-    shape(2, false, 'Bearish\nEngulfing', gt(close1, open1) && gt(open, close) && ge(open, close1) && ge(open1, close)
-      && gt(open - close, close1 - open1) && lt(openT, open));
-    // The Pine text is "Bullish\nEngulfling"
-    shape(3, true, 'Bullish\nEngulfling', gt(open1, close1) && gt(close, open) && ge(close, open1) && ge(close1, open)
-      && gt(close - open, open1 - close1) && gt(openT, open));
-    shape(4, true, 'Piercing\nLine', lt(close1, open1) && lt(open, low1) && gt(close, close1 + (open1 - close1) / 2)
-      && lt(close, open1) && gt(openT, open));
-    // lower = lowest(10)[1]
-    const lower = i >= 1 ? lowest10[i - 1] : NaN;
-    shape(5, true, 'Bullish\nBelt', eq(low, open) && lt(open, lower) && lt(open, close)
-      && gt(close, (high1 - low1) / 2 + low1) && gt(openT, open));
-    shape(6, true, 'Bullish\nKicker', gt(open1, close1) && ge(open, open1) && gt(close, open) && gt(openT, open));
-    shape(7, false, 'Bearish\nKicker', lt(open1, close1) && le(open, open1) && le(close, open) && lt(openT, open));
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
+    init() {
+      const low10 = new WindowExtreme(true, 10);
+      const s: CandlesRun = { low10, lowest10: [], markers: [], steps: [low10], vars: {}, lists: [], series: [] };
+      s.lists = [s.markers];
+      s.series = [s.lowest10];
+      return s;
+    },
+    bar(s, i, bars) {
+      const { open, high, low, close, time } = bars[i]!;
+      const markers = s.markers;
+      // lowest(10): lowest low of 10 bars
+      s.lowest10[i] = s.low10.step(low);
+      const p1 = i >= 1 ? bars[i - 1]! : null;
+      const open1 = p1 ? p1.open : NaN;
+      const close1 = p1 ? p1.close : NaN;
+      const high1 = p1 ? p1.high : NaN;
+      const low1 = p1 ? p1.low : NaN;
+      const openT = i >= trend ? bars[i - trend]!.open : NaN; // open[trend]
+      const shape = (k: number, bull: boolean, text: string, on: boolean) => {
+        if (!on) return;
+        markers.push(bull
+          ? { id: `shape${k}`, time, position: 'belowBar', shape: 'arrowUp', color: LIME, text, textColor: TEXT, size: 'auto' }
+          : { id: `shape${k}`, time, position: 'aboveBar', shape: 'arrowDown', color: RED, text, textColor: TEXT, size: 'auto' });
+      };
+
+      // plotchar(data, title="Doji", text='Doji', color=white): default char and location.abovebar
+      if (le(Math.abs(open - close), (high - low) * dojiSize)) {
+        markers.push({ id: 'char0', time, position: 'aboveBar', shape: 'circle', char: STAR, color: WHITE, text: 'Doji', textColor: TEXT, size: 'auto' });
+      }
+
+      shape(0, false, 'Bearish\nHarami', gt(close1, open1) && gt(open, close) && le(open, close1) && le(open1, close)
+        && lt(open - close, close1 - open1) && lt(openT, open));
+      shape(1, true, 'Bullish\nHarami', gt(open1, close1) && gt(close, open) && le(close, open1) && le(close1, open)
+        && lt(close - open, open1 - close1) && gt(openT, open));
+      shape(2, false, 'Bearish\nEngulfing', gt(close1, open1) && gt(open, close) && ge(open, close1) && ge(open1, close)
+        && gt(open - close, close1 - open1) && lt(openT, open));
+      // The Pine text is "Bullish\nEngulfling"
+      shape(3, true, 'Bullish\nEngulfling', gt(open1, close1) && gt(close, open) && ge(close, open1) && ge(close1, open)
+        && gt(close - open, open1 - close1) && gt(openT, open));
+      shape(4, true, 'Piercing\nLine', lt(close1, open1) && lt(open, low1) && gt(close, close1 + (open1 - close1) / 2)
+        && lt(close, open1) && gt(openT, open));
+      // lower = lowest(10)[1]
+      const lower = i >= 1 ? s.lowest10[i - 1]! : NaN;
+      shape(5, true, 'Bullish\nBelt', eq(low, open) && lt(open, lower) && lt(open, close)
+        && gt(close, (high1 - low1) / 2 + low1) && gt(openT, open));
+      shape(6, true, 'Bullish\nKicker', gt(open1, close1) && ge(open, open1) && gt(close, open) && gt(openT, open));
+      shape(7, false, 'Bearish\nKicker', lt(open1, close1) && le(open, open1) && le(close, open) && lt(openT, open));
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const CandlesticksPatternsIdentified = { calculate, metadata, defaultInputs, inputConfig, plotConfig, shapeConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CandlesticksPatternsIdentifiedInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CandlesticksPatternsIdentifiedInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const CandlesticksPatternsIdentified = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, shapeConfig };

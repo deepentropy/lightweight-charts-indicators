@@ -13,8 +13,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ScalpProInputs {
   /** Length of the fast filter */
@@ -60,64 +62,117 @@ export const metadata = {
 /** nz(): na becomes 0 */
 const nz = (v: number) => (Number.isNaN(v) ? 0 : v);
 
-/** y = c1 * (x + x[1]) * 0.5 + c2 * nz(y[1]) + c3 * nz(y[2]) */
-function superSmoother(x: number[], length: number): number[] {
-  const f = (1.414 * 3.141592653589793238462643) / length;
-  const a = Math.exp(-f);
-  const c2 = 2 * a * Math.cos(f);
-  const c3 = -a * a;
-  const c1 = 1 - c2 - c3;
-  const y: number[] = new Array(x.length);
-  for (let i = 0; i < x.length; i++) {
-    const prevX = i >= 1 ? x[i - 1] : NaN;
-    y[i] = c1 * (x[i] + prevX) * 0.5 + c2 * nz(i >= 1 ? y[i - 1] : NaN) + c3 * nz(i >= 2 ? y[i - 2] : NaN);
+/** y = c1 * (x + x[1]) * 0.5 + c2 * nz(y[1]) + c3 * nz(y[2]), one bar at a time */
+class SuperSmoother {
+  private readonly c1: number;
+  private readonly c2: number;
+  private readonly c3: number;
+  private x1 = NaN;
+  private y1 = NaN;
+  private y2 = NaN;
+  private pendingX = NaN;
+  private pendingY = NaN;
+  private stepped = false;
+
+  constructor(length: number) {
+    const f = (1.414 * 3.141592653589793238462643) / length;
+    const a = Math.exp(-f);
+    this.c2 = 2 * a * Math.cos(f);
+    this.c3 = -a * a;
+    this.c1 = 1 - this.c2 - this.c3;
   }
-  return y;
+
+  step(x: number): number {
+    this.stepped = true;
+    this.pendingX = x;
+    this.pendingY = this.c1 * (x + this.x1) * 0.5 + this.c2 * nz(this.y1) + this.c3 * nz(this.y2);
+    return this.pendingY;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.x1 = this.pendingX;
+    this.y2 = this.y1;
+    this.y1 = this.pendingY;
+  }
+}
+
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface ScalpRun extends BarRunState<Record<string, never>> {
+  fast: SuperSmoother;
+  slow: SuperSmoother;
+  sig: SuperSmoother;
+  over: ReturnType<typeof taStep.crossover>;
+  under: ReturnType<typeof taStep.crossunder>;
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<ScalpProInputs>): BarStudy<ScalpRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const fast = new SuperSmoother(cfg.fastLength);
+      const slow = new SuperSmoother(cfg.slowLength);
+      const sig = new SuperSmoother(cfg.smoothLength);
+      const over = taStep.crossover();
+      const under = taStep.crossunder();
+      const s: ScalpRun = {
+        fast, slow, sig, over, under, plot0: [], plot1: [], markers: [],
+        steps: [fast, slow, sig, over, under], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = b.close;
+      const macd = (s.fast.step(close) - s.slow.step(close)) * 10000000;
+      const signal = s.sig.step(macd);
+      const buy = s.over.step(macd, signal);
+      const sell = s.under.step(macd, signal);
+      // plotshape(buy, text = 'Buy', style = shape.labelup, location = location.belowbar, color = green,
+      //   textcolor = white, transp = 0, size = size.tiny)
+      if (buy) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: GREEN, text: 'Buy', textColor: WHITE, size: 'tiny' });
+      }
+      if (sell) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: RED, text: 'Sell', textColor: WHITE, size: 'tiny' });
+      }
+      s.plot0[i] = { time: b.time as number, value: macd };
+      s.plot1[i] = { time: b.time as number, value: signal };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: FILL } }],
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ScalpProInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(
   bars: Bar[],
   inputs: Partial<ScalpProInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const close = bars.map((b) => b.close);
-
-  const fast = superSmoother(close, cfg.fastLength);
-  const slow = superSmoother(close, cfg.slowLength);
-  const macd = fast.map((v, i) => (v - slow[i]) * 10000000);
-  const signal = superSmoother(macd, cfg.smoothLength);
-
-  const macdS = Series.fromArray(bars, macd);
-  const signalS = Series.fromArray(bars, signal);
-  const buy = ta.crossover(macdS, signalS).toArray();
-  const sell = ta.crossunder(macdS, signalS).toArray();
-
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    // plotshape(buy, text = 'Buy', style = shape.labelup, location = location.belowbar, color = green,
-    //   textcolor = white, transp = 0, size = size.tiny)
-    if (buy[i]) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: GREEN, text: 'Buy', textColor: WHITE, size: 'tiny' });
-    }
-    if (sell[i]) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: RED, text: 'Sell', textColor: WHITE, size: 'tiny' });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: macd[i] })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: signal[i] })),
-    },
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: FILL } }],
-    markers,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const ScalpPro = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

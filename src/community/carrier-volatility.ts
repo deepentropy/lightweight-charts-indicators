@@ -12,8 +12,9 @@
  * Original notice: © et20tradeview
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
-import { barInterval, barTime } from '../bar-time';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type CarrierVolatilityMode = 'Defaut (RSI)' | 'Diagnostic (RSI SMA)' | 'Price' | 'Custom';
 
@@ -71,68 +72,97 @@ export const metadata = {
   overlay: false,
 };
 
-/** pine_ema(src, length): sum = alpha * src + (1 - alpha) * nz(sum[1]), alpha = 2 / (length + 1) */
-function pineEma(src: number[], length: number): number[] {
-  const alpha = 2 / (length + 1);
-  const out: number[] = new Array(src.length);
-  for (let i = 0; i < src.length; i++) {
-    const prev = i > 0 && !isNaN(out[i - 1]) ? out[i - 1] : 0;
-    out[i] = alpha * src[i] + (1 - alpha) * prev;
-  }
-  return out;
+type Result = IndicatorResult & { visibility: Record<string, boolean> };
+type Point = { time: number; value: number; color: string };
+
+interface CarrierRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  rsiMa: WindowSma;
+  ln1: number[];
+  ln2: number[];
+  line: Point[];
+  shifted: Point[];
+  source: Point[];
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CarrierVolatilityInputs> = {},
-): IndicatorResult & { visibility: Record<string, boolean> } {
+function study(inputs: Partial<CarrierVolatilityInputs>): BarStudy<CarrierRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  // rsi_input = ta.rsi(close, rsiLengthInput); rsi_ma = ta.sma(rsi_input, maLengthInput)
-  const rsiS = ta.rsi(Series.fromArray(bars, bars.map((b) => b.close)), cfg.rsiLength);
-  const rsi = A(rsiS);
-  const rsiMa = A(ta.sma(rsiS, cfg.maLength));
-  const seriesP = cfg.mode === 'Defaut (RSI)' ? rsi
-    : cfg.mode === 'Diagnostic (RSI SMA)' ? rsiMa
-      : cfg.mode === 'Price' ? bars.map((b) => b.close)
-        : A(getSourceSeries(bars, cfg.source));
-
-  const ln1 = pineEma(seriesP, cfg.factor);
-  const ln2 = pineEma(ln1, cfg.factor2);
-
-  const interval = barInterval(bars);
-  const t = (i: number) => bars[i].time;
-  const line = () => bars.map((_b, i) => ({ time: t(i), value: ln2[i], color: color.purple }));
-  // plot(ln2, "EMA offset", offset = -1): the value of bar i is drawn on bar i - 1
-  const shifted = () => bars.slice(1).map((_b, k) => ({ time: barTime(bars, k, interval), value: ln2[k + 1], color: color.purple }));
-  const source = () => bars.map((_b, i) => ({ time: t(i), value: seriesP[i], color: SOURCE_COLOR }));
-
-  // fill(p2, p3, color.new(#69359C, 70), "Lag Shading", display = showOnPrice ? none : all); fill(p4, p5, ...)
-  const shade = String(color.new('#69359C', 70));
+  const custom = barSource(cfg.source);
+  // pine_ema(src, length): sum = alpha * src + (1 - alpha) * nz(sum[1]), alpha = 2 / (length + 1)
+  const alpha1 = 2 / (cfg.factor + 1);
+  const alpha2 = 2 / (cfg.factor2 + 1);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(),
-      plot1: shifted(),
-      plot2: source(),
-      plot3: line(),
-      plot4: shifted(),
-      plot5: source(),
+    fullRunReason: () => (cfg.mode !== 'Custom' || isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      // rsi_input = ta.rsi(close, rsiLengthInput); rsi_ma = ta.sma(rsi_input, maLengthInput)
+      const rsi = taStep.rsi(cfg.rsiLength);
+      const rsiMa = new WindowSma(cfg.maLength);
+      const s: CarrierRun = {
+        rsi, rsiMa, ln1: [], ln2: [], line: [], shifted: [], source: [],
+        steps: [rsi, rsiMa], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.ln1, s.ln2, s.line, s.source];
+      return s;
     },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Lag Shading' },
-        colors: new Array<string>(n).fill(cfg.showOnPrice ? 'transparent' : shade) },
-      { plot1: 'plot3', plot2: 'plot4', options: { title: 'Lag Shading' },
-        colors: new Array<string>(n).fill(cfg.showOnPrice ? shade : 'transparent') },
-    ],
-    visibility: { showInPane: !cfg.showOnPrice, showOnPrice: cfg.showOnPrice },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const rsi = s.rsi.step(b.close);
+      const rsiMa = s.rsiMa.step(rsi);
+      const seriesP = cfg.mode === 'Defaut (RSI)' ? rsi
+        : cfg.mode === 'Diagnostic (RSI SMA)' ? rsiMa
+          : cfg.mode === 'Price' ? b.close
+            : custom(b);
+      const p1 = i > 0 && !isNaN(s.ln1[i - 1]!) ? s.ln1[i - 1]! : 0;
+      const ln1 = alpha1 * seriesP + (1 - alpha1) * p1;
+      const p2 = i > 0 && !isNaN(s.ln2[i - 1]!) ? s.ln2[i - 1]! : 0;
+      const ln2 = alpha2 * ln1 + (1 - alpha2) * p2;
+      s.ln1[i] = ln1;
+      s.ln2[i] = ln2;
+      const time = b.time as number;
+      s.line[i] = { time, value: ln2, color: color.purple };
+      s.source[i] = { time, value: seriesP, color: SOURCE_COLOR };
+      // plot(ln2, "EMA offset", offset = -1): the value of bar i is drawn on bar i - 1 (only written by bar i)
+      if (i > 0) s.shifted[i - 1] = { time: bars[i - 1]!.time as number, value: ln2, color: color.purple };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const shifted = s.shifted.slice(0, Math.max(0, n - 1));
+      // fill(p2, p3, color.new(#69359C, 70), "Lag Shading", display = showOnPrice ? none : all); fill(p4, p5, ...)
+      const shade = String(color.new('#69359C', 70));
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.line.slice(),
+          plot1: shifted,
+          plot2: s.source.slice(),
+          plot3: s.line.slice(),
+          plot4: shifted.slice(),
+          plot5: s.source.slice(),
+        },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Lag Shading' },
+            colors: new Array<string>(n).fill(cfg.showOnPrice ? 'transparent' : shade) },
+          { plot1: 'plot3', plot2: 'plot4', options: { title: 'Lag Shading' },
+            colors: new Array<string>(n).fill(cfg.showOnPrice ? shade : 'transparent') },
+        ],
+        visibility: { showInPane: !cfg.showOnPrice, showOnPrice: cfg.showOnPrice },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CarrierVolatilityInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CarrierVolatilityInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const CarrierVolatility = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -449,7 +449,10 @@ export class WindowSum implements Committable {
       return this.last;
     }
     if (this.q.length < this.p.length) this.q = new Float64Array(this.p.length);
-    this.q.set(this.p.subarray(0, this.n));
+    // the kept partials into the second buffer (a loop: no subarray view per bar)
+    const p = this.p;
+    const q = this.q;
+    for (let j = 0; j < this.n; j++) q[j] = p[j]!;
     this.qn = this.n;
     const count = this.values.length;
     if (count >= this.len) this.add(-this.values[count - this.len]!);

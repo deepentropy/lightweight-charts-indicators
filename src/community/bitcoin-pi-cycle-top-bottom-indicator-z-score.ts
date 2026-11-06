@@ -11,8 +11,10 @@
  * Original notice: © commandoum; original code by: © Rocheur
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 // The Pine script has no inputs
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
@@ -51,56 +53,80 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(
-  bars: Bar[],
-  _inputs: Partial<BitcoinPiCycleTopBottomIndicatorZScoreInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
+type Result = IndicatorResult & { barColors: BarColorData[] };
+type Point = { time: number; value: number; color: string };
 
-  const ma111 = A(ta.sma(close, 111));
-  const ma350 = A(ta.sma(close, 350)).map((v) => 2 * v);
+interface PiRun extends BarRunState<Record<string, never>> {
+  sma111: WindowSma;
+  sma350: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  barColors: BarColorData[];
+}
 
+function study(): BarStudy<PiRun, Result> {
   const thresholdTop = 1.05;
   const thresholdBottom = -1.1;
   const mean = (thresholdTop + thresholdBottom) / 2;
   const bandsRange = thresholdTop - thresholdBottom;
   // stdDev = bands_range != 0 ? bands_range / 6 : 0 (constants: never 0)
   const stdDev = bandsRange !== 0 ? bandsRange / 6 : 0;
-
-  // Pi_cycle = 2 - ma_350 / ma_111: a plain division (x / 0 is +-infinity, 0 / 0 na)
-  const zScore = bars.map((_b, i) => {
-    const pi = 2 - ma350[i] / ma111[i];
-    return stdDev !== 0 ? (pi - mean) / stdDev : 0;
-  });
-
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
   const startColor = String(color.rgb(0, 255, 0));
   const endColor = String(color.rgb(255, 0, 0));
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    // barcolor(color.from_gradient(zScore, -3, 3, green, red)): na z-score gives na (default bar colour)
-    if (isNaN(zScore[i])) continue;
-    barColors.push({ time: bars[i].time, color: color.from_gradient(zScore[i], -3, 3, startColor, endColor) });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: ma111[i], color: color.yellow })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: ma350[i], color: color.green })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: fin(zScore[i]), color: color.white })),
+    init() {
+      const sma111 = new WindowSma(111);
+      const sma350 = new WindowSma(350);
+      const s: PiRun = {
+        sma111, sma350, plot0: [], plot1: [], plot2: [], barColors: [],
+        steps: [sma111, sma350], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.barColors];
+      s.series = [s.plot0, s.plot1, s.plot2];
+      return s;
     },
-    hlines: hlineConfig.map((h) => ({
-      value: h.price,
-      options: { title: h.title, color: h.color, linestyle: h.linestyle, linewidth: h.linewidth },
-    })),
-    barColors,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time as number;
+      const ma111 = s.sma111.step(b.close);
+      const ma350 = 2 * s.sma350.step(b.close);
+      // Pi_cycle = 2 - ma_350 / ma_111: a plain division (x / 0 is +-infinity, 0 / 0 na)
+      const pi = 2 - ma350 / ma111;
+      const zScore = stdDev !== 0 ? (pi - mean) / stdDev : 0;
+      // barcolor(color.from_gradient(zScore, -3, 3, green, red)): na z-score gives na (default bar colour)
+      if (!isNaN(zScore)) s.barColors.push({ time, color: color.from_gradient(zScore, -3, 3, startColor, endColor) });
+      s.plot0[i] = { time, value: ma111, color: color.yellow };
+      s.plot1[i] = { time, value: ma350, color: color.green };
+      s.plot2[i] = { time, value: fin(zScore), color: color.white };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        hlines: hlineConfig.map((h) => ({
+          value: h.price,
+          options: { title: h.title, color: h.color, linestyle: h.linestyle, linewidth: h.linewidth },
+        })),
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<BitcoinPiCycleTopBottomIndicatorZScoreInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(bars: Bar[], _inputs: Partial<BitcoinPiCycleTopBottomIndicatorZScoreInputs> = {}): Result {
+  return fullResult(createRun().update(bars));
 }
 
 export const BitcoinPiCycleTopBottomIndicatorZScore = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

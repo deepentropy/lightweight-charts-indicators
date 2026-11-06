@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeWeightedMaCrossoverInputs {
   /** VWMA length */
@@ -47,50 +49,86 @@ export const metadata = {
   overlay: true,
 };
 
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface VwmaCrossVars {
+  /** var color signal_color = na ('' for na) */
+  signal: string;
+  /** The values of the last bar where both were not na */
+  pv: number;
+  ps: number;
+}
+
+interface VwmaCrossRun extends BarRunState<VwmaCrossVars> {
+  vwma: WindowVwma;
+  sma: WindowSma;
+  plot0: Point[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<VolumeWeightedMaCrossoverInputs>): BarStudy<VwmaCrossRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const vwma = new WindowVwma(cfg.lenVwma);
+      const sma = new WindowSma(cfg.lenSma);
+      const s: VwmaCrossRun = {
+        vwma, sma, plot0: [], flags: [[], []], times: [[], []],
+        steps: [vwma, sma], vars: { signal: '', pv: NaN, ps: NaN }, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.plot0, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const x = value(b);
+      const v = s.vwma.step(x, b.volume ?? NaN);
+      const sm = s.sma.step(x);
+      const st = s.vars;
+      // var color signal_color = na: set on the crosses (crossover / crossunder compared with the last bar where both
+      // values were not na; a tie there counts; exact comparisons: no 1e-10 tolerance, unlike the operators)
+      const longCondition = v > sm && st.pv <= st.ps;
+      const shortCondition = v < sm && st.pv >= st.ps;
+      s.flags[0][i] = longCondition;
+      s.flags[1][i] = shortCondition;
+      if (longCondition) s.times[0].push(b.time as number);
+      if (shortCondition) s.times[1].push(b.time as number);
+      if (!isNaN(v) && !isNaN(sm)) {
+        st.pv = v;
+        st.ps = sm;
+      }
+      if (longCondition) st.signal = LONG_COL;
+      if (shortCondition) st.signal = SHORT_COL;
+      // color = signal_color == #00F1FF ? #00F1FF : #FF019A
+      s.plot0[i] = { time: b.time, value: v, color: st.signal === LONG_COL ? LONG_COL : SHORT_COL };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        // alertcondition(long_condition, 'VWMA Crossover Long') / alertcondition(short_condition, 'VWMA Crossover Short')
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeWeightedMaCrossoverInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<VolumeWeightedMaCrossoverInputs> = {},
 ): IndicatorResult & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = getSourceSeries(bars, cfg.src);
-  const volume = new Series(bars, (b) => b.volume ?? NaN);
-
-  const vwma = A(ta.vwma(src, cfg.lenVwma, volume));
-  const sma = A(ta.sma(src, cfg.lenSma));
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  // var color signal_color = na: set on the crosses (crossover / crossunder compared with the last bar where both
-  // values were not na; a tie there counts; exact comparisons: no 1e-10 tolerance, unlike the operators)
-  const longFlags: boolean[] = [];
-  const shortFlags: boolean[] = [];
-  let signal = '';
-  let pv = NaN;
-  let ps = NaN;
-  for (let i = 0; i < n; i++) {
-    const v = vwma[i];
-    const s = sma[i];
-    const longCondition = v > s && pv <= ps;
-    const shortCondition = v < s && pv >= ps;
-    longFlags.push(longCondition);
-    shortFlags.push(shortCondition);
-    if (!isNaN(v) && !isNaN(s)) {
-      pv = v;
-      ps = s;
-    }
-    if (longCondition) signal = LONG_COL;
-    if (shortCondition) signal = SHORT_COL;
-    // color = signal_color == #00F1FF ? #00F1FF : #FF019A
-    plot0.push({ time: bars[i].time, value: v, color: signal === LONG_COL ? LONG_COL : SHORT_COL });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    // alertcondition(long_condition, 'VWMA Crossover Long') / alertcondition(short_condition, 'VWMA Crossover Short')
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -101,6 +139,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const VolumeWeightedMaCrossover = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

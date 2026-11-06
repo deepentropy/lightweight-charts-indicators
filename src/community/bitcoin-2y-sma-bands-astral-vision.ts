@@ -12,7 +12,9 @@
  * Original notice: © AstralVision
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { PlotCandleData, BgColorData } from '../types';
 
 export type AstralTheme = 'Inferno' | 'Paradiso' | 'Futura' | 'Infinito' | 'Hermes';
@@ -92,13 +94,20 @@ function themeColors(cfg: Bitcoin2ySmaBandsAstralVisionInputs): [string, string]
   }
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<Bitcoin2ySmaBandsAstralVisionInputs> = {},
-): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]>; bgColors: BgColorData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { plotCandles: Record<string, PlotCandleData[]>; bgColors: BgColorData[] };
+
+interface BtcRun extends BarRunState<Record<string, never>> {
+  sma2y: WindowSma;
+  plots: Point[][];
+  fillBottom: string[];
+  fillTop: string[];
+  bgColors: BgColorData[];
+  candles: PlotCandleData[];
+}
+
+function study(inputs: Partial<Bitcoin2ySmaBandsAstralVisionInputs>): BarStudy<BtcRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
   const [posCol, negCol] = themeColors(cfg);
   const gray = color.rgb(120, 120, 120);
   const posBg = String(color.new(posCol, 50));
@@ -106,60 +115,82 @@ export function calculate(
   const posFill = String(color.new(posCol, 70));
   const negFill = String(color.new(negCol, 70));
   const multTop = cfg.multTop;
-
-  const sma2y = A(ta.sma(new Series(bars, (b) => b.close), 730));
-  const invBottom = sma2y.map((v) => v * cfg.multBottom);
-  const invTop = invBottom.map((v) => v * multTop);
-  // ratio = inv_bottom != 0 ? close / inv_bottom : na
-  const ratio = invBottom.map((v, i) => (ne(v, 0) ? bars[i].close / v : NaN));
-
-  const finalCol: string[] = new Array(n);
-  const bgColors: BgColorData[] = [];
-  const candles: PlotCandleData[] = [];
-  const fillBottom: string[] = new Array(n);
-  const fillTop: string[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const r = ratio[i];
-    const t = bars[i].time;
-    // flat_col = ratio > mult_top ? neg_col : ratio < 1.0 ? pos_col : color.rgb(120, 120, 120)
-    const flat = gt(r, multTop) ? negCol : lt(r, 1.0) ? posCol : gray;
-    finalCol[i] = cfg.usegrad ? color.from_gradient(r, 1.0, multTop, posCol, negCol) : flat;
-    // bgcolor(ratio < 1.0 ? color.new(pos_col, 50) : na, force_overlay = true), then the top layer
-    // id: the original's bgcolor() call (bgcolor0 / bgcolor1)
-    if (lt(r, 1.0)) bgColors.push({ time: t, color: posBg, forceOverlay: true, id: 'bgcolor0' });
-    if (gt(r, multTop)) bgColors.push({ time: t, color: negBg, forceOverlay: true, id: 'bgcolor1' });
-    if (cfg.showCandle) {
-      const b = bars[i];
-      candles.push({ time: t, open: b.open, high: b.high, low: b.low, close: b.close, color: finalCol[i],
-        wickColor: finalCol[i], borderColor: finalCol[i], forceOverlay: true });
-    }
-    fillBottom[i] = lt(r, 1.0) ? posFill : 'transparent';
-    fillTop[i] = gt(r, multTop) ? negFill : 'transparent';
-  }
-
   const finite = (v: number) => (Number.isFinite(v) ? v : NaN);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: finite(invBottom[i]), color: posCol })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: finite(invTop[i]), color: negCol })),
-      plot2: bars.map((b) => ({ time: b.time, value: finite(Math.log(multTop)), color: negCol })),
-      plot3: bars.map((b) => ({ time: b.time, value: Math.log(1.0), color: posCol })),
-      plot4: bars.map((b, i) => ({ time: b.time, value: finite(Math.log(ratio[i])), color: finalCol[i] })),
+    init() {
+      const sma2y = new WindowSma(730);
+      const s: BtcRun = {
+        sma2y, plots: [[], [], [], [], []], fillBottom: [], fillTop: [], bgColors: [], candles: [],
+        steps: [sma2y], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.bgColors, s.candles];
+      s.series = [...s.plots, s.fillBottom, s.fillTop];
+      return s;
     },
-    fills: [
-      // fill(p_ratio, h_one, ratio < 1.0 ? color.new(pos_col, 70) : na)
-      { plot1: 'plot4', plot2: 'plot3', colors: fillBottom },
-      // fill(p_ratio, h_top, ratio > mult_top ? color.new(neg_col, 70) : na)
-      { plot1: 'plot4', plot2: 'plot2', colors: fillTop },
-    ],
-    plotCandles: { candle: candles },
-    bgColors,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const invBottom = s.sma2y.step(b.close) * cfg.multBottom;
+      const invTop = invBottom * multTop;
+      // ratio = inv_bottom != 0 ? close / inv_bottom : na
+      const r = ne(invBottom, 0) ? b.close / invBottom : NaN;
+      // flat_col = ratio > mult_top ? neg_col : ratio < 1.0 ? pos_col : color.rgb(120, 120, 120)
+      const flat = gt(r, multTop) ? negCol : lt(r, 1.0) ? posCol : gray;
+      const finalCol = cfg.usegrad ? color.from_gradient(r, 1.0, multTop, posCol, negCol) : flat;
+      // bgcolor(ratio < 1.0 ? color.new(pos_col, 50) : na, force_overlay = true), then the top layer
+      // id: the original's bgcolor() call (bgcolor0 / bgcolor1)
+      if (lt(r, 1.0)) s.bgColors.push({ time: t, color: posBg, forceOverlay: true, id: 'bgcolor0' });
+      if (gt(r, multTop)) s.bgColors.push({ time: t, color: negBg, forceOverlay: true, id: 'bgcolor1' });
+      if (cfg.showCandle) {
+        s.candles.push({ time: t, open: b.open, high: b.high, low: b.low, close: b.close, color: finalCol,
+          wickColor: finalCol, borderColor: finalCol, forceOverlay: true });
+      }
+      s.fillBottom[i] = lt(r, 1.0) ? posFill : 'transparent';
+      s.fillTop[i] = gt(r, multTop) ? negFill : 'transparent';
+
+      const p = s.plots;
+      p[0][i] = { time: t, value: finite(invBottom), color: posCol };
+      p[1][i] = { time: t, value: finite(invTop), color: negCol };
+      p[2][i] = { time: t, value: finite(Math.log(multTop)), color: negCol };
+      p[3][i] = { time: t, value: Math.log(1.0), color: posCol };
+      p[4][i] = { time: t, value: finite(Math.log(r)), color: finalCol };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(),
+          plot1: p[1].slice(),
+          plot2: p[2].slice(),
+          plot3: p[3].slice(),
+          plot4: p[4].slice(),
+        },
+        fills: [
+          // fill(p_ratio, h_one, ratio < 1.0 ? color.new(pos_col, 70) : na)
+          { plot1: 'plot4', plot2: 'plot3', colors: s.fillBottom.slice() },
+          // fill(p_ratio, h_top, ratio > mult_top ? color.new(neg_col, 70) : na)
+          { plot1: 'plot4', plot2: 'plot2', colors: s.fillTop.slice() },
+        ],
+        plotCandles: { candle: s.candles.slice() },
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<Bitcoin2ySmaBandsAstralVisionInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<Bitcoin2ySmaBandsAstralVisionInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const Bitcoin2ySmaBandsAstralVision = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

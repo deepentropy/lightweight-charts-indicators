@@ -19,9 +19,11 @@
  * Original notice: © odnac
  */
 
-import { ta, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -99,85 +101,117 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface SweepRun extends BarRunState<Record<string, never>> {
+  atr: ReturnType<typeof taStep.atr>;
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<SweepCandleInputs>): BarStudy<SweepRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const colorLabelBullish = String(color.rgb(8, 153, 129));
+  const colorLabelBearish = String(color.rgb(242, 54, 69));
+  return {
+    init() {
+      const atr = taStep.atr(cfg.atrLength);
+      const s: SweepRun = {
+        atr, markers: [], barColors: [], flags: alertConditions.map(() => []), times: alertConditions.map(() => []),
+        steps: [atr], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.barColors, ...s.times];
+      s.series = s.flags;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const atr = s.atr.step(b.high, b.low, b.close) ?? NaN;
+      const p = i > 0 ? bars[i - 1] : undefined;
+      const open1 = p ? p.open : NaN;
+      const high1 = p ? p.high : NaN;
+      const low1 = p ? p.low : NaN;
+      const close1 = p ? p.close : NaN;
+
+      // ATR Imbalance
+      const candleRange = Math.abs(b.high - b.low);
+      const isImbalanceHigh = gt(candleRange, cfg.imbalanceMult * atr);
+
+      // Engulfing Candle
+      const enBullishStandard = gt(b.close, b.open) && lt(high1, b.close) && gt(open1, close1);
+      const enBearishStandard = lt(b.close, b.open) && gt(low1, b.close) && lt(open1, close1);
+      const enBullishSweep = enBullishStandard && lt(b.low, low1);
+      const enBearishSweep = enBearishStandard && gt(b.high, high1);
+      const enBullish = cfg.engulfingType === 'Standard' ? enBullishStandard : enBullishSweep;
+      const enBearish = cfg.engulfingType === 'Standard' ? enBearishStandard : enBearishSweep;
+      const engul = enBullish || enBearish;
+
+      // Momentum Candle
+      const momentumBullishStandard = lt(high1, b.close) && gt(close1, open1) && gt(b.close, b.open);
+      const momentumBearishStandard = gt(low1, b.close) && lt(close1, open1) && lt(b.close, b.open);
+      const momentumBullishSweep = momentumBullishStandard && gt(low1, b.low);
+      const momentumBearishSweep = momentumBearishStandard && lt(high1, b.high);
+      const momentumBullish = cfg.momentumType === 'Standard' ? momentumBullishStandard : momentumBullishSweep;
+      const momentumBearish = cfg.momentumType === 'Standard' ? momentumBearishStandard : momentumBearishSweep;
+      const momentum = momentumBullish || momentumBearish;
+
+      // alertcondition() expressions, in the original's order
+      const sweepEn = enBullishSweep || enBearishSweep;
+      const sweepMom = momentumBullishSweep || momentumBearishSweep;
+      const stdEn = enBullishStandard || enBearishStandard;
+      const stdMom = momentumBullishStandard || momentumBearishStandard;
+      [sweepEn || sweepMom || stdEn || stdMom, sweepEn || sweepMom, stdEn || stdMom, sweepEn, sweepMom, stdEn, stdMom]
+        .forEach((v, k) => {
+          s.flags[k][i] = v;
+          if (v) s.times[k].push(b.time as number);
+        });
+
+      // barcolor layers: the last non-na colour is drawn
+      let barColor: string | null = null;
+      if (cfg.imbalancePlot && isImbalanceHigh) barColor = cfg.imbalanceColor;
+      if (cfg.engulfingPlot && engul) barColor = cfg.engulfingColor;
+      if (cfg.showMomentum && momentum) barColor = cfg.momentumColor;
+      if (barColor !== null) s.barColors.push({ time: b.time, color: barColor });
+
+      // plotshape markers (size auto, no text)
+      if (cfg.engulfingShape && enBullish) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: colorLabelBullish });
+      }
+      if (cfg.engulfingShape && enBearish) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: colorLabelBearish });
+      }
+      if (cfg.momentumShape && momentumBullish) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'circle', color: colorLabelBullish });
+      }
+      if (cfg.momentumShape && momentumBearish) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'circle', color: colorLabelBearish });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => !!f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SweepCandleInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<SweepCandleInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const atr = ta.atr(bars, cfg.atrLength).toArray().map((v) => v ?? NaN);
-
-  const colorLabelBullish = String(color.rgb(8, 153, 129));
-  const colorLabelBearish = String(color.rgb(242, 54, 69));
-
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const flags: boolean[][] = alertConditions.map(() => []);
-  bars.forEach((b, i) => {
-    const p = i > 0 ? bars[i - 1] : undefined;
-    const open1 = p ? p.open : NaN;
-    const high1 = p ? p.high : NaN;
-    const low1 = p ? p.low : NaN;
-    const close1 = p ? p.close : NaN;
-
-    // ATR Imbalance
-    const candleRange = Math.abs(b.high - b.low);
-    const isImbalanceHigh = gt(candleRange, cfg.imbalanceMult * atr[i]);
-
-    // Engulfing Candle
-    const enBullishStandard = gt(b.close, b.open) && lt(high1, b.close) && gt(open1, close1);
-    const enBearishStandard = lt(b.close, b.open) && gt(low1, b.close) && lt(open1, close1);
-    const enBullishSweep = enBullishStandard && lt(b.low, low1);
-    const enBearishSweep = enBearishStandard && gt(b.high, high1);
-    const enBullish = cfg.engulfingType === 'Standard' ? enBullishStandard : enBullishSweep;
-    const enBearish = cfg.engulfingType === 'Standard' ? enBearishStandard : enBearishSweep;
-    const engul = enBullish || enBearish;
-
-    // Momentum Candle
-    const momentumBullishStandard = lt(high1, b.close) && gt(close1, open1) && gt(b.close, b.open);
-    const momentumBearishStandard = gt(low1, b.close) && lt(close1, open1) && lt(b.close, b.open);
-    const momentumBullishSweep = momentumBullishStandard && gt(low1, b.low);
-    const momentumBearishSweep = momentumBearishStandard && lt(high1, b.high);
-    const momentumBullish = cfg.momentumType === 'Standard' ? momentumBullishStandard : momentumBullishSweep;
-    const momentumBearish = cfg.momentumType === 'Standard' ? momentumBearishStandard : momentumBearishSweep;
-    const momentum = momentumBullish || momentumBearish;
-
-    // alertcondition() expressions, in the original's order
-    const sweepEn = enBullishSweep || enBearishSweep;
-    const sweepMom = momentumBullishSweep || momentumBearishSweep;
-    const stdEn = enBullishStandard || enBearishStandard;
-    const stdMom = momentumBullishStandard || momentumBearishStandard;
-    [sweepEn || sweepMom || stdEn || stdMom, sweepEn || sweepMom, stdEn || stdMom, sweepEn, sweepMom, stdEn, stdMom]
-      .forEach((v, k) => flags[k].push(v));
-
-    // barcolor layers: the last non-na colour is drawn
-    let barColor: string | null = null;
-    if (cfg.imbalancePlot && isImbalanceHigh) barColor = cfg.imbalanceColor;
-    if (cfg.engulfingPlot && engul) barColor = cfg.engulfingColor;
-    if (cfg.showMomentum && momentum) barColor = cfg.momentumColor;
-    if (barColor !== null) barColors.push({ time: b.time, color: barColor });
-
-    // plotshape markers (size auto, no text)
-    if (cfg.engulfingShape && enBullish) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: colorLabelBullish });
-    }
-    if (cfg.engulfingShape && enBearish) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: colorLabelBearish });
-    }
-    if (cfg.momentumShape && momentumBullish) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'circle', color: colorLabelBullish });
-    }
-    if (cfg.momentumShape && momentumBearish) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'circle', color: colorLabelBearish });
-    }
-  });
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    barColors,
-    alerts: alertStates(alertConditions, bars, flags),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
-export const SweepCandle = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const SweepCandle = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

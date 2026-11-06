@@ -12,9 +12,11 @@
  * Reference: "RedK RSS_WMA" by RedKTrader
  */
 
-import { taCore, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taCore, taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RedKRSSWMAInputs {
   src: SourceType;
@@ -64,40 +66,97 @@ export function lazyLine(data: number[], length: number): number[] {
   return taCore.wma(taCore.wma(taCore.wma(data, w1), w2), w3);
 }
 
-export function calculate(bars: Bar[], inputs: Partial<RedKRSSWMAInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Wma = ReturnType<typeof taStep.wma>;
+
+interface RssRun extends BarRunState<Record<string, never>> {
+  /** The three passes of f_LazyLine (null for length <= 2: the source itself) */
+  passes: [Wma, Wma, Wma] | null;
+  wma: Wma;
+  ll: number[];
+  uptrend: boolean[];
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<RedKRSSWMAInputs>): BarStudy<RssRun, Result> {
   const { src, length, showSig, sigMulti } = { ...defaultInputs, ...inputs };
-  const price = getSourceSeries(bars, src).toArray().map((v) => v ?? NaN);
-  const ll = lazyLine(price, length);
-  const wma = taCore.wma(price, length);
-
-  // uptrend = LL > LL[1] (na compares false)
-  const uptrend = ll.map((v, i) => i > 0 && v > ll[i - 1]);
-  const swingUp = uptrend.map((u, i) => u && !(i > 0 && uptrend[i - 1]));
-  const swingDn = uptrend.map((u, i) => i > 0 && uptrend[i - 1] && !u);
-
-  const plot0 = ll.map((v, i) => ({ time: bars[i].time, value: Number.isFinite(v) ? v : NaN, color: uptrend[i] ? C_UP : C_DN }));
-  const plot1 = wma.map((v, i) => ({ time: bars[i].time, value: Number.isFinite(v) ? v : NaN }));
-
-  // plotshape(SignalOn and SwingDn ? LL + d : na) / (SignalOn and SwingUp ? LL - d : na), d = SigMulti / 100 * LL
-  const markers: MarkerData[] = [];
-  if (showSig) {
-    for (let i = 0; i < bars.length; i++) {
-      const d = sigMulti / 100 * ll[i];
-      if (swingDn[i] && Number.isFinite(ll[i] + d)) {
-        markers.push({ id: 'shape0', time: bars[i].time, position: 'atPriceMiddle', price: ll[i] + d, shape: 'triangleDown', color: C_DN, size: 'small' });
-      }
-      if (swingUp[i] && Number.isFinite(ll[i] - d)) {
-        markers.push({ id: 'shape1', time: bars[i].time, position: 'atPriceMiddle', price: ll[i] - d, shape: 'triangleUp', color: C_UP, size: 'small' });
-      }
-    }
-  }
-
+  const value = barSource(src);
+  // f_LazyLine(_data, _length) of the original
+  const w2 = pineRound(length / 3);
+  const w1 = pineRound((length - w2) / 2);
+  const w3 = Math.trunc((length - w2) / 2);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
-    markers,
-    alerts: alertStates(alertConditions, bars, [swingUp, swingDn, swingUp.map((f, i) => f || swingDn[i])]),
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const passes: RssRun['passes'] = length <= 2 ? null : [taStep.wma(), taStep.wma(), taStep.wma()];
+      const wma = taStep.wma();
+      const s: RssRun = {
+        passes, wma, ll: [], uptrend: [], plot0: [], plot1: [], markers: [], flags: [[], [], []], times: [[], [], []],
+        steps: [...(passes ?? []), wma], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.ll, s.uptrend, s.plot0, s.plot1, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const price = value(b) ?? NaN;
+      const p = s.passes;
+      const ll = p ? p[2].step(p[1].step(p[0].step(price, w1), w2), w3) : price;
+      const wma = s.wma.step(price, length);
+      s.ll[i] = ll;
+
+      // uptrend = LL > LL[1] (na compares false)
+      const uptrend = i > 0 && ll > s.ll[i - 1];
+      s.uptrend[i] = uptrend;
+      const prevUp = i > 0 && s.uptrend[i - 1];
+      const swingUp = uptrend && !prevUp;
+      const swingDn = prevUp && !uptrend;
+
+      s.plot0[i] = { time: b.time, value: Number.isFinite(ll) ? ll : NaN, color: uptrend ? C_UP : C_DN };
+      s.plot1[i] = { time: b.time, value: Number.isFinite(wma) ? wma : NaN };
+
+      // plotshape(SignalOn and SwingDn ? LL + d : na) / (SignalOn and SwingUp ? LL - d : na), d = SigMulti / 100 * LL
+      if (showSig) {
+        const d = sigMulti / 100 * ll;
+        if (swingDn && Number.isFinite(ll + d)) {
+          s.markers.push({ id: 'shape0', time: b.time, position: 'atPriceMiddle', price: ll + d, shape: 'triangleDown', color: C_DN, size: 'small' });
+        }
+        if (swingUp && Number.isFinite(ll - d)) {
+          s.markers.push({ id: 'shape1', time: b.time, position: 'atPriceMiddle', price: ll - d, shape: 'triangleUp', color: C_UP, size: 'small' });
+        }
+      }
+
+      const flags = [swingUp, swingDn, swingUp || swingDn];
+      for (let k = 0; k < 3; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(b.time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice() },
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => !!f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RedKRSSWMAInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RedKRSSWMAInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -107,4 +166,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert2', title: 'RSS_WMA Swing', message: 'RSS_WMA Up/Down Swing Detected!' },
 ];
 
-export const RedKRSSWMA = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const RedKRSSWMA = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

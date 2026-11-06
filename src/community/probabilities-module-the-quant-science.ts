@@ -10,7 +10,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { array, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ProbabilitiesModuleTheQuantScienceInputs {
   /** Lookback period (trades) */
@@ -40,59 +42,95 @@ const EPS = 1e-10;
 const lt = (a: number, b: number) => b - a > EPS;
 const gt = (a: number, b: number) => a - b > EPS;
 
+type Point = { time: number; value: number };
+
+interface ProbVars {
+  /** var bool in_trade = false */
+  inTrade: boolean;
+  /** var int trade_outcome = na */
+  tradeOutcome: number;
+  /** var results_array = array.new_float(0): its size and its count of 1 (the outcomes are 0 or 1) */
+  size: number;
+  ones: number;
+}
+
+interface ProbRun extends BarRunState<ProbVars> {
+  plot0: Point[];
+}
+
+function study(inputs: Partial<ProbabilitiesModuleTheQuantScienceInputs>): BarStudy<ProbRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const s: ProbRun = {
+        plot0: [], steps: [], vars: { inTrade: false, tradeOutcome: NaN, size: 0, ones: 0 }, lists: [], series: [],
+      };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const entryCondition = lt(b.close, b.open);
+      const takeProfitCondExit = gt(b.close, b.open);
+      const stopLossCondExit = i > 0 && lt(b.close, bars[i - 1].close);
+
+      const isEntry = !v.inTrade && entryCondition;
+      const isTp = v.inTrade && takeProfitCondExit;
+      const isSl = v.inTrade && stopLossCondExit;
+
+      if (isEntry) {
+        v.inTrade = true;
+        v.tradeOutcome = NaN;
+      }
+      if (isTp) {
+        v.inTrade = false;
+        v.tradeOutcome = 1;
+      } else if (isSl) {
+        v.inTrade = false;
+        v.tradeOutcome = 0;
+      }
+
+      if (!isNaN(v.tradeOutcome) && (isTp || isSl)) {
+        // array.push(results_array, trade_outcome); array.clear when its size is above the lookback
+        v.size++;
+        v.ones += v.tradeOutcome;
+        if (v.size > cfg.look) {
+          v.size = 0;
+          v.ones = 0;
+        }
+        v.tradeOutcome = NaN;
+      }
+
+      // probabilities = array.size(results_array) > 0 ? array.avg(results_array) * 100 : na (the sum of the 0 and 1
+      // values divided by the size: the same double as array.avg)
+      const value = v.size > 0 ? (v.ones / v.size) * 100 : NaN;
+      s.plot0[i] = { time: b.time, value };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ProbabilitiesModuleTheQuantScienceInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<ProbabilitiesModuleTheQuantScienceInputs> = {},
 ): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  let inTrade = false; // var bool in_trade = false
-  let tradeOutcome = NaN; // var int trade_outcome = na
-  const results = array.new_float(0); // var results_array = array.new_float(0)
-  const plot0: { time: number; value: number }[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const entryCondition = lt(b.close, b.open);
-    const takeProfitCondExit = gt(b.close, b.open);
-    const stopLossCondExit = i > 0 && lt(b.close, bars[i - 1].close);
-
-    const isEntry = !inTrade && entryCondition;
-    const isTp = inTrade && takeProfitCondExit;
-    const isSl = inTrade && stopLossCondExit;
-
-    if (isEntry) {
-      inTrade = true;
-      tradeOutcome = NaN;
-    }
-    if (isTp) {
-      inTrade = false;
-      tradeOutcome = 1;
-    } else if (isSl) {
-      inTrade = false;
-      tradeOutcome = 0;
-    }
-
-    if (!isNaN(tradeOutcome) && (isTp || isSl)) {
-      array.push(results, tradeOutcome);
-      if (array.size(results) > cfg.look) array.clear(results);
-      tradeOutcome = NaN;
-    }
-
-    // probabilities = array.size(results_array) > 0 ? array.avg(results_array) * 100 : na
-    const value = array.size(results) > 0 ? array.avg(results) * 100 : NaN;
-    plot0[i] = { time: b.time, value };
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const ProbabilitiesModuleTheQuantScience = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

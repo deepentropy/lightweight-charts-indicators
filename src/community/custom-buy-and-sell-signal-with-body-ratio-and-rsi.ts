@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CustomBuySellBodyRatioRsiInputs {
   rsiLength: number;
@@ -45,54 +47,76 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CustomBuySellBodyRatioRsiInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface CbsRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  highVol: WindowExtreme;
+  lowVol: WindowExtreme;
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<CustomBuySellBodyRatioRsiInputs>): BarStudy<CbsRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const rsi = A(ta.rsi(S(bars.map((b) => b.close)), cfg.rsiLength));
-  // volume[1]
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const volPrev = volume.map((_v, i) => (i > 0 ? volume[i - 1] : NaN));
-  const highVol = A(ta.highest(S(volPrev), 24));
-  const lowVol = A(ta.lowest(S(volPrev), 24));
-
-  const markers: MarkerData[] = [];
-  for (let i = 1; i < n; i++) {
-    const { open, close, time } = bars[i];
-    const prev = bars[i - 1];
-    const bearish = lt(close, open);
-    const bullish = gt(close, open);
-    const prevBearish = lt(prev.close, prev.open);
-    const prevBullish = gt(prev.close, prev.open);
-    const bearBody = open - close;
-    const bullBody = close - open;
-    const prevBearBody = prev.open - prev.close;
-    const prevBullBody = prev.close - prev.open;
-    const bodyValidBuy = ge(bullBody, 0.9 * prevBearBody) && le(bullBody, 9 * prevBearBody);
-    const bodyValidSell = ge(bearBody, 0.9 * prevBullBody) && le(bearBody, 9 * prevBullBody);
-    const rsiBuy = lt(rsi[i], 40);
-    const rsiSell = gt(rsi[i], 60) && lt(rsi[i], 100);
-    const limit = ((highVol[i] + lowVol[i]) / 2) * cfg.coefVolume;
-    const volumeValid = gt(volume[i], limit);
-    // buy_condition_1 or buy_condition_2: condition 2 (condition 1 is condition 2 and the wick rule)
-    const buy = prevBearish && bullish && bodyValidBuy && rsiBuy && volumeValid;
-    const sell = prevBullish && bearish && bodyValidSell && rsiSell && volumeValid;
-    // plotshape(buy ? 1 : na, location.belowbar, color.green, shape.labelup, text = "BUY"): no textcolor, the Pine
-    // default text colour (color.blue)
-    if (buy) markers.push({ time, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY', textColor: color.blue });
-    if (sell) markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL', textColor: color.blue });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
+    init() {
+      const rsi = taStep.rsi(cfg.rsiLength);
+      const highVol = new WindowExtreme(false, 24);
+      const lowVol = new WindowExtreme(true, 24);
+      const s: CbsRun = { rsi, highVol, lowVol, markers: [], steps: [rsi, highVol, lowVol], vars: {}, lists: [], series: [] };
+      s.lists = [s.markers];
+      return s;
+    },
+    bar(s, i, bars) {
+      const { open, close, time } = bars[i];
+      const rsi = s.rsi.step(close);
+      // volume[1]
+      const volume = bars[i].volume ?? NaN;
+      const volPrev = i > 0 ? bars[i - 1].volume ?? NaN : NaN;
+      const highVol = s.highVol.step(volPrev);
+      const lowVol = s.lowVol.step(volPrev);
+      if (i < 1) return;
+
+      const prev = bars[i - 1];
+      const bearish = lt(close, open);
+      const bullish = gt(close, open);
+      const prevBearish = lt(prev.close, prev.open);
+      const prevBullish = gt(prev.close, prev.open);
+      const bearBody = open - close;
+      const bullBody = close - open;
+      const prevBearBody = prev.open - prev.close;
+      const prevBullBody = prev.close - prev.open;
+      const bodyValidBuy = ge(bullBody, 0.9 * prevBearBody) && le(bullBody, 9 * prevBearBody);
+      const bodyValidSell = ge(bearBody, 0.9 * prevBullBody) && le(bearBody, 9 * prevBullBody);
+      const rsiBuy = lt(rsi, 40);
+      const rsiSell = gt(rsi, 60) && lt(rsi, 100);
+      const limit = ((highVol + lowVol) / 2) * cfg.coefVolume;
+      const volumeValid = gt(volume, limit);
+      // buy_condition_1 or buy_condition_2: condition 2 (condition 1 is condition 2 and the wick rule)
+      const buy = prevBearish && bullish && bodyValidBuy && rsiBuy && volumeValid;
+      const sell = prevBullish && bearish && bodyValidSell && rsiSell && volumeValid;
+      // plotshape(buy ? 1 : na, location.belowbar, color.green, shape.labelup, text = "BUY"): no textcolor, the Pine
+      // default text colour (color.blue)
+      if (buy) s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY', textColor: color.blue });
+      if (sell) s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL', textColor: color.blue });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const CustomBuySellBodyRatioRsi = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CustomBuySellBodyRatioRsiInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CustomBuySellBodyRatioRsiInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const CustomBuySellBodyRatioRsi = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

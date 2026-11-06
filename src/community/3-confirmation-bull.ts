@@ -11,8 +11,10 @@
  * Original notice: © AirianM
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ThreeConfirmationBullInputs {
   /** EMA length */
@@ -58,47 +60,82 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface ThreeConfirmationBullRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  rsi: ReturnType<typeof taStep.rsi>;
+  hh: WindowExtreme;
+  ll: WindowExtreme;
+  hhArr: number[];
+  llArr: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<ThreeConfirmationBullInputs>): BarStudy<ThreeConfirmationBullRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const ema = taStep.ema(cfg.emaLength);
+      const rsi = taStep.rsi(cfg.rsiLength);
+      const hh = new WindowExtreme(false, cfg.lookback);
+      const ll = new WindowExtreme(true, cfg.lookback);
+      const s: ThreeConfirmationBullRun = {
+        ema, rsi, hh, ll, hhArr: [], llArr: [], plot0: [], plot1: [], plot2: [], markers: [],
+        steps: [ema, rsi, hh, ll], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.hhArr, s.llArr, s.plot0, s.plot1, s.plot2];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const ema = s.ema.step(b.close);
+      const rsi = s.rsi.step(b.close);
+      s.hhArr[i] = s.hh.step(b.high);
+      s.llArr[i] = s.ll.step(b.low);
+      // isHigherHigh = high > ta.highest(high, lookback)[1]; isHigherLow = low > ta.lowest(low, lookback)[1]
+      const prevHh = i > 0 ? s.hhArr[i - 1] : NaN;
+      const prevLl = i > 0 ? s.llArr[i - 1] : NaN;
+      const isUptrend = gt(b.high, prevHh) && gt(b.low, prevLl);
+      const signal = gt(b.close, ema) && gt(rsi, cfg.rsiThreshold) && isUptrend;
+      if (signal) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.green, size: 'small' });
+      }
+      s.plot0[i] = { time: b.time, value: b.close };
+      s.plot1[i] = { time: b.time, value: ema };
+      s.plot2[i] = { time: b.time, value: rsi };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        hlines: [{ value: cfg.rsiThreshold, options: { title: 'RSI Threshold', color: color.gray, linestyle: 'dotted' } }],
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ThreeConfirmationBullInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<ThreeConfirmationBullInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
-
-  const ema = A(ta.ema(close, cfg.emaLength));
-  const rsi = A(ta.rsi(close, cfg.rsiLength));
-  const hh = A(ta.highest(S(bars.map((b) => b.high)), cfg.lookback));
-  const ll = A(ta.lowest(S(bars.map((b) => b.low)), cfg.lookback));
-
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    // isHigherHigh = high > ta.highest(high, lookback)[1]; isHigherLow = low > ta.lowest(low, lookback)[1]
-    const prevHh = i > 0 ? hh[i - 1] : NaN;
-    const prevLl = i > 0 ? ll[i - 1] : NaN;
-    const isUptrend = gt(bars[i].high, prevHh) && gt(bars[i].low, prevLl);
-    const signal = gt(bars[i].close, ema[i]) && gt(rsi[i], cfg.rsiThreshold) && isUptrend;
-    if (signal) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: color.green, size: 'small' });
-    }
-  }
-
-  const plot0 = bars.map((b) => ({ time: b.time, value: b.close }));
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: ema[i] }));
-  const plot2 = bars.map((b, i) => ({ time: b.time, value: rsi[i] }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    hlines: [{ value: cfg.rsiThreshold, options: { title: 'RSI Threshold', color: color.gray, linestyle: 'dotted' } }],
-    markers,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const ThreeConfirmationBull = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

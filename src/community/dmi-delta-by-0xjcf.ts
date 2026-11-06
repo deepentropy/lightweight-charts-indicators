@@ -11,7 +11,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DmiDeltaBy0xjcfInputs {
   nonTrendingBaseColor: string;
@@ -101,79 +103,103 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<DmiDeltaBy0xjcfInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
+type Point = { time: number; value: number; color: string };
 
-  const [diPlusS, diMinusS, adxS] = ta.dmi(bars, cfg.dmiLength, cfg.adxSmoothing);
-  const diPlus = A(diPlusS);
-  const diMinus = A(diMinusS);
-  const adx = A(adxS);
-  const volumeMa = A(ta.sma(Series.fromArray(bars, volume), cfg.volumeLookback));
-  const rsi = A(ta.rsi(close, 14));
+interface DmiDeltaRun extends BarRunState<Record<string, never>> {
+  dmi: ReturnType<typeof taStep.dmi>;
+  volumeMa: WindowSma;
+  rsi: ReturnType<typeof taStep.rsi>;
+  plot0: Point[];
+}
+
+const fillColor = String(color.new('#010316', 97));
+
+function study(inputs: Partial<DmiDeltaBy0xjcfInputs>): BarStudy<DmiDeltaRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
   const showVolumeAnalysis = cfg.visualizationToggle === 'Volume Analysis';
   const up = cfg.upperLimit;
   const lo = cfg.lowerLimit;
-
-  const plot0 = bars.map((b, i) => {
-    const v = volume[i];
-    const diDelta = diPlus[i] - diMinus[i];
-    let value: number;
-    let col: string;
-    if (showVolumeAnalysis) {
-      const extreme = gt(v, cfg.volumeMultiplier * volumeMa[i]);
-      const extremeBull = extreme && gt(diPlus[i], diMinus[i]);
-      const extremeBear = extreme && lt(diPlus[i], diMinus[i]);
-      const aboveMa = gt(v, volumeMa[i]);
-      const belowMa = lt(v, volumeMa[i]);
-      value = gt(diPlus[i], diMinus[i]) ? v : -v;
-      col = extremeBull ? cfg.trendingStrongBullishColor
-        : extremeBear ? cfg.trendingStrongBearishColor
-        : gt(diDelta, 0) && aboveMa ? cfg.trendingWeakBullishColor
-        : gt(diDelta, 0) && belowMa ? cfg.nonTrendingWeakColor
-        : lt(diDelta, 0) && aboveMa ? cfg.trendingWeakBearishColor
-        : lt(diDelta, 0) && belowMa ? cfg.nonTrendingWeakColor
-        : 'transparent';
-    } else {
-      const nonTrending = lt(adx[i], cfg.thresholdTrending);
-      const trending = gt(adx[i], cfg.thresholdTrending);
-      const bullishRsi = gt(rsi[i], 50);
-      const bearishRsi = lt(rsi[i], 50);
-      value = diDelta;
-      col = nonTrending && gt(diDelta, up) && bullishRsi ? cfg.nonTrendingBaseColor
-        : nonTrending && lt(diDelta, lo) && bearishRsi ? cfg.nonTrendingBaseColor
-        : nonTrending && gt(diDelta, 0) && lt(diDelta, up) ? cfg.nonTrendingWeakColor
-        : nonTrending && lt(diDelta, 0) && gt(diDelta, lo) ? cfg.nonTrendingWeakColor
-        : trending && gt(diDelta, up) && bullishRsi ? cfg.trendingStrongBullishColor
-        : trending && lt(diDelta, lo) && bearishRsi ? cfg.trendingStrongBearishColor
-        : trending && gt(diDelta, 0) && lt(diDelta, up) ? cfg.trendingWeakBullishColor
-        : trending && lt(diDelta, 0) && gt(diDelta, lo) ? cfg.trendingWeakBearishColor
-        : 'transparent';
-    }
-    return { time: b.time as number, value: Number.isFinite(value) ? value : NaN, color: col };
-  });
-
-  const fillColor = String(color.new('#010316', 97));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    hlines: [
-      { value: up, options: { title: 'DI+ Threshold', color: showVolumeAnalysis ? 'transparent' : String(color.new(color.green, 0)), linestyle: 'dashed' } },
-      { value: 0, options: { title: 'Zero Line', color: String(color.new(color.gray, 0)), linestyle: 'dotted' } },
-      { value: lo, options: { title: 'DI- Threshold', color: showVolumeAnalysis ? 'transparent' : String(color.new(color.red, 0)), linestyle: 'dashed' } },
-    ],
-    fills: [
-      { plot1: 'hline_upper', plot2: 'hline_zero', options: { title: 'Hlines Background' }, colors: new Array<string>(n).fill(fillColor) },
-      { plot1: 'hline_zero', plot2: 'hline_lower', options: { title: 'Hlines Background' }, colors: new Array<string>(n).fill(fillColor) },
-    ],
+    init() {
+      const dmi = taStep.dmi(cfg.dmiLength, cfg.adxSmoothing);
+      const volumeMa = new WindowSma(cfg.volumeLookback);
+      const rsi = taStep.rsi(14);
+      const s: DmiDeltaRun = { dmi, volumeMa, rsi, plot0: [], steps: [dmi, volumeMa, rsi], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = b.volume ?? NaN;
+      const [diPlus, diMinus, adx] = s.dmi.step(b.high, b.low, b.close);
+      const volumeMa = s.volumeMa.step(v);
+      const rsi = s.rsi.step(b.close);
+      const diDelta = diPlus - diMinus;
+      let value: number;
+      let col: string;
+      if (showVolumeAnalysis) {
+        const extreme = gt(v, cfg.volumeMultiplier * volumeMa);
+        const extremeBull = extreme && gt(diPlus, diMinus);
+        const extremeBear = extreme && lt(diPlus, diMinus);
+        const aboveMa = gt(v, volumeMa);
+        const belowMa = lt(v, volumeMa);
+        value = gt(diPlus, diMinus) ? v : -v;
+        col = extremeBull ? cfg.trendingStrongBullishColor
+          : extremeBear ? cfg.trendingStrongBearishColor
+          : gt(diDelta, 0) && aboveMa ? cfg.trendingWeakBullishColor
+          : gt(diDelta, 0) && belowMa ? cfg.nonTrendingWeakColor
+          : lt(diDelta, 0) && aboveMa ? cfg.trendingWeakBearishColor
+          : lt(diDelta, 0) && belowMa ? cfg.nonTrendingWeakColor
+          : 'transparent';
+      } else {
+        const nonTrending = lt(adx, cfg.thresholdTrending);
+        const trending = gt(adx, cfg.thresholdTrending);
+        const bullishRsi = gt(rsi, 50);
+        const bearishRsi = lt(rsi, 50);
+        value = diDelta;
+        col = nonTrending && gt(diDelta, up) && bullishRsi ? cfg.nonTrendingBaseColor
+          : nonTrending && lt(diDelta, lo) && bearishRsi ? cfg.nonTrendingBaseColor
+          : nonTrending && gt(diDelta, 0) && lt(diDelta, up) ? cfg.nonTrendingWeakColor
+          : nonTrending && lt(diDelta, 0) && gt(diDelta, lo) ? cfg.nonTrendingWeakColor
+          : trending && gt(diDelta, up) && bullishRsi ? cfg.trendingStrongBullishColor
+          : trending && lt(diDelta, lo) && bearishRsi ? cfg.trendingStrongBearishColor
+          : trending && gt(diDelta, 0) && lt(diDelta, up) ? cfg.trendingWeakBullishColor
+          : trending && lt(diDelta, 0) && gt(diDelta, lo) ? cfg.trendingWeakBearishColor
+          : 'transparent';
+      }
+      s.plot0[i] = { time: b.time as number, value: Number.isFinite(value) ? value : NaN, color: col };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        hlines: [
+          { value: up, options: { title: 'DI+ Threshold', color: showVolumeAnalysis ? 'transparent' : String(color.new(color.green, 0)), linestyle: 'dashed' } },
+          { value: 0, options: { title: 'Zero Line', color: String(color.new(color.gray, 0)), linestyle: 'dotted' } },
+          { value: lo, options: { title: 'DI- Threshold', color: showVolumeAnalysis ? 'transparent' : String(color.new(color.red, 0)), linestyle: 'dashed' } },
+        ],
+        fills: [
+          { plot1: 'hline_upper', plot2: 'hline_zero', options: { title: 'Hlines Background' }, colors: new Array<string>(n).fill(fillColor) },
+          { plot1: 'hline_zero', plot2: 'hline_lower', options: { title: 'Hlines Background' }, colors: new Array<string>(n).fill(fillColor) },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DmiDeltaBy0xjcfInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DmiDeltaBy0xjcfInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const DmiDeltaBy0xjcf = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

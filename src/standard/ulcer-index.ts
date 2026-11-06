@@ -11,7 +11,9 @@
  * Based on the standard "Ulcer Index" indicator.
  */
 
-import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { IndicatorResult, InputConfig, PlotConfig, HLineConfig, Bar, SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface UlcerIndexInputs {
   /** Source */
@@ -47,46 +49,71 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<UlcerIndexInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface UlcerRun extends BarRunState<Record<string, never>> {
+  highest: WindowExtreme;
+  meanSq: WindowSma;
+  plotData: Point[];
+  zero: Point[];
+}
+
+function study(inputs: Partial<UlcerIndexInputs>): BarStudy<UlcerRun, IndicatorResult> {
   const { length, src } = { ...defaultInputs, ...inputs };
-
-  const srcSeries = getSourceSeries(bars, src);
-  const srcArr = srcSeries.toArray();
-  const highestArr = ta.highest(srcSeries, length).toArray();
-
-  // Squared percentage drawdown from the running highest close.
-  const drawdownSq: number[] = bars.map((_, i) => {
-    const hi = highestArr[i];
-    if (hi == null || hi === 0) return NaN;
-    const dd = (100 * ((srcArr[i] ?? NaN) - hi)) / hi;
-    return dd * dd;
-  });
-
-  const ddSeries = new Series(bars, (_, i) => drawdownSq[i]);
-  const meanSqArr = ta.sma(ddSeries, length).toArray();
-
-  const plotData = meanSqArr.map((value, i) => ({
-    time: bars[i].time,
-    value: value != null && !isNaN(value) ? Math.sqrt(value) : NaN,
-  }));
-
+  const value = barSource(src);
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const highest = new WindowExtreme(false, length);
+      const meanSq = new WindowSma(length);
+      const s: UlcerRun = { highest, meanSq, plotData: [], zero: [], steps: [highest, meanSq], vars: {}, lists: [], series: [] };
+      s.series = [s.plotData, s.zero];
+      return s;
     },
-    plots: {
-      'plot0': plotData,
-      'plot1': bars.map((b) => ({ time: b.time, value: 0 })),
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      const v = value(bars[i]);
+      const hi = s.highest.step(v);
+      // Squared percentage drawdown from the running highest close.
+      let drawdownSq = NaN;
+      if (hi !== 0) {
+        const dd = (100 * (v - hi)) / hi;
+        drawdownSq = dd * dd;
+      }
+      const meanSq = s.meanSq.step(drawdownSq);
+      s.plotData[i] = { time, value: !isNaN(meanSq) ? Math.sqrt(meanSq) : NaN };
+      s.zero[i] = { time, value: 0 };
     },
-    // Reference: fill between the index and the zero plot
-    fills: [{ id: 'fill_0', plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(33,150,243,0.1)', title: 'Plots Background' } }],
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.plotData.slice(),
+          'plot1': s.zero.slice(),
+        },
+        // Reference: fill between the index and the zero plot
+        fills: [{ id: 'fill_0', plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(33,150,243,0.1)', title: 'Plots Background' } }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<UlcerIndexInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<UlcerIndexInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const UlcerIndex = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

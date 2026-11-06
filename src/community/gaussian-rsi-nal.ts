@@ -13,8 +13,10 @@
  * Original notice: © NordicAlphaLab
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface GaussianRsiNalInputs {
   /** Colour set: 'Standard', 'Nordic' or 'Simple' */
@@ -84,29 +86,44 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-/** gaussianFilter(source, len, sigma): na values (and bars before the first one) count as 0 */
-function gaussianFilter(source: number[], len: number, sigma: number): number[] {
+/** The weights of gaussianFilter(source, len, sigma) */
+function gaussianWeights(len: number, sigma: number): number[] {
   const w: number[] = [];
   for (let k = 0; k <= len - 1; k++) w.push(Math.exp(-0.5 * Math.pow((k - (len - 1) / 2.0) / sigma, 2.0)));
-  return source.map((v, i) => {
-    let totalWeight = 0;
-    let weightedSum = 0;
-    for (let k = 0; k <= len - 1; k++) {
-      const x = i - k >= 0 ? source[i - k] : NaN;
-      totalWeight += w[k];
-      weightedSum += (isNaN(x) ? 0 : x) * w[k];
-    }
-    // totalWeight != 0.0 ? weightedSum / totalWeight : source
-    return totalWeight !== 0 ? weightedSum / totalWeight : v;
-  });
+  return w;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<GaussianRsiNalInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> } {
+/** gaussianFilter(source, len, sigma) on bar `i` (`source` known up to bar i): na values (and bars before the first one) count as 0 */
+function gaussianFilter(source: number[], i: number, w: number[]): number {
+  const len = w.length;
+  let totalWeight = 0;
+  let weightedSum = 0;
+  for (let k = 0; k <= len - 1; k++) {
+    const x = i - k >= 0 ? source[i - k] : NaN;
+    totalWeight += w[k];
+    weightedSum += (isNaN(x) ? 0 : x) * w[k];
+  }
+  // totalWeight != 0.0 ? weightedSum / totalWeight : source
+  return totalWeight !== 0 ? weightedSum / totalWeight : source[i];
+}
+
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> };
+
+interface GrsiRun extends BarRunState<Record<string, never>> {
+  rsiStep: ReturnType<typeof taStep.rsi>;
+  rsi: number[];
+  gRsi: number[];
+  nal: number[];
+  plots: Point[][];
+  regimeFill: string[];
+  candles: PlotCandleData[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<GaussianRsiNalInputs>): BarStudy<GrsiRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
+  const value = barSource(cfg.src);
 
   const [colUp, colDn, colNu] = cfg.colMode === 'Nordic'
     ? [String(color.rgb(46, 161, 255)), String(color.rgb(150, 154, 169)), color.gray]
@@ -114,71 +131,102 @@ export function calculate(
       ? [color.lime, color.red, color.gray]
       : [STD_UP, STD_DN, color.gray];
 
-  const rsi = ta.rsi(getSourceSeries(bars, cfg.src), cfg.rsiLen).toArray().map((v) => v ?? NaN);
-  const gRsi = gaussianFilter(rsi, cfg.gaussLen, cfg.gaussSig);
-  const conf = gaussianFilter(gRsi, cfg.confluenceLen, cfg.confluenceSig);
-
-  // NAL := bullSignal ? 1 : bearSignal ? -1 : nz(NAL[1], 0)
-  const nal: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const bull = gt(gRsi[i], cfg.upperThreshold) && (!cfg.useGaussianConfluence || gt(gRsi[i], conf[i]));
-    const bear = lt(gRsi[i], cfg.lowerThreshold) && (!cfg.useGaussianConfluence || lt(gRsi[i], conf[i]));
-    nal[i] = bull ? 1 : bear ? -1 : i > 0 ? nal[i - 1] : 0;
-  }
-  const col = nal.map((x) => (x === 1 ? colUp : x === -1 ? colDn : colNu));
-
-  const t = (i: number) => bars[i].time;
+  const gaussW = gaussianWeights(cfg.gaussLen, cfg.gaussSig);
+  const confW = gaussianWeights(cfg.confluenceLen, cfg.confluenceSig);
   const longCol = String(color.new(colUp, 25));
   const shortCol = String(color.new(colDn, 25));
   const midCol = String(color.new(color.white, 85));
   const confCol = String(color.new(color.white, 35));
 
-  const candles: PlotCandleData[] = [];
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    // plotcandle(open, high, low, close, "Bar Color", col, col, bordercolor = col, force_overlay = true, display.pane)
-    candles.push({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: col[i], wickColor: col[i],
-      borderColor: col[i], forceOverlay: true });
-    // plotshape(NAL == 1 and NAL[1] == -1, "Bullish Transition", shape.triangleup, location.belowbar, text = "𝓑𝓾𝔂",
-    //   color = col_up, textcolor = col_up, size.tiny, force_overlay = true, display.pane); bearish: mirror
-    if (i > 0 && nal[i] === 1 && nal[i - 1] === -1) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: colUp, text: '𝓑𝓾𝔂', textColor: colUp,
-        size: 'tiny', forceOverlay: true });
-    }
-    if (i > 0 && nal[i] === -1 && nal[i - 1] === 1) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: colDn, text: '𝓢𝓮𝓵𝓵', textColor: colDn,
-        size: 'tiny', forceOverlay: true });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((_b, i) => ({ time: t(i), value: cfg.upperThreshold, color: longCol })),
-      plot1: bars.map((_b, i) => ({ time: t(i), value: cfg.lowerThreshold, color: shortCol })),
-      plot2: bars.map((_b, i) => ({ time: t(i), value: 50.0, color: midCol })),
-      // plot(Gauss_RSI, "Gaussian RSI Glow", color = color.new(col, 75), linewidth = 7, display = display.pane)
-      plot3: bars.map((_b, i) => ({ time: t(i), value: gRsi[i], color: String(color.new(col[i], 75)) })),
-      plot4: bars.map((_b, i) => ({ time: t(i), value: gRsi[i], color: col[i] })),
-      // plot(useGaussianConfluence ? Gaussian_Confluence : na, "Gaussian Confluence", color.new(color.white, 35))
-      plot5: bars.map((_b, i) => ({ time: t(i), value: cfg.useGaussianConfluence ? conf[i] : NaN, color: confCol })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const rsiStep = taStep.rsi(cfg.rsiLen);
+      const s: GrsiRun = {
+        rsiStep, rsi: [], gRsi: [], nal: [], plots: Array.from({ length: 6 }, () => []), regimeFill: [], candles: [],
+        markers: [], steps: [rsiStep], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.rsi, s.gRsi, s.nal, ...s.plots, s.regimeFill, s.candles];
+      return s;
     },
-    fills: [
-      // fill(upperPlot, midPlot, color.new(col_up, 90), title = "Upper Zone")
-      { plot1: 'plot0', plot2: 'plot2', colors: new Array<string>(n).fill(String(color.new(colUp, 90))) },
-      // fill(lowerPlot, midPlot, color.new(col_dn, 90), title = "Lower Zone")
-      { plot1: 'plot1', plot2: 'plot2', colors: new Array<string>(n).fill(String(color.new(colDn, 90))) },
-      // fill(rsiPlot, midPlot, color.new(col, 92), title = "RSI Regime Fill")
-      { plot1: 'plot4', plot2: 'plot2', colors: col.map((c) => String(color.new(c, 92))) },
-    ],
-    markers,
-    plotCandles: { barColor: candles },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      s.rsi[i] = s.rsiStep.step(value(b));
+      const gRsi = gaussianFilter(s.rsi, i, gaussW);
+      s.gRsi[i] = gRsi;
+      const conf = gaussianFilter(s.gRsi, i, confW);
+
+      // NAL := bullSignal ? 1 : bearSignal ? -1 : nz(NAL[1], 0)
+      const bull = gt(gRsi, cfg.upperThreshold) && (!cfg.useGaussianConfluence || gt(gRsi, conf));
+      const bear = lt(gRsi, cfg.lowerThreshold) && (!cfg.useGaussianConfluence || lt(gRsi, conf));
+      const nal = bull ? 1 : bear ? -1 : i > 0 ? s.nal[i - 1] : 0;
+      s.nal[i] = nal;
+      const col = nal === 1 ? colUp : nal === -1 ? colDn : colNu;
+
+      // plotcandle(open, high, low, close, "Bar Color", col, col, bordercolor = col, force_overlay = true, display.pane)
+      s.candles[i] = { time, open: b.open, high: b.high, low: b.low, close: b.close, color: col, wickColor: col,
+        borderColor: col, forceOverlay: true };
+      // plotshape(NAL == 1 and NAL[1] == -1, "Bullish Transition", shape.triangleup, location.belowbar, text = "𝓑𝓾𝔂",
+      //   color = col_up, textcolor = col_up, size.tiny, force_overlay = true, display.pane); bearish: mirror
+      if (i > 0 && nal === 1 && s.nal[i - 1] === -1) {
+        s.markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: colUp, text: '𝓑𝓾𝔂', textColor: colUp,
+          size: 'tiny', forceOverlay: true });
+      }
+      if (i > 0 && nal === -1 && s.nal[i - 1] === 1) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: colDn, text: '𝓢𝓮𝓵𝓵', textColor: colDn,
+          size: 'tiny', forceOverlay: true });
+      }
+
+      const p = s.plots;
+      p[0][i] = { time, value: cfg.upperThreshold, color: longCol };
+      p[1][i] = { time, value: cfg.lowerThreshold, color: shortCol };
+      p[2][i] = { time, value: 50.0, color: midCol };
+      // plot(Gauss_RSI, "Gaussian RSI Glow", color = color.new(col, 75), linewidth = 7, display = display.pane)
+      p[3][i] = { time, value: gRsi, color: String(color.new(col, 75)) };
+      p[4][i] = { time, value: gRsi, color: col };
+      // plot(useGaussianConfluence ? Gaussian_Confluence : na, "Gaussian Confluence", color.new(color.white, 35))
+      p[5][i] = { time, value: cfg.useGaussianConfluence ? conf : NaN, color: confCol };
+      s.regimeFill[i] = String(color.new(col, 92));
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: [
+          // fill(upperPlot, midPlot, color.new(col_up, 90), title = "Upper Zone")
+          { plot1: 'plot0', plot2: 'plot2', colors: new Array<string>(n).fill(String(color.new(colUp, 90))) },
+          // fill(lowerPlot, midPlot, color.new(col_dn, 90), title = "Lower Zone")
+          { plot1: 'plot1', plot2: 'plot2', colors: new Array<string>(n).fill(String(color.new(colDn, 90))) },
+          // fill(rsiPlot, midPlot, color.new(col, 92), title = "RSI Regime Fill")
+          { plot1: 'plot4', plot2: 'plot2', colors: s.regimeFill.slice() },
+        ],
+        markers: s.markers.slice(),
+        plotCandles: { barColor: s.candles.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GaussianRsiNalInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<GaussianRsiNalInputs> = {},
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const GaussianRsiNal = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

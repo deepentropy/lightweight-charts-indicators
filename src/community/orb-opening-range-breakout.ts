@@ -20,6 +20,7 @@
 import { time as pineTime, timeframe, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import { chartTimeframe } from '../anchor-period';
 import { timezoneOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface OrbOpeningRangeBreakoutInputs {
   /** Highest chart timeframe (minutes) that shows the levels */
@@ -57,53 +58,90 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const ne = (a: number, b: number) => Math.abs(a - b) > EPS;
 
+type Point = { time: number; value: number; color?: string };
+
+interface OrbVars {
+  prevIn: boolean;
+  prevHigh: number;
+  prevLow: number;
+}
+
+interface OrbRun extends BarRunState<OrbVars> {
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<OrbOpeningRangeBreakoutInputs>): BarStudy<OrbRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  // t = time(timeframe.period, sess + ":1234567")
+  const session = `${cfg.sess}:1234567`;
+  let inMs = false;
+  let hide = false;
+  let timezone = '';
+  let barMs: number | undefined;
+  /** The chart timeframe read by `key` (called before `init` on each update) */
+  let tf = '';
+  return {
+    // the chart timeframe comes from the bar gaps, the time unit from the first bar
+    key: (bars, chart) => {
+      tf = chartTimeframe(bars, chart);
+      return `${tf}|${bars.length > 0 && bars[0].time >= 1e12}`;
+    },
+    init(bars, chart) {
+      inMs = bars.length > 0 && bars[0].time >= 1e12;
+      // hide = timeframe.isintraday and timeframe.multiplier <= inputMax
+      const info = tf === '' ? null : timeframe.info(tf);
+      hide = info !== null && info.isintraday && info.multiplier <= cfg.inputMax;
+      timezone = timezoneOf(chart);
+      // bar size for the clock-change rule of the session test (intraday bars)
+      barMs = info !== null && info.isintraday ? timeframe.in_seconds(tf) * 1000 : undefined;
+      const s: OrbRun = {
+        plot0: [], plot1: [], steps: [], vars: { prevIn: false, prevHigh: NaN, prevLow: NaN }, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const { time, high, low } = bars[i];
+      const inSession = pineTime.inSession(inMs ? time : time * 1000, session, timezone, barMs);
+      const isFirst = inSession && !v.prevIn;
+      let orbHigh = isFirst ? high : v.prevHigh;
+      let orbLow = isFirst ? low : v.prevLow;
+      if (gt(high, orbHigh) && inSession) orbHigh = high;
+      if (gt(orbLow, low) && inSession) orbLow = low;
+      // color = orb_high[1] != orb_high ? na : color.green
+      s.plot0[i] = { time, value: hide ? orbHigh : NaN, color: ne(v.prevHigh, orbHigh) ? 'transparent' : GREEN };
+      s.plot1[i] = { time, value: hide ? orbLow : NaN, color: ne(v.prevLow, orbLow) ? 'transparent' : RED };
+      v.prevIn = inSession;
+      v.prevHigh = orbHigh;
+      v.prevLow = orbLow;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<OrbOpeningRangeBreakoutInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<OrbOpeningRangeBreakoutInputs> = {},
   chart?: ChartContext,
 ): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const inMs = n > 0 && bars[0].time >= 1e12;
-  // hide = timeframe.isintraday and timeframe.multiplier <= inputMax
-  const tf = chartTimeframe(bars, chart);
-  const info = tf === '' ? null : timeframe.info(tf);
-  const hide = info !== null && info.isintraday && info.multiplier <= cfg.inputMax;
-  // t = time(timeframe.period, sess + ":1234567")
-  const session = `${cfg.sess}:1234567`;
-  const timezone = timezoneOf(chart);
-  // bar size for the clock-change rule of the session test (intraday bars)
-  const barMs = info !== null && info.isintraday ? timeframe.in_seconds(tf) * 1000 : undefined;
-
-  const plot0: Array<{ time: number; value: number; color?: string }> = [];
-  const plot1: Array<{ time: number; value: number; color?: string }> = [];
-  let prevIn = false;
-  let prevHigh = NaN;
-  let prevLow = NaN;
-  for (let i = 0; i < n; i++) {
-    const { time, high, low } = bars[i];
-    const inSession = pineTime.inSession(inMs ? time : time * 1000, session, timezone, barMs);
-    const isFirst = inSession && !prevIn;
-    let orbHigh = isFirst ? high : prevHigh;
-    let orbLow = isFirst ? low : prevLow;
-    if (gt(high, orbHigh) && inSession) orbHigh = high;
-    if (gt(orbLow, low) && inSession) orbLow = low;
-    // color = orb_high[1] != orb_high ? na : color.green
-    plot0.push({ time, value: hide ? orbHigh : NaN, color: ne(prevHigh, orbHigh) ? 'transparent' : GREEN });
-    plot1.push({ time, value: hide ? orbLow : NaN, color: ne(prevLow, orbLow) ? 'transparent' : RED });
-    prevIn = inSession;
-    prevHigh = orbHigh;
-    prevLow = orbLow;
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-  };
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 export const OrbOpeningRangeBreakout = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

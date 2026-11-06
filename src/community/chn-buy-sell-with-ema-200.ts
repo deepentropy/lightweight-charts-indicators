@@ -11,9 +11,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData, MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ChnBuySellWithEma200Inputs {
   /** RSI length */
@@ -61,58 +63,84 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ChnBuySellWithEma200Inputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface ChnRun extends BarRunState<{ lastBuyBar: number; lastSellBar: number }> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  ema: ReturnType<typeof taStep.ema>;
+  plot0: { time: number; value: number; color: string }[];
+  barColors: BarColorData[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<ChnBuySellWithEma200Inputs>): BarStudy<ChnRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-
-  const rsi7 = A(ta.rsi(close, cfg.rsi7Length));
-  const ema200 = A(ta.ema(close, cfg.emaLength));
-
-  const barColors: BarColorData[] = [];
-  const markers: MarkerData[] = [];
-  const buyFlags: boolean[] = [], sellFlags: boolean[] = [];
-  // var int last_buy_bar = 0, var int last_sell_bar = 0 (bar_index of the last signal)
-  let lastBuyBar = 0;
-  let lastSellBar = 0;
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const isYellow = ge(rsi7[i], cfg.rsi7Overbought);
-    const isPurple = le(rsi7[i], cfg.rsi7Oversold);
-    // barcolor(is_yellow_candle ? color.yellow : is_purple_candle ? color.purple : na, title = "Candle Colors")
-    if (isYellow) barColors.push({ time: t, color: color.yellow });
-    else if (isPurple) barColors.push({ time: t, color: color.purple });
-
-    const buy = gt(bars[i].close, ema200[i]) && isYellow && i - lastBuyBar >= cfg.signalCooldown;
-    const sell = lt(bars[i].close, ema200[i]) && isPurple && i - lastSellBar >= cfg.signalCooldown;
-    if (buy) lastBuyBar = i;
-    if (sell) lastSellBar = i;
-    buyFlags.push(buy);
-    sellFlags.push(sell);
-    if (buy) {
-      markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY',
-        textColor: color.white, size: 'normal' });
-    }
-    if (sell) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
-        textColor: color.white, size: 'normal' });
-    }
-  }
-
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: ema200[i], color: color.blue }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    markers,
-    barColors,
-    // alertcondition(buy_condition), (sell_condition), (buy_condition or sell_condition)
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags, buyFlags.map((b, i) => b || sellFlags[i])]),
+    init() {
+      const rsi = taStep.rsi(cfg.rsi7Length);
+      const ema = taStep.ema(cfg.emaLength);
+      const s: ChnRun = {
+        rsi, ema, plot0: [], barColors: [], markers: [], flags: [[], [], []], times: [[], [], []],
+        // var int last_buy_bar = 0, var int last_sell_bar = 0 (bar_index of the last signal)
+        steps: [rsi, ema], vars: { lastBuyBar: 0, lastSellBar: 0 }, lists: [], series: [],
+      };
+      s.lists = [s.barColors, s.markers, ...s.times];
+      s.series = [s.plot0, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const rsi7 = s.rsi.step(b.close);
+      const ema200 = s.ema.step(b.close);
+      const v = s.vars;
+      const isYellow = ge(rsi7, cfg.rsi7Overbought);
+      const isPurple = le(rsi7, cfg.rsi7Oversold);
+      // barcolor(is_yellow_candle ? color.yellow : is_purple_candle ? color.purple : na, title = "Candle Colors")
+      if (isYellow) s.barColors.push({ time: t, color: color.yellow });
+      else if (isPurple) s.barColors.push({ time: t, color: color.purple });
+
+      const buy = gt(b.close, ema200) && isYellow && i - v.lastBuyBar >= cfg.signalCooldown;
+      const sell = lt(b.close, ema200) && isPurple && i - v.lastSellBar >= cfg.signalCooldown;
+      if (buy) v.lastBuyBar = i;
+      if (sell) v.lastSellBar = i;
+      if (buy) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY',
+          textColor: color.white, size: 'normal' });
+      }
+      if (sell) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
+          textColor: color.white, size: 'normal' });
+      }
+      s.plot0[i] = { time: t as number, value: ema200, color: color.blue };
+      // alertcondition(buy_condition), (sell_condition), (buy_condition or sell_condition)
+      [buy, sell, buy || sell].forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(t as number);
+      });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ChnBuySellWithEma200Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ChnBuySellWithEma200Inputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -124,6 +152,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const ChnBuySellWithEma200 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -11,8 +11,10 @@
  * Original notice: © Shivam_Mandrai
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface IUMeanReversionSystemInputs {
   /** Mean length (not used by the original script: the EMA and RMA lengths are fixed at 9) */
@@ -54,79 +56,117 @@ export const metadata = {
   overlay: true,
 };
 
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface IuVars {
+  /** var in_long = false; var in_short = false */
+  inLong: boolean;
+  inShort: boolean;
+}
+
+interface IuRun extends BarRunState<IuVars> {
+  ema: ReturnType<typeof taStep.ema>;
+  rma: ReturnType<typeof taStep.rma>;
+  atr: ReturnType<typeof taStep.atr>;
+  mean: number[];
+  upper: number[];
+  lower: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<IUMeanReversionSystemInputs>): BarStudy<IuRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const white = color.white;
+  return {
+    init() {
+      const ema = taStep.ema(9);
+      const rma = taStep.rma(9);
+      const atr = taStep.atr(cfg.atrLength);
+      const s: IuRun = {
+        ema, rma, atr, mean: [], upper: [], lower: [], plot0: [], plot1: [], plot2: [], markers: [],
+        steps: [ema, rma, atr], vars: { inLong: false, inShort: false }, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.mean, s.upper, s.lower, s.plot0, s.plot1, s.plot2];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      const m = s.rma.step(s.ema.step(b.close));
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const up = m + atr * cfg.multi;
+      const lo = m - atr * cfg.multi;
+      s.mean[i] = m;
+      s.upper[i] = up;
+      s.lower[i] = lo;
+      s.plot0[i] = { time: t, value: m, color: color.lime };
+      s.plot1[i] = { time: t, value: up, color: color.gray };
+      s.plot2[i] = { time: t, value: lo, color: color.gray };
+
+      // ta.crossover(a, b): a > b and a[1] <= b[1]; ta.crossunder(a, b): a < b and a[1] >= b[1]; exact comparisons
+      // (na compares false; the bands and the mean are never na again after their first value)
+      const p = i > 0 ? bars[i - 1] : null;
+      const long = p !== null && b.close > lo && p.close <= s.lower[i - 1];
+      const short = p !== null && b.close < up && p.close >= s.upper[i - 1];
+      const longExit = p !== null && b.high > m && p.high <= s.mean[i - 1];
+      const shortExit = p !== null && b.low < m && p.low >= s.mean[i - 1];
+      // in_long[1] / in_short[1]: false on the first bar
+      const prevLong = v.inLong;
+      const prevShort = v.inShort;
+      if (long && !v.inLong) v.inLong = true;
+      if (short && !v.inShort) v.inShort = true;
+      if (longExit) v.inLong = false;
+      if (shortExit) v.inShort = false;
+
+      // plotshape(long_exit and in_long[1], "Long Exit", shape.labeldown, location.abovebar, color.gray)
+      if (longExit && prevLong) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: color.gray, text: 'Long Exit', textColor: white });
+      }
+      // plotshape(short_exit and in_short[1], "Short Exit", shape.labelup, location.belowbar, color.gray)
+      if (shortExit && prevShort) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.gray, text: 'Short Exit', textColor: white });
+      }
+      // plotshape(in_long and not in_long[1], "Long Entry", shape.labelup, location.belowbar, color.green)
+      if (v.inLong && !prevLong) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'Long Entry', textColor: white });
+      }
+      // plotshape(in_short and not in_short[1], "Short Entry", shape.labeldown, location.abovebar, color.red)
+      if (v.inShort && !prevShort) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'Short Entry', textColor: white });
+      }
+    },
+    result(s, bars) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        fills: [{ plot1: 'plot1', plot2: 'plot2', colors: new Array<string>(bars.length).fill(FILL_COLOR) }],
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IUMeanReversionSystemInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<IUMeanReversionSystemInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-  const ema = ta.ema(close, 9);
-  const mean = A(ta.rma(ema, 9));
-  const atr = A(ta.atr(bars, cfg.atrLength));
-  const upper = mean.map((m, i) => m + atr[i] * cfg.multi);
-  const lower = mean.map((m, i) => m - atr[i] * cfg.multi);
-
-  // ta.crossover(a, b): a > b and a[1] <= b[1]; ta.crossunder(a, b): a < b and a[1] >= b[1]; exact comparisons
-  // (na compares false; the bands and the mean are never na again after their first value)
-  const crossover = (a: (i: number) => number, b: number[], i: number) => i > 0 && a(i) > b[i] && a(i - 1) <= b[i - 1];
-  const crossunder = (a: (i: number) => number, b: number[], i: number) => i > 0 && a(i) < b[i] && a(i - 1) >= b[i - 1];
-  const closeAt = (i: number) => bars[i].close;
-  const highAt = (i: number) => bars[i].high;
-  const lowAt = (i: number) => bars[i].low;
-
-  const markers: MarkerData[] = [];
-  const white = color.white;
-  let inLong = false; // var in_long = false
-  let inShort = false; // var in_short = false
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const long = crossover(closeAt, lower, i);
-    const short = crossunder(closeAt, upper, i);
-    const longExit = crossover(highAt, mean, i);
-    const shortExit = crossunder(lowAt, mean, i);
-    // in_long[1] / in_short[1]: false on the first bar
-    const prevLong = inLong;
-    const prevShort = inShort;
-    if (long && !inLong) inLong = true;
-    if (short && !inShort) inShort = true;
-    if (longExit) inLong = false;
-    if (shortExit) inShort = false;
-
-    // plotshape(long_exit and in_long[1], "Long Exit", shape.labeldown, location.abovebar, color.gray)
-    if (longExit && prevLong) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: color.gray, text: 'Long Exit', textColor: white });
-    }
-    // plotshape(short_exit and in_short[1], "Short Exit", shape.labelup, location.belowbar, color.gray)
-    if (shortExit && prevShort) {
-      markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.gray, text: 'Short Exit', textColor: white });
-    }
-    // plotshape(in_long and not in_long[1], "Long Entry", shape.labelup, location.belowbar, color.green)
-    if (inLong && !prevLong) {
-      markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'Long Entry', textColor: white });
-    }
-    // plotshape(in_short and not in_short[1], "Short Entry", shape.labeldown, location.abovebar, color.red)
-    if (inShort && !prevShort) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'Short Entry', textColor: white });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: mean[i], color: color.lime })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: upper[i], color: color.gray })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: lower[i], color: color.gray })),
-    },
-    fills: [{ plot1: 'plot1', plot2: 'plot2', colors: new Array<string>(n).fill(FILL_COLOR) }],
-    markers,
-  };
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const IUMeanReversionSystem = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

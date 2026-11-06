@@ -13,9 +13,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, str, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, str, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall, BgColorData } from '../types';
-import { crossedOver, crossedUnder } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -60,73 +61,98 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<VolumeWeightedRsiInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[]; alertCalls: AlertCall[] } {
+type Result = IndicatorResult & { bgColors: BgColorData[]; alertCalls: AlertCall[] };
+type Point = { time: number; value: number; color?: string };
+
+interface VwRun extends BarRunState<Record<string, never>> {
+  avgUp: ReturnType<typeof taStep.rma>;
+  avgDown: ReturnType<typeof taStep.rma>;
+  rsi: number[];
+  plot0: Point[];
+  bgColors: BgColorData[];
+  alertCalls: AlertCall[];
+}
+
+function study(inputs: Partial<VolumeWeightedRsiInputs>): BarStudy<VwRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // up_volume = close > close[1] ? volume : 0 (close[1] na on the first bar: 0)
-  const vol = bars.map((b) => b.volume ?? NaN);
-  const upVolume = bars.map((b, i) => (i > 0 && gt(b.close, bars[i - 1].close) ? vol[i] : 0));
-  const downVolume = bars.map((b, i) => (i > 0 && lt(b.close, bars[i - 1].close) ? vol[i] : 0));
-  const avgUp = A(ta.rma(S(upVolume), cfg.length));
-  const avgDown = A(ta.rma(S(downVolume), cfg.length));
-
   const obBg = String(color.new(color.red, 90));
   const osBg = String(color.new(color.green, 90));
-  const plot0 = [];
-  const bgColors: BgColorData[] = [];
-  const rsi: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    // A plain division: x / 0 is +-infinity (VW RSI 100), 0 / 0 is na
-    const vwRs = avgUp[i] / avgDown[i];
-    const vwRsi = 100 - 100 / (1 + vwRs);
-    rsi[i] = vwRsi;
-    const c = gt(vwRsi, 50) ? color.green : lt(vwRsi, 50) ? color.red : color.gray;
-    plot0.push({ time: bars[i].time, value: Number.isFinite(vwRsi) ? vwRsi : NaN, color: c });
-    if (gt(vwRsi, cfg.overbought)) bgColors.push({ time: bars[i].time, color: obBg });
-    else if (lt(vwRsi, cfg.oversold)) bgColors.push({ time: bars[i].time, color: osBg });
-  }
-
-  // if ta.crossover(vw_rsi, 50) alert(...) ... (alert.freq_once_per_bar), in the order of the original
-  const calls: [boolean[], string][] = [
-    [crossedOver(rsi, 50), 'VW RSI Bullish: Crossed above 50'],
-    [crossedUnder(rsi, 50), 'VW RSI Bearish: Crossed below 50'],
-    [crossedOver(rsi, cfg.overbought), 'VW RSI Overbought: Crossed above ' + str.tostring(cfg.overbought)],
-    [crossedUnder(rsi, cfg.oversold), 'VW RSI Oversold: Crossed below ' + str.tostring(cfg.oversold)],
+  const messages = [
+    'VW RSI Bullish: Crossed above 50',
+    'VW RSI Bearish: Crossed below 50',
+    'VW RSI Overbought: Crossed above ' + str.tostring(cfg.overbought),
+    'VW RSI Oversold: Crossed below ' + str.tostring(cfg.oversold),
   ];
-  const alertCalls: AlertCall[] = [];
-  for (let i = 0; i < n; i++) {
-    for (const [flags, message] of calls) {
-      if (flags[i]) alertCalls.push({ time: bars[i].time, message, freq: 'once_per_bar' });
-    }
-  }
-
-  // hline(show ? level : na): an na level draws no line
-  const hlines = [];
-  if (cfg.showCenterline) {
-    hlines.push({ value: 50, options: { title: 'Centerline', color: color.gray, linestyle: 'dashed' as const } });
-  }
-  if (cfg.showOverboughtOversold) {
-    hlines.push({ value: cfg.overbought, options: { title: 'Overbought', color: color.red, linestyle: 'dashed' as const } });
-    hlines.push({ value: cfg.oversold, options: { title: 'Oversold', color: color.green, linestyle: 'dashed' as const } });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    hlines,
-    bgColors,
-    alertCalls,
+    init() {
+      const avgUp = taStep.rma(cfg.length);
+      const avgDown = taStep.rma(cfg.length);
+      const s: VwRun = {
+        avgUp, avgDown, rsi: [], plot0: [], bgColors: [], alertCalls: [],
+        steps: [avgUp, avgDown], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.bgColors, s.alertCalls];
+      s.series = [s.rsi, s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time as number;
+      // up_volume = close > close[1] ? volume : 0 (close[1] na on the first bar: 0)
+      const vol = b.volume ?? NaN;
+      const upVolume = i > 0 && gt(b.close, bars[i - 1].close) ? vol : 0;
+      const downVolume = i > 0 && lt(b.close, bars[i - 1].close) ? vol : 0;
+      const avgUp = s.avgUp.step(upVolume);
+      const avgDown = s.avgDown.step(downVolume);
+      // A plain division: x / 0 is +-infinity (VW RSI 100), 0 / 0 is na
+      const vwRs = avgUp / avgDown;
+      const vwRsi = 100 - 100 / (1 + vwRs);
+      s.rsi[i] = vwRsi;
+      const c = gt(vwRsi, 50) ? color.green : lt(vwRsi, 50) ? color.red : color.gray;
+      s.plot0[i] = { time, value: Number.isFinite(vwRsi) ? vwRsi : NaN, color: c };
+      if (gt(vwRsi, cfg.overbought)) s.bgColors.push({ time, color: obBg });
+      else if (lt(vwRsi, cfg.oversold)) s.bgColors.push({ time, color: osBg });
+
+      // if ta.crossover(vw_rsi, 50) alert(...) ... (alert.freq_once_per_bar), in the order of the original
+      const pv = i > 0 ? s.rsi[i - 1] : NaN;
+      if (vwRsi > 50 && pv <= 50) s.alertCalls.push({ time, message: messages[0], freq: 'once_per_bar' });
+      if (vwRsi < 50 && pv >= 50) s.alertCalls.push({ time, message: messages[1], freq: 'once_per_bar' });
+      if (vwRsi > cfg.overbought && pv <= cfg.overbought) s.alertCalls.push({ time, message: messages[2], freq: 'once_per_bar' });
+      if (vwRsi < cfg.oversold && pv >= cfg.oversold) s.alertCalls.push({ time, message: messages[3], freq: 'once_per_bar' });
+    },
+    result(s) {
+      // hline(show ? level : na): an na level draws no line
+      const hlines = [];
+      if (cfg.showCenterline) {
+        hlines.push({ value: 50, options: { title: 'Centerline', color: color.gray, linestyle: 'dashed' as const } });
+      }
+      if (cfg.showOverboughtOversold) {
+        hlines.push({ value: cfg.overbought, options: { title: 'Overbought', color: color.red, linestyle: 'dashed' as const } });
+        hlines.push({ value: cfg.oversold, options: { title: 'Oversold', color: color.green, linestyle: 'dashed' as const } });
+      }
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        hlines,
+        bgColors: s.bgColors.slice(),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeWeightedRsiInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolumeWeightedRsiInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const VolumeWeightedRsi = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

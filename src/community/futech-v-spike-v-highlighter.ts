@@ -13,9 +13,11 @@
  * Original notice: © Atmiya_aatubhai
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface FuTechVSpikeVHighlighterInputs {
   /** Volume spike: multiplier of the volume EMA */
@@ -76,65 +78,94 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > 1e-10);
 /** Pine a == b: within 1e-10, false with na */
 const eq = (a: number, b: number) => Math.abs(a - b) <= 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<FuTechVSpikeVHighlighterInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface FuTechRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  highest: WindowExtreme;
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<FuTechVSpikeVHighlighterInputs>): BarStudy<FuTechRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const volume = Series.fromArray(bars, bars.map((b) => b.volume ?? NaN));
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  // avgVolume = ta.ema(volume, lookbackSpike); highestVolume = ta.highest(volume, lookbackHighlighter)
-  const avgVolume = A(ta.ema(volume, cfg.lookbackSpike));
-  const highestVolume = A(ta.highest(volume, cfg.lookbackHighlighter));
-
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  const flags: boolean[][] = Array.from({ length: 6 }, () => []);
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const v = b.volume ?? NaN;
-    const prevClose = i > 0 ? bars[i - 1].close : NaN;
-    const volumeSpike = gt(v, avgVolume[i] * cfg.thresholdMultiplier);
-    const isPriceUp = gt(b.close, prevClose);
-    const isPriceDown = lt(b.close, prevClose);
-
-    // barcolor(showVolumeSpikeBarColor and volumeSpike ? (isPriceUp ? up : isPriceDown ? down : na) : na)
-    if (cfg.showVolumeSpikeBarColor && volumeSpike && (isPriceUp || isPriceDown)) {
-      barColors.push({ time: b.time, color: isPriceUp ? cfg.upVolumeSpikeColor : cfg.downVolumeSpikeColor });
-    }
-
-    // bigVolumeCondition = volume == highestVolume; highlightColor = close >= open ? up : down
-    const bigVolumeCondition = eq(v, highestVolume[i]);
-    const highlightColor = ge(b.close, b.open) ? cfg.upHighlighterColor : cfg.downHighlighterColor;
-    // bgcolor(showHighlighterColor and bigVolumeCondition ? color.new(highlightColor, 90) : na)
-    if (cfg.showHighlighterColor && bigVolumeCondition) {
-      bgColors.push({ time: b.time, color: String(color.new(highlightColor, 90)) });
-    }
-    // plotshape(bigVolumeCondition, location.bottom, color = highlightColor, shape.circle, size.small)
-    if (bigVolumeCondition) {
-      markers.push({ time: b.time, position: 'bottom', shape: 'circle', color: highlightColor, size: 'small' });
-    }
-    // bullishVolumeSpike = volumeSpike and isPriceUp; bearishVolumeSpike = volumeSpike and isPriceDown;
-    // bullishHighestVolume = bigVolumeCondition and close >= open; bearishHighestVolume = ... and close < open
-    flags[0].push(volumeSpike);
-    flags[1].push(volumeSpike && isPriceUp);
-    flags[2].push(volumeSpike && isPriceDown);
-    flags[3].push(bigVolumeCondition);
-    flags[4].push(bigVolumeCondition && ge(b.close, b.open));
-    flags[5].push(bigVolumeCondition && lt(b.close, b.open));
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    barColors,
-    bgColors,
-    alerts: alertStates(alertConditions, bars, flags),
+    init() {
+      // avgVolume = ta.ema(volume, lookbackSpike); highestVolume = ta.highest(volume, lookbackHighlighter)
+      const ema = taStep.ema(cfg.lookbackSpike);
+      const highest = new WindowExtreme(false, cfg.lookbackHighlighter);
+      const s: FuTechRun = {
+        ema, highest, markers: [], barColors: [], bgColors: [],
+        flags: Array.from({ length: 6 }, () => []), times: Array.from({ length: 6 }, () => []),
+        steps: [ema, highest], vars: {}, lists: [], series: [],
+      };
+      s.lists = [...s.times, s.markers, s.barColors, s.bgColors];
+      s.series = [...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = b.volume ?? NaN;
+      const avgVolume = s.ema.step(v) ?? NaN;
+      const highestVolume = s.highest.step(v) ?? NaN;
+      const prevClose = i > 0 ? bars[i - 1].close : NaN;
+      const volumeSpike = gt(v, avgVolume * cfg.thresholdMultiplier);
+      const isPriceUp = gt(b.close, prevClose);
+      const isPriceDown = lt(b.close, prevClose);
+
+      // barcolor(showVolumeSpikeBarColor and volumeSpike ? (isPriceUp ? up : isPriceDown ? down : na) : na)
+      if (cfg.showVolumeSpikeBarColor && volumeSpike && (isPriceUp || isPriceDown)) {
+        s.barColors.push({ time: b.time, color: isPriceUp ? cfg.upVolumeSpikeColor : cfg.downVolumeSpikeColor });
+      }
+
+      // bigVolumeCondition = volume == highestVolume; highlightColor = close >= open ? up : down
+      const bigVolumeCondition = eq(v, highestVolume);
+      const highlightColor = ge(b.close, b.open) ? cfg.upHighlighterColor : cfg.downHighlighterColor;
+      // bgcolor(showHighlighterColor and bigVolumeCondition ? color.new(highlightColor, 90) : na)
+      if (cfg.showHighlighterColor && bigVolumeCondition) {
+        s.bgColors.push({ time: b.time, color: String(color.new(highlightColor, 90)) });
+      }
+      // plotshape(bigVolumeCondition, location.bottom, color = highlightColor, shape.circle, size.small)
+      if (bigVolumeCondition) {
+        s.markers.push({ time: b.time, position: 'bottom', shape: 'circle', color: highlightColor, size: 'small' });
+      }
+      // bullishVolumeSpike = volumeSpike and isPriceUp; bearishVolumeSpike = volumeSpike and isPriceDown;
+      // bullishHighestVolume = bigVolumeCondition and close >= open; bearishHighestVolume = ... and close < open
+      const flag = (k: number, f: boolean) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(b.time as number);
+      };
+      flag(0, volumeSpike);
+      flag(1, volumeSpike && isPriceUp);
+      flag(2, volumeSpike && isPriceDown);
+      flag(3, bigVolumeCondition);
+      flag(4, bigVolumeCondition && ge(b.close, b.open));
+      flag(5, bigVolumeCondition && lt(b.close, b.open));
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FuTechVSpikeVHighlighterInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<FuTechVSpikeVHighlighterInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -147,4 +178,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert5', title: 'Bearish Highest Volume Candle', message: '{{ticker}} Bearish Highest Volume candle on {{interval}}' },
 ];
 
-export const FuTechVSpikeVHighlighter = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const FuTechVSpikeVHighlighter = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

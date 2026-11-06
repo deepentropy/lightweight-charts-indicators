@@ -10,7 +10,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { MarkerData } from '../types';
 
 export interface DonchianReversalSignalsWithLabelsInputs {
@@ -47,46 +49,68 @@ const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 /** Pine default plotshape text colour (color.blue) */
 const TEXT_COLOR = '#2962FF';
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DonchianReversalSignalsWithLabelsInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface DonchianRun extends BarRunState<Record<string, never>> {
+  upper1: WindowExtreme;
+  lower1: WindowExtreme;
+  upper2: WindowExtreme;
+  lower2: WindowExtreme;
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<DonchianReversalSignalsWithLabelsInputs>): BarStudy<DonchianRun, Result> {
   const { length1, length2 } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const high = new Series(bars, (b) => b.high);
-  const low = new Series(bars, (b) => b.low);
-  const upper1 = ta.highest(high, length1).toArray();
-  const lower1 = ta.lowest(low, length1).toArray();
-  const upper2 = ta.highest(high, length2).toArray();
-  const lower2 = ta.lowest(low, length2).toArray();
   const num = (x: number | null | undefined) => (x == null ? NaN : x);
-
-  const markers: MarkerData[] = [];
-  for (let i = 1; i < n; i++) {
-    const b = bars[i];
-    const p = bars[i - 1];
-    const isGreen = gt(b.close, b.open);
-    const isRed = lt(b.close, b.open);
-    const prevIsGreen = gt(p.close, p.open);
-    const prevIsRed = lt(p.close, p.open);
-    const u1 = num(upper1[i]);
-    const u2 = num(upper2[i]);
-    const l1 = num(lower1[i]);
-    const l2 = num(lower2[i]);
-    const t = b.time as number;
-    if (isGreen && prevIsRed && (le(p.low, l1) || le(p.low, l2))) {
-      markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.yellow, text: 'B', textColor: TEXT_COLOR, size: 'auto' });
-    }
-    if (isRed && prevIsGreen && (ge(p.high, u1) || ge(p.high, u2))) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: color.green, text: 'S', textColor: TEXT_COLOR, size: 'auto' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
+    init() {
+      const upper1 = new WindowExtreme(false, length1);
+      const lower1 = new WindowExtreme(true, length1);
+      const upper2 = new WindowExtreme(false, length2);
+      const lower2 = new WindowExtreme(true, length2);
+      const s: DonchianRun = {
+        upper1, lower1, upper2, lower2, markers: [], steps: [upper1, lower1, upper2, lower2], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const u1 = num(s.upper1.step(b.high));
+      const l1 = num(s.lower1.step(b.low));
+      const u2 = num(s.upper2.step(b.high));
+      const l2 = num(s.lower2.step(b.low));
+      if (i < 1) return;
+      const p = bars[i - 1];
+      const isGreen = gt(b.close, b.open);
+      const isRed = lt(b.close, b.open);
+      const prevIsGreen = gt(p.close, p.open);
+      const prevIsRed = lt(p.close, p.open);
+      const t = b.time as number;
+      if (isGreen && prevIsRed && (le(p.low, l1) || le(p.low, l2))) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.yellow, text: 'B', textColor: TEXT_COLOR, size: 'auto' });
+      }
+      if (isRed && prevIsGreen && (ge(p.high, u1) || ge(p.high, u2))) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: color.green, text: 'S', textColor: TEXT_COLOR, size: 'auto' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const DonchianReversalSignalsWithLabels = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DonchianReversalSignalsWithLabelsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DonchianReversalSignalsWithLabelsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const DonchianReversalSignalsWithLabels = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

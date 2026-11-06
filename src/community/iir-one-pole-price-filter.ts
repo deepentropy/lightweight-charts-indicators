@@ -14,9 +14,11 @@
  * Original notice: © BackQuant
  */
 
-import { getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface IirOnePolePriceFilterInputs {
   src: SourceType;
@@ -83,13 +85,20 @@ export const metadata = {
 /** Pine a > b: a - b > 1e-10 (false with na) */
 const gt = (a: number, b: number) => a - b > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<IirOnePolePriceFilterInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Result = IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+
+interface IirRun extends BarRunState<Record<string, never>> {
+  ys: number[];
+  plot0: Point[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<IirOnePolePriceFilterInputs>): BarStudy<IirRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
+  const value = barSource(cfg.src);
 
   const alphaEma = 2.0 / (cfg.L + 1.0);
   const alphaHl = 1.0 - Math.exp(-Math.log(2.0) / cfg.HL);
@@ -97,34 +106,60 @@ export function calculate(
   const alphaRaw = cfg.mode === 'EMA-Length' ? alphaEma : cfg.mode === 'Half-Life' ? alphaHl : alphaCut;
   const alpha = Math.min(0.9999, Math.max(0.0001, alphaRaw * cfg.alphaScale));
 
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const barColors: BarColorData[] = [];
-  let yPrev = NaN; // y[1]
-  const ys: number[] = [];
-  const ys1: number[] = [];
-  for (let i = 0; i < n; i++) {
-    // prev = nz(y[1], src); y := prev + alpha * (src - prev)
-    const prev = isNaN(yPrev) ? src[i] : yPrev;
-    const y = prev + alpha * (src[i] - prev);
-    // up = y > nz(y[1], y)
-    const up = gt(y, isNaN(yPrev) ? y : yPrev);
-    const barCol = up ? cfg.longColor : cfg.shortColor;
-    // barcolor(paintCandles ? barCol : na)
-    if (cfg.paintCandles) barColors.push({ time: bars[i].time, color: barCol });
-    // plot(showLine ? y : na, "One-Pole", color.new(barCol, transp), linewidth = lineW)
-    plot0.push({ time: bars[i].time, value: cfg.showLine ? y : NaN, color: String(color.new(barCol, cfg.transp)) });
-    ys.push(y);
-    ys1.push(yPrev);
-    yPrev = y;
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    barColors,
-    // longFlip = ta.crossover(y, y[1]) / shortFlip = ta.crossunder(y, y[1])
-    alerts: alertStates(alertConditions, bars, [crossedOver(ys, ys1), crossedUnder(ys, ys1)]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: IirRun = {
+        ys: [], plot0: [], barColors: [], flags: [[], []], times: [[], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.barColors, ...s.times];
+      s.series = [s.ys, s.plot0, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const src = value(b);
+      const yPrev = i > 0 ? s.ys[i - 1]! : NaN; // y[1]
+      // prev = nz(y[1], src); y := prev + alpha * (src - prev)
+      const prev = isNaN(yPrev) ? src : yPrev;
+      const y = prev + alpha * (src - prev);
+      s.ys[i] = y;
+      // up = y > nz(y[1], y)
+      const up = gt(y, isNaN(yPrev) ? y : yPrev);
+      const barCol = up ? cfg.longColor : cfg.shortColor;
+      // barcolor(paintCandles ? barCol : na)
+      if (cfg.paintCandles) s.barColors.push({ time: b.time, color: barCol });
+      // plot(showLine ? y : na, "One-Pole", color.new(barCol, transp), linewidth = lineW)
+      s.plot0[i] = { time: b.time as number, value: cfg.showLine ? y : NaN, color: String(color.new(barCol, cfg.transp)) };
+      // longFlip = ta.crossover(y, y[1]) / shortFlip = ta.crossunder(y, y[1])
+      const y1 = i > 0 ? s.ys[i - 1]! : NaN;
+      const y2 = i > 1 ? s.ys[i - 2]! : NaN;
+      const flags = [y > yPrev && y1 <= y2, y < yPrev && y1 >= y2];
+      flags.forEach((f, k) => {
+        s.flags[k]![i] = f;
+        if (f) s.times[k]!.push(b.time as number);
+      });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IirOnePolePriceFilterInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<IirOnePolePriceFilterInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -135,6 +170,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const IirOnePolePriceFilter = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

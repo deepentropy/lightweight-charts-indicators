@@ -11,8 +11,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BigTradesDetectorByHfInputs {
   /** Lookback period of the SMA / stdev */
@@ -52,71 +54,99 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<BigTradesDetectorByHfInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface BtRun extends BarRunState<Record<string, never>> {
+  smaBuyStep: WindowSma;
+  stdBuyStep: WindowStdev;
+  smaSellStep: WindowSma;
+  stdSellStep: WindowStdev;
+  smaBuy: number[];
+  stdBuy: number[];
+  smaSell: number[];
+  stdSell: number[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<BigTradesDetectorByHfInputs>): BarStudy<BtRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const rawBuy: number[] = new Array(n);
-  const rawSell: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const vol = b.volume === undefined || b.volume === null ? NaN : b.volume;
-    const rangeSize = b.high - b.low;
-    rawBuy[i] = eq(rangeSize, 0) ? 0 : ((b.close - b.low) / rangeSize) * vol;
-    rawSell[i] = eq(rangeSize, 0) ? 0 : ((b.high - b.close) / rangeSize) * vol;
-  }
-  const smaBuy = A(ta.sma(S(rawBuy), cfg.btLookback));
-  const stdBuy = A(ta.stdev(S(rawBuy), cfg.btLookback));
-  const smaSell = A(ta.sma(S(rawSell), cfg.btLookback));
-  const stdSell = A(ta.stdev(S(rawSell), cfg.btLookback));
-
-  const markers: MarkerData[] = [];
   const m1 = cfg.btMult;
   const m2 = cfg.btMult + 1.5;
   const m3 = cfg.btMult + 3.0;
-  for (let i = 1; i < n; i++) {
-    const b = bars[i];
-    const t = b.time;
-    // ta.sma(...)[1] / ta.stdev(...)[1]: the previous bar
-    const avgBuy = smaBuy[i - 1];
-    const sdBuy = stdBuy[i - 1];
-    const avgSell = smaSell[i - 1];
-    const sdSell = stdSell[i - 1];
-    const buy1 = gt(rawBuy[i], avgBuy + sdBuy * m1);
-    const buy2 = gt(rawBuy[i], avgBuy + sdBuy * m2);
-    const buy3 = gt(rawBuy[i], avgBuy + sdBuy * m3);
-    const sell1 = gt(rawSell[i], avgSell + sdSell * m1);
-    const sell2 = gt(rawSell[i], avgSell + sdSell * m2);
-    const sell3 = gt(rawSell[i], avgSell + sdSell * m3);
-    const posBuy = (b.close + b.low) / 2; // math.avg(close, low)
-    const posSell = (b.close + b.high) / 2;
-    // plotshape(cond ? price : na, shape.circle, location.absolute, size.small / normal / large)
-    // id: the original's output (shape0..shape5 in declaration order)
-    const circle = (price: number, c: string, size: 'small' | 'normal' | 'large', id: string) => {
-      if (!isNaN(price)) markers.push({ time: t, position: 'atPriceMiddle', price, shape: 'circle', color: c, size, id });
-    };
-    if (buy1 && !buy2) circle(posBuy, cfg.btBuyColor, 'small', 'shape0');
-    if (buy2 && !buy3) circle(posBuy, cfg.btBuyColor, 'normal', 'shape1');
-    if (buy3) circle(posBuy, cfg.btBuyColor, 'large', 'shape2');
-    if (sell1 && !sell2) circle(posSell, cfg.btSellColor, 'small', 'shape3');
-    if (sell2 && !sell3) circle(posSell, cfg.btSellColor, 'normal', 'shape4');
-    if (sell3) circle(posSell, cfg.btSellColor, 'large', 'shape5');
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
+    init() {
+      const smaBuyStep = new WindowSma(cfg.btLookback);
+      const stdBuyStep = new WindowStdev(cfg.btLookback);
+      const smaSellStep = new WindowSma(cfg.btLookback);
+      const stdSellStep = new WindowStdev(cfg.btLookback);
+      const s: BtRun = {
+        smaBuyStep, stdBuyStep, smaSellStep, stdSellStep, smaBuy: [], stdBuy: [], smaSell: [], stdSell: [], markers: [],
+        steps: [smaBuyStep, stdBuyStep, smaSellStep, stdSellStep], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.smaBuy, s.stdBuy, s.smaSell, s.stdSell];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const vol = b.volume === undefined || b.volume === null ? NaN : b.volume;
+      const rangeSize = b.high - b.low;
+      const rawBuy = eq(rangeSize, 0) ? 0 : ((b.close - b.low) / rangeSize) * vol;
+      const rawSell = eq(rangeSize, 0) ? 0 : ((b.high - b.close) / rangeSize) * vol;
+      s.smaBuy[i] = s.smaBuyStep.step(rawBuy);
+      s.stdBuy[i] = s.stdBuyStep.step(rawBuy);
+      s.smaSell[i] = s.smaSellStep.step(rawSell);
+      s.stdSell[i] = s.stdSellStep.step(rawSell);
+      if (i < 1) return;
+
+      const t = b.time;
+      // ta.sma(...)[1] / ta.stdev(...)[1]: the previous bar
+      const avgBuy = s.smaBuy[i - 1];
+      const sdBuy = s.stdBuy[i - 1];
+      const avgSell = s.smaSell[i - 1];
+      const sdSell = s.stdSell[i - 1];
+      const buy1 = gt(rawBuy, avgBuy + sdBuy * m1);
+      const buy2 = gt(rawBuy, avgBuy + sdBuy * m2);
+      const buy3 = gt(rawBuy, avgBuy + sdBuy * m3);
+      const sell1 = gt(rawSell, avgSell + sdSell * m1);
+      const sell2 = gt(rawSell, avgSell + sdSell * m2);
+      const sell3 = gt(rawSell, avgSell + sdSell * m3);
+      const posBuy = (b.close + b.low) / 2; // math.avg(close, low)
+      const posSell = (b.close + b.high) / 2;
+      // plotshape(cond ? price : na, shape.circle, location.absolute, size.small / normal / large)
+      // id: the original's output (shape0..shape5 in declaration order)
+      const circle = (price: number, c: string, size: 'small' | 'normal' | 'large', id: string) => {
+        if (!isNaN(price)) s.markers.push({ time: t, position: 'atPriceMiddle', price, shape: 'circle', color: c, size, id });
+      };
+      if (buy1 && !buy2) circle(posBuy, cfg.btBuyColor, 'small', 'shape0');
+      if (buy2 && !buy3) circle(posBuy, cfg.btBuyColor, 'normal', 'shape1');
+      if (buy3) circle(posBuy, cfg.btBuyColor, 'large', 'shape2');
+      if (sell1 && !sell2) circle(posSell, cfg.btSellColor, 'small', 'shape3');
+      if (sell2 && !sell3) circle(posSell, cfg.btSellColor, 'normal', 'shape4');
+      if (sell3) circle(posSell, cfg.btSellColor, 'large', 'shape5');
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BigTradesDetectorByHfInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BigTradesDetectorByHfInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const BigTradesDetectorByHf = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

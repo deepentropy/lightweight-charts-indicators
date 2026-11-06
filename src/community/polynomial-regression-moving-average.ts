@@ -15,10 +15,12 @@
  */
 
 import {
-  ta, Series, getSourceSeries, color, matrix, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar,
+  taStep, color, matrix, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar,
   type SourceType, type PineMatrix,
 } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowVwma, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 type SmoothType = 'None' | 'SMA' | 'EMA' | 'WMA' | 'RMA' | 'HMA' | 'DEMA' | 'TEMA' | 'VWMA' | 'Gaussian';
 
@@ -117,124 +119,196 @@ function matAdd(m1: PineMatrix<number>, m2: PineMatrix<number>): PineMatrix<numb
   return res;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<PolynomialRegressionMovingAverageInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const { length, degree, smoothType, smoothLen, smoothIter } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = A(getSourceSeries(bars, cfg.source));
+type Smoother = { step(v: number, volume: number): number; commit(): void };
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
 
-  // Kernel, built on the first bar (barstate.isfirst)
-  const nrPred: number[] = new Array(n).fill(0);
-  if (n > 0) {
-    const degF = Math.floor(degree);
-    const degC = Math.ceil(degree);
-    const weight = degree - degF;
-    const kFloor = olsWeights(length, Math.trunc(degF));
-    const kernel = degF === degC
-      ? kFloor
-      : matAdd(matScale(kFloor, 1.0 - weight), matScale(olsWeights(length, Math.trunc(degC)), weight));
+/** The Gaussian smoothing of the script on one bar: sum of nz(src[i]) * w[i] / sum of the weights (its own history) */
+class GaussianStep implements Committable {
+  private values: number[] = [];
+  private pending = NaN;
+  private stepped = false;
+  private readonly w: number[] = [];
 
-    // if not na(source[length]): nr_pred = sum of kernel(0, i) * source[length - 1 - i]
-    for (let b = length; b < n; b++) {
-      if (isNaN(src[b - length])) continue;
-      let sum = 0.0;
-      for (let i = 0; i < length; i++) sum += matrix.get(kernel, 0, i) * src[b - (length - 1 - i)];
-      nrPred[b] = sum;
-    }
+  constructor(private readonly len: number) {
+    // sigma = len / 3
+    const sigma = len / 3.0;
+    for (let i = 0; i < len; i++) this.w.push(math.exp(-0.5 * (math.pow(i / sigma, 2) as number)) as number);
   }
 
+  step(x: number): number {
+    this.stepped = true;
+    this.pending = x;
+    const n = this.values.length;
+    let sum = 0.0;
+    let wsum = 0.0;
+    for (let i = 0; i < this.len; i++) {
+      const p = i === 0 ? x : n - i >= 0 ? this.values[n - i] : NaN;
+      sum += (isNaN(p) ? 0 : p) * this.w[i];
+      wsum += this.w[i];
+    }
+    return sum / wsum;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.values.push(this.pending);
+    if (this.values.length > this.len * 2 + 1024) this.values = this.values.slice(-this.len);
+  }
+}
+
+interface PrmaVars {
+  prevUp: boolean;
+  prevDn: boolean;
+}
+
+interface PrmaRun extends BarRunState<PrmaVars> {
+  /** The kernel weights (built on the first bar) */
+  kernel: number[];
+  smoothers: Smoother[];
+  src: number[];
+  prma: number[];
+  plot0: Point[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<PolynomialRegressionMovingAverageInputs>): BarStudy<PrmaRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { length, degree, smoothType, smoothLen, smoothIter } = cfg;
+  const value = barSource(cfg.source);
+
   // Smoothing: each iteration is its own call site, run on every bar
-  const volume = S(bars.map((b) => b.volume ?? NaN));
-  const wma = (x: number[], len: number) => A(ta.wma(S(x), len));
-  const ema = (x: number[], len: number) => A(ta.ema(S(x), len));
-  const smoothOnce = (x: number[], len: number): number[] => {
+  const smoothOnce = (len: number): Smoother => {
+    const ema = (l: number) => taStep.ema(l);
     switch (smoothType) {
-      case 'SMA': return A(ta.sma(S(x), len));
-      case 'EMA': return ema(x, len);
-      case 'WMA': return wma(x, len);
-      case 'RMA': return A(ta.rma(S(x), len));
+      case 'SMA': return new WindowSma(len);
+      case 'EMA': { const m = ema(len); return { step: (x) => m.step(x), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (x) => m.step(x, len), commit: () => m.commit() }; }
+      case 'RMA': { const m = taStep.rma(len); return { step: (x) => m.step(x), commit: () => m.commit() }; }
       case 'HMA': {
         // halfLen = math.max(int(len / 2), 1); sqrtLen = math.max(int(math.sqrt(len)), 1)
         const halfLen = Math.max(Math.trunc(len / 2), 1);
         const sqrtLen = Math.max(Math.trunc(Math.sqrt(len)), 1);
-        const wHalf = wma(x, halfLen);
-        const wFull = wma(x, len);
-        return wma(wHalf.map((v, i) => 2 * v - wFull[i]), sqrtLen);
+        const wHalf = taStep.wma();
+        const wFull = taStep.wma();
+        const outer = taStep.wma();
+        return {
+          step: (x) => outer.step(2 * wHalf.step(x, halfLen) - wFull.step(x, len), sqrtLen),
+          commit: () => { wHalf.commit(); wFull.commit(); outer.commit(); },
+        };
       }
       case 'DEMA': {
-        const e1 = ema(x, len);
-        const e2 = ema(e1, len);
-        return e1.map((v, i) => 2 * v - e2[i]);
+        const e1 = ema(len);
+        const e2 = ema(len);
+        return {
+          step: (x) => { const v = e1.step(x); return 2 * v - e2.step(v); },
+          commit: () => { e1.commit(); e2.commit(); },
+        };
       }
       case 'TEMA': {
-        const e1 = ema(x, len);
-        const e2 = ema(e1, len);
-        const e3 = ema(e2, len);
-        return e1.map((v, i) => 3 * (v - e2[i]) + e3[i]);
+        const e1 = ema(len);
+        const e2 = ema(len);
+        const e3 = ema(len);
+        return {
+          step: (x) => { const v = e1.step(x); const v2 = e2.step(v); return 3 * (v - v2) + e3.step(v2); },
+          commit: () => { e1.commit(); e2.commit(); e3.commit(); },
+        };
       }
-      case 'VWMA': return A(ta.vwma(S(x), len, volume));
-      case 'Gaussian': {
-        // sum of nz(src[i]) * exp(-0.5 * (i / sigma)^2) / sum of the weights, sigma = len / 3
-        const sigma = len / 3.0;
-        const w: number[] = [];
-        for (let i = 0; i < len; i++) w.push(math.exp(-0.5 * (math.pow(i / sigma, 2) as number)) as number);
-        return x.map((_v, b) => {
-          let sum = 0.0;
-          let wsum = 0.0;
-          for (let i = 0; i < len; i++) {
-            const p = b - i >= 0 ? x[b - i] : NaN;
-            sum += (isNaN(p) ? 0 : p) * w[i];
-            wsum += w[i];
-          }
-          return sum / wsum;
-        });
-      }
-      default: return x;
+      case 'VWMA': return new WindowVwma(len);
+      case 'Gaussian': { const m = new GaussianStep(len); return { step: (x) => m.step(x), commit: () => m.commit() }; }
+      default: return { step: (x) => x, commit: () => {} };
     }
   };
-  let prma = nrPred;
-  if (smoothType !== 'None') {
-    for (let k = 1; k <= Math.min(smoothIter, 10); k++) prma = smoothOnce(prma, smoothLen);
-  }
-
-  const markers: MarkerData[] = [];
-  const plot0: { time: number; value: number; color: string }[] = [];
-  let prevUp = false;
-  let prevDn = false;
-  for (let i = 0; i < n; i++) {
-    const prev = i > 0 ? prma[i - 1] : NaN;
-    const up = gt(prma[i], prev);
-    const dn = lt(prma[i], prev);
-    const t = bars[i].time as number;
-    plot0.push({ time: t, value: Number.isFinite(prma[i]) ? prma[i] : NaN, color: up ? cfg.colorUp : cfg.colorDn });
-    // plotshape(showSig and sig_buy and close > prma, "Long", shape.labelup, location.belowbar, colorUp, text = "L")
-    if (cfg.showSig && up && prevDn && gt(bars[i].close, prma[i])) {
-      markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: cfg.colorUp, text: 'L',
-        textColor: color.white, size: 'tiny' });
-    }
-    // plotshape(showSig and sig_sell and close < prma, "Short", shape.labeldown, location.abovebar, colorDn, text = "S")
-    if (cfg.showSig && dn && prevUp && lt(bars[i].close, prma[i])) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: cfg.colorDn, text: 'S',
-        textColor: color.white, size: 'tiny' });
-    }
-    prevUp = up;
-    prevDn = dn;
-  }
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    markers,
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const smoothers: Smoother[] = [];
+      if (smoothType !== 'None') {
+        for (let k = 1; k <= Math.min(smoothIter, 10); k++) smoothers.push(smoothOnce(smoothLen));
+      }
+      const s: PrmaRun = {
+        kernel: [], smoothers, src: [], prma: [], plot0: [], markers: [],
+        steps: smoothers, vars: { prevUp: false, prevDn: false }, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.src, s.prma, s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const src = value(b);
+      s.src[i] = src;
+      // Kernel, built on the first bar (barstate.isfirst)
+      if (i === 0) {
+        const degF = Math.floor(degree);
+        const degC = Math.ceil(degree);
+        const weight = degree - degF;
+        const kFloor = olsWeights(length, Math.trunc(degF));
+        const kernel = degF === degC
+          ? kFloor
+          : matAdd(matScale(kFloor, 1.0 - weight), matScale(olsWeights(length, Math.trunc(degC)), weight));
+        s.kernel = [];
+        for (let k = 0; k < length; k++) s.kernel.push(matrix.get(kernel, 0, k));
+      }
+
+      // if not na(source[length]): nr_pred = sum of kernel(0, i) * source[length - 1 - i]
+      let nrPred = 0;
+      if (i >= length && !isNaN(s.src[i - length])) {
+        let sum = 0.0;
+        for (let k = 0; k < length; k++) sum += s.kernel[k] * s.src[i - (length - 1 - k)];
+        nrPred = sum;
+      }
+      let prma = nrPred;
+      const volume = b.volume ?? NaN;
+      for (const m of s.smoothers) prma = m.step(prma, volume);
+      s.prma[i] = prma;
+
+      const v = s.vars;
+      const prev = i > 0 ? s.prma[i - 1] : NaN;
+      const up = gt(prma, prev);
+      const dn = lt(prma, prev);
+      const t = b.time as number;
+      s.plot0[i] = { time: t, value: Number.isFinite(prma) ? prma : NaN, color: up ? cfg.colorUp : cfg.colorDn };
+      // plotshape(showSig and sig_buy and close > prma, "Long", shape.labelup, location.belowbar, colorUp, text = "L")
+      if (cfg.showSig && up && v.prevDn && gt(b.close, prma)) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: cfg.colorUp, text: 'L',
+          textColor: color.white, size: 'tiny' });
+      }
+      // plotshape(showSig and sig_sell and close < prma, "Short", shape.labeldown, location.abovebar, colorDn, text = "S")
+      if (cfg.showSig && dn && v.prevUp && lt(b.close, prma)) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: cfg.colorDn, text: 'S',
+          textColor: color.white, size: 'tiny' });
+      }
+      v.prevUp = up;
+      v.prevDn = dn;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PolynomialRegressionMovingAverageInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<PolynomialRegressionMovingAverageInputs> = {},
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PolynomialRegressionMovingAverage = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

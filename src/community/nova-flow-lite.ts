@@ -10,7 +10,9 @@
  * Original notice: © NovaQuantX
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 // The Pine script has no inputs
 export type NovaFlowLiteInputs = Record<string, never>;
@@ -42,34 +44,75 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(bars: Bar[], _inputs: Partial<NovaFlowLiteInputs> = {}): IndicatorResult {
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-  const fast = A(ta.ema(close, 34));
-  const slow = A(ta.ema(close, 55));
-  const basis = A(ta.sma(close, 34));
-  const dev = A(ta.stdev(close, 34));
+type Point = { time: number; value: number; color?: string };
+
+interface NovaRun extends BarRunState<Record<string, never>> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  basis: WindowSma;
+  dev: WindowStdev;
+  flowColor: string[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+}
+
+function study(): BarStudy<NovaRun, IndicatorResult> {
   const val = (v: number) => (Number.isFinite(v) ? v : NaN);
-
-  // trendUp = fast > slow; flowColor = trendUp ? colUp : colDown
-  const flowColor = bars.map((_b, i) => (gt(fast[i], slow[i]) ? COL_UP : COL_DOWN));
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: val(fast[i]), color: String(color.new(flowColor[i], 80)) }));
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: val(fast[i]), color: flowColor[i] }));
-  const plot2 = bars.map((b, i) => ({ time: b.time, value: val(basis[i] + dev[i]), color: ZONE_LINE }));
-  const plot3 = bars.map((b, i) => ({ time: b.time, value: val(basis[i] - dev[i]), color: ZONE_LINE }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', colors: flowColor.map((c) => String(color.new(c, 90))) },
-      { plot1: 'plot2', plot2: 'plot3', options: { color: ZONE_FILL } },
-    ],
+    init() {
+      const fast = taStep.ema(34);
+      const slow = taStep.ema(55);
+      const basis = new WindowSma(34);
+      const dev = new WindowStdev(34);
+      const s: NovaRun = {
+        fast, slow, basis, dev, flowColor: [], plot0: [], plot1: [], plot2: [], plot3: [],
+        steps: [fast, slow, basis, dev], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.flowColor, s.plot0, s.plot1, s.plot2, s.plot3];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const close = b.close;
+      const fast = s.fast.step(close);
+      const slow = s.slow.step(close);
+      const basis = s.basis.step(close);
+      const dev = s.dev.step(close);
+      // trendUp = fast > slow; flowColor = trendUp ? colUp : colDown
+      const flowColor = gt(fast, slow) ? COL_UP : COL_DOWN;
+      s.flowColor[i] = flowColor;
+      s.plot0[i] = { time: b.time, value: val(fast), color: String(color.new(flowColor, 80)) };
+      s.plot1[i] = { time: b.time, value: val(fast), color: flowColor };
+      s.plot2[i] = { time: b.time, value: val(basis + dev), color: ZONE_LINE };
+      s.plot3[i] = { time: b.time, value: val(basis - dev), color: ZONE_LINE };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', colors: s.flowColor.map((c) => String(color.new(c, 90))) },
+          { plot1: 'plot2', plot2: 'plot3', options: { color: ZONE_FILL } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<NovaFlowLiteInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(bars: Bar[], _inputs: Partial<NovaFlowLiteInputs> = {}): IndicatorResult {
+  return fullResult(createRun(_inputs).update(bars));
 }
 
 export const NovaFlowLite = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

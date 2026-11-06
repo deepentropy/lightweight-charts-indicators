@@ -6,7 +6,9 @@
  * Values above 1 = price above upper band, below 0 = price below lower band
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BBPercentBInputs {
   /** Period length */
@@ -53,52 +55,62 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<BBPercentBInputs> = {}): IndicatorResult {
+interface BbpRun extends BarRunState<Record<string, never>> {
+  basis: WindowSma;
+  dev: WindowStdev;
+  plotData: { time: number; value: number }[];
+}
+
+function study(inputs: Partial<BBPercentBInputs>): BarStudy<BbpRun, IndicatorResult> {
   const { length, src, mult } = { ...defaultInputs, ...inputs };
-
-  const source = getSourceSeries(bars, src);
-  const basis = ta.sma(source, length);
-  const dev = ta.stdev(source, length).mul(mult);
-  const upper = basis.add(dev);
-  const lower = basis.sub(dev);
-
-  // %B = (src - lower) / (upper - lower)
-  const upperArr = upper.toArray();
-  const lowerArr = lower.toArray();
-  const sourceArr = source.toArray();
-
-  const bbr: number[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const u = upperArr[i];
-    const l = lowerArr[i];
-    const s = sourceArr[i];
-
-    if (u == null || l == null || s == null || u === l) {
-      bbr.push(NaN);
-    } else {
-      bbr.push((s - l) / (u - l));
-    }
-  }
-
-  const plotData = bbr.map((value, i) => ({
-    time: bars[i].time,
-    value,
-  }));
-
+  const value = barSource(src);
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const basis = new WindowSma(length);
+      const dev = new WindowStdev(length);
+      const s: BbpRun = { basis, dev, plotData: [], steps: [basis, dev], vars: {}, lists: [], series: [] };
+      s.series = [s.plotData];
+      return s;
     },
-    plots: {
-      'plot0': plotData,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = value(b);
+      const basis = s.basis.step(v);
+      const dev = s.dev.step(v) * mult;
+      const u = basis + dev;
+      const l = basis - dev;
+
+      // %B = (src - lower) / (upper - lower)
+      s.plotData[i] = { time: b.time as number, value: u === l ? NaN : (v - l) / (u - l) };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.plotData.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BBPercentBInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BBPercentBInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const BBPercentB = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

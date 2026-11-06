@@ -11,8 +11,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrendPredictorRibbonInputs {
   /** Source of the HMA */
@@ -60,71 +62,112 @@ const lt = (a: number, b: number) => b - a > EPS;
 const max = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.max(a, b));
 const min = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.min(a, b));
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TrendPredictorRibbonInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface TprVars {
+  /** var float trendStop = na */
+  trendStop: number;
+  /** var int trendDir = 1 */
+  trendDir: number;
+}
+
+interface TprRun extends BarRunState<TprVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  hma: ReturnType<typeof taStep.hma>;
+  stop: number[];
+  pricePlot: Point[];
+  stopPlot: Point[];
+  fillColors: string[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<TrendPredictorRibbonInputs>): BarStudy<TprRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const atr = ta.atr(bars, cfg.length).toArray().map((v) => v ?? NaN);
-  const hma = ta.hma(getSourceSeries(bars, cfg.src), cfg.length).toArray().map((v) => v ?? NaN);
-
-  const stop: number[] = new Array(n);
-  const dir: number[] = new Array(n);
-  let trendStop = NaN; // var float trendStop = na
-  let trendDir = 1; // var int trendDir = 1
-  for (let i = 0; i < n; i++) {
-    const close = bars[i].close;
-    const longStop = hma[i] - cfg.multiplier * atr[i];
-    const shortStop = hma[i] + cfg.multiplier * atr[i];
-    if (isNaN(trendStop)) trendStop = hma[i];
-    if (trendDir === 1 && lt(close, trendStop)) {
-      trendDir = -1;
-      trendStop = shortStop;
-    } else if (trendDir === -1 && gt(close, trendStop)) {
-      trendDir = 1;
-      trendStop = longStop;
-    } else {
-      trendStop = trendDir === 1 ? max(longStop, trendStop) : min(shortStop, trendStop);
-    }
-    stop[i] = trendStop;
-    dir[i] = trendDir;
-  }
-
-  const markers: MarkerData[] = [];
-  for (let i = 1; i < n; i++) {
-    const t = bars[i].time;
-    const c = bars[i].close;
-    const c1 = bars[i - 1].close;
-    // ta.crossover / ta.crossunder compare exactly (no 1e-10 tolerance, unlike the operators)
-    // plotshape(ta.crossover(close, trendStop), "Buy Signal", shape.triangleup, location.belowbar, color.green, size.small)
-    if (c > stop[i] && c1 <= stop[i - 1]) {
-      markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'small' });
-    }
-    // plotshape(ta.crossunder(close, trendStop), "Sell Signal", shape.triangledown, location.abovebar, color.red, size.small)
-    if (c < stop[i] && c1 >= stop[i - 1]) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'small' });
-    }
-  }
-
+  const value = barSource(cfg.src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(close, title = "Price Line", color = fullyTransparent)
-      plot0: bars.map((b) => ({ time: b.time, value: b.close, color: FULLY_TRANSPARENT })),
-      // plot(trendStop, title = "Trend Line", color = trendDir == 1 ? bullColor : bearColor, linewidth = 3)
-      plot1: bars.map((b, i) => ({ time: b.time, value: stop[i], color: dir[i] === 1 ? BULL : BEAR })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const atr = taStep.atr(cfg.length);
+      const hma = taStep.hma(cfg.length);
+      const s: TprRun = {
+        atr, hma, stop: [], pricePlot: [], stopPlot: [], fillColors: [], markers: [],
+        steps: [atr, hma], vars: { trendStop: NaN, trendDir: 1 }, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.stop, s.pricePlot, s.stopPlot, s.fillColors];
+      return s;
     },
-    // fill(p_price, p_stop, color = trendDir == 1 ? cloudBull : cloudBear, title = "Trend Ribbon")
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Trend Ribbon' }, colors: dir.map((d) => (d === 1 ? CLOUD_BULL : CLOUD_BEAR)) },
-    ],
-    markers,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const hma = s.hma.step(value(b));
+      const close = b.close;
+      const longStop = hma - cfg.multiplier * atr;
+      const shortStop = hma + cfg.multiplier * atr;
+      let trendStop = v.trendStop;
+      let trendDir = v.trendDir;
+      if (isNaN(trendStop)) trendStop = hma;
+      if (trendDir === 1 && lt(close, trendStop)) {
+        trendDir = -1;
+        trendStop = shortStop;
+      } else if (trendDir === -1 && gt(close, trendStop)) {
+        trendDir = 1;
+        trendStop = longStop;
+      } else {
+        trendStop = trendDir === 1 ? max(longStop, trendStop) : min(shortStop, trendStop);
+      }
+      v.trendStop = trendStop;
+      v.trendDir = trendDir;
+      s.stop[i] = trendStop;
+
+      const t = b.time;
+      // plot(close, title = "Price Line", color = fullyTransparent)
+      s.pricePlot[i] = { time: t, value: close, color: FULLY_TRANSPARENT };
+      // plot(trendStop, title = "Trend Line", color = trendDir == 1 ? bullColor : bearColor, linewidth = 3)
+      s.stopPlot[i] = { time: t, value: trendStop, color: trendDir === 1 ? BULL : BEAR };
+      // fill(p_price, p_stop, color = trendDir == 1 ? cloudBull : cloudBear, title = "Trend Ribbon")
+      s.fillColors[i] = trendDir === 1 ? CLOUD_BULL : CLOUD_BEAR;
+
+      if (i < 1) return;
+      const c1 = bars[i - 1].close;
+      const stop1 = s.stop[i - 1];
+      // ta.crossover / ta.crossunder compare exactly (no 1e-10 tolerance, unlike the operators)
+      // plotshape(ta.crossover(close, trendStop), "Buy Signal", shape.triangleup, location.belowbar, color.green, size.small)
+      if (close > trendStop && c1 <= stop1) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'small' });
+      }
+      // plotshape(ta.crossunder(close, trendStop), "Sell Signal", shape.triangledown, location.abovebar, color.red, size.small)
+      if (close < trendStop && c1 >= stop1) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'small' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.pricePlot.slice(), plot1: s.stopPlot.slice() },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Trend Ribbon' }, colors: s.fillColors.slice() },
+        ],
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrendPredictorRibbonInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TrendPredictorRibbonInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const TrendPredictorRibbon = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -28,8 +28,10 @@
  * Original notice: © Zeiierman
  */
 
-import { ta, Series, color, math, str, barTime, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, math, str, barTime, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BoxData, LabelData, LineDrawingData, PineSize } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type SizeName = 'Tiny' | 'Small' | 'Normal' | 'Large' | 'Huge';
 
@@ -303,39 +305,53 @@ function bandOf(levels: number[], price: number): number {
   return -1;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<FibonacciProjectionWithVolumeDeltaProfileInputs> = {},
-): IndicatorResult & { lines: LineDrawingData[]; boxes: BoxData[]; labels: LabelData[] } {
+type Result = IndicatorResult & { lines: LineDrawingData[]; boxes: BoxData[]; labels: LabelData[] };
+
+/** A box creation of the script, counted for the box limit: 'area' boxes are the projection boxes (index k) */
+type Entry = { kind: 'area' | 'profile' | 'delta'; box: BoxObj | null; k: number };
+
+interface FibVars {
+  /** The live boxes when the box limit can be reached (changed in place: copied by copyVars) */
+  alive: Entry[];
+}
+
+interface FibRun extends BarRunState<FibVars> {
+  hiStep: WindowExtreme;
+  loStep: WindowExtreme;
+  hiBarAt: number[];
+  loBarAt: number[];
+  /** The last bar up to each bar where the profiles are made again (-1: none) */
+  lastRebuild: number[];
+}
+
+function study(inputs: Partial<FibonacciProjectionWithVolumeDeltaProfileInputs>): BarStudy<FibRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { prd, rows } = cfg;
   // the level comes from a list of options: a number, or its text
   const lvl = Number(cfg.lvl);
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const hi = A(ta.highest(S(bars.map((b) => b.high)), prd));
-  const lo = A(ta.lowest(S(bars.map((b) => b.low)), prd));
   const fibColors = [cfg.fibColor236, cfg.fibColor382, cfg.fibColor500, cfg.fibColor618, cfg.fibColor786];
+  const mostBoxes = 3 + (cfg.showFibProfile ? 2 * rows : 0) + (cfg.showFibDelta ? FIB_LEVELS.length + 1 : 0);
+  /** The box limit can be reached: the creations of every bar are counted */
+  const limited = mostBoxes > MAX_BOXES + 5;
 
-  // Swings at each bar: the last bar whose high (low) is the highest (lowest) of the period
-  const hiBarAt: number[] = new Array(n).fill(-1);
-  const loBarAt: number[] = new Array(n).fill(-1);
-  for (let i = 0; i < n; i++) {
-    hiBarAt[i] = eq(bars[i].high, hi[i]) ? i : i > 0 ? hiBarAt[i - 1] : -1;
-    loBarAt[i] = eq(bars[i].low, lo[i]) ? i : i > 0 ? loBarAt[i - 1] : -1;
-  }
+  // the bars and the swings read by the drawing functions (set by bar() and result())
+  let bars: Bar[] = [];
+  let hiBarAt: number[] = [];
+  let loBarAt: number[] = [];
+
   /** True on the bars where the script draws (both swings exist) */
-  const draws = (i: number) => hiBarAt[i] >= 0 && loBarAt[i] >= 0;
+  const draws = (i: number) => hiBarAt[i]! >= 0 && loBarAt[i]! >= 0;
+  /** The profiles are made again only on the bars where the two swings are different bars */
+  const rebuilds = (i: number) => draws(i) && hiBarAt[i] !== loBarAt[i];
 
   /** Up and down volume of the bars between the swings of bar i, by price band */
   const volumeByBand = (i: number, levels: number[]) => {
     const up: number[] = new Array(levels.length - 1).fill(0);
     const down: number[] = new Array(levels.length - 1).fill(0);
-    const startBar = Math.min(hiBarAt[i], loBarAt[i]);
-    const endBar = Math.max(hiBarAt[i], loBarAt[i]);
+    const startBar = Math.min(hiBarAt[i]!, loBarAt[i]!);
+    const endBar = Math.max(hiBarAt[i]!, loBarAt[i]!);
     for (let bi = startBar; bi <= endBar; bi++) {
-      const b = bars[bi];
+      const b = bars[bi]!;
       const r = bandOf(levels, (b.high + b.low + b.close) / 3);
       if (r < 0) continue;
       if (gt(b.close, b.open)) up[r] += b.volume ?? NaN;
@@ -346,10 +362,10 @@ export function calculate(
 
   /** The boxes of the projection of bar i (the script draws them again on every bar) */
   const projection = (i: number): { lines: LineDrawingData[]; boxes: BoxObj[]; labels: LabelData[] } => {
-    const hiPrice = bars[hiBarAt[i]].high;
-    const loPrice = bars[loBarAt[i]].low;
-    const HB = i - hiBarAt[i];
-    const LB = i - loBarAt[i];
+    const hiPrice = bars[hiBarAt[i]!]!.high;
+    const loPrice = bars[loBarAt[i]!]!.low;
+    const HB = i - hiBarAt[i]!;
+    const LB = i - loBarAt[i]!;
     const level = fibb(lvl, LB > HB, hiPrice, loPrice);
     const level2 = LB < HB ? fibb(lvl, true, level, loPrice) : fibb(lvl, false, hiPrice, level);
     const trend = fibb(1.272, LB > HB, hiPrice, loPrice);
@@ -360,8 +376,8 @@ export function calculate(
     for (let k = 0; k <= forecast.length - 2; k++) {
       const x1 = Math.min(future, i + 500);
       const x2 = Math.min(future + segment, i + 500);
-      const y1 = forecast[k];
-      const y2 = forecast[k + 1];
+      const y1 = forecast[k]!;
+      const y2 = forecast[k + 1]!;
       out.lines.push({
         time1: barTime(bars, x1), price1: y1, time2: barTime(bars, x2), price2: y2,
         color: gt(y2, y1) ? cfg.projLineBullColor : cfg.projLineBearColor, width: cfg.projLineWidth,
@@ -397,8 +413,8 @@ export function calculate(
 
   /** The boxes of the volume profile of bar i */
   const profile = (i: number): BoxObj[] => {
-    const hiPrice = bars[hiBarAt[i]].high;
-    const loPrice = bars[loBarAt[i]].low;
+    const hiPrice = bars[hiBarAt[i]!]!.high;
+    const loPrice = bars[loBarAt[i]!]!.low;
     const top = Math.max(hiPrice, loPrice);
     const bottom = Math.min(hiPrice, loPrice);
     const out: BoxObj[] = [];
@@ -408,16 +424,16 @@ export function calculate(
     for (let k = 0; k <= rows; k++) levels.push(bottom + step * k);
     const { up, down, startBar, endBar } = volumeByBand(i, levels);
     let maxTot = 0.0;
-    for (let r = 0; r < rows; r++) maxTot = math.max(maxTot, up[r] + down[r]) as number;
+    for (let r = 0; r < rows; r++) maxTot = math.max(maxTot, up[r]! + down[r]!) as number;
     const span = endBar - startBar + 1;
     if (!gt(maxTot, 0)) return out;
     for (let r = 0; r < rows; r++) {
-      const normUp = eq(up[r], 0) ? 0 : Math.trunc((up[r] / maxTot) * span);
-      const normDn = eq(down[r], 0) ? 0 : Math.trunc((down[r] / maxTot) * span);
+      const normUp = eq(up[r]!, 0) ? 0 : Math.trunc((up[r]! / maxTot) * span);
+      const normDn = eq(down[r]!, 0) ? 0 : Math.trunc((down[r]! / maxTot) * span);
       const row = (base: string, left: number, right: number): BoxObj => {
         const rowColor = color.from_gradient(r, 0, rows - 1, color.new(base, 80), color.new(base, 10));
         return {
-          left, price1: levels[r + 1], right, price2: levels[r], bgColor: String(rowColor), borderColor: String(color.new(rowColor, 0)),
+          left, price1: levels[r + 1]!, right, price2: levels[r]!, bgColor: String(rowColor), borderColor: String(color.new(rowColor, 0)),
           borderStyle: 'dotted', textColor: '#FFFFFF',
         };
       };
@@ -431,43 +447,18 @@ export function calculate(
     return out;
   };
 
-  /** The boxes of the volume delta of bar i, one per band between two retracement prices */
-  const deltaProfile = (i: number): BoxObj[] => {
-    const hiPrice = bars[hiBarAt[i]].high;
-    const loPrice = bars[loBarAt[i]].low;
-    const last = i - hiBarAt[i] < i - loBarAt[i];
-    const sorted = [hiPrice, ...FIB_LEVELS.map((e) => fibb(e, last, hiPrice, loPrice)), loPrice].sort((a, b) => a - b);
-    const bands = sorted.length - 1;
-    const { up, down, startBar } = volumeByBandPlain(i, sorted);
-    const out: BoxObj[] = [];
-    let maxAbsDelta = 0.0;
-    for (let b = 0; b < bands; b++) maxAbsDelta = math.max(maxAbsDelta, Math.abs(up[b] - down[b])) as number;
-    if (!gt(maxAbsDelta, 0)) return out;
-    for (let b = 0; b < bands; b++) {
-      const delta = up[b] - down[b];
-      if (eq(delta, 0)) continue;
-      const widthBars = Math.max(Math.trunc((Math.abs(delta) / maxAbsDelta) * cfg.deltaMaxWidth), 1);
-      const col = ge(delta, 0) ? cfg.deltaBullColor : cfg.deltaBearColor;
-      out.push({
-        left: startBar - widthBars, price1: sorted[b + 1], right: startBar, price2: sorted[b], bgColor: col,
-        borderColor: String(color.new(col, 0)), borderStyle: 'solid', text: `Δ ${str.tostring(delta, 'volume')}`,
-        textColor: '#FFFFFF', textHAlign: 'center', textVAlign: 'center',
-      });
-    }
-    return out;
-  };
   /** The bands between the retracement prices are not of equal height: searched one by one */
   const volumeByBandPlain = (i: number, levels: number[]) => {
     const bands = levels.length - 1;
     const up: number[] = new Array(bands).fill(0);
     const down: number[] = new Array(bands).fill(0);
-    const startBar = Math.min(hiBarAt[i], loBarAt[i]);
-    const endBar = Math.max(hiBarAt[i], loBarAt[i]);
+    const startBar = Math.min(hiBarAt[i]!, loBarAt[i]!);
+    const endBar = Math.max(hiBarAt[i]!, loBarAt[i]!);
     for (let bi = startBar; bi <= endBar; bi++) {
-      const b = bars[bi];
+      const b = bars[bi]!;
       const price = (b.high + b.low + b.close) / 3;
       for (let r = 0; r < bands; r++) {
-        if (ge(price, levels[r]) && gt(levels[r + 1], price)) {
+        if (ge(price, levels[r]!) && gt(levels[r + 1]!, price)) {
           if (gt(b.close, b.open)) up[r] += b.volume ?? NaN;
           else down[r] += b.volume ?? NaN;
           break;
@@ -477,84 +468,147 @@ export function calculate(
     return { up, down, startBar };
   };
 
-  const lines: LineDrawingData[] = [];
-  const labels: LabelData[] = [];
-  let boxes: BoxObj[] = [];
-  const last = n - 1;
-
-  if (n > 0 && draws(last)) {
-    const hiBar = hiBarAt[last];
-    const loBar = loBarAt[last];
-    const hiPrice = bars[hiBar].high;
-    const loPrice = bars[loBar].low;
-    const time = (index: number) => barTime(bars, index);
-    // hiLine, loLine
-    lines.push({ time1: time(hiBar), price1: hiPrice, time2: time(last), price2: hiPrice, color: cfg.hiLineColor, width: cfg.hiloLineWidth });
-    lines.push({ time1: time(loBar), price1: loPrice, time2: time(last), price2: loPrice, color: cfg.loLineColor, width: cfg.hiloLineWidth });
-    // retracement lines from the newest swing
-    const xFibStart = Math.max(hiBar, loBar);
-    FIB_LEVELS.forEach((e, k) => {
-      const f = fibb(e, hiBar > loBar, hiPrice, loPrice);
-      lines.push({ time1: time(xFibStart), price1: f, time2: time(last), price2: f, color: fibColors[k], width: cfg.fibLineWidth });
-      if (cfg.showlab) {
-        labels.push({
-          time: time(last + 1), price: f, text: `${str.tostring(e * 100, '#.##')}%`, textColor: cfg.fibLabelColor,
-          style: 'label_left', size: sizeOf(cfg.fibLabelSizeStr), color: fibColors[k],
-        });
-      }
-    });
-    const proj = projection(last);
-    lines.push(...proj.lines);
-    labels.push(...proj.labels);
-
-    // Boxes. The profiles are made again only on the bars where the two swings are different bars.
-    const rebuilds = (i: number) => draws(i) && hiBarAt[i] !== loBarAt[i];
-    const mostBoxes = 3 + (cfg.showFibProfile ? 2 * rows : 0) + (cfg.showFibDelta ? FIB_LEVELS.length + 1 : 0);
-    if (mostBoxes <= MAX_BOXES + 5) {
-      // The box limit is never reached: the profiles of the last bar that made them, and the projection of the last bar
-      let at = last;
-      while (at >= 0 && !rebuilds(at)) at--;
-      if (at >= 0 && cfg.showFibProfile) boxes.push(...profile(at));
-      if (at >= 0 && cfg.showFibDelta) boxes.push(...deltaProfile(at));
-      boxes.push(...proj.boxes);
-    } else {
-      // The box limit can be reached: the creations of every bar are counted, in the order of the script. When a
-      // creation brings the count above max + 5, the oldest boxes are deleted until max remain.
-      type Entry = { kind: 'area' | 'profile' | 'delta'; box: BoxObj | null };
-      let alive: Entry[] = [];
-      const create = (kind: Entry['kind'], box: BoxObj | null) => {
-        alive.push({ kind, box });
-        if (alive.length > MAX_BOXES + 5) alive = alive.slice(alive.length - MAX_BOXES);
-      };
-      const clear = (kind: Entry['kind']) => {
-        alive = alive.filter((e) => e.kind !== kind);
-      };
-      for (let i = 0; i < n; i++) {
-        if (!draws(i)) continue;
-        clear('area');
-        // the content of the projection boxes is only needed on the last bar
-        for (let k = 0; k < 3; k++) create('area', i === last ? proj.boxes[k] : null);
-        if (!rebuilds(i)) continue;
-        if (cfg.showFibProfile) {
-          clear('profile');
-          for (const b of profile(i)) create('profile', b);
-        }
-        if (cfg.showFibDelta) {
-          clear('delta');
-          for (const b of deltaProfile(i)) create('delta', b);
-        }
-      }
-      boxes = alive.map((e) => e.box).filter((b): b is BoxObj => b !== null);
+  /** The boxes of the volume delta of bar i, one per band between two retracement prices */
+  const deltaProfile = (i: number): BoxObj[] => {
+    const hiPrice = bars[hiBarAt[i]!]!.high;
+    const loPrice = bars[loBarAt[i]!]!.low;
+    const last = i - hiBarAt[i]! < i - loBarAt[i]!;
+    const sorted = [hiPrice, ...FIB_LEVELS.map((e) => fibb(e, last, hiPrice, loPrice)), loPrice].sort((a, b) => a - b);
+    const bands = sorted.length - 1;
+    const { up, down, startBar } = volumeByBandPlain(i, sorted);
+    const out: BoxObj[] = [];
+    let maxAbsDelta = 0.0;
+    for (let b = 0; b < bands; b++) maxAbsDelta = math.max(maxAbsDelta, Math.abs(up[b]! - down[b]!)) as number;
+    if (!gt(maxAbsDelta, 0)) return out;
+    for (let b = 0; b < bands; b++) {
+      const delta = up[b]! - down[b]!;
+      if (eq(delta, 0)) continue;
+      const widthBars = Math.max(Math.trunc((Math.abs(delta) / maxAbsDelta) * cfg.deltaMaxWidth), 1);
+      const col = ge(delta, 0) ? cfg.deltaBullColor : cfg.deltaBearColor;
+      out.push({
+        left: startBar - widthBars, price1: sorted[b + 1]!, right: startBar, price2: sorted[b]!, bgColor: col,
+        borderColor: String(color.new(col, 0)), borderStyle: 'solid', text: `Δ ${str.tostring(delta, 'volume')}`,
+        textColor: '#FFFFFF', textHAlign: 'center', textVAlign: 'center',
+      });
     }
-  }
+    return out;
+  };
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    lines,
-    boxes: boxes.map(({ left, right, ...rest }) => ({ time1: barTime(bars, left), time2: barTime(bars, right), ...rest })),
-    labels,
+    init() {
+      const hiStep = new WindowExtreme(false, prd);
+      const loStep = new WindowExtreme(true, prd);
+      const s: FibRun = {
+        hiStep, loStep, hiBarAt: [], loBarAt: [], lastRebuild: [],
+        steps: [hiStep, loStep], vars: { alive: [] }, lists: [], series: [],
+      };
+      s.series = [s.hiBarAt, s.loBarAt, s.lastRebuild];
+      return s;
+    },
+    copyVars: (v) => ({ alive: v.alive.slice() }),
+    bar(s, i, barsNow) {
+      bars = barsNow;
+      hiBarAt = s.hiBarAt;
+      loBarAt = s.loBarAt;
+      const b = bars[i]!;
+      const hi = s.hiStep.step(b.high);
+      const lo = s.loStep.step(b.low);
+      // Swings at each bar: the last bar whose high (low) is the highest (lowest) of the period
+      hiBarAt[i] = eq(b.high, hi) ? i : i > 0 ? hiBarAt[i - 1]! : -1;
+      loBarAt[i] = eq(b.low, lo) ? i : i > 0 ? loBarAt[i - 1]! : -1;
+      s.lastRebuild[i] = rebuilds(i) ? i : i > 0 ? s.lastRebuild[i - 1]! : -1;
+      if (!limited || !draws(i)) return;
+      // The box limit can be reached: the creations of every bar are counted, in the order of the script. When a
+      // creation brings the count above max + 5, the oldest boxes are deleted until max remain.
+      const v = s.vars;
+      const create = (kind: Entry['kind'], box: BoxObj | null, k: number) => {
+        v.alive.push({ kind, box, k });
+        if (v.alive.length > MAX_BOXES + 5) v.alive = v.alive.slice(v.alive.length - MAX_BOXES);
+      };
+      const clear = (kind: Entry['kind']) => {
+        v.alive = v.alive.filter((e) => e.kind !== kind);
+      };
+      clear('area');
+      // the content of the projection boxes is only needed on the last bar (made in result)
+      for (let k = 0; k < 3; k++) create('area', null, k);
+      if (!rebuilds(i)) return;
+      if (cfg.showFibProfile) {
+        clear('profile');
+        for (const bx of profile(i)) create('profile', bx, 0);
+      }
+      if (cfg.showFibDelta) {
+        clear('delta');
+        for (const bx of deltaProfile(i)) create('delta', bx, 0);
+      }
+    },
+    result(s, barsNow) {
+      bars = barsNow;
+      hiBarAt = s.hiBarAt;
+      loBarAt = s.loBarAt;
+      const n = bars.length;
+      const lines: LineDrawingData[] = [];
+      const labels: LabelData[] = [];
+      let boxes: BoxObj[] = [];
+      const last = n - 1;
+
+      if (n > 0 && draws(last)) {
+        const hiBar = hiBarAt[last]!;
+        const loBar = loBarAt[last]!;
+        const hiPrice = bars[hiBar]!.high;
+        const loPrice = bars[loBar]!.low;
+        const time = (index: number) => barTime(bars, index);
+        // hiLine, loLine
+        lines.push({ time1: time(hiBar), price1: hiPrice, time2: time(last), price2: hiPrice, color: cfg.hiLineColor, width: cfg.hiloLineWidth });
+        lines.push({ time1: time(loBar), price1: loPrice, time2: time(last), price2: loPrice, color: cfg.loLineColor, width: cfg.hiloLineWidth });
+        // retracement lines from the newest swing
+        const xFibStart = Math.max(hiBar, loBar);
+        FIB_LEVELS.forEach((e, k) => {
+          const f = fibb(e, hiBar > loBar, hiPrice, loPrice);
+          lines.push({ time1: time(xFibStart), price1: f, time2: time(last), price2: f, color: fibColors[k]!, width: cfg.fibLineWidth });
+          if (cfg.showlab) {
+            labels.push({
+              time: time(last + 1), price: f, text: `${str.tostring(e * 100, '#.##')}%`, textColor: cfg.fibLabelColor,
+              style: 'label_left', size: sizeOf(cfg.fibLabelSizeStr), color: fibColors[k],
+            });
+          }
+        });
+        const proj = projection(last);
+        lines.push(...proj.lines);
+        labels.push(...proj.labels);
+
+        // Boxes. The profiles are made again only on the bars where the two swings are different bars.
+        if (!limited) {
+          // The box limit is never reached: the profiles of the last bar that made them, and the projection of the last bar
+          const at = s.lastRebuild[last]!;
+          if (at >= 0 && cfg.showFibProfile) boxes.push(...profile(at));
+          if (at >= 0 && cfg.showFibDelta) boxes.push(...deltaProfile(at));
+          boxes.push(...proj.boxes);
+        } else {
+          // the live projection boxes are the ones of the last bar (it draws)
+          boxes = s.vars.alive
+            .map((e) => (e.kind === 'area' ? proj.boxes[e.k]! : e.box))
+            .filter((b): b is BoxObj => b !== null);
+        }
+      }
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        lines,
+        boxes: boxes.map(({ left, right, ...rest }) => ({ time1: barTime(bars, left), time2: barTime(bars, right), ...rest })),
+        labels,
+      };
+    },
   };
 }
 
-export const FibonacciProjectionWithVolumeDeltaProfile = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FibonacciProjectionWithVolumeDeltaProfileInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<FibonacciProjectionWithVolumeDeltaProfileInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const FibonacciProjectionWithVolumeDeltaProfile = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

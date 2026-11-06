@@ -14,8 +14,10 @@
  * Reference: "CM_Stochastic Highlight Bars" by ChrisMoody
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData, BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 // Pine comparison operators: equal within 1e-10; a comparison with na is false
 const EPS = 1e-10;
@@ -74,115 +76,149 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<CMStochHighlightInputs> = {}): Omit<IndicatorResult, 'markers'> {
-  const { kLen, kSmooth, dSmooth, upLine, lowLine, sbc, sbh, sch, sl, sac, sacl } = { ...defaultInputs, ...inputs };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] };
 
-  const closeSeries = new Series(bars, (b) => b.close);
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-
-  const rawK = ta.stoch(closeSeries, highSeries, lowSeries, kLen);
-  const k = ta.sma(rawK, kSmooth);
-  const d = ta.sma(k, dSmooth);
-
-  const kArr = k.toArray();
-  const dArr = d.toArray();
-  const warmup = kLen + kSmooth + dSmooth;
-
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  const markers: MarkerData[] = [];
-
-  for (let i = warmup; i < bars.length; i++) {
-    const kVal = kArr[i];
-    const dVal = dArr[i];
-    if (kVal == null || dVal == null) continue;
-
-    const aboveLine = gt(kVal, upLine);
-    const belowLine = lt(kVal, lowLine);
-
-    // barcolor: orange when overbought, fuchsia when oversold
-    if (sbc) {
-      if (aboveLine) {
-        barColors.push({ id: 'barcolor0', time: bars[i].time, color: '#FF9800' }); // orange
-      } else if (belowLine) {
-        barColors.push({ id: 'barcolor0', time: bars[i].time, color: '#FF00FF' }); // fuchsia
-      }
-    }
-
-    // bgcolor: above/below line highlights
-    if (sbh) {
-      if (aboveLine) {
-        bgColors.push({ id: 'bgcolor0', time: bars[i].time, color: 'rgba(255, 0, 0, 0.30)' }); // red transp=70
-      }
-      if (belowLine) {
-        bgColors.push({ id: 'bgcolor1', time: bars[i].time, color: 'rgba(0, 255, 0, 0.30)' }); // lime transp=70
-      }
-    }
-
-    if (i < warmup + 1) continue;
-
-    const k1 = kArr[i - 1] ?? NaN;
-    const d1 = dArr[i - 1] ?? NaN;
-    if (isNaN(k1) || isNaN(d1)) continue;
-
-    // Strict cross definitions: K[1] was below lowLine and below D[1], now K > D
-    const crossUp = (lt(k1, d1) && lt(k1, lowLine)) && gt(kVal, dVal);
-    // K[1] was above upLine and above D[1], now K < D
-    const crossDn = (gt(k1, d1) && gt(k1, upLine)) && lt(kVal, dVal);
-
-    // Any cross definitions
-    const crossUpAll = lt(k1, d1) && gt(kVal, dVal);
-    const crossDownAll = gt(k1, d1) && lt(kVal, dVal);
-
-    // bgcolor: strict cross highlights
-    if (sch) {
-      if (crossUp) {
-        bgColors.push({ id: 'bgcolor2', time: bars[i].time, color: 'rgba(0, 255, 0, 0.60)' }); // lime transp=40
-      }
-      if (crossDn) {
-        bgColors.push({ id: 'bgcolor3', time: bars[i].time, color: 'rgba(255, 0, 0, 0.60)' }); // red transp=40
-      }
-    }
-
-    // bgcolor: any cross highlights
-    if (sac) {
-      if (crossUpAll) {
-        bgColors.push({ id: 'bgcolor4', time: bars[i].time, color: 'rgba(0, 255, 0, 0.60)' }); // lime transp=40
-      }
-      if (crossDownAll) {
-        bgColors.push({ id: 'bgcolor5', time: bars[i].time, color: 'rgba(255, 0, 0, 0.60)' }); // red transp=40
-      }
-    }
-
-    // markers: strict cross B/S
-    if (sl) {
-      if (crossUp) {
-        markers.push({ id: 'char0', time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#00FF00', text: 'B' });
-      }
-      if (crossDn) {
-        markers.push({ id: 'char1', time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'S' });
-      }
-    }
-
-    // markers: any cross B/S
-    if (sacl) {
-      if (crossUpAll) {
-        markers.push({ id: 'char2', time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#00FF00', text: 'B' });
-      }
-      if (crossDownAll) {
-        markers.push({ id: 'char3', time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'S' });
-      }
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    barColors,
-    bgColors,
-  } as Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] };
+interface CmStochRun extends BarRunState<{ rawK: number; k1: number; d1: number }> {
+  /** ta.stoch: the lowest low and highest high of kLen bars */
+  lowest: WindowExtreme;
+  highest: WindowExtreme;
+  kSma: WindowSma;
+  dSma: WindowSma;
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+  markers: MarkerData[];
 }
 
-export const CMStochHighlight = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+function study(inputs: Partial<CMStochHighlightInputs>): BarStudy<CmStochRun, Result> {
+  const { kLen, kSmooth, dSmooth, upLine, lowLine, sbc, sbh, sch, sl, sac, sacl } = { ...defaultInputs, ...inputs };
+  const warmup = kLen + kSmooth + dSmooth;
+  return {
+    init() {
+      // the length check of ta.stoch, then its windows
+      taStep.stoch(kLen);
+      const lowest = new WindowExtreme(true, kLen);
+      const highest = new WindowExtreme(false, kLen);
+      const kSma = new WindowSma(kSmooth);
+      const dSma = new WindowSma(dSmooth);
+      const s: CmStochRun = {
+        lowest, highest, kSma, dSma, barColors: [], bgColors: [], markers: [],
+        steps: [lowest, highest, kSma, dSma], vars: { rawK: NaN, k1: NaN, d1: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.barColors, s.bgColors, s.markers];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // k = ta.sma(ta.stoch(close, high, low, kLen), kSmooth); d = ta.sma(k, dSmooth)
+      // ta.stoch = 100 * (close - lowest(low)) / (highest(high) - lowest(low)); an na result keeps the previous one
+      const lo = s.lowest.step(b.low);
+      const stoch = (100 * (b.close - lo)) / (s.highest.step(b.high) - lo);
+      if (!Number.isNaN(stoch)) s.vars.rawK = stoch;
+      const kVal = s.kSma.step(s.vars.rawK);
+      const dVal = s.dSma.step(kVal);
+      // K[1] / D[1]
+      const v = s.vars;
+      const k1 = v.k1;
+      const d1 = v.d1;
+      v.k1 = kVal;
+      v.d1 = dVal;
+      if (i < warmup) return;
+
+      const aboveLine = gt(kVal, upLine);
+      const belowLine = lt(kVal, lowLine);
+
+      // barcolor: orange when overbought, fuchsia when oversold
+      if (sbc) {
+        if (aboveLine) {
+          s.barColors.push({ id: 'barcolor0', time, color: '#FF9800' }); // orange
+        } else if (belowLine) {
+          s.barColors.push({ id: 'barcolor0', time, color: '#FF00FF' }); // fuchsia
+        }
+      }
+
+      // bgcolor: above/below line highlights
+      if (sbh) {
+        if (aboveLine) {
+          s.bgColors.push({ id: 'bgcolor0', time, color: 'rgba(255, 0, 0, 0.30)' }); // red transp=70
+        }
+        if (belowLine) {
+          s.bgColors.push({ id: 'bgcolor1', time, color: 'rgba(0, 255, 0, 0.30)' }); // lime transp=70
+        }
+      }
+
+      if (i < warmup + 1) return;
+
+      if (isNaN(k1) || isNaN(d1)) return;
+
+      // Strict cross definitions: K[1] was below lowLine and below D[1], now K > D
+      const crossUp = (lt(k1, d1) && lt(k1, lowLine)) && gt(kVal, dVal);
+      // K[1] was above upLine and above D[1], now K < D
+      const crossDn = (gt(k1, d1) && gt(k1, upLine)) && lt(kVal, dVal);
+
+      // Any cross definitions
+      const crossUpAll = lt(k1, d1) && gt(kVal, dVal);
+      const crossDownAll = gt(k1, d1) && lt(kVal, dVal);
+
+      // bgcolor: strict cross highlights
+      if (sch) {
+        if (crossUp) {
+          s.bgColors.push({ id: 'bgcolor2', time, color: 'rgba(0, 255, 0, 0.60)' }); // lime transp=40
+        }
+        if (crossDn) {
+          s.bgColors.push({ id: 'bgcolor3', time, color: 'rgba(255, 0, 0, 0.60)' }); // red transp=40
+        }
+      }
+
+      // bgcolor: any cross highlights
+      if (sac) {
+        if (crossUpAll) {
+          s.bgColors.push({ id: 'bgcolor4', time, color: 'rgba(0, 255, 0, 0.60)' }); // lime transp=40
+        }
+        if (crossDownAll) {
+          s.bgColors.push({ id: 'bgcolor5', time, color: 'rgba(255, 0, 0, 0.60)' }); // red transp=40
+        }
+      }
+
+      // markers: strict cross B/S
+      if (sl) {
+        if (crossUp) {
+          s.markers.push({ id: 'char0', time, position: 'belowBar', shape: 'labelUp', color: '#00FF00', text: 'B' });
+        }
+        if (crossDn) {
+          s.markers.push({ id: 'char1', time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'S' });
+        }
+      }
+
+      // markers: any cross B/S
+      if (sacl) {
+        if (crossUpAll) {
+          s.markers.push({ id: 'char2', time, position: 'belowBar', shape: 'labelUp', color: '#00FF00', text: 'B' });
+        }
+        if (crossDownAll) {
+          s.markers.push({ id: 'char3', time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'S' });
+        }
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CMStochHighlightInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CMStochHighlightInputs> = {}): Omit<IndicatorResult, 'markers'> {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const CMStochHighlight = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

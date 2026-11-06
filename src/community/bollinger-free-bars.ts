@@ -9,8 +9,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType, type Series } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BollingerFreeBarsInputs {
   /** Period (周期) */
@@ -55,50 +57,78 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface BfbRun extends BarRunState<Record<string, never>> {
+  basis: WindowSma;
+  dev: WindowStdev;
+  upperData: Point[];
+  lowerData: Point[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<BollingerFreeBarsInputs>): BarStudy<BfbRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const basis = new WindowSma(cfg.length);
+      const dev = new WindowStdev(cfg.length);
+      const s: BfbRun = { basis, dev, upperData: [], lowerData: [], markers: [], steps: [basis, dev], vars: {}, lists: [], series: [] };
+      s.lists = [s.markers];
+      s.series = [s.upperData, s.lowerData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = value(b);
+      const basis = s.basis.step(v);
+      const dev = s.dev.step(v);
+      const u = basis + dev * cfg.mult;
+      const l = basis - dev * cfg.mult;
+      s.upperData[i] = { time: b.time, value: u, color: UPPER_COLOR };
+      s.lowerData[i] = { time: b.time, value: l, color: LOWER_COLOR };
+      // Plotshape order: Half Upper, Half Lower, Complete Upper, Complete Lower (all size.small)
+      if (gt(b.open, u) && gt(b.close, u)) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: HALF_COLOR, size: 'small' });
+      }
+      if (lt(b.open, l) && lt(b.close, l)) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: HALF_COLOR, size: 'small' });
+      }
+      if (gt(b.high, u) && gt(b.low, u)) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'flag', color: UP_FLAG_COLOR, size: 'small' });
+      }
+      if (lt(b.high, l) && lt(b.low, l)) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'flag', color: DN_FLAG_COLOR, size: 'small' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.upperData.slice(), plot1: s.lowerData.slice() },
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BollingerFreeBarsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<BollingerFreeBarsInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = getSourceSeries(bars, cfg.src);
-  const basis = A(ta.sma(src, cfg.length));
-  const dev = A(ta.stdev(src, cfg.length));
-
-  const upper: number[] = bars.map((_b, i) => basis[i] + dev[i] * cfg.mult);
-  const lower: number[] = bars.map((_b, i) => basis[i] - dev[i] * cfg.mult);
-
-  const markers: MarkerData[] = [];
-  bars.forEach((b, i) => {
-    const u = upper[i];
-    const l = lower[i];
-    // Plotshape order: Half Upper, Half Lower, Complete Upper, Complete Lower (all size.small)
-    if (gt(b.open, u) && gt(b.close, u)) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: HALF_COLOR, size: 'small' });
-    }
-    if (lt(b.open, l) && lt(b.close, l)) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: HALF_COLOR, size: 'small' });
-    }
-    if (gt(b.high, u) && gt(b.low, u)) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'flag', color: UP_FLAG_COLOR, size: 'small' });
-    }
-    if (lt(b.high, l) && lt(b.low, l)) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'flag', color: DN_FLAG_COLOR, size: 'small' });
-    }
-  });
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: upper[i], color: UPPER_COLOR })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: lower[i], color: LOWER_COLOR })),
-    },
-    markers,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const BollingerFreeBars = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

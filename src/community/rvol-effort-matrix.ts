@@ -12,9 +12,10 @@
  * Laboratory (2025)
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
-import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RvolEffortMatrixInputs {
   /** Average volume lookback */
@@ -83,15 +84,18 @@ const lt = (a: number, b: number) => b - a > EPS;
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RvolEffortMatrixInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } {
+interface RvolRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  /** The Sell RVOL point of each bar (drawn on the bar before) */
+  sell: Point[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<RvolEffortMatrixInputs>): BarStudy<RvolRun, IndicatorResult & { bgColors: BgColorData[] }> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const avgVol = ta.sma(Series.fromArray(bars, volume), cfg.lookback).toArray().map((v) => v ?? NaN);
-  const interval = barInterval(bars);
   // Plain divisions: x / 0 is +-infinity (0 / 0 na); the zone comparisons use the infinite value, plots show na
   const fin = (x: number) => (Number.isFinite(x) ? x : NaN);
 
@@ -105,54 +109,67 @@ export function calculate(
     String(color.new(color.fuchsia, 80)),
   ];
   const zoneColor = [cfg.colBelow, cfg.colAvg, cfg.colAbove, cfg.colExtreme];
+  return {
+    init() {
+      const sma = new WindowSma(cfg.lookback);
+      const s: RvolRun = { sma, plot0: [], plot1: [], plot2: [], sell: [], bgColors: [], steps: [sma], vars: {}, lists: [], series: [] };
+      s.lists = [s.bgColors];
+      s.series = [s.plot0, s.plot1, s.plot2, s.sell];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const vol = b.volume ?? NaN;
+      const avgVol = s.sma.step(vol) ?? NaN;
+      const rvol = vol / avgVol;
+      // zone = rvol < avgThresh ? 0 : rvol < aboveThresh ? 1 : rvol < strongThresh ? 2 : 3 (na rvol: 3)
+      const zone = lt(rvol, cfg.avgThresh) ? 0 : lt(rvol, cfg.aboveThresh) ? 1 : lt(rvol, cfg.strongThresh) ? 2 : 3;
+      const volColor = zoneColor[zone];
+      const bodyUp = gt(b.close, b.open);
+      const bodyDown = lt(b.close, b.open);
+      const volBuy = bodyUp ? vol * 0.7 : bodyDown ? vol * 0.3 : vol * 0.5;
+      const volSell = vol - volBuy;
+      const rvolBuy = volBuy / avgVol;
+      const rvolSell = volSell / avgVol;
 
-  const plot0: Point[] = [];
-  const plot1: Point[] = [];
-  const plot2: Point[] = [];
-  const plot3: Point[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time;
-    const vol = volume[i];
-    const rvol = vol / avgVol[i];
-    // zone = rvol < avgThresh ? 0 : rvol < aboveThresh ? 1 : rvol < strongThresh ? 2 : 3 (na rvol: 3)
-    const zone = lt(rvol, cfg.avgThresh) ? 0 : lt(rvol, cfg.aboveThresh) ? 1 : lt(rvol, cfg.strongThresh) ? 2 : 3;
-    const volColor = zoneColor[zone];
-    const bodyUp = gt(b.close, b.open);
-    const bodyDown = lt(b.close, b.open);
-    const volBuy = bodyUp ? vol * 0.7 : bodyDown ? vol * 0.3 : vol * 0.5;
-    const volSell = vol - volBuy;
-    const rvolBuy = volBuy / avgVol[i];
-    const rvolSell = volSell / avgVol[i];
-
-    plot0.push({ time: t, value: cfg.showSplitOverlay ? fin(rvol) : NaN, color: volColor });
-    plot1.push({ time: t, value: cfg.showSplitOverlay ? NaN : fin(rvol), color: volColor });
-    plot2.push({ time: t, value: cfg.showSplitOverlay ? fin(rvolBuy) : NaN, color: buyColor });
-    // plot(..., "Sell RVOL", offset = -1): the value (and colour) of bar i is drawn on bar i - 1
-    if (i >= 1) {
-      plot3.push({
-        time: barTime(bars, i - 1, interval),
+      s.plot0[i] = { time: t, value: cfg.showSplitOverlay ? fin(rvol) : NaN, color: volColor };
+      s.plot1[i] = { time: t, value: cfg.showSplitOverlay ? NaN : fin(rvol), color: volColor };
+      s.plot2[i] = { time: t, value: cfg.showSplitOverlay ? fin(rvolBuy) : NaN, color: buyColor };
+      // plot(..., "Sell RVOL", offset = -1): the value (and colour) of bar i is drawn on bar i - 1
+      s.sell[i] = {
+        time: i >= 1 ? bars[i - 1].time : NaN,
         value: cfg.showSplitOverlay ? fin(rvolSell) : NaN,
         color: zone === 0 ? sellBelow : sellOther,
-      });
-    }
-    // bgcolor(showBG ? bgCol : na); zone is never na here, so bgCol is always a zone colour
-    if (cfg.showBG) bgColors.push({ time: t, color: bgZone[zone] });
-  }
-
-  return {
-    metadata: {
-      title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay,
-      precision: metadata.precision, format: metadata.format,
+      };
+      // bgcolor(showBG ? bgCol : na); zone is never na here, so bgCol is always a zone colour
+      if (cfg.showBG) s.bgColors.push({ time: t, color: bgZone[zone] });
     },
-    plots: { plot0, plot1, plot2, plot3 },
-    bgColors,
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay,
+          precision: metadata.precision, format: metadata.format,
+        },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.sell.slice(1) },
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RvolEffortMatrixInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult & { bgColors: BgColorData[] }> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RvolEffortMatrixInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RvolEffortMatrix = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

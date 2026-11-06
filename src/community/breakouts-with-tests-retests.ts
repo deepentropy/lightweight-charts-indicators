@@ -15,9 +15,11 @@
  * Original notice: © LuxAlgo
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BoxData, LabelData } from '../types';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BreakoutsWithTestsRetestsInputs {
   display: 'Bullish OR Bearish' | 'Bullish AND Bearish' | 'Bearish' | 'Bullish';
@@ -111,32 +113,38 @@ interface Bin {
   lab2: Lb[];
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<BreakoutsWithTestsRetestsInputs> = {},
-): Omit<IndicatorResult, 'boxes' | 'labels'> & { boxes: BoxData[]; labels: LabelData[] } {
+type Result = Omit<IndicatorResult, 'boxes' | 'labels'> & { boxes: BoxData[]; labels: LabelData[] };
+
+interface BrVars {
+  /** Live drawings in creation order */
+  boxes: Bx[];
+  labels: Lb[];
+  bull: Bin;
+  bear: Bin;
+  cum: number;
+}
+
+interface BrRun extends BarRunState<BrVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  ph: PivotStep;
+  pl: PivotStep;
+}
+
+function study(inputs: Partial<BreakoutsWithTestsRetestsInputs>): BarStudy<BrRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const { display, maxBars, minBars, setBack, right } = cfg;
   const last = cfg.showReTest === 'Last';
-
-  // atr = nz(ta.atr(200), ta.cum(high - low) / (n + 1)) * mult
-  const atr200 = ta.atr(bars, 200).toArray();
-  const ph = ta.pivothigh(new Series(bars, (b) => b.high), cfg.left, right).toArray();
-  const pl = ta.pivotlow(new Series(bars, (b) => b.low), cfg.left, right).toArray();
   const isNa = (v: number | null | undefined): v is null | undefined => v === null || v === undefined || Number.isNaN(v);
 
   // Live drawings in creation order: when a creation brings the count above max + 5, the oldest are deleted until
   // max remain
-  const boxes: Bx[] = [];
-  const labels: Lb[] = [];
   const limit = <T extends { deleted: boolean }>(list: T[]) => {
     if (list.length > MAX_OBJECTS + 5) for (const old of list.splice(0, list.length - MAX_OBJECTS)) old.deleted = true;
   };
-  const newBox = (left: number, top: number, rightBar: number, bottom: number, bg: string): Bx => {
+  const newBox = (v: BrVars, left: number, top: number, rightBar: number, bottom: number, bg: string): Bx => {
     const o = { left, top, right: rightBar, bottom, bg, deleted: false };
-    boxes.push(o);
-    limit(boxes);
+    v.boxes.push(o);
+    limit(v.boxes);
     return o;
   };
   const remove = <T extends { deleted: boolean }>(list: T[], o: T | null | undefined) => {
@@ -147,7 +155,7 @@ export function calculate(
   /** colorRGB(): the colour without its transparency */
   const solid = (c: string) => String(color.rgb(color.r(c), color.g(c), color.b(c)));
   /** label(dir, state, y) */
-  const newLabel = (i: number, bullSide: boolean, state: number, y: number): Lb => {
+  const newLabel = (v: BrVars, i: number, bullSide: boolean, state: number, y: number): Lb => {
     const o: Lb = bullSide
       ? state === 1
         ? { x: i, y, text: '▲', textColor: solid(cfg.bull1Color), style: 'label_up', deleted: false }
@@ -155,30 +163,28 @@ export function calculate(
       : state === 1
         ? { x: i, y, text: '▼', textColor: solid(cfg.bear1Color), style: 'label_down', deleted: false }
         : { x: i, y, text: '△', textColor: solid(cfg.bear2Color), style: 'label_up', deleted: false };
-    labels.push(o);
-    limit(labels);
+    v.labels.push(o);
+    limit(v.labels);
     return o;
   };
   /** mayAdd() */
   const mayAdd = (aLab: Lb[], i: number) => (aLab.length === 0 || last ? true : cfg.showReTest === 'All' && i - aLab[0].x > minBars);
   /** addLabel(...).delete(): with 'Last' the label before is taken out of the array and deleted */
-  const addLabel = (aLab: Lb[], lab: Lb) => {
+  const addLabel = (v: BrVars, aLab: Lb[], lab: Lb) => {
     aLab.unshift(lab);
-    if (last && aLab.length > 1) remove(labels, aLab.pop());
+    if (last && aLab.length > 1) remove(v.labels, aLab.pop());
   };
 
-  const bull: Bin = { bx: null, state: 0, price: NaN, lab1: [], lab2: [] };
-  const bear: Bin = { bx: null, state: 0, price: NaN, lab1: [], lab2: [] };
-  let cum = 0;
-
   /** One side: `up` is the bullish side (boxes on swing lows) */
-  const step = (i: number, side: Bin, up: boolean, atr: number, boxNow: { left: number; right: number; top: number; bottom: number }) => {
-    const { open, close } = bars[i];
+  const step = (
+    v: BrVars, b: Bar, i: number, side: Bin, up: boolean, atr: number, pivot: number,
+    boxNow: { left: number; right: number; top: number; bottom: number },
+  ) => {
+    const { open, close } = b;
     const { left, right: boxRight, top, bottom } = boxNow;
     if (side.state === 0) {
-      const pivot = up ? pl[i] : ph[i];
       if (!isNa(pivot)) {
-        side.bx = up ? newBox(i - right, pivot + atr, i, pivot, cfg.bull1Color) : newBox(i - right, pivot, i, pivot - atr, cfg.bear1Color);
+        side.bx = up ? newBox(v, i - right, pivot + atr, i, pivot, cfg.bull1Color) : newBox(v, i - right, pivot, i, pivot - atr, cfg.bear1Color);
         side.state = 1; // swing found
         side.lab1 = []; // the labels leave the arrays, they are not deleted
         side.lab2 = [];
@@ -187,30 +193,30 @@ export function calculate(
     } else if (side.state === 1) {
       if (boxRight - left >= maxBars) {
         // the right side is too far from the start
-        if (side.lab1.length === 0) remove(boxes, side.bx);
+        if (side.lab1.length === 0) remove(v.boxes, side.bx);
         else if (setBack && side.bx) side.bx.right = side.lab1[0].x;
         side.state = 0;
       } else {
         if (side.bx) side.bx.right = i;
         // breakout: the first box stays, a second box starts
         if (up ? lt(close, bottom) : gt(close, top)) {
-          side.bx = newBox(i, top, i, bottom, up ? cfg.bull2Color : cfg.bear2Color);
+          side.bx = newBox(v, i, top, i, bottom, up ? cfg.bull2Color : cfg.bear2Color);
           side.state = 2;
           side.price = up ? top : bottom;
         }
         const test = up ? gt(close, top) && lt(open, top) : lt(close, bottom) && gt(open, bottom);
-        if (test && mayAdd(side.lab1, i)) addLabel(side.lab1, newLabel(i, up, 1, side.price));
+        if (test && mayAdd(side.lab1, i)) addLabel(v, side.lab1, newLabel(v, i, up, 1, side.price));
       }
     } else if (side.state === 2) {
       if (boxRight - left >= maxBars) {
-        if (side.lab2.length === 0) remove(boxes, side.bx);
+        if (side.lab2.length === 0) remove(v.boxes, side.bx);
         else if (setBack && side.bx) side.bx.right = side.lab2[0].x;
         side.state = 0;
       } else {
         if (side.bx) side.bx.right = i;
         if (up ? gt(close, top) : lt(close, bottom)) side.state = 0;
         const retest = up ? lt(close, bottom) && gt(open, bottom) : gt(close, top) && lt(open, top);
-        if (retest && mayAdd(side.lab2, i)) addLabel(side.lab2, newLabel(i, up, 2, side.price));
+        if (retest && mayAdd(side.lab2, i)) addLabel(v, side.lab2, newLabel(v, i, up, 2, side.price));
       }
     }
   };
@@ -219,37 +225,70 @@ export function calculate(
   const snapshot = (b: Bx | null) =>
     b && !b.deleted ? { left: b.left, right: b.right, top: b.top, bottom: b.bottom } : { left: NaN, right: NaN, top: NaN, bottom: NaN };
 
-  for (let i = 0; i < n; i++) {
-    cum += bars[i].high - bars[i].low;
-    const a = atr200[i];
-    const atr = (isNa(a) ? cum / (i + 1) : a) * cfg.mult;
-    const bullBox = snapshot(bull.bx);
-    const bearBox = snapshot(bear.bx);
-
-    if (display === 'Bullish' || display === 'Bullish AND Bearish' || (display === 'Bullish OR Bearish' && bear.state === 0)) {
-      step(i, bull, true, atr, bullBox);
-    }
-    if (display === 'Bearish' || display === 'Bullish AND Bearish' || (display === 'Bullish OR Bearish' && bull.state === 0)) {
-      step(i, bear, false, atr, bearBox);
-    }
-  }
-
-  const interval = barInterval(bars);
-  const T = (index: number) => barTime(bars, index, interval);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    boxes: boxes.map((b) => ({
-      time1: T(b.left), price1: b.top, time2: T(b.right), price2: b.bottom, bgColor: b.bg, borderColor: 'transparent',
-    })),
-    labels: labels.map((l) => ({
-      time: T(l.x), price: l.y, text: l.text, color: 'transparent', textColor: l.textColor, style: l.style, size: cfg.labSize,
-    })),
+    init() {
+      // atr = nz(ta.atr(200), ta.cum(high - low) / (n + 1)) * mult
+      const atr = taStep.atr(200);
+      const ph = new PivotStep(cfg.left, right, true);
+      const pl = new PivotStep(cfg.left, right, false);
+      return {
+        atr, ph, pl, steps: [atr, ph, pl], lists: [], series: [],
+        vars: {
+          boxes: [], labels: [], cum: 0,
+          bull: { bx: null, state: 0, price: NaN, lab1: [], lab2: [] },
+          bear: { bx: null, state: 0, price: NaN, lab1: [], lab2: [] },
+        },
+      };
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const a = s.atr.step(b.high, b.low, b.close);
+      const ph = s.ph.step(i, b.high);
+      const pl = s.pl.step(i, b.low);
+      v.cum += b.high - b.low;
+      const atr = (isNa(a) ? v.cum / (i + 1) : a) * cfg.mult;
+      const bullBox = snapshot(v.bull.bx);
+      const bearBox = snapshot(v.bear.bx);
+
+      if (display === 'Bullish' || display === 'Bullish AND Bearish' || (display === 'Bullish OR Bearish' && v.bear.state === 0)) {
+        step(v, b, i, v.bull, true, atr, pl, bullBox);
+      }
+      if (display === 'Bearish' || display === 'Bullish AND Bearish' || (display === 'Bullish OR Bearish' && v.bull.state === 0)) {
+        step(v, b, i, v.bear, false, atr, ph, bearBox);
+      }
+    },
+    // the drawings and the bins pointing at them (one clone keeps the shared objects shared)
+    copyVars: (v) => structuredClone(v),
+    result(s, bars) {
+      const interval = barInterval(bars);
+      const T = (index: number) => barTime(bars, index, interval);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        boxes: s.vars.boxes.map((b) => ({
+          time1: T(b.left), price1: b.top, time2: T(b.right), price2: b.bottom, bgColor: b.bg, borderColor: 'transparent',
+        })),
+        labels: s.vars.labels.map((l) => ({
+          time: T(l.x), price: l.y, text: l.text, color: 'transparent', textColor: l.textColor, style: l.style, size: cfg.labSize,
+        })),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BreakoutsWithTestsRetestsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BreakoutsWithTestsRetestsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const BreakoutsWithTestsRetests = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

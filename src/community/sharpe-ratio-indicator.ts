@@ -10,7 +10,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SharpeRatioIndicatorInputs {
   /** Risk-free rate (annualized, in decimal) */
@@ -52,42 +54,66 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<SharpeRatioIndicatorInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface SharpeRun extends BarRunState<Record<string, never>> {
+  mean: WindowSma;
+  sd: WindowStdev;
+  plot0: Point[];
+}
+
+function study(inputs: Partial<SharpeRatioIndicatorInputs>): BarStudy<SharpeRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const { riskFreeRate, lookback, overValued, underValued, criticallyUnderValued } = cfg;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  // dailyReturn = (close - close[1]) / close[1]
-  const ret = bars.map((b, i) => (i > 0 ? (b.close - bars[i - 1].close) / bars[i - 1].close : NaN));
-  const retSeries = Series.fromArray(bars, ret);
-  const mean = A(ta.sma(retSeries, lookback));
-  const sd = A(ta.stdev(retSeries, lookback));
-
-  const plot0 = bars.map((b, i) => {
-    const stdDev = sd[i] * Math.sqrt(lookback);
-    // A plain division: x / 0 is +-infinity (0 / 0 NaN); the comparisons use the infinite value, the plot shows na
-    const sharpe = (mean[i] * 365 - riskFreeRate) / stdDev;
-    const isOver = gt(sharpe, overValued);
-    const isUnder = gt(underValued, sharpe) && gt(sharpe, criticallyUnderValued);
-    const isCritical = gt(criticallyUnderValued, sharpe);
-    const c = isOver ? color.red : isUnder ? color.green : isCritical ? color.blue : color.yellow;
-    return { time: b.time, value: Number.isFinite(sharpe) ? sharpe : NaN, color: c };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    hlines: [
-      { value: overValued, options: { title: 'Overvalued Zone', color: color.red, linestyle: 'dashed' } },
-      { value: underValued, options: { title: 'Undervalued Zone', color: color.green, linestyle: 'dashed' } },
-      { value: criticallyUnderValued, options: { title: 'Critically Undervalued Zone', color: color.blue, linestyle: 'dashed' } },
-      { value: 0, options: { title: 'Neutral Zone', color: color.gray, linestyle: 'dotted' } },
-    ],
+    init() {
+      const mean = new WindowSma(lookback);
+      const sd = new WindowStdev(lookback);
+      const s: SharpeRun = { mean, sd, plot0: [], steps: [mean, sd], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // dailyReturn = (close - close[1]) / close[1]
+      const ret = i > 0 ? (b.close - bars[i - 1].close) / bars[i - 1].close : NaN;
+      const mean = s.mean.step(ret);
+      const stdDev = s.sd.step(ret) * Math.sqrt(lookback);
+      // A plain division: x / 0 is +-infinity (0 / 0 NaN); the comparisons use the infinite value, the plot shows na
+      const sharpe = (mean * 365 - riskFreeRate) / stdDev;
+      const isOver = gt(sharpe, overValued);
+      const isUnder = gt(underValued, sharpe) && gt(sharpe, criticallyUnderValued);
+      const isCritical = gt(criticallyUnderValued, sharpe);
+      const c = isOver ? color.red : isUnder ? color.green : isCritical ? color.blue : color.yellow;
+      s.plot0[i] = { time: b.time as number, value: Number.isFinite(sharpe) ? sharpe : NaN, color: c };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        hlines: [
+          { value: overValued, options: { title: 'Overvalued Zone', color: color.red, linestyle: 'dashed' } },
+          { value: underValued, options: { title: 'Undervalued Zone', color: color.green, linestyle: 'dashed' } },
+          { value: criticallyUnderValued, options: { title: 'Critically Undervalued Zone', color: color.blue, linestyle: 'dashed' } },
+          { value: 0, options: { title: 'Neutral Zone', color: color.gray, linestyle: 'dotted' } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SharpeRatioIndicatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SharpeRatioIndicatorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const SharpeRatioIndicator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -13,9 +13,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type RvoPreset = 'Default' | 'Fast Response' | 'Smooth Trend';
 export type RvoColorPreset = 'Classic' | 'Aqua' | 'Cosmic' | 'Cyber' | 'Neon' | 'Custom';
@@ -96,15 +98,25 @@ function presetColors(cfg: RelativeValuationOscillatorInputs): [string, string, 
   }
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RelativeValuationOscillatorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
 
+interface RvoRun extends BarRunState<Record<string, never>> {
+  mean: WindowSma;
+  sd: WindowStdev;
+  score: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<RelativeValuationOscillatorInputs>): BarStudy<RvoRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   let lookback = cfg.lookbackPeriod;
   let threshold = cfg.thresholdMult;
   if (cfg.presetConfig === 'Fast Response') {
@@ -115,78 +127,109 @@ export function calculate(
     threshold = 2;
   }
   const [bullish, bearish, neutral] = presetColors(cfg);
-
-  // valuation_score = (log_price - sma(log_price)) / stdev(log_price): plain division (x / 0 is +-infinity)
-  const logPrice = bars.map((b) => Math.log(b.close));
-  const mean = A(ta.sma(S(logPrice), lookback));
-  const sd = A(ta.stdev(S(logPrice), lookback));
-  const score = logPrice.map((v, i) => (v - mean[i]) / sd[i]);
-
   const overColor = String(color.new(bearish, 60));
   const underColor = String(color.new(bullish, 60));
   const neutralFaded = String(color.new(neutral, 50));
   const fairColor = String(color.new(neutral, 80));
   const bgOver = String(color.new(bearish, cfg.bgTransparency));
   const bgUnder = String(color.new(bullish, cfg.bgTransparency));
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const plot2: { time: number; value: number; color: string }[] = [];
-  const plot3: { time: number; value: number; color: string }[] = [];
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const v = score[i];
-    const isOver = gt(v, threshold);
-    const isUnder = lt(v, -threshold);
-    const shown = Number.isFinite(v) ? v : NaN; // plots and shapes show +-infinity as na
-    plot0.push({ time: t, value: threshold, color: overColor });
-    plot1.push({ time: t, value: -threshold, color: underColor });
-    plot2.push({ time: t, value: shown, color: isOver ? bearish : isUnder ? bullish : neutralFaded });
-    plot3.push({ time: t, value: 0, color: fairColor });
-
-    if (!isNaN(shown)) {
-      // plotshape(is_overvalued ? valuation_score : na, shape.circle, location.absolute, bearish, size.tiny)
-      if (isOver) markers.push({ time: t, position: 'atPriceMiddle', price: shown, shape: 'circle', color: bearish, size: 'tiny', id: 'shape0' });
-      if (isUnder) markers.push({ time: t, position: 'atPriceMiddle', price: shown, shape: 'circle', color: bullish, size: 'tiny', id: 'shape1' });
-      // plotshape(enableOverlaySignals and is_overvalued ? valuation_score : na, location.abovebar, force_overlay)
-      if (cfg.enableOverlaySignals && isOver) {
-        markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: bearish, size: 'tiny', forceOverlay: true, id: 'shape2' });
-      }
-      if (cfg.enableOverlaySignals && isUnder) {
-        markers.push({ time: t, position: 'belowBar', shape: 'circle', color: bullish, size: 'tiny', forceOverlay: true, id: 'shape3' });
-      }
-    }
-    // bgcolor(enableBgSignals and is_overvalued ? color.new(bearish, bgTransparency) : na, force_overlay = true)
-    if (cfg.enableBgSignals && isOver) bgColors.push({ time: t, color: bgOver, forceOverlay: true, id: 'bgcolor0' });
-    if (cfg.enableBgSignals && isUnder) bgColors.push({ time: t, color: bgUnder, forceOverlay: true, id: 'bgcolor1' });
-  }
-
-  // overvalued_cross = ta.crossover(valuation_score, threshold_mult); undervalued_cross = ta.crossunder(valuation_score,
-  // -threshold_mult); cross_above_zero / cross_below_zero = ta.crossover / ta.crossunder(valuation_score, 0)
-  const overCross = crossedOver(score, threshold);
-  const underCross = crossedUnder(score, -threshold);
-  const anyExtreme = overCross.map((f, i) => f || underCross[i]);
-
-  const fillArr = <T>(x: T) => new Array<T>(n).fill(x);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
-    fills: [
-      // fill(upper_threshold, lower_threshold, color = color.new(neutral, 100))
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Fair Value Zone' }, colors: fillArr(String(color.new(neutral, 100))) },
-      // fill(main_plot, fair_value_line, top_value = 0.5, bottom_value = -0.5, top_color = color.new(bearish, 80),
-      //      bottom_color = color.new(bullish, 80))
-      { plot1: 'plot2', plot2: 'plot3', options: { title: 'Valuation Glow' },
-        gradient: { topValue: fillArr(0.5), bottomValue: fillArr(-0.5),
-          topColor: fillArr<string | null>(String(color.new(bearish, 80))),
-          bottomColor: fillArr<string | null>(String(color.new(bullish, 80))) } },
-    ],
-    markers,
-    bgColors,
-    alerts: alertStates(alertConditions, bars, [overCross, underCross, crossedOver(score, 0), crossedUnder(score, 0), anyExtreme]),
+    init() {
+      const mean = new WindowSma(lookback);
+      const sd = new WindowStdev(lookback);
+      const s: RvoRun = {
+        mean, sd, score: [], plot0: [], plot1: [], plot2: [], plot3: [], markers: [], bgColors: [],
+        flags: [[], [], [], [], []], times: [[], [], [], [], []], steps: [mean, sd], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.bgColors, ...s.times];
+      s.series = [s.score, s.plot0, s.plot1, s.plot2, s.plot3, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time;
+      // valuation_score = (log_price - sma(log_price)) / stdev(log_price): plain division (x / 0 is +-infinity)
+      const logPrice = Math.log(bars[i].close);
+      const mean = s.mean.step(logPrice);
+      const sd = s.sd.step(logPrice);
+      const v = (logPrice - mean) / sd;
+      s.score[i] = v;
+      const isOver = gt(v, threshold);
+      const isUnder = lt(v, -threshold);
+      const shown = Number.isFinite(v) ? v : NaN; // plots and shapes show +-infinity as na
+      s.plot0[i] = { time: t, value: threshold, color: overColor };
+      s.plot1[i] = { time: t, value: -threshold, color: underColor };
+      s.plot2[i] = { time: t, value: shown, color: isOver ? bearish : isUnder ? bullish : neutralFaded };
+      s.plot3[i] = { time: t, value: 0, color: fairColor };
+
+      if (!isNaN(shown)) {
+        // plotshape(is_overvalued ? valuation_score : na, shape.circle, location.absolute, bearish, size.tiny)
+        if (isOver) s.markers.push({ time: t, position: 'atPriceMiddle', price: shown, shape: 'circle', color: bearish, size: 'tiny', id: 'shape0' });
+        if (isUnder) s.markers.push({ time: t, position: 'atPriceMiddle', price: shown, shape: 'circle', color: bullish, size: 'tiny', id: 'shape1' });
+        // plotshape(enableOverlaySignals and is_overvalued ? valuation_score : na, location.abovebar, force_overlay)
+        if (cfg.enableOverlaySignals && isOver) {
+          s.markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: bearish, size: 'tiny', forceOverlay: true, id: 'shape2' });
+        }
+        if (cfg.enableOverlaySignals && isUnder) {
+          s.markers.push({ time: t, position: 'belowBar', shape: 'circle', color: bullish, size: 'tiny', forceOverlay: true, id: 'shape3' });
+        }
+      }
+      // bgcolor(enableBgSignals and is_overvalued ? color.new(bearish, bgTransparency) : na, force_overlay = true)
+      if (cfg.enableBgSignals && isOver) s.bgColors.push({ time: t, color: bgOver, forceOverlay: true, id: 'bgcolor0' });
+      if (cfg.enableBgSignals && isUnder) s.bgColors.push({ time: t, color: bgUnder, forceOverlay: true, id: 'bgcolor1' });
+
+      // overvalued_cross = ta.crossover(valuation_score, threshold_mult); undervalued_cross = ta.crossunder(valuation_score,
+      // -threshold_mult); cross_above_zero / cross_below_zero = ta.crossover / ta.crossunder(valuation_score, 0)
+      const pv = i > 0 ? s.score[i - 1] : NaN;
+      const overCross = v > threshold && pv <= threshold;
+      const underCross = v < -threshold && pv >= -threshold;
+      const above = v > 0 && pv <= 0;
+      const below = v < 0 && pv >= 0;
+      const any = overCross || underCross;
+      s.flags[0][i] = overCross;
+      s.flags[1][i] = underCross;
+      s.flags[2][i] = above;
+      s.flags[3][i] = below;
+      s.flags[4][i] = any;
+      if (overCross) s.times[0].push(t as number);
+      if (underCross) s.times[1].push(t as number);
+      if (above) s.times[2].push(t as number);
+      if (below) s.times[3].push(t as number);
+      if (any) s.times[4].push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const fillArr = <T>(x: T) => new Array<T>(n).fill(x);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+        fills: [
+          // fill(upper_threshold, lower_threshold, color = color.new(neutral, 100))
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Fair Value Zone' }, colors: fillArr(String(color.new(neutral, 100))) },
+          // fill(main_plot, fair_value_line, top_value = 0.5, bottom_value = -0.5, top_color = color.new(bearish, 80),
+          //      bottom_color = color.new(bullish, 80))
+          { plot1: 'plot2', plot2: 'plot3', options: { title: 'Valuation Glow' },
+            gradient: { topValue: fillArr(0.5), bottomValue: fillArr(-0.5),
+              topColor: fillArr<string | null>(String(color.new(bearish, 80))),
+              bottomColor: fillArr<string | null>(String(color.new(bullish, 80))) } },
+        ],
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RelativeValuationOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<RelativeValuationOscillatorInputs> = {},
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -200,6 +243,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const RelativeValuationOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

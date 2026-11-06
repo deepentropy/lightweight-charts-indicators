@@ -6,7 +6,9 @@
  * Signal = EMA(SMI, signalLen)
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SMIErgodicInputs {
   /** Long period */
@@ -40,72 +42,81 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SMIErgodicInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+type Ema = ReturnType<typeof taStep.ema>;
+
+interface SmiRun extends BarRunState<Record<string, never>> {
+  firstPC: Ema;
+  doublePC: Ema;
+  firstAbsPC: Ema;
+  doubleAbsPC: Ema;
+  signal: Ema;
+  smiData: Point[];
+  signalData: Point[];
+}
+
+function study(inputs: Partial<SMIErgodicInputs>): BarStudy<SmiRun, IndicatorResult> {
   const { longLength, shortLength, signalLength } = { ...defaultInputs, ...inputs };
-
-  // Price change
-  const pc: number[] = [NaN];
-  for (let i = 1; i < bars.length; i++) {
-    pc.push(bars[i].close - bars[i - 1].close);
-  }
-
-  // Absolute price change
-  const absPC = pc.map(v => isNaN(v) ? NaN : Math.abs(v));
-
-  // Double smooth: EMA(EMA(src, longLen), shortLen) — per PineScript ta.tsi()
-  const pcSeries = new Series(bars, (_, i) => pc[i]);
-  const firstSmoothPC = ta.ema(pcSeries, longLength);
-  const doubleSmoothPC = ta.ema(firstSmoothPC, shortLength);
-  const doubleSmoothPCArr = doubleSmoothPC.toArray();
-
-  const absPCSeries = new Series(bars, (_, i) => absPC[i]);
-  const firstSmoothAbsPC = ta.ema(absPCSeries, longLength);
-  const doubleSmoothAbsPC = ta.ema(firstSmoothAbsPC, shortLength);
-  const doubleSmoothAbsPCArr = doubleSmoothAbsPC.toArray();
-
-  // SMI = doubleSmoothPC / doubleSmoothAbsPC (ta.tsi returns raw ratio, no 100x)
-  const smiValues: number[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const dsPC = doubleSmoothPCArr[i];
-    const dsAbsPC = doubleSmoothAbsPCArr[i];
-
-    if (dsPC == null || dsAbsPC == null || dsAbsPC === 0) {
-      smiValues.push(NaN);
-    } else {
-      smiValues.push(dsPC / dsAbsPC);
-    }
-  }
-
-  // Signal = EMA(SMI, signalLength)
-  const smiSeries = new Series(bars, (_, i) => smiValues[i]);
-  const signalValues = ta.ema(smiSeries, signalLength);
-  const signalArr = signalValues.toArray();
-
-  const smiData = smiValues.map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const signalData = signalArr.map((value: number | null, i: number) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    init() {
+      const firstPC = taStep.ema(longLength);
+      const doublePC = taStep.ema(shortLength);
+      const firstAbsPC = taStep.ema(longLength);
+      const doubleAbsPC = taStep.ema(shortLength);
+      const signal = taStep.ema(signalLength);
+      const s: SmiRun = {
+        firstPC, doublePC, firstAbsPC, doubleAbsPC, signal, smiData: [], signalData: [],
+        steps: [firstPC, doublePC, firstAbsPC, doubleAbsPC, signal], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.smiData, s.signalData];
+      return s;
     },
-    plots: {
-      'plot0': smiData,
-      'plot1': signalData,
+    bar(s, i, bars) {
+      // Price change and absolute price change
+      const pc = i > 0 ? bars[i].close - bars[i - 1].close : NaN;
+      const absPC = isNaN(pc) ? NaN : Math.abs(pc);
+
+      // Double smooth: EMA(EMA(src, longLen), shortLen) — per PineScript ta.tsi()
+      const dsPC = s.doublePC.step(s.firstPC.step(pc));
+      const dsAbsPC = s.doubleAbsPC.step(s.firstAbsPC.step(absPC));
+
+      // SMI = doubleSmoothPC / doubleSmoothAbsPC (ta.tsi returns raw ratio, no 100x)
+      const smi = dsPC == null || dsAbsPC == null || dsAbsPC === 0 ? NaN : dsPC / dsAbsPC;
+
+      // Signal = EMA(SMI, signalLength)
+      const signal = s.signal.step(smi);
+
+      s.smiData[i] = { time: bars[i].time, value: smi ?? NaN };
+      s.signalData[i] = { time: bars[i].time, value: signal ?? NaN };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.smiData.slice(),
+          'plot1': s.signalData.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SMIErgodicInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SMIErgodicInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const SMIErgodic = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

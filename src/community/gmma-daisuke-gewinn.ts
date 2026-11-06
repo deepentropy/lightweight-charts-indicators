@@ -9,7 +9,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, color, type Bar, type IndicatorResult, type InputConfig, type PlotConfig } from 'oakscriptjs';
+import { taStep, color, type Bar, type IndicatorResult, type InputConfig, type PlotConfig } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface GmmaDaisukeGewinnInputs {
   /** EMA1 period (short) */
@@ -79,18 +81,45 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<GmmaDaisukeGewinnInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface GmmaRun extends BarRunState<Record<string, never>> {
+  emas: ReturnType<typeof taStep.ema>[];
+  points: Point[][];
+}
+
+function study(inputs: Partial<GmmaDaisukeGewinnInputs>): BarStudy<GmmaRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const close = getSourceSeries(bars, 'close');
-  const plots: IndicatorResult['plots'] = {};
-  KEYS.forEach((key, k) => {
-    const ema = ta.ema(close, cfg[key]).toArray();
-    plots[`plot${k}`] = bars.map((b, i) => ({ time: b.time, value: ema[i] ?? NaN }));
-  });
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    init() {
+      const emas = KEYS.map((key) => taStep.ema(cfg[key]));
+      const points: Point[][] = KEYS.map(() => []);
+      return { emas, points, steps: emas, vars: {}, lists: [], series: points };
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      for (let k = 0; k < KEYS.length; k++) s.points[k][i] = { time: b.time, value: s.emas[k].step(b.close) ?? NaN };
+    },
+    result(s) {
+      const plots: IndicatorResult['plots'] = {};
+      KEYS.forEach((_key, k) => {
+        plots[`plot${k}`] = s.points[k].slice();
+      });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
 }
 
-export const GmmaDaisukeGewinn = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GmmaDaisukeGewinnInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<GmmaDaisukeGewinnInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const GmmaDaisukeGewinn = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

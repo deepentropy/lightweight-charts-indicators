@@ -12,8 +12,10 @@
  * Original notice: © PrasadJoshi12
  */
 
-import { taCore, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MultipleRsiInputs {
   /** Fast RSI length */
@@ -80,67 +82,98 @@ export const metadata = {
 const EPS = 1e-10;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MultipleRsiInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+type Point = { time: number; value: number; color: string };
+type Rsi = ReturnType<typeof taStep.rsi>;
+
+interface MrsiVars {
+  prevMedium: number;
+  prevSlow: number;
+}
+
+interface MrsiRun extends BarRunState<MrsiVars> {
+  rsiFast: Rsi;
+  rsiMedium: Rsi;
+  rsiSlow: Rsi;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<MultipleRsiInputs>): BarStudy<MrsiRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const close = bars.map((b) => b.close);
-  const rsiFast = taCore.rsi(close, cfg.fastRSILength);
-  const rsiMedium = taCore.rsi(close, cfg.mediumRSILength);
-  const rsiSlow = taCore.rsi(close, cfg.slowRSILength);
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const plot2: { time: number; value: number; color: string }[] = [];
-  const markers: MarkerData[] = [];
-  // ta.crossover / ta.crossunder compare exactly (no 1e-10), with the last bar where both values were not na
-  let prevMedium = NaN;
-  let prevSlow = NaN;
-  for (let i = 0; i < n; i++) {
-    const f = rsiFast[i];
-    const m = rsiMedium[i];
-    const s = rsiSlow[i];
-    const fastUp = ge(f, m);
-    const mediumUp = ge(m, s);
-    const slowUp = ge(f, m) && ge(m, s) && ge(f, s);
-    const t = bars[i].time;
-    plot0.push({ time: t, value: f, color: fastUp ? color.green : color.yellow });
-    plot1.push({ time: t, value: m, color: mediumUp ? color.blue : color.orange });
-    plot2.push({ time: t, value: s, color: slowUp ? color.aqua : color.red });
-
-    if (!isNaN(m) && !isNaN(s)) {
-      const crossedOver = m > s && prevMedium <= prevSlow;
-      const crossedUnder = m < s && prevMedium >= prevSlow;
-      // plotshape(..., style = shape.triangleup / triangledown, location = location.bottom, size = size.tiny)
-      if (crossedOver) markers.push({ time: t, position: 'bottom', shape: 'triangleUp', color: color.fuchsia, size: 'tiny' });
-      if (crossedUnder) markers.push({ time: t, position: 'bottom', shape: 'triangleDown', color: color.red, size: 'tiny' });
-      prevMedium = m;
-      prevSlow = s;
-    }
-  }
-
-  // var HlineColor = DarkTheme ? color.gray : color.black
-  const hlineColor = cfg.darkTheme ? color.gray : color.black;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    hlines: [
-      { value: cfg.overBoughtLevel, options: { title: 'Overbought Level', color: hlineColor, linestyle: 'dotted' } },
-      { value: 50, options: { title: 'Middle Level', color: hlineColor, linestyle: 'dotted' } },
-      { value: cfg.overSoldLevel, options: { title: 'Oversold Level', color: hlineColor, linestyle: 'dotted' } },
-    ],
-    fills: [
-      { plot1: 'hline_os', plot2: 'hline_mid', options: { title: 'Hlines Background', color: FILL_COLOR } },
-      { plot1: 'hline_mid', plot2: 'hline_ob', options: { title: 'Hlines Background', color: FILL_COLOR } },
-    ],
-    markers,
+    init() {
+      const rsiFast = taStep.rsi(cfg.fastRSILength);
+      const rsiMedium = taStep.rsi(cfg.mediumRSILength);
+      const rsiSlow = taStep.rsi(cfg.slowRSILength);
+      // ta.crossover / ta.crossunder compare exactly (no 1e-10), with the last bar where both values were not na
+      const st: MrsiRun = {
+        rsiFast, rsiMedium, rsiSlow, plot0: [], plot1: [], plot2: [], markers: [],
+        steps: [rsiFast, rsiMedium, rsiSlow], vars: { prevMedium: NaN, prevSlow: NaN }, lists: [], series: [],
+      };
+      st.lists = [st.markers];
+      st.series = [st.plot0, st.plot1, st.plot2];
+      return st;
+    },
+    bar(st, i, bars) {
+      const v = st.vars;
+      const close = bars[i].close;
+      const f = st.rsiFast.step(close);
+      const m = st.rsiMedium.step(close);
+      const s = st.rsiSlow.step(close);
+      const fastUp = ge(f, m);
+      const mediumUp = ge(m, s);
+      const slowUp = ge(f, m) && ge(m, s) && ge(f, s);
+      const t = bars[i].time;
+      st.plot0[i] = { time: t, value: f, color: fastUp ? color.green : color.yellow };
+      st.plot1[i] = { time: t, value: m, color: mediumUp ? color.blue : color.orange };
+      st.plot2[i] = { time: t, value: s, color: slowUp ? color.aqua : color.red };
+
+      if (!isNaN(m) && !isNaN(s)) {
+        const crossedOver = m > s && v.prevMedium <= v.prevSlow;
+        const crossedUnder = m < s && v.prevMedium >= v.prevSlow;
+        // plotshape(..., style = shape.triangleup / triangledown, location = location.bottom, size = size.tiny)
+        if (crossedOver) st.markers.push({ time: t, position: 'bottom', shape: 'triangleUp', color: color.fuchsia, size: 'tiny' });
+        if (crossedUnder) st.markers.push({ time: t, position: 'bottom', shape: 'triangleDown', color: color.red, size: 'tiny' });
+        v.prevMedium = m;
+        v.prevSlow = s;
+      }
+    },
+    result(st) {
+      // var HlineColor = DarkTheme ? color.gray : color.black
+      const hlineColor = cfg.darkTheme ? color.gray : color.black;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: st.plot0.slice(), plot1: st.plot1.slice(), plot2: st.plot2.slice() },
+        hlines: [
+          { value: cfg.overBoughtLevel, options: { title: 'Overbought Level', color: hlineColor, linestyle: 'dotted' } },
+          { value: 50, options: { title: 'Middle Level', color: hlineColor, linestyle: 'dotted' } },
+          { value: cfg.overSoldLevel, options: { title: 'Oversold Level', color: hlineColor, linestyle: 'dotted' } },
+        ],
+        fills: [
+          { plot1: 'hline_os', plot2: 'hline_mid', options: { title: 'Hlines Background', color: FILL_COLOR } },
+          { plot1: 'hline_mid', plot2: 'hline_ob', options: { title: 'Hlines Background', color: FILL_COLOR } },
+        ],
+        markers: st.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MultipleRsiInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MultipleRsiInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MultipleRsi = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

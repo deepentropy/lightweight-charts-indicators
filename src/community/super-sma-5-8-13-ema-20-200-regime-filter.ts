@@ -11,9 +11,11 @@
  * Original notice: Owner: ALIZET
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SuperSma5813Ema20200RegimeFilterInputs {
   /** Regime filter */
@@ -54,70 +56,111 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface SuperSmaVars {
+  /** ta.cross(ma5, ma13): the last bar where both values were not na */
+  prev5: number;
+  prev13: number;
+}
+
+interface SuperSmaRun extends BarRunState<SuperSmaVars> {
+  sma5: WindowSma;
+  sma8: WindowSma;
+  sma13: WindowSma;
+  ema20: ReturnType<typeof taStep.ema>;
+  ema200: ReturnType<typeof taStep.ema>;
+  lines: Point[][];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<SuperSma5813Ema20200RegimeFilterInputs>): BarStudy<SuperSmaRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const sma5 = new WindowSma(5);
+      const sma8 = new WindowSma(8);
+      const sma13 = new WindowSma(13);
+      const ema20 = taStep.ema(20);
+      const ema200 = taStep.ema(200);
+      const s: SuperSmaRun = {
+        sma5, sma8, sma13, ema20, ema200, lines: [[], [], [], [], []], markers: [], flags: [[], []], times: [[], []],
+        steps: [sma5, sma8, sma13, ema20, ema200], vars: { prev5: NaN, prev13: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [...s.lines, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const close = bars[i].close;
+      const time = bars[i].time;
+      const a = s.sma5.step(close);
+      const m8 = s.sma8.step(close);
+      const b = s.sma13.step(close);
+      const e20 = s.ema20.step(close);
+      const e200 = s.ema200.step(close);
+      // ta.cross(ma5, ma13): compares exactly, with the last bar where both values were not na
+      let cross = false;
+      if (!isNaN(a) && !isNaN(b)) {
+        cross = !isNaN(v.prev5) && ((a > b && v.prev5 <= v.prev13) || (a < b && v.prev5 >= v.prev13));
+        v.prev5 = a;
+        v.prev13 = b;
+      }
+      const bullRegime = gt(e20, e200);
+      const bearRegime = lt(e20, e200);
+      const regimeFilter = cfg.regimeMode === 'Bullish only (EMA20 > EMA200)' ? bullRegime
+        : cfg.regimeMode === 'Bearish only (EMA20 < EMA200)' ? bearRegime : true;
+      const buyCond = cross && gt(a, b) && regimeFilter;
+      const sellCond = cross && lt(a, m8) && lt(a, b) && regimeFilter;
+      // plotshape(buy_cond, "BUY SIGNAL", shape.triangleup, location.belowbar, color.lime, size = size.large,
+      //   text = "BUY NOW"): default text colour
+      if (buyCond) {
+        s.markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: color.lime, size: 'large',
+          text: 'BUY NOW', textColor: color.blue });
+      }
+      if (sellCond) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'large',
+          text: 'SELL NOW', textColor: color.blue });
+      }
+      const l = s.lines;
+      l[0][i] = { time, value: a, color: SMA5_COL };
+      l[1][i] = { time, value: m8, color: SMA8_COL };
+      l[2][i] = { time, value: b, color: SMA13_COL };
+      l[3][i] = { time, value: e20, color: EMA20_COL };
+      l[4][i] = { time, value: e200, color: EMA200_COL };
+      s.flags[0][i] = buyCond;
+      s.flags[1][i] = sellCond;
+      if (buyCond) s.times[0].push(time as number);
+      if (sellCond) s.times[1].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const l = s.lines;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: l[0].slice(), plot1: l[1].slice(), plot2: l[2].slice(), plot3: l[3].slice(), plot4: l[4].slice() },
+        markers: s.markers.slice(),
+        // alertcondition(buy_cond, "Buy Condition") / alertcondition(sell_cond, "Sell Condition")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SuperSma5813Ema20200RegimeFilterInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<SuperSma5813Ema20200RegimeFilterInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = Series.fromArray(bars, bars.map((b) => b.close));
-
-  const ma5 = A(ta.sma(src, 5));
-  const ma8 = A(ta.sma(src, 8));
-  const ma13 = A(ta.sma(src, 13));
-  const ema20 = A(ta.ema(src, 20));
-  const ema200 = A(ta.ema(src, 200));
-
-  const markers: MarkerData[] = [];
-  const buyFlags: boolean[] = [];
-  const sellFlags: boolean[] = [];
-  // ta.cross(ma5, ma13): compares exactly, with the last bar where both values were not na
-  let prev5 = NaN;
-  let prev13 = NaN;
-  for (let i = 0; i < n; i++) {
-    const a = ma5[i];
-    const b = ma13[i];
-    let cross = false;
-    if (!isNaN(a) && !isNaN(b)) {
-      cross = !isNaN(prev5) && ((a > b && prev5 <= prev13) || (a < b && prev5 >= prev13));
-      prev5 = a;
-      prev13 = b;
-    }
-    const bullRegime = gt(ema20[i], ema200[i]);
-    const bearRegime = lt(ema20[i], ema200[i]);
-    const regimeFilter = cfg.regimeMode === 'Bullish only (EMA20 > EMA200)' ? bullRegime
-      : cfg.regimeMode === 'Bearish only (EMA20 < EMA200)' ? bearRegime : true;
-    const buyCond = cross && gt(a, b) && regimeFilter;
-    const sellCond = cross && lt(a, ma8[i]) && lt(a, b) && regimeFilter;
-    buyFlags.push(buyCond);
-    sellFlags.push(sellCond);
-    // plotshape(buy_cond, "BUY SIGNAL", shape.triangleup, location.belowbar, color.lime, size = size.large,
-    //   text = "BUY NOW"): default text colour
-    if (buyCond) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: color.lime, size: 'large',
-        text: 'BUY NOW', textColor: color.blue });
-    }
-    if (sellCond) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'large',
-        text: 'SELL NOW', textColor: color.blue });
-    }
-  }
-
-  const line = (v: number[], c: string) => bars.map((bar, i) => ({ time: bar.time, value: v[i], color: c }));
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(ma5, SMA5_COL),
-      plot1: line(ma8, SMA8_COL),
-      plot2: line(ma13, SMA13_COL),
-      plot3: line(ema20, EMA20_COL),
-      plot4: line(ema200, EMA200_COL),
-    },
-    markers,
-    // alertcondition(buy_cond, "Buy Condition") / alertcondition(sell_cond, "Sell Condition")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
-  };
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -128,6 +171,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const SuperSma5813Ema20200RegimeFilter = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

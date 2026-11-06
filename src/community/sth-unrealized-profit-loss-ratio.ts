@@ -12,8 +12,10 @@
  * Original notice: ©DeVrizii
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface STHUnrealizedProfitLossRatioInputs {
   /** Realized value lookback length (SMA of the close) */
@@ -72,69 +74,106 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+type Ma = { step(v: number, volume: number): number; commit(): void };
+
+/** calculateMA(source, length, maType) stepped bar by bar */
+function maStep(maType: string, length: number): Ma {
+  switch (maType) {
+    case 'SMA': { const m = new WindowSma(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'EMA': { const m = taStep.ema(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'HMA': { const m = taStep.hma(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, length), commit: () => m.commit() }; }
+    case 'RMA': { const m = taStep.rma(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'VWMA': { const m = new WindowVwma(length); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+    default: throw new Error(`Unknown MA type ${String(maType)}`);
+  }
+}
+
+interface SthRun extends BarRunState<Record<string, never>> {
+  realized: WindowSma;
+  ema: ReturnType<typeof taStep.ema>;
+  ma: Ma;
+  maNupl: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<STHUnrealizedProfitLossRatioInputs>): BarStudy<SthRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const realized = new WindowSma(cfg.lookbackPeriod);
+      const ema = taStep.ema(cfg.smoothingPeriod);
+      const ma = maStep(cfg.maType, cfg.maLength);
+      const s: SthRun = {
+        realized, ema, ma, maNupl: [], plot0: [], plot1: [], plot2: [], plot3: [], bgColors: [],
+        steps: [realized, ema, ma], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.maNupl, s.plot0, s.plot1, s.plot2, s.plot3, s.bgColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      // realizedValue = ta.sma(close, lookbackPeriod); rawSthNupl = (close - realizedValue) / close
+      const c = b.close;
+      const raw = (c - s.realized.step(c)) / c;
+      // sthNupl = ta.ema(rawSthNupl, smoothingPeriod)
+      const sthNupl = s.ema.step(raw);
+      // maNupl = calculateMA(sthNupl, maLength, maType)
+      const maNupl = s.ma.step(sthNupl, b.volume ?? NaN);
+      s.maNupl[i] = maNupl;
+
+      // colorMA = maNupl > maNupl[2] ? color.new(colorBullish, 40) : color.new(colorBearish, 40)
+      const colorMA = gt(maNupl, i >= 2 ? s.maNupl[i - 2] : NaN) ? MA_BULL : MA_BEAR;
+      // colorMidline = sthNupl > 0 ? colorBullish : colorBearish
+      const colorMidline = gt(sthNupl, 0) ? COLOR_BULLISH : COLOR_BEARISH;
+
+      // bgcolor(showBackground ? color.new(backgroundColor, 90) : color.new(color.white, 100))
+      const bg = cfg.backgroundSource === 'STH-NUPL' ? colorMidline : colorMA;
+      s.bgColors[i] = {
+        time: t,
+        color: cfg.showBackground ? String(color.new(bg, 90)) : String(color.new(color.white, 100)),
+      };
+      // plot(sthNupl, color = color.gray, title = "STH-NUPL")
+      s.plot0[i] = { time: t, value: sthNupl, color: COLOR_NUPL };
+      // plot(maNupl, color = colorMA, title = "STH-NUPL MA", display = showMA ? display.all : display.none)
+      s.plot1[i] = { time: t, value: maNupl, color: colorMA };
+      // plot(0, color = colorMidline, title = "Midline")
+      s.plot2[i] = { time: t, value: 0, color: colorMidline };
+      // plot(sthNupl, title = "STH-NUPL Trend", style = plot.style_linebr, linewidth = 3, color = sthNupl > 0 ? ...)
+      s.plot3[i] = { time: t, value: sthNupl, color: colorMidline };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+        bgColors: s.bgColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<STHUnrealizedProfitLossRatioInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<STHUnrealizedProfitLossRatioInputs> = {},
 ): IndicatorResult & { bgColors: BgColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // realizedValue = ta.sma(close, lookbackPeriod); rawSthNupl = (close - realizedValue) / close
-  const close = bars.map((b) => b.close);
-  const realized = A(ta.sma(S(close), cfg.lookbackPeriod));
-  const raw = close.map((c, i) => (c - realized[i]) / c);
-  // sthNupl = ta.ema(rawSthNupl, smoothingPeriod)
-  const sthNupl = A(ta.ema(S(raw), cfg.smoothingPeriod));
-
-  // maNupl = calculateMA(sthNupl, maLength, maType)
-  const src = S(sthNupl);
-  let maSeries: Series;
-  switch (cfg.maType) {
-    case 'SMA': maSeries = ta.sma(src, cfg.maLength); break;
-    case 'EMA': maSeries = ta.ema(src, cfg.maLength); break;
-    case 'HMA': maSeries = ta.hma(src, cfg.maLength); break;
-    case 'WMA': maSeries = ta.wma(src, cfg.maLength); break;
-    case 'RMA': maSeries = ta.rma(src, cfg.maLength); break;
-    case 'VWMA': maSeries = ta.vwma(src, cfg.maLength, S(bars.map((b) => b.volume ?? NaN))); break;
-    default: throw new Error(`Unknown MA type ${String(cfg.maType)}`);
-  }
-  const maNupl = A(maSeries);
-
-  // colorMA = maNupl > maNupl[2] ? color.new(colorBullish, 40) : color.new(colorBearish, 40)
-  const colorMA = (i: number) => (gt(maNupl[i], i >= 2 ? maNupl[i - 2] : NaN) ? MA_BULL : MA_BEAR);
-  // colorMidline = sthNupl > 0 ? colorBullish : colorBearish
-  const colorMidline = (i: number) => (gt(sthNupl[i], 0) ? COLOR_BULLISH : COLOR_BEARISH);
-
-  // bgcolor(showBackground ? color.new(backgroundColor, 90) : color.new(color.white, 100))
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const bg = cfg.backgroundSource === 'STH-NUPL' ? colorMidline(i) : colorMA(i);
-    bgColors.push({
-      time: bars[i].time,
-      color: cfg.showBackground ? String(color.new(bg, 90)) : String(color.new(color.white, 100)),
-    });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(sthNupl, color = color.gray, title = "STH-NUPL")
-      plot0: bars.map((b, i) => ({ time: b.time, value: sthNupl[i], color: COLOR_NUPL })),
-      // plot(maNupl, color = colorMA, title = "STH-NUPL MA", display = showMA ? display.all : display.none)
-      plot1: bars.map((b, i) => ({ time: b.time, value: maNupl[i], color: colorMA(i) })),
-      // plot(0, color = colorMidline, title = "Midline")
-      plot2: bars.map((b, i) => ({ time: b.time, value: 0, color: colorMidline(i) })),
-      // plot(sthNupl, title = "STH-NUPL Trend", style = plot.style_linebr, linewidth = 3, color = sthNupl > 0 ? ...)
-      plot3: bars.map((b, i) => ({ time: b.time, value: sthNupl[i], color: colorMidline(i) })),
-    },
-    bgColors,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const STHUnrealizedProfitLossRatio = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

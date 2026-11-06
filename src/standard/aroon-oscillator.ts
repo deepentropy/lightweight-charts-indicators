@@ -9,6 +9,8 @@
  */
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AroonOscillatorInputs {
   /** Period length */
@@ -44,55 +46,76 @@ export const metadata = {
 const EPS = 1e-10;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(bars: Bar[], inputs: Partial<AroonOscillatorInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface AroonRun extends BarRunState<Record<string, never>> {
+  plotData: Point[];
+  zeroData: Point[];
+  fillColors: string[];
+}
+
+function study(inputs: Partial<AroonOscillatorInputs>): BarStudy<AroonRun, IndicatorResult> {
   const { length } = { ...defaultInputs, ...inputs };
-
-  const oscArr: number[] = [];
-
-  for (let i = 0; i < bars.length; i++) {
-    if (i < length) {
-      oscArr.push(NaN);
-      continue;
-    }
-
-    let highestIdx = i;
-    let lowestIdx = i;
-    let highestVal = -Infinity;
-    let lowestVal = Infinity;
-
-    for (let j = i - length; j <= i; j++) {
-      if (bars[j].high > highestVal) { highestVal = bars[j].high; highestIdx = j; }
-      if (bars[j].low < lowestVal) { lowestVal = bars[j].low; lowestIdx = j; }
-    }
-
-    const aroonUp = (100 * (length - (i - highestIdx))) / length;
-    const aroonDown = (100 * (length - (i - lowestIdx))) / length;
-    oscArr.push(aroonUp - aroonDown);
-  }
-
-  // plot(osc, "Oscillator", osc >= 0 ? #4caf50 : #ff5252)
-  const plotData = oscArr.map((value, i) => ({ time: bars[i].time, value, color: ge(value, 0) ? '#4CAF50' : '#FF5252' }));
-  // zeroPlot = plot(0, "", na, display = display.none, editable = false)
-  const zeroData = bars.map((b) => ({ time: b.time, value: 0 }));
-  // fill(oscPlot, zeroPlot, osc >= 0 ? #4caf501a : #ff52521a, "Oscillator fill")
-  const fillColors = oscArr.map((value) => (ge(value, 0) ? '#4CAF501A' : '#FF52521A'));
-
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    init() {
+      const s: AroonRun = { plotData: [], zeroData: [], fillColors: [], steps: [], vars: {}, lists: [], series: [] };
+      s.series = [s.plotData, s.zeroData, s.fillColors];
+      return s;
     },
-    plots: {
-      'plot0': plotData,
-      'plot1': zeroData,
+    bar(s, i, bars) {
+      let value = NaN;
+      if (i >= length) {
+        let highestIdx = i;
+        let lowestIdx = i;
+        let highestVal = -Infinity;
+        let lowestVal = Infinity;
+
+        for (let j = i - length; j <= i; j++) {
+          if (bars[j].high > highestVal) { highestVal = bars[j].high; highestIdx = j; }
+          if (bars[j].low < lowestVal) { lowestVal = bars[j].low; lowestIdx = j; }
+        }
+
+        const aroonUp = (100 * (length - (i - highestIdx))) / length;
+        const aroonDown = (100 * (length - (i - lowestIdx))) / length;
+        value = aroonUp - aroonDown;
+      }
+      const time = bars[i].time;
+      // plot(osc, "Oscillator", osc >= 0 ? #4caf50 : #ff5252)
+      s.plotData[i] = { time, value, color: ge(value, 0) ? '#4CAF50' : '#FF5252' };
+      // zeroPlot = plot(0, "", na, display = display.none, editable = false)
+      s.zeroData[i] = { time, value: 0 };
+      // fill(oscPlot, zeroPlot, osc >= 0 ? #4caf501a : #ff52521a, "Oscillator fill")
+      s.fillColors[i] = ge(value, 0) ? '#4CAF501A' : '#FF52521A';
     },
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Oscillator fill' }, colors: fillColors }],
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.plotData.slice(),
+          'plot1': s.zeroData.slice(),
+        },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Oscillator fill' }, colors: s.fillColors.slice() }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AroonOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AroonOscillatorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AroonOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -14,11 +14,14 @@
  * distributed under the terms of the GPL-3.0 license.
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
 import {
-  alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState,
-} from '../alert-states';
+  barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, WindowStdev,
+  type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 
 export interface CorrectedMovingAverageInputs {
   length: number;
@@ -58,59 +61,98 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CorrectedMovingAverageInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+
+interface CmaRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  variance: WindowStdev;
+  smaArr: number[];
+  cma: number[];
+  cmaPlot: Point[];
+  smaPlot: Point[];
+  fillColors: string[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<CorrectedMovingAverageInputs>): BarStudy<CmaRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  // sma = ta.sma(src, length); v1 = ta.variance(src, length)
-  const srcSeries = getSourceSeries(bars, cfg.src);
-  const sma = ta.sma(srcSeries, cfg.length).toArray().map((v) => v ?? NaN);
-  const v1 = ta.variance(srcSeries, cfg.length).toArray().map((v) => v ?? NaN);
-
-  const cma: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    // cmaPrev = nz(cma[1], sma)
-    const prev = i > 0 ? cma[i - 1] : NaN;
-    const cmaPrev = isNaN(prev) ? sma[i] : prev;
-    const dev = cmaPrev - sma[i];
-    const v2 = dev * dev;
-    // v3 = v1 == 0 or v2 == 0 ? 1 : v2 / (v1 + v2) (na == 0 is false). Plain division: v2 / 0 is +infinity,
-    // then 1 / v3 is 0 and k is 2
-    const v3 = v1[i] === 0 || v2 === 0 ? 1 : v2 / (v1[i] + v2);
-    // k = math.max(0.0, 2 - 1 / v3) (na when v3 is na)
-    const k = isNaN(v3) ? NaN : Math.max(0.0, 2 - 1 / v3);
-    cma[i] = cmaPrev + k * (sma[i] - cmaPrev);
-  }
-
+  const value = barSource(cfg.src);
   const bullishFillColor = String(color.new('#0ebb23', 75));
   const bearishFillColor = String(color.new('#cc0000', 75));
-  const cmaPlot: { time: number; value: number; color: string }[] = [];
-  const fillColors: string[] = [];
-  for (let i = 0; i < n; i++) {
-    // cmaColor = highlightDirection ? cma > cma[1] ? color.green : color.red : color.orange
-    const prev = i > 0 ? cma[i - 1] : NaN;
-    const cmaColor = cfg.highlightDirection ? (gt(cma[i], prev) ? color.green : color.red) : color.orange;
-    cmaPlot.push({ time: bars[i].time, value: cma[i], color: cmaColor });
-    // fillColor = applyRibbonFilling ? (sma > cma ? bullishFillColor : bearishFillColor) : #ffffff00
-    fillColors.push(cfg.applyRibbonFilling ? (gt(sma[i], cma[i]) ? bullishFillColor : bearishFillColor) : '#ffffff00');
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(cma, 'CMA', linewidth = 2, color = cmaColor); plot(sma, 'SMA', linewidth = 2, color = color.blue)
-      plot0: cmaPlot,
-      plot1: bars.map((b, i) => ({ time: b.time, value: sma[i], color: color.blue })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      // sma = ta.sma(src, length); v1 = ta.variance(src, length)
+      const sma = new WindowSma(cfg.length);
+      const variance = new WindowStdev(cfg.length);
+      const s: CmaRun = {
+        sma, variance, smaArr: [], cma: [], cmaPlot: [], smaPlot: [], fillColors: [], flags: [[], []], times: [[], []],
+        steps: [sma, variance], vars: {}, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.smaArr, s.cma, s.cmaPlot, s.smaPlot, s.fillColors, ...s.flags];
+      return s;
     },
-    // fill(smaPlot, cmaPlot, color = fillColor)
-    fills: [{ plot1: 'plot1', plot2: 'plot0', colors: fillColors }],
-    markers: [],
-    // longSignal = ta.crossover(sma, cma) / shortSignal = ta.crossunder(sma, cma)
-    alerts: alertStates(alertConditions, bars, [crossedOver(sma, cma), crossedUnder(sma, cma)]),
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const src = value(b);
+      const sma = s.sma.step(src);
+      const v1 = s.variance.variance(src);
+      // cmaPrev = nz(cma[1], sma)
+      const prev = i > 0 ? s.cma[i - 1]! : NaN;
+      const cmaPrev = isNaN(prev) ? sma : prev;
+      const dev = cmaPrev - sma;
+      const v2 = dev * dev;
+      // v3 = v1 == 0 or v2 == 0 ? 1 : v2 / (v1 + v2) (na == 0 is false). Plain division: v2 / 0 is +infinity,
+      // then 1 / v3 is 0 and k is 2
+      const v3 = v1 === 0 || v2 === 0 ? 1 : v2 / (v1 + v2);
+      // k = math.max(0.0, 2 - 1 / v3) (na when v3 is na)
+      const k = isNaN(v3) ? NaN : Math.max(0.0, 2 - 1 / v3);
+      const cma = cmaPrev + k * (sma - cmaPrev);
+      s.smaArr[i] = sma;
+      s.cma[i] = cma;
+      const time = b.time as number;
+      // cmaColor = highlightDirection ? cma > cma[1] ? color.green : color.red : color.orange
+      const cmaColor = cfg.highlightDirection ? (gt(cma, prev) ? color.green : color.red) : color.orange;
+      s.cmaPlot[i] = { time, value: cma, color: cmaColor };
+      s.smaPlot[i] = { time, value: sma, color: color.blue };
+      // fillColor = applyRibbonFilling ? (sma > cma ? bullishFillColor : bearishFillColor) : #ffffff00
+      s.fillColors[i] = cfg.applyRibbonFilling ? (gt(sma, cma) ? bullishFillColor : bearishFillColor) : '#ffffff00';
+      // longSignal = ta.crossover(sma, cma) / shortSignal = ta.crossunder(sma, cma)
+      const pSma = i > 0 ? s.smaArr[i - 1]! : NaN;
+      const flags = [sma > cma && pSma <= prev, sma < cma && pSma >= prev];
+      flags.forEach((f, j) => {
+        s.flags[j]![i] = f;
+        if (f) s.times[j]!.push(time);
+      });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          // plot(cma, 'CMA', linewidth = 2, color = cmaColor); plot(sma, 'SMA', linewidth = 2, color = color.blue)
+          plot0: s.cmaPlot.slice(),
+          plot1: s.smaPlot.slice(),
+        },
+        // fill(smaPlot, cmaPlot, color = fillColor)
+        fills: [{ plot1: 'plot1', plot2: 'plot0', colors: s.fillColors.slice() }],
+        markers: [],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CorrectedMovingAverageInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CorrectedMovingAverageInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -121,6 +163,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const CorrectedMovingAverage = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

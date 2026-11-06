@@ -28,6 +28,7 @@ import { color, timeframe, time as pineTime, type IndicatorResult, type InputCon
 import type { BgColorData, LineDrawingData, MarkerData } from '../types';
 import { chartTimeframe } from '../anchor-period';
 import { timezoneOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type DayName = 'Sunday' | 'Monday' | 'Tuesday' | 'Wednesday' | 'Thursday' | 'Friday' | 'Saturday';
 type ColourName =
@@ -134,15 +135,21 @@ const DAY_TRANSPARENCY = 20;
 /** study() without max_lines_count: 50 lines */
 const MAX_LINES = 50;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<FxnWeekAndDaySeparatorInputs> = {},
-  chart?: ChartContext,
-): Omit<IndicatorResult, 'lines'> & { lines: LineDrawingData[] } {
+type Result = Omit<IndicatorResult, 'lines'> & { lines: LineDrawingData[] };
+
+interface FxnRun extends BarRunState<Record<string, never>> {
+  /** Every line created, in creation order (the deletions are applied in result) */
+  created: LineDrawingData[];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  ms: boolean;
+  validDay: boolean;
+  validWeek: boolean;
+  shortNames: boolean;
+}
+
+function study(inputs: Partial<FxnWeekAndDaySeparatorInputs>): BarStudy<FxnRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const TZ = timezoneOf(chart);
-  const ms = n > 0 && bars[0].time >= 1e12;
 
   const weekColour = String(color.new(COLOURS[cfg.weekLineColour as ColourName] ?? WEEK_DEFAULT, WEEK_TRANSPARENCY));
   const dayColour = String(color.new(COLOURS[cfg.dayLineColour as ColourName] ?? DAY_DEFAULT, DAY_TRANSPARENCY));
@@ -150,32 +157,7 @@ export function calculate(
   // dayofweek.sunday = 1 ... dayofweek.saturday = 7
   const weekStartDay = Math.max(0, DAYS.indexOf(cfg.weekStart)) + 1;
 
-  // The trading day opens at 17:00 and the names are written at 01:00; 5 hours later on a UTC exchange
-  let newDayStartTime = 17;
-  let dayLabelStartTime = 1;
-  if (TZ === 'Etc/UTC') {
-    newDayStartTime += 5;
-    dayLabelStartTime += 5;
-  }
-
-  // timeframe.isdwm / timeframe.period of the chart
-  const period = chartTimeframe(bars, chart);
-  const isdwm = period !== '' && timeframe.info(period).isdwm;
-  const longHours = period === '120' || period === '240' || period === '180' || period === '360';
-  const validDay = !(isdwm || (period === '60' && !cfg.showOn1Hour) || longHours);
-  const validWeek = !(isdwm || longHours);
-
-  // Lines in creation order: when a creation brings the count above max + 5, the oldest are deleted until max remain
-  const lines: LineDrawingData[] = [];
-  const vline = (time: number, css: string, style: LineStyleName, width: number) => {
-    lines.push({ time1: time, price1: 0, time2: time, price2: 1, extend: 'both', color: css, style, width });
-    if (lines.length > MAX_LINES + 5) lines.splice(0, lines.length - MAX_LINES);
-  };
-
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
   const dot = String(color.new(COLOURS.silver, 100));
-  const shortNames = (cfg.shortDayLabel && cfg.showDow) || (cfg.showDow && period === '60' && cfg.showOn1Hour);
   const longNames = !cfg.shortDayLabel && cfg.showDow && !cfg.showOn1Hour;
   // Monday (2) to Friday (6): short text, long text, text colour
   const names: Array<[string, string, string]> = [
@@ -189,45 +171,94 @@ export function calculate(
   const weekBg = 'rgba(244, 212, 21, 0.4)';
   const dayBg = 'rgba(116, 151, 223, 0.1)';
 
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const tMs = ms ? t : t * 1000;
-    const hour = pineTime.hour(tMs, TZ);
-    const minute = pineTime.minute(tMs, TZ);
-    const dow = pineTime.dayofweek(tMs, TZ);
-    const isNewWeek = dow === weekStartDay;
-    const isStartTime = hour === newDayStartTime && minute === 0;
-    const week = validWeek && cfg.weekToggle && isNewWeek && isStartTime;
-    const day = validDay && cfg.dayToggle && !isNewWeek && isStartTime;
-
-    if (!cfg.showAsBackground) {
-      if (week) vline(t, weekColour, lineStyle(cfg.weekLineStyle), cfg.weekLineWidth);
-      if (day) vline(t, dayColour, lineStyle(cfg.dayLineStyle), cfg.dayLineWidth);
-    } else {
-      if (week) bgColors.push({ id: 'bgcolor0', time: t, color: weekBg });
-      // four bgcolor() calls with the same condition and colour (Monday to Thursday separators: bgcolor1 to bgcolor4)
-      if (day) for (let k = 0; k < 4; k++) bgColors.push({ id: `bgcolor${k + 1}`, time: t, color: dayBg });
-    }
-
-    // Day names
-    if (validDay && hour === dayLabelStartTime && minute === 0 && dow >= 2 && dow <= 6) {
-      const [shortText, longText, textColor] = names[dow - 2];
-      // plotshape outputs: short names shape0 (Mon) to shape4 (Fri), long names shape5 (Monday) to shape9 (Friday)
-      const marker = (text: string, id: string): MarkerData => ({
-        id, time: t, position: 'bottom', shape: 'circle', color: dot, text, textColor, size: 'tiny',
-      });
-      if (shortNames) markers.push(marker(shortText, `shape${dow - 2}`));
-      if (longNames) markers.push(marker(longText, `shape${dow + 3}`));
-    }
-  }
+  let TZ = 'Etc/UTC';
+  // The trading day opens at 17:00 and the names are written at 01:00; 5 hours later on a UTC exchange
+  let newDayStartTime = 17;
+  let dayLabelStartTime = 1;
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    bgColors,
-    lines,
+    // the chart timeframe from the bar spacing and the time unit of the first bar
+    key: (bars, chart) => `${chartTimeframe(bars, chart)}|${bars.length > 0 && bars[0]!.time >= 1e12}`,
+    init(bars, chart) {
+      TZ = timezoneOf(chart);
+      newDayStartTime = 17;
+      dayLabelStartTime = 1;
+      if (TZ === 'Etc/UTC') {
+        newDayStartTime += 5;
+        dayLabelStartTime += 5;
+      }
+      // timeframe.isdwm / timeframe.period of the chart
+      const period = chartTimeframe(bars, chart);
+      const isdwm = period !== '' && timeframe.info(period).isdwm;
+      const longHours = period === '120' || period === '240' || period === '180' || period === '360';
+      const s: FxnRun = {
+        created: [], markers: [], bgColors: [],
+        ms: bars.length > 0 && bars[0]!.time >= 1e12,
+        validDay: !(isdwm || (period === '60' && !cfg.showOn1Hour) || longHours),
+        validWeek: !(isdwm || longHours),
+        shortNames: (cfg.shortDayLabel && cfg.showDow) || (cfg.showDow && period === '60' && cfg.showOn1Hour),
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.created, s.markers, s.bgColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i]!.time;
+      const tMs = s.ms ? t : t * 1000;
+      const hour = pineTime.hour(tMs, TZ);
+      const minute = pineTime.minute(tMs, TZ);
+      const dow = pineTime.dayofweek(tMs, TZ);
+      const isNewWeek = dow === weekStartDay;
+      const isStartTime = hour === newDayStartTime && minute === 0;
+      const week = s.validWeek && cfg.weekToggle && isNewWeek && isStartTime;
+      const day = s.validDay && cfg.dayToggle && !isNewWeek && isStartTime;
+      const vline = (time: number, css: string, style: LineStyleName, width: number) => {
+        s.created.push({ time1: time, price1: 0, time2: time, price2: 1, extend: 'both', color: css, style, width });
+      };
+
+      if (!cfg.showAsBackground) {
+        if (week) vline(t, weekColour, lineStyle(cfg.weekLineStyle), cfg.weekLineWidth);
+        if (day) vline(t, dayColour, lineStyle(cfg.dayLineStyle), cfg.dayLineWidth);
+      } else {
+        if (week) s.bgColors.push({ id: 'bgcolor0', time: t, color: weekBg });
+        // four bgcolor() calls with the same condition and colour (Monday to Thursday separators: bgcolor1 to bgcolor4)
+        if (day) for (let k = 0; k < 4; k++) s.bgColors.push({ id: `bgcolor${k + 1}`, time: t, color: dayBg });
+      }
+
+      // Day names
+      if (s.validDay && hour === dayLabelStartTime && minute === 0 && dow >= 2 && dow <= 6) {
+        const [shortText, longText, textColor] = names[dow - 2]!;
+        // plotshape outputs: short names shape0 (Mon) to shape4 (Fri), long names shape5 (Monday) to shape9 (Friday)
+        const marker = (text: string, id: string): MarkerData => ({
+          id, time: t, position: 'bottom', shape: 'circle', color: dot, text, textColor, size: 'tiny',
+        });
+        if (s.shortNames) s.markers.push(marker(shortText, `shape${dow - 2}`));
+        if (longNames) s.markers.push(marker(longText, `shape${dow + 3}`));
+      }
+    },
+    result(s) {
+      // Lines in creation order: when a creation brings the count above max + 5, the oldest are deleted until max
+      // remain (after k > max + 5 creations: max + (k - max - 6) % 6 lines are left)
+      const k = s.created.length;
+      const kept = k <= MAX_LINES + 5 ? k : MAX_LINES + ((k - MAX_LINES - 6) % 6);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        lines: s.created.slice(k - kept),
+      };
+    },
   };
 }
 
-export const FxnWeekAndDaySeparator = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FxnWeekAndDaySeparatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<FxnWeekAndDaySeparatorInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const FxnWeekAndDaySeparator = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

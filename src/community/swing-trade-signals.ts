@@ -12,9 +12,11 @@
  * Reference: "SWING CALLS" by nicks1008
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -62,80 +64,139 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SwingTradeSignalsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface SwingRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  sma: WindowSma;
+  rsiStep: ReturnType<typeof taStep.rsi>;
+  ema1: number[];
+  sma2: number[];
+  rsi: number[];
+  plot0: Point[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+/** crossedOver / crossedUnder of one bar: the values of the bar and of the bar before (na compares false) */
+const over = (v: number, w: number, pv: number, pw: number) => v > w && pv <= pw;
+const under = (v: number, w: number, pv: number, pw: number) => v < w && pv >= pw;
+
+function study(inputs: Partial<SwingTradeSignalsInputs>): BarStudy<SwingRun, Result> {
   const { emaValue, smaValue, rsiLen, overbought, oversold, src } = { ...defaultInputs, ...inputs };
-
-  const source = getSourceSeries(bars, src);
-  const ema1 = ta.ema(source, emaValue).toArray();
-  const sma2 = ta.sma(source, smaValue).toArray();
-  const rsi = ta.rsi(source, rsiLen).toArray();
-
+  const value = barSource(src);
   const warmup = Math.max(smaValue, rsiLen);
-  const markers: MarkerData[] = [];
-
-  // Pine: mycolor = iff(rs>=85 or rs<=15, yellow, iff(low>sma2, lime, iff(high<sma2, red, yellow)))
-  const plot0 = bars.map((b, i) => {
-    const s = sma2[i];
-    if (i < warmup || s == null || isNaN(s)) {
-      return { time: b.time, value: NaN };
-    }
-    const rs = rsi[i] ?? 50;
-    let color: string;
-    if (rs >= 85 || rs <= 15) {
-      color = '#FFFF00'; // yellow
-    } else if (b.low > s) {
-      color = '#00FF00'; // lime
-    } else if (b.high < s) {
-      color = '#FF0000'; // red
-    } else {
-      color = '#FFFF00'; // yellow
-    }
-    return { time: b.time, value: s, color };
-  });
-
-  for (let i = warmup + 1; i < bars.length; i++) {
-    const rs = rsi[i] ?? 50;
-    const prevRs = rsi[i - 1] ?? 50;
-    const currSma = sma2[i] ?? 0;
-    const prevSma = sma2[i - 1] ?? 0;
-    const currEma = ema1[i] ?? 0;
-    const prevEma = ema1[i - 1] ?? 0;
-
-    // Pine: buyexit = crossunder(rs, hl) - RSI crosses below overbought
-    if (prevRs >= overbought && rs < overbought) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#008080', text: '\u2193\n\u2193' });
-    }
-    // Pine: sellexit = crossover(rs, ll) - RSI crosses above oversold
-    if (prevRs <= oversold && rs > oversold) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#008080', text: '\u2191\n\u2191' });
-    }
-
-    // Pine: buycall = crossunder(sma2, ema1) and high > sma2
-    if (prevSma >= prevEma && currSma < currEma && bars[i].high > currSma) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#00FFFF', text: 'B' });
-    }
-    // Pine: sellcall = crossover(sma2, ema1) and open > close
-    if (prevSma <= prevEma && currSma > currEma && bars[i].open > bars[i].close) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'S' });
-    }
-  }
-
-  // Alerts from the original's expressions (na is false): buyexit = crossunder(rs, hl), sellexit = crossover(rs, ll),
-  // sellcall = crossover(sma2, ema1) and open > close, buycall = crossunder(sma2, ema1) and high > sma2
-  const buyExit = crossedUnder(rsi, overbought);
-  const sellExit = crossedOver(rsi, oversold);
-  const smaOver = crossedOver(sma2, ema1);
-  const smaUnder = crossedUnder(sma2, ema1);
-  const reversal = bars.map((_b, i) => buyExit[i] || sellExit[i]);
-  const entry = bars.map((b, i) => (smaOver[i] && gt(b.open, b.close)) || (smaUnder[i] && gt(b.high, sma2[i] ?? NaN)));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
-    markers,
-    // alertcondition(buyexit or sellexit, 'Reversal') / alertcondition(buycall or sellcall, 'Buy/Sale Swing Signal')
-    alerts: alertStates(alertConditions, bars, [reversal, entry]),
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const ema = taStep.ema(emaValue);
+      const sma = new WindowSma(smaValue);
+      const rsiStep = taStep.rsi(rsiLen);
+      const s: SwingRun = {
+        ema, sma, rsiStep, ema1: [], sma2: [], rsi: [], plot0: [], markers: [], flags: [[], []], times: [[], []],
+        steps: [ema, sma, rsiStep], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.ema1, s.sma2, s.rsi, s.plot0, ...s.flags];
+      return s;
+    },
+    bar(st, i, bars) {
+      const b = bars[i];
+      const source = value(b);
+      const e = st.ema.step(source);
+      const sm = st.sma.step(source);
+      const r = st.rsiStep.step(source);
+      st.ema1[i] = e;
+      st.sma2[i] = sm;
+      st.rsi[i] = r;
+
+      // Pine: mycolor = iff(rs>=85 or rs<=15, yellow, iff(low>sma2, lime, iff(high<sma2, red, yellow)))
+      const s = sm;
+      if (i < warmup || s == null || isNaN(s)) {
+        st.plot0[i] = { time: b.time, value: NaN };
+      } else {
+        const rs = r ?? 50;
+        let color: string;
+        if (rs >= 85 || rs <= 15) {
+          color = '#FFFF00'; // yellow
+        } else if (b.low > s) {
+          color = '#00FF00'; // lime
+        } else if (b.high < s) {
+          color = '#FF0000'; // red
+        } else {
+          color = '#FFFF00'; // yellow
+        }
+        st.plot0[i] = { time: b.time, value: s, color };
+      }
+
+      if (i >= warmup + 1) {
+        const rs = r ?? 50;
+        const prevRs = st.rsi[i - 1] ?? 50;
+        const currSma = sm ?? 0;
+        const prevSma = st.sma2[i - 1] ?? 0;
+        const currEma = e ?? 0;
+        const prevEma = st.ema1[i - 1] ?? 0;
+
+        // Pine: buyexit = crossunder(rs, hl) - RSI crosses below overbought
+        if (prevRs >= overbought && rs < overbought) {
+          st.markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: '#008080', text: '↓\n↓' });
+        }
+        // Pine: sellexit = crossover(rs, ll) - RSI crosses above oversold
+        if (prevRs <= oversold && rs > oversold) {
+          st.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: '#008080', text: '↑\n↑' });
+        }
+
+        // Pine: buycall = crossunder(sma2, ema1) and high > sma2
+        if (prevSma >= prevEma && currSma < currEma && b.high > currSma) {
+          st.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: '#00FFFF', text: 'B' });
+        }
+        // Pine: sellcall = crossover(sma2, ema1) and open > close
+        if (prevSma <= prevEma && currSma > currEma && b.open > b.close) {
+          st.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'S' });
+        }
+      }
+
+      // Alerts from the original's expressions (na is false): buyexit = crossunder(rs, hl), sellexit = crossover(rs, ll),
+      // sellcall = crossover(sma2, ema1) and open > close, buycall = crossunder(sma2, ema1) and high > sma2
+      const pr = i > 0 ? st.rsi[i - 1] ?? NaN : NaN;
+      const ps = i > 0 ? st.sma2[i - 1] ?? NaN : NaN;
+      const pe = i > 0 ? st.ema1[i - 1] ?? NaN : NaN;
+      const rv = r ?? NaN;
+      const sv = sm ?? NaN;
+      const ev = e ?? NaN;
+      const buyExit = under(rv, overbought, pr, overbought);
+      const sellExit = over(rv, oversold, pr, oversold);
+      const smaOver = over(sv, ev, ps, pe);
+      const smaUnder = under(sv, ev, ps, pe);
+      const reversal = buyExit || sellExit;
+      const entry = (smaOver && gt(b.open, b.close)) || (smaUnder && gt(b.high, sm ?? NaN));
+      // alertcondition(buyexit or sellexit, 'Reversal') / alertcondition(buycall or sellcall, 'Buy/Sale Swing Signal')
+      st.flags[0][i] = reversal;
+      st.flags[1][i] = entry;
+      if (reversal) st.times[0].push(b.time as number);
+      if (entry) st.times[1].push(b.time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice() },
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => !!f[n - 1])),
+      };
+    },
   };
 }
 
-export const SwingTradeSignals = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SwingTradeSignalsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SwingTradeSignalsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const SwingTradeSignals = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

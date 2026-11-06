@@ -11,7 +11,9 @@
  * Original notice: © LuxAlgo
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RollingLiquidityClustersChannelInputs {
   /** Window size: number of bars to look back for the levels */
@@ -55,69 +57,98 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(bars: Bar[], inputs: Partial<RollingLiquidityClustersChannelInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface RollingRun extends BarRunState<Record<string, never>> {
+  maxBody: WindowExtreme;
+  minBody: WindowExtreme;
+  upper: number[];
+  lower: number[];
+  mid: number[];
+  upperData: Point[];
+  midData: Point[];
+  lowerData: Point[];
+}
+
+function study(inputs: Partial<RollingLiquidityClustersChannelInputs>): BarStudy<RollingRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const len = cfg.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // bodyHigh = math.max(open, close); bodyLow = math.min(open, close)
-  const maxBodyHigh = A(ta.highest(S(bars.map((b) => Math.max(b.open, b.close))), len));
-  const minBodyLow = A(ta.lowest(S(bars.map((b) => Math.min(b.open, b.close))), len));
-
-  const upper: number[] = new Array(n);
-  const lower: number[] = new Array(n);
-  const mid: number[] = new Array(n);
-  for (let k = 0; k < n; k++) {
-    let upperLevel = NaN;
-    let lowerLevel = NaN;
-    for (let i = 0; i <= len - 1; i++) {
-      // high[i] / low[i]: na before the first bar
-      const h = k - i >= 0 ? bars[k - i].high : NaN;
-      const l = k - i >= 0 ? bars[k - i].low : NaN;
-      // Minimum high that is above all bodies of the window
-      if (ge(h, maxBodyHigh[k])) {
-        if (isNaN(upperLevel) || lt(h, upperLevel)) upperLevel = h;
-      }
-      // Maximum low that is below all bodies of the window
-      if (le(l, minBodyLow[k])) {
-        if (isNaN(lowerLevel) || gt(l, lowerLevel)) lowerLevel = l;
-      }
-    }
-    upper[k] = upperLevel;
-    lower[k] = lowerLevel;
-    mid[k] = (upperLevel + lowerLevel) / 2;
-  }
-
-  const upperTop = String(color.new(cfg.upperColor, 90));
-  const upperMid = String(color.new(cfg.upperColor, 100));
-  const lowerMid = String(color.new(cfg.lowerColor, 100));
-  const lowerBottom = String(color.new(cfg.lowerColor, 90));
-  const constant = (c: string) => new Array<string | null>(n).fill(c);
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: upper[i], color: cfg.upperColor })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: mid[i], color: cfg.midColor })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: lower[i], color: cfg.lowerColor })),
+    init() {
+      const maxBody = new WindowExtreme(false, len);
+      const minBody = new WindowExtreme(true, len);
+      const s: RollingRun = {
+        maxBody, minBody, upper: [], lower: [], mid: [], upperData: [], midData: [], lowerData: [],
+        steps: [maxBody, minBody], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.upper, s.lower, s.mid, s.upperData, s.midData, s.lowerData];
+      return s;
     },
-    fills: [
-      // fill(pUpper, pMid, upperLevel, midLevel, color.new(upperColorInput, 90), color.new(upperColorInput, 100),
-      //      "Upper Gradient Fill")
-      { plot1: 'plot0', plot2: 'plot1',
-        gradient: { topValue: upper.slice(), bottomValue: mid.slice(), topColor: constant(upperTop), bottomColor: constant(upperMid) } },
-      // fill(pMid, pLower, midLevel, lowerLevel, color.new(lowerColorInput, 100), color.new(lowerColorInput, 90),
-      //      "Lower Gradient Fill")
-      { plot1: 'plot1', plot2: 'plot2',
-        gradient: { topValue: mid.slice(), bottomValue: lower.slice(), topColor: constant(lowerMid), bottomColor: constant(lowerBottom) } },
-    ],
+    bar(s, k, bars) {
+      const b = bars[k]!;
+      // bodyHigh = math.max(open, close); bodyLow = math.min(open, close)
+      const maxBodyHigh = s.maxBody.step(Math.max(b.open, b.close));
+      const minBodyLow = s.minBody.step(Math.min(b.open, b.close));
+      let upperLevel = NaN;
+      let lowerLevel = NaN;
+      for (let i = 0; i <= len - 1; i++) {
+        // high[i] / low[i]: na before the first bar
+        const h = k - i >= 0 ? bars[k - i]!.high : NaN;
+        const l = k - i >= 0 ? bars[k - i]!.low : NaN;
+        // Minimum high that is above all bodies of the window
+        if (ge(h, maxBodyHigh)) {
+          if (isNaN(upperLevel) || lt(h, upperLevel)) upperLevel = h;
+        }
+        // Maximum low that is below all bodies of the window
+        if (le(l, minBodyLow)) {
+          if (isNaN(lowerLevel) || gt(l, lowerLevel)) lowerLevel = l;
+        }
+      }
+      const midLevel = (upperLevel + lowerLevel) / 2;
+      s.upper[k] = upperLevel;
+      s.lower[k] = lowerLevel;
+      s.mid[k] = midLevel;
+      s.upperData[k] = { time: b.time as number, value: upperLevel, color: cfg.upperColor };
+      s.midData[k] = { time: b.time as number, value: midLevel, color: cfg.midColor };
+      s.lowerData[k] = { time: b.time as number, value: lowerLevel, color: cfg.lowerColor };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const upperTop = String(color.new(cfg.upperColor, 90));
+      const upperMid = String(color.new(cfg.upperColor, 100));
+      const lowerMid = String(color.new(cfg.lowerColor, 100));
+      const lowerBottom = String(color.new(cfg.lowerColor, 90));
+      const constant = (c: string) => new Array<string | null>(n).fill(c);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.upperData.slice(), plot1: s.midData.slice(), plot2: s.lowerData.slice() },
+        fills: [
+          // fill(pUpper, pMid, upperLevel, midLevel, color.new(upperColorInput, 90), color.new(upperColorInput, 100),
+          //      "Upper Gradient Fill")
+          { plot1: 'plot0', plot2: 'plot1',
+            gradient: { topValue: s.upper.slice(), bottomValue: s.mid.slice(), topColor: constant(upperTop), bottomColor: constant(upperMid) } },
+          // fill(pMid, pLower, midLevel, lowerLevel, color.new(lowerColorInput, 100), color.new(lowerColorInput, 90),
+          //      "Lower Gradient Fill")
+          { plot1: 'plot1', plot2: 'plot2',
+            gradient: { topValue: s.mid.slice(), bottomValue: s.lower.slice(), topColor: constant(lowerMid), bottomColor: constant(lowerBottom) } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RollingLiquidityClustersChannelInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RollingLiquidityClustersChannelInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RollingLiquidityClustersChannel = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

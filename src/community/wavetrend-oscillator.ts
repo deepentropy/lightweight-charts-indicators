@@ -10,7 +10,9 @@
  * Reference: "WaveTrend Oscillator" by LazyBear
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface WavetrendOscillatorInputs {
   channelLength: number;
@@ -63,36 +65,72 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<WavetrendOscillatorInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface WtRun extends BarRunState<Record<string, never>> {
+  esa: ReturnType<typeof taStep.ema>;
+  d: ReturnType<typeof taStep.ema>;
+  tci: ReturnType<typeof taStep.ema>;
+  wt2: WindowSma;
+  plots: Point[][];
+}
+
+const PLOT_IDS = ['zero', 'ob1', 'os1', 'ob2', 'os2', 'wt1', 'wt2', 'diff'] as const;
+
+function study(inputs: Partial<WavetrendOscillatorInputs>): BarStudy<WtRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const t = (i: number) => bars[i].time;
-  const arr = (x: Series) => x.toArray().map((v) => v ?? NaN);
-
-  // ap = hlc3; esa = ema(ap, n1); d = ema(abs(ap - esa), n1); ci = (ap - esa) / (0.015 * d)
-  const ap = new Series(bars, (b) => (b.high + b.low + b.close) / 3);
-  const apArr = arr(ap);
-  const esaArr = arr(ta.ema(ap, cfg.channelLength));
-  const dArr = arr(ta.ema(Series.fromArray(bars, apArr.map((v, i) => Math.abs(v - esaArr[i]))), cfg.channelLength));
-  // a division by 0 is na
-  const ci = apArr.map((v, i) => (dArr[i] === 0 ? NaN : (v - esaArr[i]) / (0.015 * dArr[i])));
-  // wt1 = tci = ema(ci, n2); wt2 = sma(wt1, 4)
-  const wt1Arr = arr(ta.ema(Series.fromArray(bars, ci), cfg.avgLength));
-  const wt2Arr = arr(ta.sma(Series.fromArray(bars, wt1Arr), 4));
-
-  const line = (v: (i: number) => number) => bars.map((_b, i) => ({ time: t(i), value: v(i) }));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      zero: line(() => 0),
-      ob1: line(() => cfg.obLevel1),
-      os1: line(() => cfg.osLevel1),
-      ob2: line(() => cfg.obLevel2),
-      os2: line(() => cfg.osLevel2),
-      wt1: line((i) => wt1Arr[i]),
-      wt2: line((i) => wt2Arr[i]),
-      diff: line((i) => wt1Arr[i] - wt2Arr[i]),
+    init() {
+      const esa = taStep.ema(cfg.channelLength);
+      const d = taStep.ema(cfg.channelLength);
+      const tci = taStep.ema(cfg.avgLength);
+      const wt2 = new WindowSma(4);
+      const s: WtRun = {
+        esa, d, tci, wt2, plots: PLOT_IDS.map(() => []), steps: [esa, d, tci, wt2], vars: {}, lists: [], series: [],
+      };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // ap = hlc3; esa = ema(ap, n1); d = ema(abs(ap - esa), n1); ci = (ap - esa) / (0.015 * d)
+      const ap = (b.high + b.low + b.close) / 3;
+      const esa = s.esa.step(ap);
+      const d = s.d.step(Math.abs(ap - esa));
+      // a division by 0 is na
+      const ci = d === 0 ? NaN : (ap - esa) / (0.015 * d);
+      // wt1 = tci = ema(ci, n2); wt2 = sma(wt1, 4)
+      const wt1 = s.tci.step(ci);
+      const wt2 = s.wt2.step(wt1);
+      const p = s.plots;
+      p[0][i] = { time, value: 0 };
+      p[1][i] = { time, value: cfg.obLevel1 };
+      p[2][i] = { time, value: cfg.osLevel1 };
+      p[3][i] = { time, value: cfg.obLevel2 };
+      p[4][i] = { time, value: cfg.osLevel2 };
+      p[5][i] = { time, value: wt1 };
+      p[6][i] = { time, value: wt2 };
+      p[7][i] = { time, value: wt1 - wt2 };
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      PLOT_IDS.forEach((id, k) => { plots[id] = s.plots[k].slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
     },
   };
 }
 
-export const WavetrendOscillator = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WavetrendOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<WavetrendOscillatorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const WavetrendOscillator = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

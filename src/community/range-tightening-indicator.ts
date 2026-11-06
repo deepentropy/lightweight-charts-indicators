@@ -12,9 +12,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -64,83 +66,116 @@ const lt = (a: number, b: number) => b - a > EPS; // false when a value is na
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RangeTighteningIndicatorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface RtiVars {
+  /** var int consecutive_count = 0 */
+  consecutiveCount: number;
+}
+
+interface RtiRun extends BarRunState<RtiVars> {
+  maxVol: WindowExtreme;
+  minVol: WindowExtreme;
+  rti: number[];
+  rtiPlot: Point[];
+  constants: Point[][];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<RangeTighteningIndicatorInputs>): BarStudy<RtiRun, Result> {
   const { lookbackOption, customLength } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   // length = lookback_option == '5' ? 5 : lookback_option == '15' ? 15 : custom_length
   const length = lookbackOption === '5' ? 5 : lookbackOption === '15' ? 15 : customLength;
-
-  // volatility = high - low; max / min volatility over the lookback period
-  const volatility = bars.map((b) => b.high - b.low);
-  const volS = Series.fromArray(bars, volatility);
-  const maxVol = ta.highest(volS, length).toArray().map((v) => v ?? NaN);
-  const minVol = ta.lowest(volS, length).toArray().map((v) => v ?? NaN);
-
-  // rti = 100 * (volatility - min_volatility) / (max_volatility - min_volatility). When max = min, volatility = min:
-  // Pine gives 0 / 0 = NaN
-  const rti = volatility.map((v, i) => {
-    const den = maxVol[i] - minVol[i];
-    return den === 0 || isNaN(den) ? NaN : (100 * (v - minVol[i])) / den;
-  });
-
-  const rtiPlot: { time: number; value: number; color: string }[] = [];
-  const markers: MarkerData[] = [];
-  let consecutiveCount = 0; // var int consecutive_count = 0
-  const dotFlags: boolean[] = [];
-  const below20Flags: boolean[] = [];
-  const expansionFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const r = rti[i];
-    // range_expansion_condition = rti[1] <= 20 and rti >= 2 * rti[1]
-    const prev = i > 0 ? rti[i - 1] : NaN;
-    const expansion = le(prev, 20) && ge(r, 2 * prev);
-    // plot(rti, color = range_expansion_condition ? color.green : color.blue, linewidth = 2, title = 'RTI')
-    rtiPlot.push({ time: t, value: r, color: expansion ? color.green : color.blue });
-    // below_20 = rti < 20: consecutive_count + 1, else 0
-    consecutiveCount = lt(r, 20) ? consecutiveCount + 1 : 0;
-    dotFlags.push(consecutiveCount >= 2);
-    below20Flags.push(lt(r, 20));
-    expansionFlags.push(expansion);
-    // plotshape(consecutive_count >= 2 ? rti : na, location.absolute, shape.circle, size.tiny, color.orange)
-    if (consecutiveCount >= 2 && !isNaN(r)) {
-      markers.push({ time: t, position: 'atPriceMiddle', price: r, shape: 'circle', color: color.orange, size: 'tiny' });
-    }
-  }
-
-  const constant = (v: number) => bars.map((b) => ({ time: b.time, value: v }));
+  const levels = [5, 0, 20, 5, 5, 20];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: rtiPlot,
-      plot1: constant(5),
-      plot2: constant(0),
-      plot3: constant(20),
-      plot4: constant(5),
-      plot5: constant(5),
-      plot6: constant(20),
+    init() {
+      // volatility = high - low; max / min volatility over the lookback period
+      const maxVol = new WindowExtreme(false, length);
+      const minVol = new WindowExtreme(true, length);
+      const s: RtiRun = {
+        maxVol, minVol, rti: [], rtiPlot: [], constants: levels.map(() => []), markers: [], flags: [[], [], []],
+        times: [[], [], []], steps: [maxVol, minVol], vars: { consecutiveCount: 0 }, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.rti, s.rtiPlot, ...s.constants, ...s.flags];
+      return s;
     },
-    // fill(plot(5), plot(0), color.new(color.red, 90)); fill(plot(20), plot(5), color.new(color.green, 80))
-    fills: [
-      { plot1: 'plot1', plot2: 'plot2', options: { color: String(color.new(color.red, 90)) } },
-      { plot1: 'plot3', plot2: 'plot4', options: { color: String(color.new(color.green, 80)) } },
-    ],
-    // hline(100) / hline(0): default hline style (dashed)
-    hlines: [
-      { value: 100, options: { title: 'RTI Upper Bound', color: color.gray, linestyle: 'dashed' } },
-      { value: 0, options: { title: 'RTI Lower Bound', color: color.gray, linestyle: 'dashed' } },
-    ],
-    markers,
-    // alertcondition(dot_condition), (below_20_condition), (range_expansion_condition)
-    alerts: alertStates(alertConditions, bars, [dotFlags, below20Flags, expansionFlags]),
+    bar(s, i, bars) {
+      const t = bars[i].time;
+      const v = bars[i].high - bars[i].low;
+      const maxVol = s.maxVol.step(v);
+      const minVol = s.minVol.step(v);
+      // rti = 100 * (volatility - min_volatility) / (max_volatility - min_volatility). When max = min, volatility = min:
+      // Pine gives 0 / 0 = NaN
+      const den = maxVol - minVol;
+      const r = den === 0 || isNaN(den) ? NaN : (100 * (v - minVol)) / den;
+      s.rti[i] = r;
+      // range_expansion_condition = rti[1] <= 20 and rti >= 2 * rti[1]
+      const prev = i > 0 ? s.rti[i - 1] : NaN;
+      const expansion = le(prev, 20) && ge(r, 2 * prev);
+      // plot(rti, color = range_expansion_condition ? color.green : color.blue, linewidth = 2, title = 'RTI')
+      s.rtiPlot[i] = { time: t, value: r, color: expansion ? color.green : color.blue };
+      // below_20 = rti < 20: consecutive_count + 1, else 0
+      const consecutiveCount = lt(r, 20) ? s.vars.consecutiveCount + 1 : 0;
+      s.vars.consecutiveCount = consecutiveCount;
+      const flags = [consecutiveCount >= 2, lt(r, 20), expansion];
+      for (let k = 0; k < 3; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+      // plotshape(consecutive_count >= 2 ? rti : na, location.absolute, shape.circle, size.tiny, color.orange)
+      if (consecutiveCount >= 2 && !isNaN(r)) {
+        s.markers.push({ time: t, position: 'atPriceMiddle', price: r, shape: 'circle', color: color.orange, size: 'tiny' });
+      }
+      for (let k = 0; k < levels.length; k++) s.constants[k][i] = { time: t, value: levels[k] };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const c = s.constants;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.rtiPlot.slice(),
+          plot1: c[0].slice(),
+          plot2: c[1].slice(),
+          plot3: c[2].slice(),
+          plot4: c[3].slice(),
+          plot5: c[4].slice(),
+          plot6: c[5].slice(),
+        },
+        // fill(plot(5), plot(0), color.new(color.red, 90)); fill(plot(20), plot(5), color.new(color.green, 80))
+        fills: [
+          { plot1: 'plot1', plot2: 'plot2', options: { color: String(color.new(color.red, 90)) } },
+          { plot1: 'plot3', plot2: 'plot4', options: { color: String(color.new(color.green, 80)) } },
+        ],
+        // hline(100) / hline(0): default hline style (dashed)
+        hlines: [
+          { value: 100, options: { title: 'RTI Upper Bound', color: color.gray, linestyle: 'dashed' } },
+          { value: 0, options: { title: 'RTI Lower Bound', color: color.gray, linestyle: 'dashed' } },
+        ],
+        markers: s.markers.slice(),
+        // alertcondition(dot_condition), (below_20_condition), (range_expansion_condition)
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RangeTighteningIndicatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RangeTighteningIndicatorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RangeTighteningIndicator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

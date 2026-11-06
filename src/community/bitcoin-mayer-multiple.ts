@@ -9,7 +9,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BitcoinMayerMultipleInputs {
   /** Length of the price SMA */
@@ -64,39 +66,64 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<BitcoinMayerMultipleInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface MayerRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<BitcoinMayerMultipleInputs>): BarStudy<MayerRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-  const ma = A(ta.sma(close, cfg.psmaLength));
-
-  const plots: Record<string, { time: number; value: number; color?: string }[]> = {};
-  LEVELS.forEach(([value, , c], k) => {
-    plots[`plot${k}`] = bars.map((b) => ({ time: b.time, value, color: c }));
-  });
-  plots.plot10 = bars.map((b, i) => {
-    const multiple = b.close / ma[i];
-    const c = gt(multiple, 2.6) ? RED
-      : gt(multiple, 2.2) ? ORANGE
-      : gt(multiple, 1.9) ? AMBER
-      : gt(multiple, 1.45) ? YELLOW
-      : gt(multiple, 1.2) ? CHARTREUSE
-      : gt(multiple, 1.0) ? MINT
-      : gt(multiple, 0.85) ? AQUA
-      : gt(multiple, 0.7) ? AZURE
-      : gt(multiple, 0.55) ? VIOLET
-      : BLACK;
-    return { time: b.time, value: Number.isFinite(multiple) ? multiple : NaN, color: c };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    init() {
+      const sma = new WindowSma(cfg.psmaLength);
+      const s: MayerRun = { sma, plots: Array.from({ length: LEVELS.length + 1 }, () => []), steps: [sma], vars: {}, lists: [], series: [] };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const ma = s.sma.step(b.close);
+      LEVELS.forEach(([value, , c], k) => {
+        s.plots[k][i] = { time: b.time, value, color: c };
+      });
+      const multiple = b.close / ma;
+      const c = gt(multiple, 2.6) ? RED
+        : gt(multiple, 2.2) ? ORANGE
+        : gt(multiple, 1.9) ? AMBER
+        : gt(multiple, 1.45) ? YELLOW
+        : gt(multiple, 1.2) ? CHARTREUSE
+        : gt(multiple, 1.0) ? MINT
+        : gt(multiple, 0.85) ? AQUA
+        : gt(multiple, 0.7) ? AZURE
+        : gt(multiple, 0.55) ? VIOLET
+        : BLACK;
+      s.plots[LEVELS.length][i] = { time: b.time, value: Number.isFinite(multiple) ? multiple : NaN, color: c };
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BitcoinMayerMultipleInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BitcoinMayerMultipleInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const BitcoinMayerMultiple = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -13,7 +13,9 @@
  * Laboratory (2025)
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ObvxConvictionBiasInputs {
   /** Smoothing Method */
@@ -53,64 +55,102 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<ObvxConvictionBiasInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const volume = bars.map((b) => b.volume ?? NaN);
+type Point = { time: number; value: number; color: string };
+type Ma = { step(v: number, volume: number): number; commit(): void };
 
+function maStep(typeMA: string, len: number): Ma {
+  switch (typeMA) {
+    case 'VWMA': { const m = new WindowVwma(len); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+    case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+    case 'SMA': { const m = new WindowSma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'EMA': { const m = taStep.ema(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    default: { const m = taStep.rma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+  }
+}
+
+interface ObvxVars {
+  /** var cumVol = 0.0; cumVol += nz(volume) */
+  cumVol: number;
+}
+
+interface ObvxRun extends BarRunState<ObvxVars> {
+  cum: ReturnType<typeof taStep.cum>;
+  short: Ma;
+  long: Ma;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  fillShort: string[];
+  fillLong: string[];
+}
+
+const fillShortUp = String(color.new(color.lime, 70));
+const fillShortDown = String(color.new(color.maroon, 70));
+const fillLongUp = String(color.new(color.green, 40));
+const fillLongDown = String(color.new('#ec1d1d', 18));
+
+function study(inputs: Partial<ObvxConvictionBiasInputs>): BarStudy<ObvxRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const mult = 2.718;
   // obv = ta.cum(math.sign(ta.change(close)) * volume)
   const sign = (x: number) => (isNaN(x) ? NaN : x > 0 ? 1 : x < 0 ? -1 : 0);
-  const obvIn = bars.map((b, i) => (i > 0 ? sign(b.close - bars[i - 1].close) * volume[i] : NaN));
-  const obv = A(ta.cum(S(obvIn)));
-
-  // var cumVol = 0.0; cumVol += nz(volume); if barstate.islast and cumVol == 0: runtime.error(...)
-  let cumVol = 0;
-  for (let i = 0; i < n; i++) cumVol += isNaN(volume[i]) ? 0 : volume[i];
-  if (n > 0 && Math.abs(cumVol) <= EPS) throw new Error('No volume is provided by the data vendor.');
-
-  const ma = (src: number[], len: number): number[] => {
-    switch (cfg.typeMA) {
-      case 'VWMA': return A(ta.vwma(S(src), len, S(volume)));
-      case 'WMA': return A(ta.wma(S(src), len));
-      case 'SMA': return A(ta.sma(S(src), len));
-      case 'EMA': return A(ta.ema(S(src), len));
-      default: return A(ta.rma(S(src), len));
-    }
-  };
-  const mult = 2.718;
-  const smoothShort = ma(obv, cfg.len);
-  const smoothLong = ma(obv, Math.round(cfg.len * mult));
-
-  const fillShortUp = String(color.new(color.lime, 70));
-  const fillShortDown = String(color.new(color.maroon, 70));
-  const fillLongUp = String(color.new(color.green, 40));
-  const fillLongDown = String(color.new('#ec1d1d', 18));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: obv[i], color: OBV_COLOR })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: smoothShort[i], color: SHORT_COLOR })),
-      // colorLong = smoothShort > smoothLong ? color.rgb(101, 221, 105, 33) : color.rgb(223, 117, 117, 33)
-      plot2: bars.map((b, i) => ({
-        time: b.time, value: smoothLong[i], color: gt(smoothShort[i], smoothLong[i]) ? LONG_BULL : LONG_BEAR,
-      })),
+    init() {
+      const cum = taStep.cum();
+      const short = maStep(cfg.typeMA, cfg.len);
+      const long = maStep(cfg.typeMA, Math.round(cfg.len * mult));
+      const s: ObvxRun = {
+        cum, short, long, plot0: [], plot1: [], plot2: [], fillShort: [], fillLong: [],
+        steps: [cum, short, long], vars: { cumVol: 0 }, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1, s.plot2, s.fillShort, s.fillLong];
+      return s;
     },
-    fills: [
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const volume = b.volume ?? NaN;
+      const obvIn = i > 0 ? sign(b.close - bars[i - 1].close) * volume : NaN;
+      const obv = s.cum.step(obvIn);
+      s.vars.cumVol += isNaN(volume) ? 0 : volume;
+      const smoothShort = s.short.step(obv, volume);
+      const smoothLong = s.long.step(obv, volume);
+      s.plot0[i] = { time: t, value: obv, color: OBV_COLOR };
+      s.plot1[i] = { time: t, value: smoothShort, color: SHORT_COLOR };
+      // colorLong = smoothShort > smoothLong ? color.rgb(101, 221, 105, 33) : color.rgb(223, 117, 117, 33)
+      s.plot2[i] = { time: t, value: smoothLong, color: gt(smoothShort, smoothLong) ? LONG_BULL : LONG_BEAR };
       // fill(plotShort, plotOBV, obv > smoothShort ? color.new(color.lime, 70) : color.new(color.maroon, 70))
-      { plot1: 'plot1', plot2: 'plot0', options: { title: 'Short OBV Fill' },
-        colors: bars.map((_b, i) => (gt(obv[i], smoothShort[i]) ? fillShortUp : fillShortDown)) },
+      s.fillShort[i] = gt(obv, smoothShort) ? fillShortUp : fillShortDown;
       // fill(plotLong, plotShort, smoothShort > smoothLong ? color.new(color.green, 40) : color.new(#ec1d1d, 18))
-      { plot1: 'plot2', plot2: 'plot1', options: { title: 'Long OBV Fill' },
-        colors: bars.map((_b, i) => (gt(smoothShort[i], smoothLong[i]) ? fillLongUp : fillLongDown)) },
-    ],
+      s.fillLong[i] = gt(smoothShort, smoothLong) ? fillLongUp : fillLongDown;
+    },
+    result(s, bars) {
+      // if barstate.islast and cumVol == 0: runtime.error(...)
+      if (bars.length > 0 && Math.abs(s.vars.cumVol) <= EPS) throw new Error('No volume is provided by the data vendor.');
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        fills: [
+          { plot1: 'plot1', plot2: 'plot0', options: { title: 'Short OBV Fill' }, colors: s.fillShort.slice() },
+          { plot1: 'plot2', plot2: 'plot1', options: { title: 'Long OBV Fill' }, colors: s.fillLong.slice() },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ObvxConvictionBiasInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ObvxConvictionBiasInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const ObvxConvictionBias = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

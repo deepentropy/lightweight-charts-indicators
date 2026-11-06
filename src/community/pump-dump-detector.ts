@@ -13,9 +13,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PumpDumpDetectorInputs {
   /** Pump threshold: close-to-close change (%) */
@@ -74,83 +76,115 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<PumpDumpDetectorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface PumpRun extends BarRunState<Record<string, never>> {
+  volumeAvg: WindowSma;
+  avgBarRange: WindowSma;
+  atr: ReturnType<typeof taStep.atr>;
+  avgNatr: WindowSma;
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<PumpDumpDetectorInputs>): BarStudy<PumpRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const volumeAvg = A(ta.sma(S(volume), cfg.lookback));
-  const barRange = bars.map((b) => b.high - b.low);
-  const avgBarRange = A(ta.sma(S(barRange), cfg.lookback));
-  const atr = A(ta.atr(bars, cfg.natrLength));
-  const natr = atr.map((a, i) => (a / bars[i].close) * 100);
-  const avgNatr = A(ta.sma(S(natr), cfg.lookback));
-
   const earlyPumpBg = String(color.new(color.orange, 85));
   const confirmedPumpBg = String(color.new(color.green, 85));
   const earlyDumpBg = String(color.new(color.red, 85));
   const confirmedDumpBg = String(color.new(color.maroon, 85));
   const textColor = color.blue; // no textcolor: the Pine plotshape default text colour
-
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  const flags: boolean[][] = [[], [], [], []];
-  for (let i = 0; i < n; i++) {
-    const close = bars[i].close;
-    const close1 = i > 0 ? bars[i - 1].close : NaN;
-    const priceChange = ((close - close1) / close1) * 100;
-    const pricePump = ge(priceChange, cfg.pumpThreshold);
-    const priceDump = le(priceChange, cfg.dumpThreshold);
-    const volumeSpike = gt(volume[i], volumeAvg[i] * cfg.volumeMultiplier);
-    const volatilitySpike = gt(barRange[i], avgBarRange[i] * cfg.volatilityMultiplier);
-    const natrSpike = gt(natr[i], avgNatr[i] * cfg.natrMultiplier);
-    const base = gt(volume[i], cfg.minVolume) && volumeSpike && volatilitySpike && natrSpike;
-    const earlyPump = base && gt(close, close1);
-    const earlyDump = base && lt(close, close1);
-    const confirmedPump = pricePump && earlyPump;
-    const confirmedDump = priceDump && earlyDump;
-    flags[0].push(earlyPump);
-    flags[1].push(confirmedPump);
-    flags[2].push(earlyDump);
-    flags[3].push(confirmedDump);
-
-    const t = bars[i].time;
-    // bgcolor / plotshape in the Pine order (a later bgcolor is drawn on top)
-    if (earlyPump) {
-      bgColors.push({ time: t, color: earlyPumpBg });
-      // plotshape(earlyPumpSignal, location.belowbar, color.orange, shape.triangleup, text = "EARLY ↑")
-      markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: color.orange, text: 'EARLY ↑', textColor, size: 'auto' });
-    }
-    if (confirmedPump) {
-      bgColors.push({ time: t, color: confirmedPumpBg });
-      // plotshape(confirmedPumpSignal, location.abovebar, color.lime, shape.labelup, text = "PUMP")
-      markers.push({ time: t, position: 'aboveBar', shape: 'labelUp', color: color.lime, text: 'PUMP', textColor, size: 'auto' });
-    }
-    if (earlyDump) {
-      bgColors.push({ time: t, color: earlyDumpBg });
-      // plotshape(earlyDumpSignal, location.abovebar, color.red, shape.triangledown, text = "EARLY ↓")
-      markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: color.red, text: 'EARLY ↓', textColor, size: 'auto' });
-    }
-    if (confirmedDump) {
-      bgColors.push({ time: t, color: confirmedDumpBg });
-      // plotshape(confirmedDumpSignal, location.belowbar, color.red, shape.labeldown, text = "DUMP")
-      markers.push({ time: t, position: 'belowBar', shape: 'labelDown', color: color.red, text: 'DUMP', textColor, size: 'auto' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    bgColors,
-    // alertcondition(earlyPumpSignal / confirmedPumpSignal / earlyDumpSignal / confirmedDumpSignal)
-    alerts: alertStates(alertConditions, bars, flags),
+    init() {
+      const volumeAvg = new WindowSma(cfg.lookback);
+      const avgBarRange = new WindowSma(cfg.lookback);
+      const atr = taStep.atr(cfg.natrLength);
+      const avgNatr = new WindowSma(cfg.lookback);
+      const s: PumpRun = {
+        volumeAvg, avgBarRange, atr, avgNatr, markers: [], bgColors: [], flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [volumeAvg, avgBarRange, atr, avgNatr], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.bgColors, ...s.times];
+      s.series = [...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = b.volume ?? NaN;
+      const volumeAvg = s.volumeAvg.step(volume);
+      const barRange = b.high - b.low;
+      const avgBarRange = s.avgBarRange.step(barRange);
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const natr = (atr / b.close) * 100;
+      const avgNatr = s.avgNatr.step(natr);
+
+      const close = b.close;
+      const close1 = i > 0 ? bars[i - 1].close : NaN;
+      const priceChange = ((close - close1) / close1) * 100;
+      const pricePump = ge(priceChange, cfg.pumpThreshold);
+      const priceDump = le(priceChange, cfg.dumpThreshold);
+      const volumeSpike = gt(volume, volumeAvg * cfg.volumeMultiplier);
+      const volatilitySpike = gt(barRange, avgBarRange * cfg.volatilityMultiplier);
+      const natrSpike = gt(natr, avgNatr * cfg.natrMultiplier);
+      const base = gt(volume, cfg.minVolume) && volumeSpike && volatilitySpike && natrSpike;
+      const earlyPump = base && gt(close, close1);
+      const earlyDump = base && lt(close, close1);
+      const confirmedPump = pricePump && earlyPump;
+      const confirmedDump = priceDump && earlyDump;
+
+      const t = b.time;
+      const flags = [earlyPump, confirmedPump, earlyDump, confirmedDump];
+      for (let k = 0; k < 4; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+
+      const { markers, bgColors } = s;
+      // bgcolor / plotshape in the Pine order (a later bgcolor is drawn on top)
+      if (earlyPump) {
+        bgColors.push({ time: t, color: earlyPumpBg });
+        // plotshape(earlyPumpSignal, location.belowbar, color.orange, shape.triangleup, text = "EARLY ↑")
+        markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: color.orange, text: 'EARLY ↑', textColor, size: 'auto' });
+      }
+      if (confirmedPump) {
+        bgColors.push({ time: t, color: confirmedPumpBg });
+        // plotshape(confirmedPumpSignal, location.abovebar, color.lime, shape.labelup, text = "PUMP")
+        markers.push({ time: t, position: 'aboveBar', shape: 'labelUp', color: color.lime, text: 'PUMP', textColor, size: 'auto' });
+      }
+      if (earlyDump) {
+        bgColors.push({ time: t, color: earlyDumpBg });
+        // plotshape(earlyDumpSignal, location.abovebar, color.red, shape.triangledown, text = "EARLY ↓")
+        markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: color.red, text: 'EARLY ↓', textColor, size: 'auto' });
+      }
+      if (confirmedDump) {
+        bgColors.push({ time: t, color: confirmedDumpBg });
+        // plotshape(confirmedDumpSignal, location.belowbar, color.red, shape.labeldown, text = "DUMP")
+        markers.push({ time: t, position: 'belowBar', shape: 'labelDown', color: color.red, text: 'DUMP', textColor, size: 'auto' });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        // alertcondition(earlyPumpSignal / confirmedPumpSignal / earlyDumpSignal / confirmedDumpSignal)
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PumpDumpDetectorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PumpDumpDetectorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -161,4 +195,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert3', title: '🔥 Confirmed Dump', message: 'CONFIRMED DUMP on {{ticker}}' },
 ];
 
-export const PumpDumpDetector = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const PumpDumpDetector = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

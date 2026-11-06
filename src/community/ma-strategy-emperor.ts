@@ -8,8 +8,10 @@
  * Reference: "MA Strategy Emperor" by insiliconot
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MAStrategyEmperorInputs {
   maType: string;
@@ -67,165 +69,230 @@ export const metadata = {
   overlay: true,
 };
 
-/**
- * Compute a moving average of the given type on raw source array.
- * Returns a number[] of the same length as src.
- */
-function computeMA(bars: Bar[], src: number[], len: number, type: string): number[] {
-  const n = src.length;
-  const srcSeries = new Series(bars, (_, i) => src[i]);
+/** One moving average of the given type on the close, one bar at a time */
+interface MaStep {
+  step(src: number, i: number, bars: Bar[]): number;
+  commit(): void;
+}
 
-  switch (type) {
-    case 'SMA':
-      return ta.sma(srcSeries, len).toArray().map(v => v ?? NaN);
+/** A moving average whose value depends on its own value of the previous bar (and on the bar before for one type) */
+abstract class RecursiveMa implements MaStep {
+  /** The result of the previous bar and of the bar before it (NaN before the first bars) */
+  protected r1 = NaN;
+  protected r2 = NaN;
+  private pending = NaN;
+  private stepped = false;
 
-    case 'EMA':
-      return ta.ema(srcSeries, len).toArray().map(v => v ?? NaN);
+  constructor(protected readonly len: number, private readonly inner: Array<{ commit(): void }> = []) {}
 
-    case 'WMA':
-      return ta.wma(srcSeries, len).toArray().map(v => v ?? NaN);
+  protected abstract value(src: number, i: number, bars: Bar[]): number;
 
-    case 'DEMA': {
-      const e1 = ta.ema(srcSeries, len).toArray();
-      const e1Series = new Series(bars, (_, i) => e1[i] ?? NaN);
-      const e2 = ta.ema(e1Series, len).toArray();
-      return e1.map((v, i) => {
-        const v1 = v ?? NaN;
-        const v2 = e2[i] ?? NaN;
-        return 2 * v1 - v2;
-      });
-    }
+  step(src: number, i: number, bars: Bar[]): number {
+    this.stepped = true;
+    this.pending = this.value(src, i, bars);
+    return this.pending;
+  }
 
-    case 'Smoothed_MA': {
-      // sm = na(sm[1]) ? sma(src,len) : (sm[1]*(len-1)+src)/len
-      const smaArr = ta.sma(srcSeries, len).toArray();
-      const result: number[] = new Array(n).fill(NaN);
-      for (let i = 0; i < n; i++) {
-        if (isNaN(result[i - 1] ?? NaN)) {
-          result[i] = smaArr[i] ?? NaN;
-        } else {
-          result[i] = (result[i - 1] * (len - 1) + src[i]) / len;
-        }
+  commit(): void {
+    for (const m of this.inner) m.commit();
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.r2 = this.r1;
+    this.r1 = this.pending;
+  }
+}
+
+/** sm = na(sm[1]) ? sma(src,len) : (sm[1]*(len-1)+src)/len */
+class SmoothedMa extends RecursiveMa {
+  private readonly sma: WindowSma;
+
+  constructor(len: number) {
+    const sma = new WindowSma(len);
+    super(len, [sma]);
+    this.sma = sma;
+  }
+
+  protected value(src: number): number {
+    const sma = this.sma.step(src);
+    if (isNaN(this.r1 ?? NaN)) return sma ?? NaN;
+    return (this.r1 * (this.len - 1) + src) / this.len;
+  }
+}
+
+/** WiMA = (src + WiMA[1]*(len-1))/len */
+class WildersMa extends RecursiveMa {
+  protected value(src: number, i: number, bars: Bar[]): number {
+    const len = this.len;
+    if (isNaN(src)) return NaN;
+    if (isNaN(this.r1 ?? NaN)) {
+      // Seed with SMA
+      if (i >= len - 1) {
+        let sum = 0;
+        for (let j = i - len + 1; j <= i; j++) sum += bars[j].close;
+        return sum / len;
       }
-      return result;
+      return NaN;
     }
+    return (src + this.r1 * (len - 1)) / len;
+  }
+}
 
+/** 2-pole Super Smoother filter */
+class SuperSmootherMa extends RecursiveMa {
+  private readonly c1: number;
+  private readonly c2: number;
+  private readonly c3: number;
+
+  constructor(len: number) {
+    super(len);
+    const pi = Math.PI;
+    const a1 = Math.exp(-1.414 * pi / len);
+    const b1 = 2 * a1 * Math.cos(1.414 * pi / len);
+    this.c2 = b1;
+    this.c3 = -(a1 * a1);
+    this.c1 = 1 - this.c2 - this.c3;
+  }
+
+  protected value(src: number, i: number, bars: Bar[]): number {
+    if (isNaN(src)) return NaN;
+    if (i < 2 || isNaN(this.r1) || isNaN(this.r2)) return src;
+    return this.c1 * (src + bars[i - 1].close) / 2 + this.c2 * this.r1 + this.c3 * this.r2;
+  }
+}
+
+/** mg = mg[1] + (src - mg[1]) / (len * pow(src/mg[1], 4)) */
+class McGinleyMa extends RecursiveMa {
+  protected value(src: number): number {
+    if (isNaN(src)) return NaN;
+    if (isNaN(this.r1 ?? NaN)) return src;
+    const prev = this.r1;
+    const ratio = src / prev;
+    return prev + (src - prev) / (this.len * Math.pow(ratio, 4));
+  }
+}
+
+/** A moving average of the given type on the close (the source of the original) */
+function maStep(len: number, type: string): MaStep {
+  switch (type) {
+    case 'SMA': {
+      const m = new WindowSma(len);
+      return { step: (v) => m.step(v) ?? NaN, commit: () => m.commit() };
+    }
+    case 'WMA': {
+      const m = taStep.wma();
+      return { step: (v) => m.step(v, len) ?? NaN, commit: () => m.commit() };
+    }
+    case 'DEMA': {
+      const e1 = taStep.ema(len);
+      const e2 = taStep.ema(len);
+      return {
+        step: (v) => {
+          const v1 = e1.step(v) ?? NaN;
+          const v2 = e2.step(v1) ?? NaN;
+          return 2 * v1 - v2;
+        },
+        commit: () => { e1.commit(); e2.commit(); },
+      };
+    }
+    case 'Smoothed_MA': return new SmoothedMa(len);
     case 'Zero_Lag': {
       // d = src + (src - src[floor((len-1)/2)]), ema(d, len)
       const lag = Math.floor((len - 1) / 2);
-      const d: number[] = new Array(n);
-      for (let i = 0; i < n; i++) {
-        const prev = i >= lag ? src[i - lag] : NaN;
-        d[i] = src[i] + (src[i] - prev);
-      }
-      const dSeries = new Series(bars, (_, i) => d[i]);
-      return ta.ema(dSeries, len).toArray().map(v => v ?? NaN);
+      const m = taStep.ema(len);
+      return {
+        step: (v, i, bars) => {
+          const prev = i >= lag ? bars[i - lag].close : NaN;
+          return m.step(v + (v - prev)) ?? NaN;
+        },
+        commit: () => m.commit(),
+      };
     }
-
-    case 'Wilders': {
-      // WiMA = (src + WiMA[1]*(len-1))/len
-      const result: number[] = new Array(n).fill(NaN);
-      for (let i = 0; i < n; i++) {
-        if (isNaN(src[i])) continue;
-        if (isNaN(result[i - 1] ?? NaN)) {
-          // Seed with SMA
-          if (i >= len - 1) {
-            let sum = 0;
-            for (let j = i - len + 1; j <= i; j++) sum += src[j];
-            result[i] = sum / len;
-          }
-        } else {
-          result[i] = (src[i] + result[i - 1] * (len - 1)) / len;
-        }
-      }
-      return result;
+    case 'Wilders': return new WildersMa(len);
+    case 'Super_Smoother': return new SuperSmootherMa(len);
+    case 'McGuinley': return new McGinleyMa(len);
+    default: {
+      const m = taStep.ema(len);
+      return { step: (v) => m.step(v) ?? NaN, commit: () => m.commit() };
     }
-
-    case 'Super_Smoother': {
-      // 2-pole Super Smoother filter
-      const pi = Math.PI;
-      const a1 = Math.exp(-1.414 * pi / len);
-      const b1 = 2 * a1 * Math.cos(1.414 * pi / len);
-      const c2 = b1;
-      const c3 = -(a1 * a1);
-      const c1 = 1 - c2 - c3;
-      const result: number[] = new Array(n).fill(NaN);
-      for (let i = 0; i < n; i++) {
-        if (isNaN(src[i])) continue;
-        if (i < 2 || isNaN(result[i - 1]) || isNaN(result[i - 2])) {
-          result[i] = src[i];
-        } else {
-          result[i] = c1 * (src[i] + src[i - 1]) / 2 + c2 * result[i - 1] + c3 * result[i - 2];
-        }
-      }
-      return result;
-    }
-
-    case 'McGuinley': {
-      // mg = mg[1] + (src - mg[1]) / (len * pow(src/mg[1], 4))
-      const result: number[] = new Array(n).fill(NaN);
-      for (let i = 0; i < n; i++) {
-        if (isNaN(src[i])) continue;
-        if (isNaN(result[i - 1] ?? NaN)) {
-          result[i] = src[i];
-        } else {
-          const prev = result[i - 1];
-          const ratio = src[i] / prev;
-          result[i] = prev + (src[i] - prev) / (len * Math.pow(ratio, 4));
-        }
-      }
-      return result;
-    }
-
-    default:
-      return ta.ema(srcSeries, len).toArray().map(v => v ?? NaN);
   }
 }
 
-export function calculate(bars: Bar[], inputs: Partial<MAStrategyEmperorInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
 
-  const closeArr = bars.map(b => b.close);
+interface EmperorRun extends BarRunState<Record<string, never>> {
+  mas: MaStep[];
+  ma2: number[];
+  ma3: number[];
+  lines: Point[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<MAStrategyEmperorInputs>): BarStudy<EmperorRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const lengths = [cfg.len1, cfg.len2, cfg.len3, cfg.len4, cfg.len5];
   const enables = [cfg.enable1, cfg.enable2, cfg.enable3, cfg.enable4, cfg.enable5];
-
-  // Compute all MAs
-  const maArrays: number[][] = lengths.map(len => computeMA(bars, closeArr, len, cfg.maType));
-
-  // Build plots
-  const plots: Record<string, { time: number; value: number }[]> = {};
-  for (let p = 0; p < 5; p++) {
-    const key = `plot${p}`;
-    plots[key] = maArrays[p].map((v, i) => ({
-      time: bars[i].time,
-      value: enables[p] ? v : NaN,
-    }));
-  }
-
-  // Buy/Sell signals: crossover/crossunder of MA2 and MA3
-  const markers: MarkerData[] = [];
-  const ma2 = maArrays[1]; // MA2
-  const ma3 = maArrays[2]; // MA3
-
-  for (let i = 1; i < n; i++) {
-    if (isNaN(ma2[i]) || isNaN(ma3[i]) || isNaN(ma2[i - 1]) || isNaN(ma3[i - 1])) continue;
-
-    // Buy: crossover(MA2, MA3)
-    if (ma2[i - 1] <= ma3[i - 1] && ma2[i] > ma3[i]) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#00FF00', text: 'P' });
-    }
-    // Sell: crossunder(MA2, MA3)
-    if (ma2[i - 1] >= ma3[i - 1] && ma2[i] < ma3[i]) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#FF0000', text: 'N' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    markers,
+    init() {
+      // Compute all MAs
+      const mas = lengths.map((len) => maStep(len, cfg.maType));
+      const s: EmperorRun = {
+        mas, ma2: [], ma3: [], lines: mas.map(() => []), markers: [],
+        steps: mas, vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.ma2, s.ma3, ...s.lines];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = b.close;
+      let v2 = NaN;
+      let v3 = NaN;
+      for (let p = 0; p < 5; p++) {
+        const v = s.mas[p].step(close, i, bars);
+        if (p === 1) v2 = v;
+        else if (p === 2) v3 = v;
+        s.lines[p][i] = { time: b.time as number, value: enables[p] ? v : NaN };
+      }
+      s.ma2[i] = v2;
+      s.ma3[i] = v3;
+
+      // Buy/Sell signals: crossover/crossunder of MA2 and MA3
+      if (i < 1) return;
+      const ma2 = s.ma2; // MA2
+      const ma3 = s.ma3; // MA3
+      if (isNaN(ma2[i]) || isNaN(ma3[i]) || isNaN(ma2[i - 1]) || isNaN(ma3[i - 1])) return;
+
+      // Buy: crossover(MA2, MA3)
+      if (ma2[i - 1] <= ma3[i - 1] && ma2[i] > ma3[i]) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: '#00FF00', text: 'P' });
+      }
+      // Sell: crossunder(MA2, MA3)
+      if (ma2[i - 1] >= ma3[i - 1] && ma2[i] < ma3[i]) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: '#FF0000', text: 'N' });
+      }
+    },
+    result(s) {
+      // Build plots
+      const plots: Record<string, { time: number; value: number }[]> = {};
+      for (let p = 0; p < 5; p++) plots[`plot${p}`] = s.lines[p].slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const MAStrategyEmperor = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MAStrategyEmperorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MAStrategyEmperorInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MAStrategyEmperor = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

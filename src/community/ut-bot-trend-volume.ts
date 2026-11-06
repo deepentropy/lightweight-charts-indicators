@@ -12,9 +12,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface UtBotTrendVolumeInputs {
   /** Sensitivity (ATR multiplier) */
@@ -52,60 +54,95 @@ const nz = (x: number) => (Number.isFinite(x) ? x : 0);
 const max = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.max(a, b));
 const min = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.min(a, b));
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface UtVars {
+  /** trailingStop of the previous bar (na before bar 0) */
+  prevStop: number;
+}
+
+interface UtRun extends BarRunState<UtVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  over: ReturnType<typeof taStep.crossover>;
+  under: ReturnType<typeof taStep.crossunder>;
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<UtBotTrendVolumeInputs>): BarStudy<UtRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const buyCol = String(color.new('#26a69a', 0));
+  const sellCol = String(color.new('#ef5350', 0));
+  return {
+    init() {
+      const atr = taStep.atr(cfg.atrPeriod);
+      const over = taStep.crossover();
+      const under = taStep.crossunder();
+      const s: UtRun = {
+        atr, over, under, markers: [], flags: [[], []], times: [[], []],
+        steps: [atr, over, under], vars: { prevStop: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = s.flags;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const xATR = s.atr.step(b.high, b.low, b.close) ?? NaN;
+      // var float trailingStop = 0.0; trailingStop[1] before bar 0 is na (nz gives 0)
+      const c = b.close;
+      const c1 = i > 0 ? bars[i - 1].close : NaN;
+      const nLoss = cfg.keyValue * xATR;
+      const p = nz(v.prevStop);
+      let ts: number;
+      if (gt(c, p) && gt(c1, p)) ts = max(p, c - nLoss);
+      else if (lt(c, p) && lt(c1, p)) ts = min(p, c + nLoss);
+      else ts = gt(c, p) ? c - nLoss : c + nLoss;
+      v.prevStop = ts;
+
+      // ta.crossover / ta.crossunder(close, trailingStop): exact comparisons (library functions)
+      const buySignal = !!s.over.step(c, ts);
+      const sellSignal = !!s.under.step(c, ts);
+      // plotshape(buySignal, "BUY", shape.labelup, location.belowbar, text = "BUY", textcolor = color.white, size.small)
+      if (buySignal) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: buyCol, text: 'BUY',
+          textColor: color.white, size: 'small' });
+      }
+      // plotshape(sellSignal, "SELL", shape.labeldown, location.abovebar, text = "SELL", textcolor = color.white, size.small)
+      if (sellSignal) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: sellCol, text: 'SELL',
+          textColor: color.white, size: 'small' });
+      }
+      // alertcondition(buySignal, "UT Buy Signal") / alertcondition(sellSignal, "UT Sell Signal")
+      s.flags[0][i] = buySignal;
+      s.flags[1][i] = sellSignal;
+      if (buySignal) s.times[0].push(b.time as number);
+      if (sellSignal) s.times[1].push(b.time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => !!f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<UtBotTrendVolumeInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<UtBotTrendVolumeInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const xATR = ta.atr(bars, cfg.atrPeriod).toArray().map((v) => v ?? NaN);
-
-  // var float trailingStop = 0.0; trailingStop[1] before bar 0 is na (nz gives 0)
-  const trailingStop: number[] = new Array(n);
-  let prevStop = NaN;
-  for (let i = 0; i < n; i++) {
-    const c = bars[i].close;
-    const c1 = i > 0 ? bars[i - 1].close : NaN;
-    const nLoss = cfg.keyValue * xATR[i];
-    const p = nz(prevStop);
-    let ts: number;
-    if (gt(c, p) && gt(c1, p)) ts = max(p, c - nLoss);
-    else if (lt(c, p) && lt(c1, p)) ts = min(p, c + nLoss);
-    else ts = gt(c, p) ? c - nLoss : c + nLoss;
-    trailingStop[i] = ts;
-    prevStop = ts;
-  }
-
-  // ta.crossover / ta.crossunder(close, trailingStop): exact comparisons (library functions)
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const closeS = S(bars.map((b) => b.close));
-  const stopS = S(trailingStop);
-  const buySignal = ta.crossover(closeS, stopS).toArray().map((v) => !!v);
-  const sellSignal = ta.crossunder(closeS, stopS).toArray().map((v) => !!v);
-
-  const buyCol = String(color.new('#26a69a', 0));
-  const sellCol = String(color.new('#ef5350', 0));
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    // plotshape(buySignal, "BUY", shape.labelup, location.belowbar, text = "BUY", textcolor = color.white, size.small)
-    if (buySignal[i]) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: buyCol, text: 'BUY',
-        textColor: color.white, size: 'small' });
-    }
-    // plotshape(sellSignal, "SELL", shape.labeldown, location.abovebar, text = "SELL", textcolor = color.white, size.small)
-    if (sellSignal[i]) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: sellCol, text: 'SELL',
-        textColor: color.white, size: 'small' });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    // alertcondition(buySignal, "UT Buy Signal") / alertcondition(sellSignal, "UT Sell Signal")
-    alerts: alertStates(alertConditions, bars, [buySignal, sellSignal]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -114,4 +151,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'UT Sell Signal', message: 'UT Bot SELL' },
 ];
 
-export const UtBotTrendVolume = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const UtBotTrendVolume = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

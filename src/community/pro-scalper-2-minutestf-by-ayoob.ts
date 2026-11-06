@@ -9,8 +9,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ProScalperAyoobInputs {
   /** VWMA length */
@@ -44,63 +46,102 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface ProScalperVars {
+  /** var int current_state = 0 */
+  state: number;
+}
+
+interface ProScalperRun extends BarRunState<ProScalperVars> {
+  vwma: WindowVwma;
+  trend: ReturnType<typeof taStep.ema>;
+  up: ReturnType<typeof taStep.crossover>;
+  dn: ReturnType<typeof taStep.crossunder>;
+  vw: number[];
+  vwData: Point[];
+  trendData: Point[];
+  markers: MarkerData[];
+}
+
+const noShape = String(color.new(color.white, 100));
+
+function study(inputs: Partial<ProScalperAyoobInputs>): BarStudy<ProScalperRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const vwma = new WindowVwma(cfg.lenVwma);
+      const trend = taStep.ema(cfg.lenTrend);
+      const up = taStep.crossover();
+      const dn = taStep.crossunder();
+      const s: ProScalperRun = {
+        vwma, trend, up, dn, vw: [], vwData: [], trendData: [], markers: [],
+        steps: [vwma, trend, up, dn], vars: { state: 0 }, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.vw, s.vwData, s.trendData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const vw = s.vwma.step((b.high + b.low + b.close) / 3, b.volume ?? NaN);
+      const trendMA = s.trend.step(b.close);
+      const crossUp = s.up.step(b.close, vw);
+      const crossDn = s.dn.step(b.close, vw);
+      s.vw[i] = vw;
+      const prev = i > 0 ? s.vw[i - 1] : NaN;
+      const rising = gt(vw, prev); // vwma7 > vwma7[1]
+      const falling = gt(prev, vw); // vwma7 < vwma7[1]
+      let isLong = false;
+      let isShort = false;
+      const v = s.vars;
+      if (crossUp && rising && v.state !== 1) {
+        isLong = true;
+        v.state = 1;
+      }
+      if (crossDn && falling && v.state !== -1) {
+        isShort = true;
+        v.state = -1;
+      }
+      // plotshape(isLong ? low : na, location.absolute, color.new(color.white, 100), shape.labelup, text = "BUY",
+      //   textcolor = color.green, size.small)
+      if (isLong) {
+        s.markers.push({ time: b.time, position: 'atPriceBottom', price: b.low, shape: 'labelUp',
+          color: noShape, text: 'BUY', textColor: color.green, size: 'small' });
+      }
+      if (isShort) {
+        s.markers.push({ time: b.time, position: 'atPriceTop', price: b.high, shape: 'labelDown',
+          color: noShape, text: 'SELL', textColor: color.red, size: 'small' });
+      }
+      s.vwData[i] = { time: b.time, value: vw, color: color.blue };
+      s.trendData[i] = { time: b.time, value: trendMA, color: color.gray };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.vwData.slice(), plot1: s.trendData.slice() },
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ProScalperAyoobInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<ProScalperAyoobInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
-
-  const vwma7 = ta.vwma(S(bars.map((b) => (b.high + b.low + b.close) / 3)), cfg.lenVwma, S(bars.map((b) => b.volume ?? NaN)));
-  const trendMA = A(ta.ema(close, cfg.lenTrend));
-  const crossUp = A(ta.crossover(close, vwma7));
-  const crossDn = A(ta.crossunder(close, vwma7));
-  const vw = A(vwma7);
-
-  const markers: MarkerData[] = [];
-  const noShape = String(color.new(color.white, 100));
-  let state = 0; // var int current_state = 0
-  for (let i = 0; i < n; i++) {
-    const prev = i > 0 ? vw[i - 1] : NaN;
-    const rising = gt(vw[i], prev); // vwma7 > vwma7[1]
-    const falling = gt(prev, vw[i]); // vwma7 < vwma7[1]
-    let isLong = false;
-    let isShort = false;
-    if (crossUp[i] === 1 && rising && state !== 1) {
-      isLong = true;
-      state = 1;
-    }
-    if (crossDn[i] === 1 && falling && state !== -1) {
-      isShort = true;
-      state = -1;
-    }
-    // plotshape(isLong ? low : na, location.absolute, color.new(color.white, 100), shape.labelup, text = "BUY",
-    //   textcolor = color.green, size.small)
-    if (isLong) {
-      markers.push({ time: bars[i].time, position: 'atPriceBottom', price: bars[i].low, shape: 'labelUp',
-        color: noShape, text: 'BUY', textColor: color.green, size: 'small' });
-    }
-    if (isShort) {
-      markers.push({ time: bars[i].time, position: 'atPriceTop', price: bars[i].high, shape: 'labelDown',
-        color: noShape, text: 'SELL', textColor: color.red, size: 'small' });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: vw[i], color: color.blue })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: trendMA[i], color: color.gray })),
-    },
-    markers,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const ProScalperAyoob = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

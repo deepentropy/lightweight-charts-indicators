@@ -7,7 +7,9 @@
  * Reference: "TMA Bands"
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TMABandsInputs {
   length: number;
@@ -39,49 +41,63 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TMABandsInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface TmaRun extends BarRunState<Record<string, never>> {
+  sma1: WindowSma;
+  sma2: WindowSma;
+  atr: ReturnType<typeof taStep.atr>;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  fillColors: string[];
+}
+
+function study(inputs: Partial<TMABandsInputs>): BarStudy<TmaRun, IndicatorResult> {
   const { length, atrMultiplier, atrLength } = { ...defaultInputs, ...inputs };
-
-  const closeSeries = new Series(bars, (b) => b.close);
-
   const halfLen = Math.ceil(length / 2);
   const secondLen = Math.floor(length / 2) + 1;
-
-  const sma1Arr = ta.sma(closeSeries, halfLen).toArray();
-  const sma1Series = new Series(bars, (_b, i) => sma1Arr[i] ?? 0);
-  const tmaArr = ta.sma(sma1Series, secondLen).toArray();
-
-  const atrArr = ta.atr(bars, atrLength).toArray();
-
   const warmup = length + atrLength;
-
-  const plot0 = bars.map((b, i) => {
-    const t = tmaArr[i];
-    if (i < warmup || t == null || isNaN(t)) return { time: b.time, value: NaN };
-    return { time: b.time, value: t };
-  });
-
-  const plot1 = bars.map((b, i) => {
-    const t = tmaArr[i];
-    const a = atrArr[i];
-    if (i < warmup || t == null || isNaN(t) || a == null || isNaN(a)) return { time: b.time, value: NaN };
-    return { time: b.time, value: t + atrMultiplier * a };
-  });
-
-  const plot2 = bars.map((b, i) => {
-    const t = tmaArr[i];
-    const a = atrArr[i];
-    if (i < warmup || t == null || isNaN(t) || a == null || isNaN(a)) return { time: b.time, value: NaN };
-    return { time: b.time, value: t - atrMultiplier * a };
-  });
-
-  const fillColors = bars.map((_b, i) => (i < warmup ? 'transparent' : '#2962FF20'));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
-    fills: [{ plot1: 'plot1', plot2: 'plot2', colors: fillColors }],
+    init() {
+      const sma1 = new WindowSma(halfLen);
+      const sma2 = new WindowSma(secondLen);
+      const atr = taStep.atr(atrLength);
+      const s: TmaRun = {
+        sma1, sma2, atr, plot0: [], plot1: [], plot2: [], fillColors: [],
+        steps: [sma1, sma2, atr], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1, s.plot2, s.fillColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time as number;
+      const t = s.sma2.step(s.sma1.step(b.close));
+      const a = s.atr.step(b.high, b.low, b.close);
+      s.plot0[i] = i < warmup || t == null || isNaN(t) ? { time, value: NaN } : { time, value: t };
+      const off = i < warmup || t == null || isNaN(t) || a == null || isNaN(a);
+      s.plot1[i] = off ? { time, value: NaN } : { time, value: t + atrMultiplier * a };
+      s.plot2[i] = off ? { time, value: NaN } : { time, value: t - atrMultiplier * a };
+      s.fillColors[i] = i < warmup ? 'transparent' : '#2962FF20';
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice(), 'plot2': s.plot2.slice() },
+        fills: [{ plot1: 'plot1', plot2: 'plot2', colors: s.fillColors.slice() }],
+      };
+    },
   };
 }
 
-export const TMABands = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TMABandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TMABandsInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const TMABands = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

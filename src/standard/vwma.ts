@@ -5,7 +5,9 @@
  * A moving average weighted by volume.
  */
 
-import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VWMAInputs {
   length: number;
@@ -35,21 +37,48 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VWMAInputs> = {}): IndicatorResult {
+interface VWMARun extends BarRunState<Record<string, never>> {
+  vwma: WindowVwma;
+  vwmaArr: number[];
+}
+
+function study(inputs: Partial<VWMAInputs>): BarStudy<VWMARun, IndicatorResult> {
   const { length, src, offset } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
-  const volume = new Series(bars, (bar) => bar.volume ?? 0);
-  const vwmaArr = ta.vwma(source, length, volume).toArray();
-
-  const plotData = bars.map((bar, i) => {
-    const srcIdx = i - offset;
-    return { time: bar.time, value: (srcIdx >= 0 && srcIdx < bars.length) ? (vwmaArr[srcIdx] ?? NaN) : NaN };
-  });
-
+  const value = barSource(src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plotData },
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const vwma = new WindowVwma(length);
+      const s: VWMARun = { vwma, vwmaArr: [], steps: [vwma], vars: {}, lists: [], series: [] };
+      s.series = [s.vwmaArr];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      s.vwmaArr[i] = s.vwma.step(value(b), b.volume ?? 0);
+    },
+    result(s, bars) {
+      // plot(..., offset = offset): bar i shows the value of bar i - offset
+      const vwmaArr = s.vwmaArr;
+      const plotData = bars.map((bar, i) => {
+        const srcIdx = i - offset;
+        return { time: bar.time, value: (srcIdx >= 0 && srcIdx < bars.length) ? (vwmaArr[srcIdx] ?? NaN) : NaN };
+      });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': plotData },
+      };
+    },
   };
 }
 
-export const VWMA = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VWMAInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VWMAInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const VWMA = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

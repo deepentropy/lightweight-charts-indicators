@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType, type Series } from 'oakscriptjs';
+import { taStep, taCore, compare, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BgColorData, MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type Committable, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface HtcPeppermint07CciRsiInputs {
   rsiLength: number;
@@ -70,52 +72,131 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+/**
+ * `ta.cci(source, length)` one bar at a time with a {@link WindowSma} mean (the doubles of taStep.cci, which steps two
+ * slower window sums): (source - sma) / (0.015 * dev); a zero dev keeps the previous value (0 at the start).
+ */
+class CciStep implements Committable {
+  private readonly mean: WindowSma;
+  private readonly len: number;
+  private values: number[] = [];
+  private pending = NaN;
+  private stepped = false;
+  private last = 0;
+  private next = 0;
+
+  constructor(length: number) {
+    // the length check of ta.cci (the same runtime error)
+    taCore.cci([], length);
+    this.len = Math.floor(length);
+    this.mean = new WindowSma(length);
+  }
+
+  step(value: number): number {
+    this.stepped = true;
+    this.pending = value;
+    this.next = this.last;
+    const mean = this.mean.step(value);
+    const n = this.values.length;
+    if (n < this.len - 1 || Number.isNaN(mean)) return NaN;
+    // ta.dev: the mean of |source - sma| over the last `length` bars
+    let sum = 0;
+    for (let k = 0; k < this.len; k++) sum += Math.abs((k === 0 ? value : this.values[n - k]!) - mean);
+    const d = sum / this.len;
+    if (Number.isNaN(d)) return NaN;
+    if (!compare.eq(d, 0)) this.next = (value - mean) / (0.015 * d);
+    return this.next;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.last = this.next;
+    this.mean.commit();
+    this.values.push(this.pending);
+    if (this.values.length > this.len * 2 + 1024) this.values = this.values.slice(-this.len);
+  }
+}
+
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] };
+
+interface HtcRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  cci: CciStep;
+  plot0: Point[];
+  plot1: Point[];
+  bgColors: BgColorData[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<HtcPeppermint07CciRsiInputs>): BarStudy<HtcRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const rsiSrc = barSource(cfg.rsiSource);
+  const cciSrc = barSource(cfg.cciSource);
+  return {
+    fullRunReason: () => (isBarSource(cfg.rsiSource) && isBarSource(cfg.cciSource) ? null : 'source of another study'),
+    init() {
+      const rsi = taStep.rsi(cfg.rsiLength);
+      const cci = new CciStep(cfg.cciLength);
+      const s: HtcRun = {
+        rsi, cci, plot0: [], plot1: [], bgColors: [], markers: [],
+        steps: [rsi, cci], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.bgColors, s.markers];
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const rsi = s.rsi.step(rsiSrc(b));
+      const cci = s.cci.step(cciSrc(b));
+      // bgcolor(rsiValue > rsiOverbought ? #4d4b4b1a : na, title = "RSI Overbought Background")
+      if (gt(rsi, cfg.rsiOverbought)) s.bgColors.push({ time: t, color: OB_BG });
+      // bgcolor(rsiValue < rsiOversold ? #2ca4b41a : na, title = "RSI Oversold Background")
+      if (lt(rsi, cfg.rsiOversold)) s.bgColors.push({ time: t, color: OS_BG });
+      // plotshape(series = cond ? rsiValue : na, location.top / location.bottom, ...): with a location other than
+      // absolute the series is read as a bool: na and 0 draw no shape (an RSI of 0 draws nothing)
+      if (gt(rsi, cfg.rsiOverbought) && gt(cci, cfg.cciOverbought) && !isNaN(rsi) && rsi !== 0) {
+        s.markers.push({ time: t, position: 'top', shape: 'labelUp', color: OB_SHAPE });
+      }
+      if (lt(rsi, cfg.rsiOversold) && lt(cci, cfg.cciOversold) && !isNaN(rsi) && rsi !== 0) {
+        s.markers.push({ time: t, position: 'bottom', shape: 'labelDown', color: OS_SHAPE });
+      }
+      s.plot0[i] = { time: t, value: rsi, color: RSI_COLOR };
+      s.plot1[i] = { time: t, value: cci, color: CCI_COLOR };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [
+          { value: cfg.cciOverbought, options: { title: 'CCI Overbought', color: LEVEL_COLOR, linestyle: 'dotted' } },
+          { value: cfg.cciOversold, options: { title: 'CCI Oversold', color: LEVEL_COLOR, linestyle: 'dotted' } },
+        ],
+        bgColors: s.bgColors.slice(),
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HtcPeppermint07CciRsiInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<HtcPeppermint07CciRsiInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const rsi = A(ta.rsi(getSourceSeries(bars, cfg.rsiSource), cfg.rsiLength));
-  const cci = A(ta.cci(getSourceSeries(bars, cfg.cciSource), cfg.cciLength));
-
-  const bgColors: BgColorData[] = [];
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // bgcolor(rsiValue > rsiOverbought ? #4d4b4b1a : na, title = "RSI Overbought Background")
-    if (gt(rsi[i], cfg.rsiOverbought)) bgColors.push({ time: t, color: OB_BG });
-    // bgcolor(rsiValue < rsiOversold ? #2ca4b41a : na, title = "RSI Oversold Background")
-    if (lt(rsi[i], cfg.rsiOversold)) bgColors.push({ time: t, color: OS_BG });
-    // plotshape(series = cond ? rsiValue : na, location.top / location.bottom, ...): with a location other than
-    // absolute the series is read as a bool: na and 0 draw no shape (an RSI of 0 draws nothing)
-    if (gt(rsi[i], cfg.rsiOverbought) && gt(cci[i], cfg.cciOverbought) && !isNaN(rsi[i]) && rsi[i] !== 0) {
-      markers.push({ time: t, position: 'top', shape: 'labelUp', color: OB_SHAPE });
-    }
-    if (lt(rsi[i], cfg.rsiOversold) && lt(cci[i], cfg.cciOversold) && !isNaN(rsi[i]) && rsi[i] !== 0) {
-      markers.push({ time: t, position: 'bottom', shape: 'labelDown', color: OS_SHAPE });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: rsi[i], color: RSI_COLOR })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: cci[i], color: CCI_COLOR })),
-    },
-    hlines: [
-      { value: cfg.cciOverbought, options: { title: 'CCI Overbought', color: LEVEL_COLOR, linestyle: 'dotted' } },
-      { value: cfg.cciOversold, options: { title: 'CCI Oversold', color: LEVEL_COLOR, linestyle: 'dotted' } },
-    ],
-    bgColors,
-    markers,
-  };
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const HtcPeppermint07CciRsi = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,
