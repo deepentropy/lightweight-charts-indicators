@@ -17711,6 +17711,62 @@
         "trendData": "Source",
         "src": "close"
       }
+    ],
+    "pivot-points-standard": [
+      {
+        "pivotAnchor": "Weekly",
+        "pivotType": "Woodie"
+      },
+      {
+        "pivotAnchor": "Daily",
+        "pivotType": "Camarilla",
+        "maxHistoricalPivots": 3
+      },
+      {
+        "isDailyBased": false
+      },
+      {
+        "isDailyBased": false,
+        "pivotAnchor": "Weekly",
+        "positionLabels": "Right",
+        "pivotType": "DM"
+      }
+    ],
+    "fibonacci-extension-retracement-pivot-points": [
+      {
+        "zigZag": true,
+        "depth": 4,
+        "deviation": 1
+      },
+      {
+        "fibTool": "Extensions + Pivot Points",
+        "extend": true,
+        "extendER": true,
+        "relevant": true,
+        "pivotTimeframe": "Weekly"
+      },
+      {
+        "fibTool": "Retracements + Pivot Points",
+        "histPP": true,
+        "reverse": true,
+        "levels": "Levels + Prices",
+        "levelsP": "Last Bar"
+      },
+      {
+        "fibTool": "Extensions",
+        "histPivot": 2,
+        "histPivot2": 1,
+        "fibTzlp2": "Top",
+        "zzSwings": false
+      },
+      {
+        "isFib": false,
+        "fibTime": false,
+        "atrLength": 5,
+        "volumeLength": 10,
+        "volumeSpikeThreshold": 1.2,
+        "atrMultiplier": 1.1
+      }
     ]
   },
   "intraday": [

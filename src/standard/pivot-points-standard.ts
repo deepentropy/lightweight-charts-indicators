@@ -33,13 +33,14 @@
  */
 
 import {
-  taCore, timeframe, time as ptime, str, line, label, resetDrawings, setDrawingBar, drawingOutputs, mapToChart,
+  taCore, timeframe, time as ptime, str, line, label, drawingOutputs, mapToChart,
   type Line, type Label, type IndicatorResult, type InputConfig, type PlotConfig, type Bar,
 } from 'oakscriptjs';
 import type { LabelData, LineDrawingData } from '../types';
 import { chartTimeframe, higherTimeframeBars, periodChanges } from '../anchor-period';
 import { lastBarConfirmedOf, mintickOf, tickeridOf, timezoneOf, type ChartContext, type SymbolRequest } from '../chart-context';
 import { otherSymbolChart, securityOther } from '../other-symbol';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type PivotType = 'Traditional' | 'Fibonacci' | 'Woodie' | 'Classic' | 'DM' | 'Camarilla';
 export type PivotAnchor = 'Auto' | 'Daily' | 'Weekly' | 'Monthly' | 'Quarterly' | 'Yearly' | 'Biyearly' | 'Triyearly'
@@ -212,25 +213,28 @@ interface PivotGraphic {
   pivotLabel: Label;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<PivotPointsStandardInputs> = {},
-  chart?: ChartContext,
-): IndicatorResult & { lines: LineDrawingData[]; labels: LabelData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const result = (lines: LineDrawingData[], labels: LabelData[]) => ({
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    lines,
-    labels,
-  });
-  if (n === 0) return result([], []);
+type Result = IndicatorResult & { lines: LineDrawingData[]; labels: LabelData[] };
 
-  const tz = timezoneOf(chart);
-  const msUnit = bars[0].time >= 1e12;
-  const ms = (t: number) => (msUnit ? t : t * 1000);
-  const mintick = mintickOf(chart);
+/** The state of a run: the levels of every bar, computed before the first bar, and the graphics drawn so far */
+interface PivotRun extends BarRunState<{ drawnGraphics: PivotGraphic[][] }> {
+  /** Levels of each bar in the order of ta.pivot_point_levels (daily-based or local) */
+  levels: number[][];
+  /** pivotTimeframeChangeCounter of each bar (daily-based values), null without a period of the pivots timeframe */
+  counter: number[] | null;
+  /** timeframe.change(pivotTimeframe) and year % mult == 0, local values */
+  localChange: boolean[];
+  /** barstate.islastconfirmedhistory: the last bar, or the bar before it when the last bar is still open */
+  lastConfirmedHistory: number;
+  firstBarTime: number;
+  periodMs: number;
+  msUnit: boolean;
+  /** syminfo.mintick, for the prices of the labels */
+  mintick: number;
+}
+
+function study(inputs: Partial<PivotPointsStandardInputs>): BarStudy<PivotRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const pivotYearMultiplier = MULTI_YEAR[cfg.pivotAnchor] ?? 1;
 
   // graphicSettingsArray: the order of ta.pivot_point_levels [P, R1, S1, R2, S2, ..., R5, S5]
   const settings: Array<{ levelName: string; levelColor: string; showLevel: boolean }> = [
@@ -247,79 +251,8 @@ export function calculate(
     { levelName: 'S5', levelColor: cfg.s5Color, showLevel: cfg.s5Show },
   ];
 
-  // autoAnchor / pivotTimeframe / pivotYearMultiplier
-  const chartTf = chartTimeframe(bars, chart);
-  const pivotTimeframe = pivotTimeframeOf(cfg.pivotAnchor, chartTf);
-  const pivotYearMultiplier = MULTI_YEAR[cfg.pivotAnchor] ?? 1;
-  const yearOk = (t: number) => ptime.year(t, tz) % pivotYearMultiplier === 0;
-
-  const high = bars.map((b) => b.high);
-  const low = bars.map((b) => b.low);
-  const close = bars.map((b) => b.close);
-  const open = bars.map((b) => b.open);
-
-  // [ta.pivot_point_levels(...), pivotTimeframeChangeCounter(...)] on the bars of the pivots timeframe
-  const securityLevels = (htf: ReadonlyArray<Bar>) => {
-    const change = htf.map((b, k) => k > 0 && yearOk(ms(b.time)));
-    const levels = taCore.pivot_point_levels(cfg.pivotType, change, false, htf.map((b) => b.high),
-      htf.map((b) => b.low), htf.map((b) => b.close), htf.map((b) => b.open)) as number[][];
-    const counter: number[] = [];
-    let count = 0;
-    change.forEach((c, k) => {
-      if (c && k > 0) count++;
-      counter.push(count);
-    });
-    return { levels, counter };
-  };
-
-  // request.security(syminfo.tickerid, pivotTimeframe, [ta.pivot_point_levels(type, timeframe.change(timeframe.period)
-  // and year % mult == 0), pivotTimeframeChangeCounter(...)], lookahead = barmerge.lookahead_on)
-  const pivotSeconds = timeframe.in_seconds(pivotTimeframe);
-  const chartSeconds = chartTf === '' ? pivotSeconds : timeframe.in_seconds(chartTf);
-  let securityPivots: number[][] | null = null;
-  let securityCounter: number[] | null = null;
-  // the host's bars of the chart symbol on the pivots timeframe, when it gives them
-  const request = hostRequest(cfg, chartTf, chart);
-  const hostBars = request ? chart?.bars?.(request.symbol, request.timeframe) : undefined;
-  if (hostBars && hostBars.length > 0 && pivotSeconds >= chartSeconds) {
-    const other = chart?.symbolInfo?.(request!.symbol) ?? { timezone: chart?.timezone, session: chart?.session };
-    const shown = securityOther(bars, hostBars, pivotTimeframe, otherSymbolChart(bars, chart), { lookahead: true, other });
-    const { levels, counter } = securityLevels(hostBars);
-    securityPivots = levels.map((lv) => shown.map((k) => (k < 0 ? NaN : lv[k])));
-    securityCounter = shown.map((k) => (k < 0 ? NaN : counter[k]));
-  } else if (pivotSeconds >= chartSeconds) {
-    let htf: Bar[];
-    let group: number[];
-    let latest: number[];
-    if (pivotSeconds === chartSeconds) {
-      htf = bars;
-      group = bars.map((_, i) => i);
-      latest = group;
-    } else {
-      const sec = higherTimeframeBars(bars, pivotTimeframe, chart);
-      htf = sec.htf;
-      group = sec.group;
-      latest = sec.latest;
-    }
-    const { levels, counter } = securityLevels(htf);
-    securityPivots = levels.map((lv) => mapToChart(lv, group, latest, true, false));
-    securityCounter = mapToChart(counter, group, latest, true, false);
-  } else if (cfg.isDailyBased) {
-    throw new Error(`Pivot Points Standard: the pivots timeframe (${pivotTimeframe}) is lower than the chart timeframe `
-      + `(${chartTf}); daily-based values need lower timeframe data. Choose a higher pivots timeframe or turn off `
-      + `'Use Daily-based Values'.`);
-  }
-
-  // localPivots = ta.pivot_point_levels(type, timeframe.change(pivotTimeframe) and year % mult == 0)
-  const localChange = cfg.isDailyBased ? [] : periodChanges(bars, pivotTimeframe, chart).map((c, i) => c && yearOk(ms(bars[i].time)));
-  const localPivots = cfg.isDailyBased ? [] : taCore.pivot_point_levels(cfg.pivotType, localChange, false, high, low, close, open) as number[][];
-
-  resetDrawings({ line: MAX_OBJECTS, label: MAX_OBJECTS });
-  // drawnGraphics: one row of graphics per period
-  const drawnGraphics: PivotGraphic[][] = [];
-  const periodMs = pivotSeconds * 1000 * pivotYearMultiplier;
-
-  const affixOldPivots = (endTime: number) => {
+  const affixOldPivots = (s: PivotRun, endTime: number) => {
+    const drawnGraphics = s.vars.drawnGraphics;
     if (drawnGraphics.length > 0) {
       for (const graphic of drawnGraphics[drawnGraphics.length - 1]) {
         line.set_x2(graphic.pivotLine, endTime);
@@ -328,16 +261,17 @@ export function calculate(
     }
   };
 
-  const drawNewPivots = (startTime: number, pivotPointsArray: number[]) => {
+  const drawNewPivots = (s: PivotRun, startTime: number, pivotPointsArray: number[]) => {
+    const drawnGraphics = s.vars.drawnGraphics;
     const newGraphics: PivotGraphic[] = [];
     pivotPointsArray.forEach((coord, index) => {
       const levelSettings = settings[index];
       if (!Number.isNaN(coord) && levelSettings.showLevel) {
-        const lineEndTime = startTime + periodMs;
+        const lineEndTime = startTime + s.periodMs;
         const pivotLine = line.new(startTime, coord, lineEndTime, coord, 'bar_time', undefined, levelSettings.levelColor,
           undefined, cfg.linewidth);
         const text = (cfg.showLabels ? levelSettings.levelName + ' ' : '')
-          + (cfg.showPrices ? '(' + str.tostring(coord, 'mintick', mintick) + ')' : '');
+          + (cfg.showPrices ? '(' + str.tostring(coord, 'mintick', s.mintick) + ')' : '');
         const pivotLabel = label.new(cfg.positionLabels === 'Left' ? startTime : lineEndTime, coord, text, 'bar_time',
           undefined, '#00000000', cfg.positionLabels === 'Left' ? 'label_right' : 'label_left', levelSettings.levelColor);
         newGraphics.push({ pivotLine, pivotLabel });
@@ -353,41 +287,152 @@ export function calculate(
   };
 
   const levelsAt = (levels: number[][], i: number) => levels.map((lv) => lv[i]);
-  // barstate.islastconfirmedhistory: the last bar, or the bar before it when the last bar is still open
-  const lastConfirmedHistory = lastBarConfirmedOf(chart) ? n - 1 : n - 2;
-  const firstBarTime = ms(bars[0].time);
 
-  for (let i = 0; i < n; i++) {
-    setDrawingBar(i, i === n - 1);
-    const t = ms(bars[i].time);
-    // securityPivotCounter != securityPivotCounter[1] (false when one side is na)
-    const securityDraw = cfg.isDailyBased && securityCounter !== null && i > 0
-      && !Number.isNaN(securityCounter[i]) && !Number.isNaN(securityCounter[i - 1])
-      && securityCounter[i] !== securityCounter[i - 1];
-    const localDraw = !cfg.isDailyBased && localChange[i];
-    if (securityDraw || localDraw) {
-      affixOldPivots(t);
-      drawNewPivots(t, levelsAt(cfg.isDailyBased ? securityPivots! : localPivots, i));
-    }
+  return {
+    drawings: { line: MAX_OBJECTS, label: MAX_OBJECTS },
+    // The levels and periods come from the whole set of bars (the periods of the chart bars, the bars of the host, the
+    // bar count of barstate.islastconfirmedhistory): a new bar, a new open of the forming bar (the open of its period)
+    // or a change of the last bar state runs in full. A new high, low or close of the forming bar changes none of
+    // them: the levels of a period come from the periods before it and from its open.
+    key(bars, chart) {
+      const last = bars[bars.length - 1];
+      return `${bars.length}|${last?.time}|${last?.open}|${lastBarConfirmedOf(chart)}`;
+    },
+    // The bars of the host but the high, low and close of the newest one (the forming period: as above, they change no
+    // level), and the calendar of the symbol
+    data(bars, chart) {
+      const request = bars.length === 0 ? null : hostRequest(cfg, chartTimeframe(bars, chart), chart);
+      if (!request) return [];
+      const hostBars = chart.bars?.(request.symbol, request.timeframe);
+      const other = chart.symbolInfo?.(request.symbol);
+      const values: unknown[] = [other?.timezone, JSON.stringify(other?.session), hostBars?.length];
+      hostBars?.forEach((b, k) => {
+        values.push(b.time, b.open);
+        if (k < hostBars.length - 1) values.push(b.high, b.low, b.close);
+      });
+      return values;
+    },
+    copyVars: (v) => ({ drawnGraphics: v.drawnGraphics.slice() }),
+    init(bars, chart) {
+      const n = bars.length;
+      const msUnit = n > 0 && bars[0].time >= 1e12;
+      const s: PivotRun = {
+        levels: [], counter: null, localChange: [], lastConfirmedHistory: lastBarConfirmedOf(chart) ? n - 1 : n - 2,
+        firstBarTime: 0, periodMs: 0, msUnit, mintick: mintickOf(chart), steps: [], lists: [], series: [],
+        vars: { drawnGraphics: [] },
+      };
+      if (n === 0) return s;
 
-    // If possible, draw pivots from the beginning of the chart if none were found
-    const columns = drawnGraphics.length > 0 ? drawnGraphics[0].length : 0;
-    if (i === lastConfirmedHistory && columns === 0) {
-      if (securityCounter !== null && securityCounter[i] > 0) {
-        if (cfg.isDailyBased) {
-          drawNewPivots(firstBarTime, levelsAt(securityPivots!, i));
+      const tz = timezoneOf(chart);
+      const ms = (t: number) => (msUnit ? t : t * 1000);
+      // autoAnchor / pivotTimeframe / pivotYearMultiplier
+      const chartTf = chartTimeframe(bars, chart);
+      const pivotTimeframe = pivotTimeframeOf(cfg.pivotAnchor, chartTf);
+      const yearOk = (t: number) => ptime.year(t, tz) % pivotYearMultiplier === 0;
+
+      // [ta.pivot_point_levels(...), pivotTimeframeChangeCounter(...)] on the bars of the pivots timeframe
+      const securityLevels = (htf: ReadonlyArray<Bar>) => {
+        const change = htf.map((b, k) => k > 0 && yearOk(ms(b.time)));
+        const levels = taCore.pivot_point_levels(cfg.pivotType, change, false, htf.map((b) => b.high),
+          htf.map((b) => b.low), htf.map((b) => b.close), htf.map((b) => b.open)) as number[][];
+        const counter: number[] = [];
+        let count = 0;
+        change.forEach((c, k) => {
+          if (c && k > 0) count++;
+          counter.push(count);
+        });
+        return { levels, counter };
+      };
+
+      // request.security(syminfo.tickerid, pivotTimeframe, [ta.pivot_point_levels(type, timeframe.change(timeframe.period)
+      // and year % mult == 0), pivotTimeframeChangeCounter(...)], lookahead = barmerge.lookahead_on)
+      const pivotSeconds = timeframe.in_seconds(pivotTimeframe);
+      const chartSeconds = chartTf === '' ? pivotSeconds : timeframe.in_seconds(chartTf);
+      // the host's bars of the chart symbol on the pivots timeframe, when it gives them
+      const request = hostRequest(cfg, chartTf, chart);
+      const hostBars = request ? chart.bars?.(request.symbol, request.timeframe) : undefined;
+      if (hostBars && hostBars.length > 0 && pivotSeconds >= chartSeconds) {
+        const other = chart.symbolInfo?.(request!.symbol) ?? { timezone: chart.timezone, session: chart.session };
+        const shown = securityOther(bars, hostBars, pivotTimeframe, otherSymbolChart(bars, chart), { lookahead: true, other });
+        const { levels, counter } = securityLevels(hostBars);
+        s.levels = levels.map((lv) => shown.map((k) => (k < 0 ? NaN : lv[k])));
+        s.counter = shown.map((k) => (k < 0 ? NaN : counter[k]));
+      } else if (pivotSeconds >= chartSeconds) {
+        let htf: Bar[];
+        let group: number[];
+        let latest: number[];
+        if (pivotSeconds === chartSeconds) {
+          htf = bars;
+          group = bars.map((_, i) => i);
+          latest = group;
         } else {
-          throw new Error("Not enough intraday data to calculate Pivot Points. Lower the Pivots Timeframe or turn on the 'Use Daily-based Values' option in the indicator settings.");
+          const sec = higherTimeframeBars(bars, pivotTimeframe, chart);
+          htf = sec.htf;
+          group = sec.group;
+          latest = sec.latest;
         }
-      } else {
-        throw new Error('Not enough data to calculate Pivot Points. Lower the Pivots Timeframe in the indicator settings.');
+        const { levels, counter } = securityLevels(htf);
+        s.levels = levels.map((lv) => mapToChart(lv, group, latest, true, false));
+        s.counter = mapToChart(counter, group, latest, true, false);
+      } else if (cfg.isDailyBased) {
+        throw new Error(`Pivot Points Standard: the pivots timeframe (${pivotTimeframe}) is lower than the chart timeframe `
+          + `(${chartTf}); daily-based values need lower timeframe data. Choose a higher pivots timeframe or turn off `
+          + `'Use Daily-based Values'.`);
       }
-    }
-  }
-  setDrawingBar(null);
 
-  const out = drawingOutputs(bars, msUnit ? 'ms' : 's');
-  return result(out.lines ?? [], out.labels ?? []);
+      if (!cfg.isDailyBased) {
+        // localPivots = ta.pivot_point_levels(type, timeframe.change(pivotTimeframe) and year % mult == 0)
+        s.localChange = periodChanges(bars, pivotTimeframe, chart).map((c, i) => c && yearOk(ms(bars[i].time)));
+        s.levels = taCore.pivot_point_levels(cfg.pivotType, s.localChange, false, bars.map((b) => b.high),
+          bars.map((b) => b.low), bars.map((b) => b.close), bars.map((b) => b.open)) as number[][];
+      }
+      s.periodMs = pivotSeconds * 1000 * pivotYearMultiplier;
+      s.firstBarTime = ms(bars[0].time);
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = s.msUnit ? bars[i].time : bars[i].time * 1000;
+      const counter = s.counter;
+      // securityPivotCounter != securityPivotCounter[1] (false when one side is na)
+      const securityDraw = cfg.isDailyBased && counter !== null && i > 0
+        && !Number.isNaN(counter[i]) && !Number.isNaN(counter[i - 1]) && counter[i] !== counter[i - 1];
+      const localDraw = !cfg.isDailyBased && s.localChange[i];
+      if (securityDraw || localDraw) {
+        affixOldPivots(s, t);
+        drawNewPivots(s, t, levelsAt(s.levels, i));
+      }
+
+      // If possible, draw pivots from the beginning of the chart if none were found
+      const drawnGraphics = s.vars.drawnGraphics;
+      const columns = drawnGraphics.length > 0 ? drawnGraphics[0].length : 0;
+      if (i === s.lastConfirmedHistory && columns === 0) {
+        if (counter !== null && counter[i] > 0) {
+          if (cfg.isDailyBased) {
+            drawNewPivots(s, s.firstBarTime, levelsAt(s.levels, i));
+          } else {
+            throw new Error("Not enough intraday data to calculate Pivot Points. Lower the Pivots Timeframe or turn on the 'Use Daily-based Values' option in the indicator settings.");
+          }
+        } else {
+          throw new Error('Not enough data to calculate Pivot Points. Lower the Pivots Timeframe in the indicator settings.');
+        }
+      }
+    },
+    result(s, bars) {
+      const meta = { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay };
+      if (bars.length === 0) return { metadata: meta, plots: {}, lines: [], labels: [] };
+      const out = drawingOutputs(bars, s.msUnit ? 'ms' : 's');
+      return { metadata: meta, plots: {}, lines: out.lines ?? [], labels: out.labels ?? [] };
+    },
+  };
 }
 
-export const PivotPointsStandard = { calculate, metadata, defaultInputs, inputConfig, plotConfig, requiredSymbols };
+/** A live run: a new price of the forming bar calculates that bar only (see live-run.ts and the key of the study) */
+export function createRun(inputs: Partial<PivotPointsStandardInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PivotPointsStandardInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const PivotPointsStandard = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, requiredSymbols };

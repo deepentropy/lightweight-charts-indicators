@@ -45,12 +45,13 @@
  * Original notice: © dgtrd
  */
 
-import { ta, str, math, Series, timeframe, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, str, math, timeframe, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall, BarColorData, LabelData, LineDrawingData, MarkerData, TableData } from '../types';
 import { barInterval, barTime } from '../bar-time';
 import { periodStarts, chartTimeframe } from '../anchor-period';
 import { mintickOf, nowOf, tickerOf, type ChartContext } from '../chart-context';
-import { alertStates, crossedOver, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import { WindowSma, createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type LevelLabels = 'Levels' | 'Prices' | 'Levels + Prices' | 'None';
 type LineStyleName = 'Dashed' | 'Dotted' | 'Solid';
@@ -364,7 +365,6 @@ interface Ln {
   extend: 'none' | 'right' | 'both';
   /** xloc.bar_time: x1 and x2 are times */
   byTime: boolean;
-  deleted: boolean;
 }
 interface Lb {
   x: number;
@@ -376,7 +376,8 @@ interface Lb {
   align: 'center' | 'left';
   tooltip: string;
   byTime: boolean;
-  deleted: boolean;
+  /** x is timenow, read when the result is made (the clock of the update, as a full run on the same bars) */
+  atNow?: boolean;
 }
 
 /**
@@ -385,17 +386,15 @@ interface Lb {
  * objects (kept in a variable of the script, or made and deleted on every bar) only count: they are either never
  * deleted by the limit or newer than the whole queue.
  */
-class Pool<T extends { deleted: boolean }> {
-  readonly queue: T[] = [];
+class Pool<T> {
+  private queue: T[] = [];
   private head = 0;
   private others = 0;
   create(obj?: T): void {
     if (obj) this.queue.push(obj);
     else this.others++;
     if (this.queue.length - this.head + this.others > MAX_OBJECTS + 5) {
-      while (this.head < this.queue.length && this.queue.length - this.head + this.others > MAX_OBJECTS) {
-        this.queue[this.head++].deleted = true;
-      }
+      while (this.head < this.queue.length && this.queue.length - this.head + this.others > MAX_OBJECTS) this.head++;
     }
   }
   remove(count = 1): void {
@@ -404,67 +403,126 @@ class Pool<T extends { deleted: boolean }> {
   alive(): T[] {
     return this.queue.slice(this.head);
   }
-}
-
-/** ta.valuewhen(ta.change(x) != 0, x, occurrence): the values of x on the bars where it changed */
-function changeValues(): { update: (v: number) => void; get: (occurrence: number) => number } {
-  const values: number[] = [];
-  let prev = NaN;
-  return {
-    update: (v) => {
-      if (Math.abs(v - prev) > EPS) values.push(v);
-      prev = v;
-    },
-    get: (occurrence) => (values.length > occurrence ? values[values.length - 1 - occurrence] : NaN),
-  };
+  /** A copy for the state of a bar, with `to` in place of `from` (an object that is changed later is copied too) */
+  copy(from?: T | null, to?: T | null): Pool<T> {
+    const p = new Pool<T>();
+    p.queue = this.alive();
+    p.others = this.others;
+    const k = from ? p.queue.lastIndexOf(from) : -1;
+    if (k >= 0) p.queue[k] = to!;
+    return p;
+  }
 }
 
 const lineStyle = (s: LineStyleName) => (s === 'Solid' ? 'solid' : s === 'Dotted' ? 'dotted' : 'dashed');
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<FibonacciExtensionRetracementPivotPointsInputs> = {},
-  chart?: ChartContext,
-): IndicatorResult & {
+type Result = IndicatorResult & {
   markers: MarkerData[]; barColors: BarColorData[]; lines: LineDrawingData[]; labels: LabelData[]; tables: TableData[];
   alerts: AlertConditionState[]; alertCalls: AlertCall[];
-} {
+};
+
+/** The variables of the script kept from bar to bar (copied at the end of the last confirmed bar) */
+interface FibVars {
+  /** The running zigzag line (its end moves with the swing: copied with the state) */
+  zzLine: Ln | null;
+  iLast: number;
+  pLast: number;
+  isHighLast: boolean;
+  iPrevPivot: number;
+  pPrevPivot: number;
+  iLastPivot: number;
+  pLastPivot: number;
+  /** The label of the running swing high / low */
+  tmpHigh: Lb | null;
+  tmpLow: Lb | null;
+  linePool: Pool<Ln>;
+  labelPool: Pool<Lb>;
+  /** The values of the bar before of iPrevPivot, pPrevPivot, iLastPivot, pLastPivot (ta.change) */
+  prevChange: readonly number[];
+  // f_htf_ohlc(): high, low and close of the period before, kept without a request of the higher timeframe
+  htfH: number;
+  htfL: number;
+  htfH1: number;
+  htfL1: number;
+  htfC1: number;
+  timeX10: number;
+  timeX11: number;
+  /**
+   * Lines and labels made on every bar and kept in two arrays, with the bar that made each one. On every bar the
+   * script deletes them with `for i = 1 to array.size(ln)` and `array.shift(ln)`: the end of the loop is read again on
+   * each turn while the array gets shorter, so only the older half (rounded up) is deleted. The arrays never hold
+   * objects older than a few bars: before the last RECENT bars the objects are only counted (null).
+   */
+  ln: Array<Ln | null>;
+  lnBar: number[];
+  lb: Array<Lb | null>;
+  lbBar: number[];
+}
+
+interface FibRun extends BarRunState<FibVars> {
+  atr10: ReturnType<typeof taStep.atr>;
+  /** ATR(10) of the current bar (the deviation of a new leg) */
+  atr10Of: number;
+  atr: ReturnType<typeof taStep.atr>;
+  vSma: WindowSma;
+  /** The period of the higher timeframe of each bar, and the bar count and last time they were computed for */
+  starts: number[];
+  startsCount: number;
+  startsLast: number;
+  /** ta.valuewhen(ta.change(x) != 0, x, occurrence): the values of iPrevPivot, pPrevPivot, iLastPivot, pLastPivot on
+   *  the bars where they changed */
+  changes: number[][];
+  plots: Array<Array<{ time: number; value: number; color?: string }>>;
+  /** Volume average and ATR of each bar (the alert conditions read the bar before) */
+  vSmaOf: number[];
+  atrOf: number[];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  alertCalls: AlertCall[];
+  /** Lines and labels of the extension / retracement tool: made once per call, then moved on every bar */
+  toolLines: Ln[];
+  toolLabels: Lb[];
+}
+
+/** Bars from the end that keep the objects of the lines and labels made on every bar (see FibVars.ln) */
+const RECENT = 32;
+
+function study(inputs: Partial<FibonacciExtensionRetracementPivotPointsInputs>): BarStudy<FibRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const last = n - 1;
   const levels = LEVELS.map(([k]) => ({ show: cfg[`show${k}`], value: cfg[`value${k}`], css: cfg[`color${k}`] }));
   const tool = cfg.fibTool;
   const withExt = tool === 'Extensions' || tool === 'Extensions + Pivot Points';
   const withRet = tool === 'Retracements' || tool === 'Retracements + Pivot Points';
   const withPvt = tool === 'Pivot Points' || tool === 'Extensions + Pivot Points' || tool === 'Retracements + Pivot Points';
-  // str.tostring(v, format.mintick) with syminfo.mintick
-  const MINTICK = mintickOf(chart);
-  const priceText = (v: number) => str.tostring(v, 'mintick', MINTICK);
-  const ms = n > 0 && bars[0].time >= 1e12;
+  const histPP = cfg.histPP && withPvt;
+  const extendStyle = lineStyle(cfg.extendL);
+  const tzStyle = cfg.fibTzlp === 'Left' ? 'label_left' : 'label_right';
+  const zzStyle = cfg.zigZag ? lineStyle(cfg.zzStyle) : 'dashed';
+  let priceText = (v: number) => str.tostring(v, 'mintick', mintickOf());
+  let ticker = tickerOf();
 
   // Higher timeframe of the pivot points
-  const chartTf = chartTimeframe(bars, chart);
-  const info = chartTf === '' ? null : timeframe.info(chartTf);
-  const fixed: Record<string, string> = {
-    '15 Min': '15', '1 Hour': '60', '4 Hour': '240', Session: 'D', Daily: 'D', Weekly: 'W', Monthly: 'M', Quarterly: '3M', Yearly: '12M',
+  const htfOf = (bars: Bar[], chart: ChartContext) => {
+    const chartTf = chartTimeframe(bars, chart);
+    const info = chartTf === '' ? null : timeframe.info(chartTf);
+    const fixed: Record<string, string> = {
+      '15 Min': '15', '1 Hour': '60', '4 Hour': '240', Session: 'D', Daily: 'D', Weekly: 'W', Monthly: 'M', Quarterly: '3M', Yearly: '12M',
+    };
+    return fixed[cfg.pivotTimeframe]
+      ?? (['1', '3', '5', '15'].includes(chartTf) ? 'D'
+        : ['30', '45', '60', '120', '180', '240'].includes(chartTf) ? 'W'
+          : info?.isdaily ? 'M'
+            : info?.isweekly || info?.ismonthly ? '12M' : '3M');
   };
-  const htf = fixed[cfg.pivotTimeframe]
-    ?? (['1', '3', '5', '15'].includes(chartTf) ? 'D'
-      : ['30', '45', '60', '120', '180', '240'].includes(chartTf) ? 'W'
-        : info?.isdaily ? 'M'
-          : info?.isweekly || info?.ismonthly ? '12M' : '3M');
-  const starts = periodStarts(bars, htf, chart);
-
-  const atr10 = ta.atr(bars, 10).toArray();
-  const atr = ta.atr(bars, cfg.atrLength).toArray();
-  const vSma = ta.sma(new Series(bars, (b) => b.volume ?? 0), cfg.volumeLength).toArray();
 
   // pivots(src, depth / 2, isHigh): the division keeps its fraction (5.5 for a depth of 11); the history index is
   // truncated and the loop runs up to twice the length
   const half = cfg.depth / 2;
   const back = Math.trunc(half);
   const span = half * 2;
-  const pivotAt = (i: number, isHigh: boolean): [number, number] => {
+  const pivotAt = (bars: Bar[], i: number, isHigh: boolean): [number, number] => {
     const c = i >= back ? (isHigh ? bars[i - back].high : bars[i - back].low) : 0;
     for (let k = 0; k <= span && k <= i; k++) {
       if (isHigh ? gt(bars[i - k].high, c) : lt(bars[i - k].low, c)) return [NaN, NaN];
@@ -472,376 +530,432 @@ export function calculate(
     return [i >= back ? i - back : NaN, c];
   };
 
-  const linePool = new Pool<Ln>();
-  const labelPool = new Pool<Lb>();
-
-  // Zigzag state
-  const zz: { line: Ln | null } = { line: null };
-  let iLast = 0;
-  let pLast = 0;
-  let isHighLast = false;
-  let iPrevPivot = 0;
-  let pPrevPivot = 0;
-  let iLastPivot = 0;
-  let pLastPivot = 0;
-  const tmpLabel: { high: Lb | null; low: Lb | null } = { high: null, low: null };
-  const zzStyle = cfg.zigZag ? lineStyle(cfg.zzStyle) : 'dashed';
-
-  const swing = (i: number, isHigh: boolean, index: number, price: number) => {
-    const dev = (100 * (price - pLast)) / price;
+  const swing = (s: FibRun, bars: Bar[], i: number, isHigh: boolean, index: number, price: number) => {
+    const v = s.vars;
+    const dev = (100 * (price - v.pLast)) / price;
     // pivotFound()
     let id: Ln | null = null;
-    let newDirection = isHighLast;
-    if (isHighLast === isHigh && zz.line !== null) {
-      if (isHighLast ? gt(price, pLast) : lt(price, pLast)) {
-        zz.line.x2 = index;
-        zz.line.y2 = price;
-        id = zz.line;
+    let newDirection = v.isHighLast;
+    if (v.isHighLast === isHigh && v.zzLine !== null) {
+      if (v.isHighLast ? gt(price, v.pLast) : lt(price, v.pLast)) {
+        v.zzLine.x2 = index;
+        v.zzLine.y2 = price;
+        id = v.zzLine;
       }
-    } else if (gt(Math.abs(dev), (atr10[i] / bars[i].close) * 100 * cfg.deviation)) {
+    } else if (gt(Math.abs(dev), (s.atr10Of / bars[i].close) * 100 * cfg.deviation)) {
       id = {
-        x1: iLast, y1: pLast, x2: index, y2: price, color: cfg.zigZag ? cfg.zzColor : null, width: cfg.zigZag ? cfg.zzWidth : 1,
-        style: zzStyle, extend: 'none', byTime: false, deleted: false,
+        x1: v.iLast, y1: v.pLast, x2: index, y2: price, color: cfg.zigZag ? cfg.zzColor : null, width: cfg.zigZag ? cfg.zzWidth : 1,
+        style: zzStyle, extend: 'none', byTime: false,
       };
       // without the zigzag option the line before is deleted below: only the running line is alive
-      linePool.create(cfg.zigZag ? id : undefined);
+      v.linePool.create(cfg.zigZag ? id : undefined);
       newDirection = isHigh;
     }
     if (id === null) return;
     // `id != lineLast` is also true while lineLast is na (the first line): the four values become na
-    if (id !== zz.line) {
-      iPrevPivot = zz.line?.x1 ?? NaN;
-      pPrevPivot = zz.line?.y1 ?? NaN;
-      iLastPivot = zz.line?.x2 ?? NaN;
-      pLastPivot = zz.line?.y2 ?? NaN;
+    if (id !== v.zzLine) {
+      v.iPrevPivot = v.zzLine?.x1 ?? NaN;
+      v.pPrevPivot = v.zzLine?.y1 ?? NaN;
+      v.iLastPivot = v.zzLine?.x2 ?? NaN;
+      v.pLastPivot = v.zzLine?.y2 ?? NaN;
       if (cfg.zzSwings) {
-        labelPool.create({
-          x: iPrevPivot, y: pPrevPivot, text: isHigh ? '▼' : '▲', textColor: isHigh ? cfg.highColor : cfg.lowColor,
+        v.labelPool.create({
+          x: v.iPrevPivot, y: v.pPrevPivot, text: isHigh ? '▼' : '▲', textColor: isHigh ? cfg.highColor : cfg.lowColor,
           style: isHigh ? 'label_down' : 'label_up', size: 'small', align: 'center',
-          tooltip: `ZigZag Swing ${isHigh ? 'High' : 'Low'}\nPrice : ${priceText(pPrevPivot)}`, byTime: false, deleted: false,
+          tooltip: `ZigZag Swing ${isHigh ? 'High' : 'Low'}\nPrice : ${priceText(v.pPrevPivot)}`, byTime: false,
         });
       }
-      if (!cfg.zigZag && zz.line !== null) linePool.remove();
+      if (!cfg.zigZag && v.zzLine !== null) v.linePool.remove();
     }
-    zz.line = id;
-    isHighLast = newDirection;
-    iLast = index;
-    pLast = price;
+    v.zzLine = id;
+    v.isHighLast = newDirection;
+    v.iLast = index;
+    v.pLast = price;
     if (cfg.zzSwings) {
       // each direction has its own label of the running swing
-      const key = isHigh ? 'high' : 'low';
-      if (tmpLabel[key] !== null) labelPool.remove();
-      tmpLabel[key] = {
-        x: iLast, y: pLast, text: isHigh ? '●\n▼' : '▲\n●', textColor: cfg.tempColor, style: isHigh ? 'label_down' : 'label_up',
+      if ((isHigh ? v.tmpHigh : v.tmpLow) !== null) v.labelPool.remove();
+      const tmp: Lb = {
+        x: v.iLast, y: v.pLast, text: isHigh ? '●\n▼' : '▲\n●', textColor: cfg.tempColor, style: isHigh ? 'label_down' : 'label_up',
         size: 'small', align: 'center',
-        tooltip: `Temporary ZigZag Swing ${isHigh ? 'High' : 'Low'}\nPrice : ${priceText(pLast)}\n\n⚠ Provisional level\n`
+        tooltip: `Temporary ZigZag Swing ${isHigh ? 'High' : 'Low'}\nPrice : ${priceText(v.pLast)}\n\n⚠ Provisional level\n`
           + 'Subject to repaint until structure confirms',
-        byTime: false, deleted: false,
+        byTime: false,
       };
-      labelPool.create();
+      if (isHigh) v.tmpHigh = tmp;
+      else v.tmpLow = tmp;
+      v.labelPool.create();
     }
   };
 
-  const iPrevChanges = changeValues();
-  const pPrevChanges = changeValues();
-  const iLastChanges = changeValues();
-  const pLastChanges = changeValues();
+  // ta.valuewhen(ta.change(x) != 0, x, occurrence)
+  const changed = (s: FibRun, k: number, occurrence: number) => {
+    const values = s.changes[k];
+    return values.length > occurrence ? values[values.length - 1 - occurrence] : NaN;
+  };
 
-  // f_htf_ohlc(): high, low and close of the period before, kept without a request of the higher timeframe
-  let htfH = 0;
-  let htfL = 0;
-  let htfH1 = 0;
-  let htfL1 = 0;
-  let htfC1 = 0;
-  let timeX10 = NaN;
-  let timeX11 = NaN;
+  return {
+    // the chart timeframe (from the bar gaps without a context) gives the higher timeframe; the unit of the times
+    key: (bars, chart) => `${htfOf(bars, chart)}|${bars.length > 0 && bars[0].time >= 1e12}`,
+    copyVars(v) {
+      // the running zigzag line is changed in place by the next swings: the copy has its own, also in the pool
+      const zzLine = v.zzLine ? { ...v.zzLine } : null;
+      return {
+        ...v, zzLine, linePool: v.linePool.copy(v.zzLine, zzLine), labelPool: v.labelPool.copy(),
+        ln: v.ln.slice(), lnBar: v.lnBar.slice(), lb: v.lb.slice(), lbBar: v.lbBar.slice(),
+      };
+    },
+    init(bars, chart) {
+      // str.tostring(v, format.mintick) with syminfo.mintick
+      const mintick = mintickOf(chart);
+      priceText = (v: number) => str.tostring(v, 'mintick', mintick);
+      ticker = tickerOf(chart);
+      const s: FibRun = {
+        atr10: taStep.atr(10), atr: taStep.atr(cfg.atrLength), vSma: new WindowSma(cfg.volumeLength), atr10Of: NaN,
+        starts: periodStarts(bars, htfOf(bars, chart), chart), startsCount: bars.length, startsLast: bars[bars.length - 1]?.time ?? NaN,
+        changes: [[], [], [], []], plots: plotConfig.map(() => []), vSmaOf: [], atrOf: [], flags: [[], []], times: [[], []],
+        markers: [], barColors: [], alertCalls: [], toolLines: [], toolLabels: [],
+        steps: [], lists: [], series: [],
+        vars: {
+          zzLine: null, iLast: 0, pLast: 0, isHighLast: false, iPrevPivot: 0, pPrevPivot: 0, iLastPivot: 0, pLastPivot: 0,
+          tmpHigh: null, tmpLow: null, linePool: new Pool<Ln>(), labelPool: new Pool<Lb>(), prevChange: [NaN, NaN, NaN, NaN],
+          htfH: 0, htfL: 0, htfH1: 0, htfL1: 0, htfC1: 0, timeX10: NaN, timeX11: NaN, ln: [], lnBar: [], lb: [], lbBar: [],
+        },
+      };
+      s.steps = [s.atr10, s.atr, s.vSma];
+      s.lists = [...s.changes, ...s.times, s.markers, s.barColors, s.alertCalls, s.toolLines, s.toolLabels];
+      s.series = [...s.plots, s.vSmaOf, s.atrOf, ...s.flags];
+      return s;
+    },
+    // the periods come from every bar time (a weekend bar makes every day a trading day): computed again for new bars,
+    // the bars already calculated keep theirs or the update runs in full
+    prepare(s, bars, chart, from) {
+      const n = bars.length;
+      if (n === s.startsCount && bars[n - 1].time === s.startsLast) return true;
+      const starts = periodStarts(bars, htfOf(bars, chart), chart);
+      for (let i = 0; i < from; i++) if (starts[i] !== s.starts[i]) return false;
+      s.starts = starts;
+      s.startsCount = n;
+      s.startsLast = bars[n - 1].time;
+      return true;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const n = bars.length;
+      const b = bars[i];
+      const t = b.time;
+      const isLast = i === n - 1;
+      // f_crossingLevel(close, level): level > close and level < close[1] or level < close and level > close[1]
+      const prevClose = i > 0 ? bars[i - 1].close : NaN;
+      const crossing = (lvl: number) => (gt(lvl, b.close) && lt(lvl, prevClose)) || (lt(lvl, b.close) && gt(lvl, prevClose));
+      const call = (message: string) => s.alertCalls.push({ time: t, message, freq: 'once_per_bar' });
+      s.atr10Of = s.atr10.step(b.high, b.low, b.close);
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const vSma = s.vSma.step(b.volume ?? 0);
+      s.atrOf[i] = atr;
+      s.vSmaOf[i] = vSma;
 
-  // Lines and labels made on every bar and kept in two arrays. On every bar the script deletes them with
-  // `for i = 1 to array.size(ln)` and `array.shift(ln)`: the end of the loop is read again on each turn while the
-  // array gets shorter, so only the older half (rounded up) is deleted. The arrays never hold objects older than a
-  // few bars: before the last RECENT bars the objects are only counted (null).
-  const RECENT = 32;
-  const ln: Array<Ln | null> = [];
-  const lb: Array<Lb | null> = [];
-  // Lines and labels of the extension / retracement tool: made once per call, then moved on every bar
-  const toolLines: Ln[] = [];
-  const toolLabels: Lb[] = [];
-
-  const plots: Record<string, Array<{ time: number; value: number; color?: string }>> = {};
-  for (const p of plotConfig) plots[p.id] = [];
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const histPP = cfg.histPP && withPvt;
-  const extendStyle = lineStyle(cfg.extendL);
-  const tzStyle = cfg.fibTzlp === 'Left' ? 'label_left' : 'label_right';
-  // timenow
-  const nowMs = nowOf(chart);
-  const nowTime = ms ? nowMs : Math.floor(nowMs / 1000);
-  const ticker = tickerOf(chart);
-  const alertCalls: AlertCall[] = [];
-
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time;
-    const isLast = i === last;
-    // f_crossingLevel(close, level): level > close and level < close[1] or level < close and level > close[1]
-    const prevClose = i > 0 ? bars[i - 1].close : NaN;
-    const crossing = (lvl: number) => (gt(lvl, b.close) && lt(lvl, prevClose)) || (lt(lvl, b.close) && gt(lvl, prevClose));
-    const call = (message: string) => alertCalls.push({ time: t, message, freq: 'once_per_bar' });
-
-    // Zigzag
-    const [iH, pH] = pivotAt(i, true);
-    if (!isNaN(iH)) swing(i, true, iH, pH);
-    else {
-      const [iL, pL] = pivotAt(i, false);
-      if (!isNaN(iL)) swing(i, false, iL, pL);
-    }
-    iPrevChanges.update(iPrevPivot);
-    pPrevChanges.update(pPrevPivot);
-    iLastChanges.update(iLastPivot);
-    pLastChanges.update(pLastPivot);
-    const running = zz.line;
-    const base = (hist: number) => ({
-      iEnd: hist > 0 ? iLastChanges.get(hist - 1) : running?.x2 ?? NaN,
-      pEnd: hist > 0 ? pLastChanges.get(hist - 1) : running?.y2 ?? NaN,
-      iMid: hist > 0 ? iPrevChanges.get(hist - 1) : running?.x1 ?? NaN,
-      pMid: hist > 0 ? pPrevChanges.get(hist - 1) : running?.y1 ?? NaN,
-    });
-    const iStartBase = iPrevChanges.get(cfg.histPivot > 0 ? cfg.histPivot : 0);
-    const pStartBase = pPrevChanges.get(cfg.histPivot > 0 ? cfg.histPivot : 0);
-    const { iEnd: iEndBase, pEnd: pEndBase, iMid: iMidPivot, pMid: pMidPivot } = base(cfg.histPivot);
-    const zone = base(cfg.histPivot2);
-
-    // Higher timeframe
-    const change = i > 0 && starts[i] !== starts[i - 1];
-    if (change) {
-      htfH1 = htfH;
-      htfH = b.high;
-      htfL1 = htfL;
-      htfL = b.low;
-      htfC1 = bars[i - 1].close;
-      timeX10 = timeX11;
-      timeX11 = t;
-    } else {
-      htfH = Math.max(b.high, htfH);
-      htfL = Math.min(b.low, htfL);
-    }
-    const timeX21 = 2 * timeX11 - timeX10;
-
-    // The lines and labels of the bar before are deleted
-    if (i > 0) {
-      linePool.remove(ln.splice(0, Math.floor((ln.length + 1) / 2)).length);
-      labelPool.remove(lb.splice(0, Math.floor((lb.length + 1) / 2)).length);
-    }
-    const recent = i >= n - RECENT;
-    const tmpLine = (make: () => Omit<Ln, 'deleted'>) => {
-      linePool.create();
-      ln.push(recent ? { ...make(), deleted: false } : null);
-    };
-    const tmpLbl = (make: () => Omit<Lb, 'deleted'>) => {
-      labelPool.create();
-      lb.push(recent ? { ...make(), deleted: false } : null);
-    };
-
-    // Time zones
-    if (cfg.fibTime) {
-      const reference = math.round(zone.iEnd - zone.iMid) as number;
-      for (const k of TIME_ZONES) {
-        const x = zone.iMid + reference * k;
-        if (x - i < 500) {
-          tmpLine(() => ({
-            x1: x, y1: zone.pEnd, x2: x, y2: zone.pMid, color: k === 0 || k === 1 ? GRAY : cfg.tzColor, width: 1, style: 'solid',
-            extend: 'both', byTime: false,
-          }));
-        }
+      // Zigzag
+      const [iH, pH] = pivotAt(bars, i, true);
+      if (!isNaN(iH)) swing(s, bars, i, true, iH, pH);
+      else {
+        const [iL, pL] = pivotAt(bars, i, false);
+        if (!isNaN(iL)) swing(s, bars, i, false, iL, pL);
       }
-      if (cfg.fibTzl) {
-        const y = cfg.fibTzlp2 === 'Bottom' ? Math.min(zone.pEnd, zone.pMid) : Math.max(zone.pEnd, zone.pMid);
+      const pivots = [v.iPrevPivot, v.pPrevPivot, v.iLastPivot, v.pLastPivot];
+      pivots.forEach((x, k) => {
+        if (Math.abs(x - v.prevChange[k]) > EPS) s.changes[k].push(x);
+      });
+      v.prevChange = pivots;
+      const running = v.zzLine;
+      const base = (hist: number) => ({
+        iEnd: hist > 0 ? changed(s, 2, hist - 1) : running?.x2 ?? NaN,
+        pEnd: hist > 0 ? changed(s, 3, hist - 1) : running?.y2 ?? NaN,
+        iMid: hist > 0 ? changed(s, 0, hist - 1) : running?.x1 ?? NaN,
+        pMid: hist > 0 ? changed(s, 1, hist - 1) : running?.y1 ?? NaN,
+      });
+      const iStartBase = changed(s, 0, cfg.histPivot > 0 ? cfg.histPivot : 0);
+      const pStartBase = changed(s, 1, cfg.histPivot > 0 ? cfg.histPivot : 0);
+      const { iEnd: iEndBase, pEnd: pEndBase, iMid: iMidPivot, pMid: pMidPivot } = base(cfg.histPivot);
+      const zone = base(cfg.histPivot2);
+
+      // Higher timeframe
+      const change = i > 0 && s.starts[i] !== s.starts[i - 1];
+      if (change) {
+        v.htfH1 = v.htfH;
+        v.htfH = b.high;
+        v.htfL1 = v.htfL;
+        v.htfL = b.low;
+        v.htfC1 = bars[i - 1].close;
+        v.timeX10 = v.timeX11;
+        v.timeX11 = t;
+      } else {
+        v.htfH = Math.max(b.high, v.htfH);
+        v.htfL = Math.min(b.low, v.htfL);
+      }
+      const timeX10 = v.timeX10;
+      const timeX11 = v.timeX11;
+      const timeX21 = 2 * timeX11 - timeX10;
+
+      // The lines and labels of the bar before are deleted
+      if (i > 0) {
+        const lines = Math.floor((v.ln.length + 1) / 2);
+        const labels = Math.floor((v.lb.length + 1) / 2);
+        v.ln.splice(0, lines);
+        v.lnBar.splice(0, lines);
+        v.lb.splice(0, labels);
+        v.lbBar.splice(0, labels);
+        v.linePool.remove(lines);
+        v.labelPool.remove(labels);
+      }
+      const recent = i >= n - RECENT;
+      const tmpLine = (make: () => Ln) => {
+        v.linePool.create();
+        v.ln.push(recent ? make() : null);
+        v.lnBar.push(i);
+      };
+      const tmpLbl = (make: () => Lb) => {
+        v.labelPool.create();
+        v.lb.push(recent ? make() : null);
+        v.lbBar.push(i);
+      };
+
+      // Time zones
+      if (cfg.fibTime) {
+        const reference = math.round(zone.iEnd - zone.iMid) as number;
         for (const k of TIME_ZONES) {
           const x = zone.iMid + reference * k;
           if (x - i < 500) {
-            tmpLbl(() => ({
-              x, y, text: String(k), textColor: k === 0 || k === 1 ? GRAY : cfg.tzColor, style: tzStyle, size: 'normal', align: 'center',
-              tooltip: '', byTime: false,
+            tmpLine(() => ({
+              x1: x, y1: zone.pEnd, x2: x, y2: zone.pMid, color: k === 0 || k === 1 ? GRAY : cfg.tzColor, width: 1, style: 'solid',
+              extend: 'both', byTime: false,
             }));
           }
         }
-      }
-    }
-
-    // f_processLevelX() of each level
-    const pivot = (htfH1 + htfL1 + htfC1) / 3;
-    const range = htfH1 - htfL1;
-    if (cfg.isFib) {
-      const pPivotDiff = Math.abs(pMidPivot - pEndBase);
-      const sign = cfg.reverse ? -1 : 1;
-      // f_drawLineX(): the line is made on the first bar, then set on every bar
-      const toolLine = (x1: number, y1: number, x2: number, y2: number, extend: Ln['extend'], css: string, style: Ln['style']) => {
-        if (i === 0) linePool.create();
-        if (!isLast) return;
-        const ok = gt(y1, 0) && gt(y2, 0);
-        toolLines.push({
-          x1, y1: ok ? y1 : b.close, x2, y2: ok ? y2 : b.close, color: ok ? css : CLEAR, width: 1, style, extend, byTime: false,
-          deleted: false,
-        });
-      };
-      // f_drawLabelX()
-      const toolLabel = (price: number, name: string, level: number, css: string) => {
-        if (i === 0) labelPool.create();
-        if (!isLast) return;
-        const text = (cfg.levels === 'Prices' ? '' : `${name} ${str.tostring(level)}`)
-          + (cfg.levels === 'Levels + Prices' || cfg.levels === 'Prices' ? ` (${priceText(price)})` : '');
-        const ok = gt(price, 0);
-        toolLabels.push({
-          x: cfg.levelsP === 'Last Bar' ? i : iMidPivot, y: ok ? price : b.close,
-          text: cfg.extend || cfg.extendER || cfg.levelsP === 'Last Bar' ? `${text}\n\n` : text,
-          textColor: ok ? css : CLEAR, style: cfg.levelsP === 'Last Bar' ? 'label_left' : 'label_right',
-          size: cfg.levelsS === 'Small' ? 'small' : 'normal', align: 'left', tooltip: priceText(price), byTime: false, deleted: false,
-        });
-      };
-      // f_drawLinePVT() / f_drawLabelPVT()
-      const pvtLine = (x1: number, y: number, extend: Ln['extend'], css: string | null, style: Ln['style'], width: number) => {
-        if (gt(y, 0)) tmpLine(() => ({ x1, y1: y, x2: timeX21, y2: y, color: css, width, style, extend, byTime: true }));
-      };
-      const pvtLabel = (y: number, name: string, css: string | null) => {
-        if (!gt(y, 0)) return;
-        tmpLbl(() => {
-          const text = (cfg.levelsPvt === 'Prices' ? '' : name)
-            + (cfg.levelsPvt === 'Levels + Prices' || cfg.levelsPvt === 'Prices' ? ` (${priceText(y)})` : '');
-          return {
-            x: cfg.levelsPvtP === 'Last Bar' ? nowTime : timeX21, y,
-            text: cfg.extend || cfg.levelsPvtP === 'Last Bar' ? `${text}\n\n` : text, textColor: css, style: 'label_left',
-            size: cfg.levelsPvtS === 'Small' ? 'small' : 'normal', align: 'left', tooltip: priceText(y), byTime: true,
-          };
-        });
-      };
-
-      for (const { show, value: level, css } of levels) {
-        if (withExt) {
-          toolLine(iStartBase, pStartBase, iMidPivot, pMidPivot, 'none', GRAY, 'dashed');
-          toolLine(iMidPivot, pMidPivot, iEndBase, pEndBase, 'none', GRAY, 'dashed');
-          const offset = Math.abs(pMidPivot - pStartBase);
-          const price = lt(pEndBase, pMidPivot)
-            ? pMidPivot - pPivotDiff + sign * offset * level
-            : pMidPivot + pPivotDiff - sign * offset * level;
-          if (show) {
-            toolLine(iMidPivot, price, i, price, cfg.extendER ? 'both' : 'right', css, 'solid');
-            if (cfg.levels !== 'None') toolLabel(price, 'EXT', level, css);
-            if (crossing(price)) call('AutoFib Extension : ' + ticker + ' crossing level ' + str.tostring(level));
-          }
-        }
-        if (withRet) {
-          toolLine(iMidPivot, pMidPivot, iEndBase, pEndBase, 'none', GRAY, 'dashed');
-          const from = cfg.reverse ? pEndBase : pMidPivot;
-          const price = lt(pEndBase, pMidPivot) ? from - sign * pPivotDiff * level : from + sign * pPivotDiff * level;
-          if (show) {
-            toolLine(iMidPivot, price, i, price, cfg.extendER ? 'both' : 'right', css, 'solid');
-            if (cfg.levels !== 'None') toolLabel(price, 'RET', level, css);
-            if (crossing(price)) call('AutoFib Retracment : ' + ticker + ' crossing level ' + str.tostring(level));
-          }
-        }
-        if (withPvt) {
-          if (!cfg.histPP) pvtLine(timeX10, pivot, 'none', GRAY, 'dashed', 1);
-          if (show && level >= -EPS) {
-            const main = eq(level, 0) || eq(level, 0.382) || eq(level, 0.618) || eq(level, 1);
-            const lo = pivot - range * level;
-            const hi = pivot + range * level;
-            const loCss = cfg.relevant ? (lt(b.close, pivot) ? css : null) : css;
-            const hiCss = cfg.relevant ? (gt(b.close, pivot) ? css : null) : css;
-            pvtLine(timeX11, lo, 'none', loCss, main ? 'solid' : 'dashed', main ? 2 : 1);
-            pvtLine(timeX11, hi, 'none', hiCss, main ? 'solid' : 'dashed', main ? 2 : 1);
-            if (cfg.extend) {
-              pvtLine(timeX11, lo, 'both', loCss, extendStyle, 1);
-              pvtLine(timeX11, hi, 'both', hiCss, extendStyle, 1);
+        if (cfg.fibTzl) {
+          const y = cfg.fibTzlp2 === 'Bottom' ? Math.min(zone.pEnd, zone.pMid) : Math.max(zone.pEnd, zone.pMid);
+          for (const k of TIME_ZONES) {
+            const x = zone.iMid + reference * k;
+            if (x - i < 500) {
+              tmpLbl(() => ({
+                x, y, text: String(k), textColor: k === 0 || k === 1 ? GRAY : cfg.tzColor, style: tzStyle, size: 'normal', align: 'center',
+                tooltip: '', byTime: false,
+              }));
             }
-            if (cfg.levelsPvt !== 'None') {
-              if (main && eq(level, 0)) pvtLabel(pivot, 'PP', css);
-              else {
-                const rank = eq(level, 0.382) ? '1' : eq(level, 0.618) ? '2' : '3';
-                const lvl = str.tostring(level);
-                pvtLabel(lo, main ? `S${rank} PP ${lvl}` : `   PP ${lvl}`, loCss);
-                pvtLabel(hi, main ? `R${rank} PP ${lvl}` : `   PP ${lvl}`, hiCss);
+          }
+        }
+      }
+
+      // f_processLevelX() of each level
+      const pivot = (v.htfH1 + v.htfL1 + v.htfC1) / 3;
+      const range = v.htfH1 - v.htfL1;
+      if (cfg.isFib) {
+        const pPivotDiff = Math.abs(pMidPivot - pEndBase);
+        const sign = cfg.reverse ? -1 : 1;
+        // f_drawLineX(): the line is made on the first bar, then set on every bar
+        const toolLine = (x1: number, y1: number, x2: number, y2: number, extend: Ln['extend'], css: string, style: Ln['style']) => {
+          if (i === 0) v.linePool.create();
+          if (!isLast) return;
+          const ok = gt(y1, 0) && gt(y2, 0);
+          s.toolLines.push({
+            x1, y1: ok ? y1 : b.close, x2, y2: ok ? y2 : b.close, color: ok ? css : CLEAR, width: 1, style, extend, byTime: false,
+          });
+        };
+        // f_drawLabelX()
+        const toolLabel = (price: number, name: string, level: number, css: string) => {
+          if (i === 0) v.labelPool.create();
+          if (!isLast) return;
+          const text = (cfg.levels === 'Prices' ? '' : `${name} ${str.tostring(level)}`)
+            + (cfg.levels === 'Levels + Prices' || cfg.levels === 'Prices' ? ` (${priceText(price)})` : '');
+          const ok = gt(price, 0);
+          s.toolLabels.push({
+            x: cfg.levelsP === 'Last Bar' ? i : iMidPivot, y: ok ? price : b.close,
+            text: cfg.extend || cfg.extendER || cfg.levelsP === 'Last Bar' ? `${text}\n\n` : text,
+            textColor: ok ? css : CLEAR, style: cfg.levelsP === 'Last Bar' ? 'label_left' : 'label_right',
+            size: cfg.levelsS === 'Small' ? 'small' : 'normal', align: 'left', tooltip: priceText(price), byTime: false,
+          });
+        };
+        // f_drawLinePVT() / f_drawLabelPVT()
+        const pvtLine = (x1: number, y: number, extend: Ln['extend'], css: string | null, style: Ln['style'], width: number) => {
+          if (gt(y, 0)) tmpLine(() => ({ x1, y1: y, x2: timeX21, y2: y, color: css, width, style, extend, byTime: true }));
+        };
+        const pvtLabel = (y: number, name: string, css: string | null) => {
+          if (!gt(y, 0)) return;
+          tmpLbl(() => {
+            const text = (cfg.levelsPvt === 'Prices' ? '' : name)
+              + (cfg.levelsPvt === 'Levels + Prices' || cfg.levelsPvt === 'Prices' ? ` (${priceText(y)})` : '');
+            const atNow = cfg.levelsPvtP === 'Last Bar';
+            return {
+              x: atNow ? NaN : timeX21, y, atNow,
+              text: cfg.extend || atNow ? `${text}\n\n` : text, textColor: css, style: 'label_left',
+              size: cfg.levelsPvtS === 'Small' ? 'small' : 'normal', align: 'left', tooltip: priceText(y), byTime: true,
+            };
+          });
+        };
+
+        for (const { show, value: level, css } of levels) {
+          if (withExt) {
+            toolLine(iStartBase, pStartBase, iMidPivot, pMidPivot, 'none', GRAY, 'dashed');
+            toolLine(iMidPivot, pMidPivot, iEndBase, pEndBase, 'none', GRAY, 'dashed');
+            const offset = Math.abs(pMidPivot - pStartBase);
+            const price = lt(pEndBase, pMidPivot)
+              ? pMidPivot - pPivotDiff + sign * offset * level
+              : pMidPivot + pPivotDiff - sign * offset * level;
+            if (show) {
+              toolLine(iMidPivot, price, i, price, cfg.extendER ? 'both' : 'right', css, 'solid');
+              if (cfg.levels !== 'None') toolLabel(price, 'EXT', level, css);
+              if (crossing(price)) call('AutoFib Extension : ' + ticker + ' crossing level ' + str.tostring(level));
+            }
+          }
+          if (withRet) {
+            toolLine(iMidPivot, pMidPivot, iEndBase, pEndBase, 'none', GRAY, 'dashed');
+            const from = cfg.reverse ? pEndBase : pMidPivot;
+            const price = lt(pEndBase, pMidPivot) ? from - sign * pPivotDiff * level : from + sign * pPivotDiff * level;
+            if (show) {
+              toolLine(iMidPivot, price, i, price, cfg.extendER ? 'both' : 'right', css, 'solid');
+              if (cfg.levels !== 'None') toolLabel(price, 'RET', level, css);
+              if (crossing(price)) call('AutoFib Retracment : ' + ticker + ' crossing level ' + str.tostring(level));
+            }
+          }
+          if (withPvt) {
+            if (!cfg.histPP) pvtLine(timeX10, pivot, 'none', GRAY, 'dashed', 1);
+            if (show && level >= -EPS) {
+              const main = eq(level, 0) || eq(level, 0.382) || eq(level, 0.618) || eq(level, 1);
+              const lo = pivot - range * level;
+              const hi = pivot + range * level;
+              const loCss = cfg.relevant ? (lt(b.close, pivot) ? css : null) : css;
+              const hiCss = cfg.relevant ? (gt(b.close, pivot) ? css : null) : css;
+              pvtLine(timeX11, lo, 'none', loCss, main ? 'solid' : 'dashed', main ? 2 : 1);
+              pvtLine(timeX11, hi, 'none', hiCss, main ? 'solid' : 'dashed', main ? 2 : 1);
+              if (cfg.extend) {
+                pvtLine(timeX11, lo, 'both', loCss, extendStyle, 1);
+                pvtLine(timeX11, hi, 'both', hiCss, extendStyle, 1);
               }
+              if (cfg.levelsPvt !== 'None') {
+                if (main && eq(level, 0)) pvtLabel(pivot, 'PP', css);
+                else {
+                  const rank = eq(level, 0.382) ? '1' : eq(level, 0.618) ? '2' : '3';
+                  const lvl = str.tostring(level);
+                  pvtLabel(lo, main ? `S${rank} PP ${lvl}` : `   PP ${lvl}`, loCss);
+                  pvtLabel(hi, main ? `R${rank} PP ${lvl}` : `   PP ${lvl}`, hiCss);
+                }
+              }
+              if (crossing(lo)) call('AutoFib PivotPoints : ' + ticker + ' crossing support level ' + str.tostring(level));
+              if (crossing(hi)) call('AutoFib PivotPoints : ' + ticker + ' crossing resistance level ' + str.tostring(level));
             }
-            if (crossing(lo)) call('AutoFib PivotPoints : ' + ticker + ' crossing support level ' + str.tostring(level));
-            if (crossing(hi)) call('AutoFib PivotPoints : ' + ticker + ' crossing resistance level ' + str.tostring(level));
           }
         }
       }
-    }
 
-    // Historical pivot points
-    const plotColor = (css: string) => (change ? 'transparent' : css);
-    plots.plot0.push({ time: t, value: histPP && levels[0].show ? pivot : NaN, color: plotColor(levels[0].css) });
-    HIST_PLOTS.forEach(([level], k) => {
-      const { show, value, css } = levels[level];
-      plots[`plot${2 * k + 1}`].push({ time: t, value: histPP && show ? pivot - range * value : NaN, color: plotColor(css) });
-      plots[`plot${2 * k + 2}`].push({ time: t, value: histPP && show ? pivot + range * value : NaN, color: plotColor(css) });
-    });
+      // Historical pivot points
+      const plotColor = (css: string) => (change ? 'transparent' : css);
+      s.plots[0][i] = { time: t, value: histPP && levels[0].show ? pivot : NaN, color: plotColor(levels[0].css) };
+      HIST_PLOTS.forEach(([level], k) => {
+        const { show, value, css } = levels[level];
+        s.plots[2 * k + 1][i] = { time: t, value: histPP && show ? pivot - range * value : NaN, color: plotColor(css) };
+        s.plots[2 * k + 2][i] = { time: t, value: histPP && show ? pivot + range * value : NaN, color: plotColor(css) };
+      });
 
-    // Volume and volatility add-ons
-    const volume = b.volume ?? 0;
-    const hasVolume = !isNaN(volume) && volume !== 0;
-    if (cfg.volumeSpike && hasVolume && gt(volume, cfg.volumeSpikeThreshold * vSma[i])) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: 'transparent', text: '🚦', textColor: BLUE, size: 'tiny' });
-    }
-    if (cfg.highVolatility && gt(Math.abs(b.high - b.low), atr[i] * cfg.atrMultiplier)) {
-      markers.push({ time: t, position: 'belowBar', shape: 'circle', color: 'transparent', text: '⚡', textColor: BLUE, size: 'tiny' });
-    }
-    if (cfg.volumeBars && hasVolume) {
-      if (gt(volume, vSma[i] * cfg.volumeHighThreshold)) {
-        barColors.push({ time: t, color: gt(b.close, b.open) ? '#006400' : '#910000' });
-      } else if (lt(volume, vSma[i] * cfg.volumeLowThreshold)) {
-        barColors.push({ time: t, color: lt(b.close, b.open) ? '#FF9800' : '#7FFFD4' });
+      // Volume and volatility add-ons
+      const volume = b.volume ?? 0;
+      const hasVolume = !isNaN(volume) && volume !== 0;
+      if (cfg.volumeSpike && hasVolume && gt(volume, cfg.volumeSpikeThreshold * vSma)) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: 'transparent', text: '🚦', textColor: BLUE, size: 'tiny' });
       }
-    }
-  }
+      if (cfg.highVolatility && gt(Math.abs(b.high - b.low), atr * cfg.atrMultiplier)) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'circle', color: 'transparent', text: '⚡', textColor: BLUE, size: 'tiny' });
+      }
+      if (cfg.volumeBars && hasVolume) {
+        if (gt(volume, vSma * cfg.volumeHighThreshold)) {
+          s.barColors.push({ time: t, color: gt(b.close, b.open) ? '#006400' : '#910000' });
+        } else if (lt(volume, vSma * cfg.volumeLowThreshold)) {
+          s.barColors.push({ time: t, color: lt(b.close, b.open) ? '#FF9800' : '#7FFFD4' });
+        }
+      }
 
-  // alertcondition(ta.crossover(nzVolume, i_vSMA * i_vSpikeThresh), 'Volume Spikes', ...)
-  // alertcondition(ta.crossover(range_1, i_weightedATR), 'High Volatility', ...)
-  const nzVolume = bars.map((b) => (b.volume === undefined || isNaN(b.volume) ? 0 : b.volume));
-  const spikeLevel = vSma.map((v) => (v ?? NaN) * cfg.volumeSpikeThreshold);
-  const range1 = bars.map((b) => Math.abs(b.high - b.low));
-  const weightedAtr = atr.map((v) => (v ?? NaN) * cfg.atrMultiplier);
-  const alerts = alertStates(alertConditions, bars, [crossedOver(nzVolume, spikeLevel), crossedOver(range1, weightedAtr)]);
+      // alertcondition(ta.crossover(nzVolume, i_vSMA * i_vSpikeThresh), 'Volume Spikes', ...)
+      // alertcondition(ta.crossover(range_1, i_weightedATR), 'High Volatility', ...)
+      const nzVolume = (k: number) => (bars[k].volume === undefined || isNaN(bars[k].volume!) ? 0 : bars[k].volume!);
+      const range1 = (k: number) => Math.abs(bars[k].high - bars[k].low);
+      const prev = i > 0;
+      const flags = [
+        nzVolume(i) > vSma * cfg.volumeSpikeThreshold
+          && (prev ? nzVolume(i - 1) : NaN) <= (prev ? s.vSmaOf[i - 1] * cfg.volumeSpikeThreshold : NaN),
+        range1(i) > atr * cfg.atrMultiplier && (prev ? range1(i - 1) : NaN) <= (prev ? s.atrOf[i - 1] * cfg.atrMultiplier : NaN),
+      ];
+      flags.forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(t);
+      });
+    },
+    result(s, bars, chart) {
+      const n = bars.length;
+      const v = s.vars;
+      const ms = n > 0 && bars[0].time >= 1e12;
+      // timenow
+      const nowMs = nowOf(chart);
+      const nowTime = ms ? nowMs : Math.floor(nowMs / 1000);
+      const interval = barInterval(bars);
+      const toLine = (l: Ln): LineDrawingData => ({
+        time1: l.byTime ? l.x1 : barTime(bars, l.x1, interval), price1: l.y1, time2: l.byTime ? l.x2 : barTime(bars, l.x2, interval),
+        price2: l.y2, color: l.color ?? 'transparent', width: l.width,
+        ...(l.style === 'solid' ? {} : { style: l.style }), ...(l.extend === 'none' ? {} : { extend: l.extend }),
+      });
+      const toLabel = (l: Lb): LabelData => ({
+        time: l.atNow ? nowTime : l.byTime ? l.x : barTime(bars, l.x, interval), price: l.y, text: l.text, color: CLEAR,
+        textColor: l.textColor ?? 'transparent', style: l.style, size: l.size, ...(l.align === 'center' ? {} : { textAlign: l.align }),
+        ...(l.tooltip === '' ? {} : { tooltip: l.tooltip }),
+      });
+      const finalLine = v.zzLine;
+      const zigzag: Ln[] = cfg.zigZag ? v.linePool.alive() : finalLine ? [finalLine] : [];
+      const swingLabels = v.labelPool.alive();
+      const tmpLabels = [v.tmpHigh, v.tmpLow].filter((l): l is Lb => l !== null);
+      // the swing labels have a white background with a transparency of 100
+      const swingLabel = (l: Lb): LabelData => ({ ...toLabel(l), color: '#FFFFFF00' });
+      // an object with an na coordinate is not drawn
+      const drawnLine = (l: LineDrawingData) => ![l.time1, l.time2, l.price1, l.price2].some((x) => isNaN(x));
+      const drawnLabel = (l: LabelData) => !isNaN(l.time) && !isNaN(l.price);
+      // the objects of the bars before the last RECENT ones are only counted (made by an earlier update, they are left out)
+      const recent = <T>(objs: Array<T | null>, at: number[]) => objs.filter((o, k): o is T => o !== null && at[k] >= n - RECENT);
+      const plots: Record<string, Array<{ time: number; value: number; color?: string }>> = {};
+      plotConfig.forEach((p, k) => {
+        plots[p.id] = s.plots[k].slice();
+      });
 
-  const interval = barInterval(bars);
-  const toLine = (l: Ln): LineDrawingData => ({
-    time1: l.byTime ? l.x1 : barTime(bars, l.x1, interval), price1: l.y1, time2: l.byTime ? l.x2 : barTime(bars, l.x2, interval),
-    price2: l.y2, color: l.color ?? 'transparent', width: l.width,
-    ...(l.style === 'solid' ? {} : { style: l.style }), ...(l.extend === 'none' ? {} : { extend: l.extend }),
-  });
-  const toLabel = (l: Lb): LabelData => ({
-    time: l.byTime ? l.x : barTime(bars, l.x, interval), price: l.y, text: l.text, color: CLEAR, textColor: l.textColor ?? 'transparent',
-    style: l.style, size: l.size, ...(l.align === 'center' ? {} : { textAlign: l.align }), ...(l.tooltip === '' ? {} : { tooltip: l.tooltip }),
-  });
-  const finalLine = zz.line;
-  const zigzag: Ln[] = cfg.zigZag ? linePool.alive() : finalLine ? [finalLine] : [];
-  const swingLabels = labelPool.alive();
-  const tmpLabels = [tmpLabel.high, tmpLabel.low].filter((l): l is Lb => l !== null);
-  // the swing labels have a white background with a transparency of 100
-  const swingLabel = (l: Lb): LabelData => ({ ...toLabel(l), color: '#FFFFFF00' });
-  // an object with an na coordinate is not drawn
-  const drawnLine = (l: LineDrawingData) => ![l.time1, l.time2, l.price1, l.price2].some((v) => isNaN(v));
-  const drawnLabel = (l: LabelData) => !isNaN(l.time) && !isNaN(l.price);
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    markers,
-    barColors,
-    lines: [...zigzag, ...ln.filter((l): l is Ln => l !== null), ...toolLines].map(toLine).filter(drawnLine),
-    labels: [
-      ...[...swingLabels, ...tmpLabels].map(swingLabel),
-      ...[...lb.filter((l): l is Lb => l !== null), ...toolLabels].map(toLabel),
-    ].filter(drawnLabel),
-    // var table logo = table.new(position.bottom_right, 1, 1) with one cell
-    tables: n > 0
-      ? [{ position: 'bottom_right', columns: 1, rows: 1, cells: [{ column: 0, row: 0, text: '☼☾  ', textSize: 'normal', textColor: TEAL }] }]
-      : [],
-    alerts,
-    alertCalls,
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        lines: [...zigzag, ...recent(v.ln, v.lnBar), ...s.toolLines].map(toLine).filter(drawnLine),
+        labels: [
+          ...[...swingLabels, ...tmpLabels].map(swingLabel),
+          ...[...recent(v.lb, v.lbBar), ...s.toolLabels].map(toLabel),
+        ].filter(drawnLabel),
+        // var table logo = table.new(position.bottom_right, 1, 1) with one cell
+        tables: n > 0
+          ? [{ position: 'bottom_right', columns: 1, rows: 1, cells: [{ column: 0, row: 0, text: '☼☾  ', textSize: 'normal', textColor: TEAL }] }]
+          : [],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(
+  inputs: Partial<FibonacciExtensionRetracementPivotPointsInputs> = {},
+  chart: ChartContext = {},
+): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<FibonacciExtensionRetracementPivotPointsInputs> = {},
+  chart?: ChartContext,
+): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 /** The original's alertconditions */
@@ -860,6 +974,7 @@ export const hasAlertFunction = true;
 
 export const FibonacciExtensionRetracementPivotPoints = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

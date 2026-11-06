@@ -16,6 +16,8 @@ import type {
   SeriesType,
   AutoscaleInfo,
   Logical,
+  ITimeScaleApi,
+  MismatchDirection,
 } from 'lightweight-charts';
 import type { CanvasRenderingTarget2D } from 'fancy-canvas';
 import { barInterval } from 'oakscriptjs';
@@ -1712,6 +1714,99 @@ function ohlcBarWidth(barSpacing: number, pixelRatio: number): number {
 
 type Ohlc = { open: number; high: number; low: number; close: number };
 
+/** A row of a main series as `data()` / `dataByIndex()` give it (OHLC for a candlestick or bar series) */
+type OhlcRow = Partial<Ohlc> & { time: Time };
+
+/** MismatchDirection.NearestLeft of lightweight-charts (the module imports its types only) */
+const NEAREST_LEFT = -1 as MismatchDirection;
+
+/**
+ * OHLC by time of a main series, shared by the bar-colour primitives on it (the renderer makes a new primitive on each
+ * result of a study). `series.data()` gives new objects on every call: a cache keyed on them was rebuilt over the
+ * whole series on every paint. Built from the whole series after `setData()`; after `update()` / `pop()` (a live tick
+ * replaces the forming bar or appends bars, a pop removes the newest ones) the rows are read again from the newest one
+ * back to the first one the map has as it is, so a tick reads two rows. The map is then the one a rebuild from
+ * `data()` gives; a row changed behind a row the map has as it is (an older bar changed by `update(bar, true)`) is
+ * read at the next `setData()`.
+ */
+class SeriesOhlc {
+  readonly map = new Map<number, Ohlc>();
+  /** Times of the rows read, in order */
+  private times: number[] = [];
+  private stale: 'full' | 'update' | null = 'full';
+
+  constructor(private readonly series: ISeriesApi<SeriesType, Time>) {
+    series.subscribeDataChanged((scope) => {
+      if (this.stale !== 'full') this.stale = scope;
+    });
+  }
+
+  /** The map, brought up to date with the series */
+  get(timeScale: ITimeScaleApi<Time>): Map<number, Ohlc> {
+    if (this.stale === 'full') this.rebuild();
+    else if (this.stale === 'update') this.refresh(timeScale);
+    this.stale = null;
+    return this.map;
+  }
+
+  private set(row: OhlcRow): void {
+    const time = row.time as unknown as number;
+    if (row.open != null && row.high != null && row.low != null && row.close != null) this.map.set(time, row as Ohlc);
+    else this.map.delete(time);
+  }
+
+  private rebuild(): void {
+    this.map.clear();
+    this.times = [];
+    for (const row of this.series.data() as ReadonlyArray<OhlcRow>) {
+      this.times.push(row.time as unknown as number);
+      this.set(row);
+    }
+  }
+
+  /** The row is the one in the map (an incomplete row: none in the map) */
+  private known(row: OhlcRow): boolean {
+    const bar = this.map.get(row.time as unknown as number);
+    if (row.open == null || row.high == null || row.low == null || row.close == null) return bar === undefined;
+    return bar !== undefined && bar.open === row.open && bar.high === row.high && bar.low === row.low && bar.close === row.close;
+  }
+
+  private refresh(timeScale: ITimeScaleApi<Time>): void {
+    const times = this.times;
+    const newest = this.series.dataByIndex(Number.MAX_SAFE_INTEGER, NEAREST_LEFT) as OhlcRow | null;
+    const newestTime = newest ? (newest.time as unknown as number) : -Infinity;
+    // the rows removed by a pop
+    while (times.length > 0 && times[times.length - 1]! > newestTime) this.map.delete(times.pop()!);
+    // from the newest row back to the first one already known as it is: the appended and replaced rows
+    const rows: OhlcRow[] = [];
+    for (let row = newest; row; ) {
+      const last = times.length > 0 ? times[times.length - 1]! : -Infinity;
+      if ((row.time as unknown as number) <= last && this.known(row)) break;
+      rows.push(row);
+      const index = timeScale.timeToIndex(row.time, false);
+      if (index === null) {
+        this.rebuild();
+        return;
+      }
+      row = this.series.dataByIndex(index - 1, NEAREST_LEFT) as OhlcRow | null;
+    }
+    for (let k = rows.length - 1; k >= 0; k--) {
+      const time = rows[k]!.time as unknown as number;
+      if (times.length === 0 || time > times[times.length - 1]!) times.push(time);
+      this.set(rows[k]!);
+    }
+  }
+}
+
+const seriesOhlcs = new WeakMap<object, SeriesOhlc>();
+
+/** OHLC by time of the main series (complete rows only), kept up to date with it (see {@link SeriesOhlc}) */
+export function seriesOhlc(series: ISeriesApi<SeriesType, Time>, timeScale: ITimeScaleApi<Time>): Map<number, Ohlc> {
+  let cache = seriesOhlcs.get(series);
+  if (!cache) seriesOhlcs.set(series, (cache = new SeriesOhlc(series)));
+  return cache.get(timeScale);
+}
+
 /**
  * barcolor: the bars of the host's main series (candlestick or bar series, Heikin Ashi included) repainted in their
  * colour, with the same geometry as lightweight-charts, so the main series data is never rewritten. Other series
@@ -1719,9 +1814,6 @@ type Ohlc = { open: number; high: number; low: number; close: number };
  */
 export class BarColorPrimitive extends BasePrimitive {
   private _colors = new Map<number, string>();
-  private _ohlc = new Map<number, Ohlc>();
-  private _dataLength = -1;
-  private _lastBar: unknown = undefined;
   private _views: IPrimitivePaneView[];
 
   constructor(colors: Array<{ time: number; color: string }>) {
@@ -1737,31 +1829,14 @@ export class BarColorPrimitive extends BasePrimitive {
     return this._views;
   }
 
-  /** OHLC of the main series by time, rebuilt when its data changed length */
-  private ohlc(series: ISeriesApi<SeriesType, Time>): Map<number, Ohlc> {
-    const data = series.data() as ReadonlyArray<Partial<Ohlc> & { time: Time }>;
-    // A live update replaces the newest bar: rebuilt then too.
-    if (data.length !== this._dataLength || data[data.length - 1] !== this._lastBar) {
-      this._ohlc.clear();
-      for (const d of data) {
-        if (d.open != null && d.high != null && d.low != null && d.close != null) {
-          this._ohlc.set(d.time as unknown as number, d as Ohlc);
-        }
-      }
-      this._dataLength = data.length;
-      this._lastBar = data[data.length - 1];
-    }
-    return this._ohlc;
-  }
-
   private drawAll(target: CanvasRenderingTarget2D): void {
     const chart = this._chart;
     const series = this._series;
     if (!chart || !series || !this._colors.size) return;
     const type = series.seriesType();
     if (type !== 'Candlestick' && type !== 'Bar') return;
-    const ohlc = this.ohlc(series);
     const timeScale = chart.timeScale();
+    const ohlc = seriesOhlc(series, timeScale);
     const barSpacing = timeScale.options().barSpacing;
     const opts = series.options() as { thinBars?: boolean; openVisible?: boolean };
     const range = timeScale.getVisibleRange();

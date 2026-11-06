@@ -6,7 +6,10 @@
  * that bar only, from the state kept at the end of the last confirmed bar. The result equals a full run on the same
  * bars. Any other change (history loaded or adjusted, fewer bars, other chart fields) runs the study in full.
  */
-import { taCore, type Bar } from 'oakscriptjs';
+import {
+  taCore, resetDrawings, restoreDrawingCheckpoint, saveDrawingCheckpoint, setDrawingBar, type Bar, type DrawingCheckpoint,
+  type DrawingLimits,
+} from 'oakscriptjs';
 import type { ChartContext } from './chart-context';
 
 /** One state machine stepped once or more per bar and committed when the bar is final (oakscriptjs `taStep`) */
@@ -61,18 +64,45 @@ export interface BarStudy<S extends BarRunState<any>, R> {
    * time unit...): an update whose key differs from the previous one runs in full
    */
   key?(bars: Bar[], chart: ChartContext): string;
+  /**
+   * The values the study reads through the functions of the chart context (`bars` of another symbol or timeframe,
+   * `symbolInfo`): an update with a value that differs (Object.is) from the previous update's runs in full. With it the
+   * functions themselves are not compared: a host may give new functions with the same data on each update.
+   */
+  data?(bars: Bar[], chart: ChartContext): unknown[];
+  /**
+   * Before a resumed update calculated from bar `from`: brings what the study computed from the whole set of bars up
+   * to date (period starts of the new bars...) and returns false when it changed on a bar before `from`; the update
+   * then runs in full.
+   */
+  prepare?(s: S, bars: Bar[], chart: ChartContext, from: number): boolean;
+  /**
+   * The study draws with the oakscriptjs drawing objects (`line.new`, `label.new`...) with these maximum counts: the
+   * run resets the registry before the first bar, gives each bar to `setDrawingBar` and puts the drawings back with
+   * the state of the last confirmed bar (the drawing checkpoint of oakscriptjs).
+   */
+  drawings?: DrawingLimits;
 }
 
 /** Chart context fields that only describe the last bar (barstate of the forming bar): they do not change the history */
 const LAST_BAR_FIELDS = new Set(['lastBarConfirmed', 'lastBarNew', 'realtime', 'now']);
 
-function sameChart(a: ChartContext, b: ChartContext): boolean {
+/** The same chart fields; the functions are skipped when `functions` is false (the study compares their data) */
+function sameChart(a: ChartContext, b: ChartContext, functions = true): boolean {
   const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
   for (const k of keys) {
     if (LAST_BAR_FIELDS.has(k)) continue;
-    if (!Object.is((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k])) return false;
+    const x = (a as Record<string, unknown>)[k];
+    const y = (b as Record<string, unknown>)[k];
+    if (!functions && typeof x === 'function' && typeof y === 'function') continue;
+    if (!Object.is(x, y)) return false;
   }
   return true;
+}
+
+function sameValues(a: readonly unknown[] | undefined, b: readonly unknown[] | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return a.length === b.length && a.every((v, k) => Object.is(v, b[k]));
 }
 
 const FIELDS = 6;
@@ -123,9 +153,14 @@ export function createBarRun<S extends BarRunState<any>, R>(study: BarStudy<S, R
   let confirmed = 0;
   let copy: Float64Array = new Float64Array(0);
   /** The state at the end of bar `confirmed - 1` */
-  let saved: { vars: S['vars']; lists: number[] } | null = null;
+  let saved: { vars: S['vars']; lists: number[]; drawings: DrawingCheckpoint | null } | null = null;
   const copyVars = study.copyVars ?? ((v: S['vars']) => ({ ...v }));
+  const limits = study.drawings;
   let lastKey: string | undefined;
+  let lastData: unknown[] | undefined;
+  const save = (s: S) => ({
+    vars: copyVars(s.vars), lists: s.lists.map((l) => l.length), drawings: limits ? saveDrawingCheckpoint() : null,
+  });
 
   return {
     get fullRunReason() {
@@ -134,30 +169,38 @@ export function createBarRun<S extends BarRunState<any>, R>(study: BarStudy<S, R
     update(bars: Bar[], next: ChartContext = lastChart) {
       const n = bars.length;
       const key = study.key?.(bars, next);
-      const resume =
-        state !== null && saved !== null && n > confirmed && key === lastKey && sameChart(lastChart, next) &&
-        !study.fullRunReason?.(next) && sameBars(copy, bars, confirmed);
+      const data = study.data?.(bars, next);
+      let resume =
+        state !== null && saved !== null && n > confirmed && key === lastKey && sameValues(data, lastData) &&
+        sameChart(lastChart, next, !study.data) && !study.fullRunReason?.(next) && sameBars(copy, bars, confirmed);
       lastChart = next;
       lastKey = key;
-      let from: number;
-      if (resume) {
-        const s = state!;
-        s.vars = copyVars(saved!.vars);
-        s.lists.forEach((list, k) => { list.length = saved!.lists[k]!; });
-        from = confirmed;
-      } else {
-        state = study.init(bars, next);
-        confirmed = 0;
-        from = 0;
-      }
-      const s = state!;
+      lastData = data;
+      let from = 0;
       try {
+        if (resume) {
+          const s = state!;
+          s.vars = copyVars(saved!.vars);
+          s.lists.forEach((list, k) => { list.length = saved!.lists[k]!; });
+          resume = study.prepare?.(s, bars, next, confirmed) ?? true;
+        }
+        if (resume) {
+          if (saved!.drawings) restoreDrawingCheckpoint(saved!.drawings);
+          from = confirmed;
+        } else {
+          if (limits) resetDrawings(limits);
+          state = study.init(bars, next);
+          confirmed = 0;
+        }
+        const s = state!;
         for (let i = from; i < n; i++) {
-          if (i === n - 1) {
-            // the end of the last confirmed bar, put back before the forming bar is calculated again
-            saved = { vars: copyVars(s.vars), lists: s.lists.map((l) => l.length) };
+          // the end of the last confirmed bar, put back before the forming bar is calculated again (a resumed update
+          // of the same forming bar starts there: what was put back is kept as it is)
+          if (i === n - 1 && !(resume && i === from)) {
+            saved = save(s);
             confirmed = i;
           }
+          if (limits) setDrawingBar(i, i === n - 1);
           study.bar(s, i, bars);
           if (i < n - 1) {
             // read on every bar: a study may set its steps on its first bar
@@ -166,7 +209,7 @@ export function createBarRun<S extends BarRunState<any>, R>(study: BarStudy<S, R
           }
         }
         if (n === 0) {
-          saved = { vars: copyVars(s.vars), lists: s.lists.map((l) => l.length) };
+          saved = save(s);
           confirmed = 0;
         }
         for (const out of s.series) out.length = n;
@@ -177,6 +220,8 @@ export function createBarRun<S extends BarRunState<any>, R>(study: BarStudy<S, R
         state = null;
         saved = null;
         throw e;
+      } finally {
+        if (limits) setDrawingBar(null);
       }
     },
   };

@@ -26030,6 +26030,7 @@ const registryPart7: IndicatorRegistryEntry[] = [
     plotConfig: fibonacciExtensionRetracementPivotPointsIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...fibonacciExtensionRetracementPivotPointsIndicator.defaultInputs },
     calculate: fibonacciExtensionRetracementPivotPointsIndicator.calculate,
+    createRun: fibonacciExtensionRetracementPivotPointsIndicator.createRun,
   },
   {
     id: 'support-resistance-interactive',
@@ -30893,6 +30894,7 @@ const registryPart11: IndicatorRegistryEntry[] = [
     requiredSymbols: pivotPointsStandardStd.requiredSymbols,
     defaultInputs: { ...pivotPointsStandardStd.defaultInputs },
     calculate: pivotPointsStandardStd.calculate,
+    createRun: pivotPointsStandardStd.createRun,
   },
   {
     id: 'pmo',
