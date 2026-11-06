@@ -5,7 +5,9 @@
  * Measures the percentage change in price over a specified period.
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ROCInputs {
   length: number;
@@ -36,20 +38,44 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ROCInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface RocRun extends BarRunState<Record<string, never>> {
+  m: { step(v: number): number; commit(): void };
+  plotData: Point[];
+}
+
+function study(inputs: Partial<ROCInputs>): BarStudy<RocRun, IndicatorResult> {
   const { length, src } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
-  const roc = ta.roc(source, length);
-
-  const plotData = roc.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
+  const value = barSource(src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plotData },
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const m = taStep.roc(length);
+      const s: RocRun = { m, plotData: [], steps: [m], vars: {}, lists: [], series: [] };
+      s.series = [s.plotData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      s.plotData[i] = { time: b.time as number, value: s.m.step(value(b)) ?? NaN };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plotData.slice() },
+      };
+    },
   };
 }
 
-export const ROC = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ROCInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ROCInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const ROC = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig };

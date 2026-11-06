@@ -9,6 +9,8 @@
  */
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface HighLowOfXBarInputs {
   /** Number of bars ago */
@@ -47,27 +49,52 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<HighLowOfXBarInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface HighLowRun extends BarRunState<Record<string, never>> {
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<HighLowOfXBarInputs>): BarStudy<HighLowRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const k = cfg.barsAgo;
-
-  const plot0 = bars.map((b, i) => {
-    // diff_barsAgo = high[barsAgo] - low[barsAgo]; na when bar_index < barsAgo
-    const diff = i < k ? NaN : bars[i - k].high - bars[i - k].low;
-    // plot(showDiff ? diff_barsAgo : na, color = diffColor, linewidth = 2)
-    return { time: b.time, value: cfg.showDiff ? diff : NaN, color: cfg.diffColor };
-  });
-  // plot(bar_index < barsAgo ? 1 : na, color = notEnoughBarsColor, linewidth = 2)
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: i < k ? 1 : NaN, color: cfg.notEnoughBarsColor }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
+    init() {
+      const s: HighLowRun = { plot0: [], plot1: [], steps: [], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // diff_barsAgo = high[barsAgo] - low[barsAgo]; na when bar_index < barsAgo
+      const diff = i < k ? NaN : bars[i - k].high - bars[i - k].low;
+      // plot(showDiff ? diff_barsAgo : na, color = diffColor, linewidth = 2)
+      s.plot0[i] = { time: b.time, value: cfg.showDiff ? diff : NaN, color: cfg.diffColor };
+      // plot(bar_index < barsAgo ? 1 : na, color = notEnoughBarsColor, linewidth = 2)
+      s.plot1[i] = { time: b.time, value: i < k ? 1 : NaN, color: cfg.notEnoughBarsColor };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HighLowOfXBarInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<HighLowOfXBarInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const HighLowOfXBar = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

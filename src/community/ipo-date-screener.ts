@@ -14,7 +14,9 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface IpoDateScreenerInputs {
   /** Number of bars (days) of the IPO threshold */
@@ -40,41 +42,69 @@ export const metadata = {
   overlay: false,
 };
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface IpoRun extends BarRunState<Record<string, never>> {
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  plot0: { time: number; value: number }[];
+  plot1: { time: number; value: number }[];
+  newFlags: boolean[];
+  times: number[][];
+}
+
+function study(inputs: Partial<IpoDateScreenerInputs>): BarStudy<IpoRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const s: IpoRun = {
+        markers: [], bgColors: [], plot0: [], plot1: [], newFlags: [], times: [[]],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.bgColors, ...s.times];
+      s.series = [s.plot0, s.plot1, s.newFlags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time;
+      // barsAvailable = bar_index + 1 (bar_index counts from the first bar given to the port)
+      const barsAvailable = i + 1;
+      const isStockNew = barsAvailable < cfg.barThreshold;
+      s.newFlags[i] = isStockNew;
+      if (isStockNew) s.times[0].push(t as number);
+      // bgcolor(isStockNew ? color.green : na)
+      if (isStockNew) s.bgColors.push({ time: t, color: color.green });
+      // plotshape(isStockNew, location = location.top, color = color.red, style = shape.labeldown)
+      if (isStockNew) s.markers.push({ time: t, position: 'top', shape: 'labelDown', color: color.red });
+      // plot(isStockNew ? 1 : na, style = plot.style_columns, color = color.blue)
+      s.plot0[i] = { time: t, value: isStockNew ? 1 : NaN };
+      // plot(barsAvailable, style = plot.style_columns, color = color.orange)
+      s.plot1[i] = { time: t, value: barsAvailable };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        // alertcondition(isStockNew, "IPO Date within IPO Days")
+        alerts: liveAlertStates(alertConditions, s.times, [n > 0 && s.newFlags[n - 1]]),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IpoDateScreenerInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<IpoDateScreenerInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  const plot0: { time: number; value: number }[] = [];
-  const plot1: { time: number; value: number }[] = [];
-  const newFlags: boolean[] = [];
-
-  for (let i = 0; i < bars.length; i++) {
-    const t = bars[i].time;
-    // barsAvailable = bar_index + 1 (bar_index counts from the first bar given to the port)
-    const barsAvailable = i + 1;
-    const isStockNew = barsAvailable < cfg.barThreshold;
-    newFlags.push(isStockNew);
-    // bgcolor(isStockNew ? color.green : na)
-    if (isStockNew) bgColors.push({ time: t, color: color.green });
-    // plotshape(isStockNew, location = location.top, color = color.red, style = shape.labeldown)
-    if (isStockNew) markers.push({ time: t, position: 'top', shape: 'labelDown', color: color.red });
-    // plot(isStockNew ? 1 : na, style = plot.style_columns, color = color.blue)
-    plot0.push({ time: t, value: isStockNew ? 1 : NaN });
-    // plot(barsAvailable, style = plot.style_columns, color = color.orange)
-    plot1.push({ time: t, value: barsAvailable });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    markers,
-    bgColors,
-    // alertcondition(isStockNew, "IPO Date within IPO Days")
-    alerts: alertStates(alertConditions, bars, [newFlags]),
-  };
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -84,6 +114,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const IpoDateScreener = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

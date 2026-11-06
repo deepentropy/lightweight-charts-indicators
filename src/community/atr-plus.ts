@@ -14,7 +14,9 @@
  * Reference: "ATR+ (Stop Loss Indicator)" by ZenAndTheArtOfTrading
  */
 
-import { ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ATRPlusInputs {
   riskRatio: number;
@@ -78,71 +80,85 @@ function toPips(value: number): number {
   return toWhole(value);
 }
 
-export function calculate(bars: Bar[], inputs: Partial<ATRPlusInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface AtrPlusRun extends BarRunState<Record<string, never>> {
+  atr: ReturnType<typeof taStep.atr>;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  plot4: Point[];
+}
+
+function study(inputs: Partial<ATRPlusInputs>): BarStudy<AtrPlusRun, IndicatorResult> {
   const { riskRatio, atrLength, lookback, stopSize, useATR } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const atrArr = ta.atr(bars, atrLength).toArray();
-
-  // Compute lowest low over lookback
-  const lowestLow: number[] = new Array(n);
-  const highestHigh: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    let lo = bars[i].low;
-    let hi = bars[i].high;
-    for (let j = 1; j < lookback && i - j >= 0; j++) {
-      lo = Math.min(lo, bars[i - j].low);
-      hi = Math.max(hi, bars[i - j].high);
-    }
-    lowestLow[i] = lo;
-    highestHigh[i] = hi;
-  }
-
   const warmup = atrLength;
-
-  const plot0: { time: number; value: number }[] = [];
-  const plot1: { time: number; value: number }[] = [];
-  const plot2: { time: number; value: number }[] = [];
-  const plot3: { time: number; value: number }[] = [];
-  const plot4: { time: number; value: number }[] = [];
-
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    if (i < warmup || atrArr[i] == null) {
-      plot0.push({ time: t, value: NaN });
-      plot1.push({ time: t, value: NaN });
-      plot2.push({ time: t, value: NaN });
-      plot3.push({ time: t, value: NaN });
-      plot4.push({ time: t, value: NaN });
-      continue;
-    }
-
-    const atrValue = atrArr[i]!;
-    const atrWhole = toWhole(atrValue);
-
-    // Stop size: either ATR-based or fixed pip
-    let stop: number;
-    if (useATR) {
-      stop = atrValue * stopSize;
-    } else {
-      stop = toPips(stopSize);
-    }
-
-    const close = bars[i].close;
-    const longEntrySize = toWhole(close - lowestLow[i] + stop);
-    const shortEntrySize = toWhole(highestHigh[i] - close + stop);
-
-    plot0.push({ time: t, value: atrWhole });
-    plot1.push({ time: t, value: longEntrySize });
-    plot2.push({ time: t, value: longEntrySize * riskRatio });
-    plot3.push({ time: t, value: shortEntrySize });
-    plot4.push({ time: t, value: shortEntrySize * riskRatio });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3, 'plot4': plot4 },
+    init() {
+      const atr = taStep.atr(atrLength);
+      const s: AtrPlusRun = { atr, plot0: [], plot1: [], plot2: [], plot3: [], plot4: [], steps: [atr], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1, s.plot2, s.plot3, s.plot4];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const atrValue = s.atr.step(b.high, b.low, b.close);
+
+      // Compute lowest low / highest high over lookback
+      let lo = b.low;
+      let hi = b.high;
+      for (let j = 1; j < lookback && i - j >= 0; j++) {
+        lo = Math.min(lo, bars[i - j].low);
+        hi = Math.max(hi, bars[i - j].high);
+      }
+
+      if (i < warmup || atrValue == null) {
+        s.plot0[i] = { time: t, value: NaN };
+        s.plot1[i] = { time: t, value: NaN };
+        s.plot2[i] = { time: t, value: NaN };
+        s.plot3[i] = { time: t, value: NaN };
+        s.plot4[i] = { time: t, value: NaN };
+        return;
+      }
+
+      const atrWhole = toWhole(atrValue);
+
+      // Stop size: either ATR-based or fixed pip
+      let stop: number;
+      if (useATR) {
+        stop = atrValue * stopSize;
+      } else {
+        stop = toPips(stopSize);
+      }
+
+      const close = b.close;
+      const longEntrySize = toWhole(close - lo + stop);
+      const shortEntrySize = toWhole(hi - close + stop);
+
+      s.plot0[i] = { time: t, value: atrWhole };
+      s.plot1[i] = { time: t, value: longEntrySize };
+      s.plot2[i] = { time: t, value: longEntrySize * riskRatio };
+      s.plot3[i] = { time: t, value: shortEntrySize };
+      s.plot4[i] = { time: t, value: shortEntrySize * riskRatio };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice(), 'plot2': s.plot2.slice(), 'plot3': s.plot3.slice(), 'plot4': s.plot4.slice() },
+      };
+    },
   };
 }
 
-export const ATRPlus = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ATRPlusInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ATRPlusInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const ATRPlus = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

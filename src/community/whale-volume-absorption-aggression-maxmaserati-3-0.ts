@@ -9,8 +9,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData, MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface WhaleVolumeAbsorptionAggressionInputs {
   volMaLength: number;
@@ -77,59 +79,81 @@ const EPS = 1e-10;
 const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<WhaleVolumeAbsorptionAggressionInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const vol = bars.map((b) => b.volume ?? NaN);
-  const volSma = ta.sma(Series.fromArray(bars, vol), cfg.volMaLength).toArray().map((v) => v ?? NaN);
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] };
 
+interface WhaleRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  plot0: { time: number; value: number; color?: string }[];
+  plot1: { time: number; value: number; color: string }[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<WhaleVolumeAbsorptionAggressionInputs>): BarStudy<WhaleRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const bgSellWhale = String(color.new(cfg.colSellWhale, 90));
   const bgSellUltra = String(color.new(cfg.colSellUltra, 85));
   const bgBuyWhale = String(color.new(cfg.colBuyWhale, 90));
   const bgBuyUltra = String(color.new(cfg.colBuyUltra, 85));
-
-  const plot0: { time: number; value: number; color?: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const b = bars[i];
-    const v = vol[i];
-    const s = volSma[i];
-    const isSeller = lt(b.close, b.open);
-    const isBuyer = ge(b.close, b.open);
-    const isUltra = ge(v, s * cfg.ultraMult);
-    const isWhale = ge(v, s * cfg.whaleMult) && !isUltra;
-    const isMid = ge(v, s * cfg.midMult) && !isWhale && !isUltra;
-
-    // color volColor = na; if isSeller ... else if isBuyer ...
-    let volColor: string | undefined;
-    if (isSeller) {
-      volColor = isUltra ? cfg.colSellUltra : isWhale ? cfg.colSellWhale : isMid ? cfg.colSellMid : cfg.colSellRetail;
-    } else if (isBuyer) {
-      volColor = isUltra ? cfg.colBuyUltra : isWhale ? cfg.colBuyWhale : isMid ? cfg.colBuyMid : cfg.colBuyRetail;
-    }
-    plot0.push(volColor === undefined ? { time: b.time, value: v } : { time: b.time, value: v, color: volColor });
-    plot1.push({ time: b.time, value: s, color: AVG_COL });
-
-    // Four bgcolor calls in this order (at most one is not na on a bar)
-    if (isSeller && isWhale) bgColors.push({ id: 'bgcolor0', time: b.time, color: bgSellWhale });
-    if (isSeller && isUltra) bgColors.push({ id: 'bgcolor1', time: b.time, color: bgSellUltra });
-    if (isBuyer && isWhale) bgColors.push({ id: 'bgcolor2', time: b.time, color: bgBuyWhale });
-    if (isBuyer && isUltra) bgColors.push({ id: 'bgcolor3', time: b.time, color: bgBuyUltra });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, format: metadata.format },
-    plots: { plot0, plot1 },
-    markers: [],
-    bgColors,
+    init() {
+      const sma = new WindowSma(cfg.volMaLength);
+      const st: WhaleRun = { sma, plot0: [], plot1: [], bgColors: [], steps: [sma], vars: {}, lists: [], series: [] };
+      st.lists = [st.bgColors];
+      st.series = [st.plot0, st.plot1];
+      return st;
+    },
+    bar(st, i, bars) {
+      const b = bars[i];
+      const v = b.volume ?? NaN;
+      const s = st.sma.step(v);
+      const isSeller = lt(b.close, b.open);
+      const isBuyer = ge(b.close, b.open);
+      const isUltra = ge(v, s * cfg.ultraMult);
+      const isWhale = ge(v, s * cfg.whaleMult) && !isUltra;
+      const isMid = ge(v, s * cfg.midMult) && !isWhale && !isUltra;
+
+      // color volColor = na; if isSeller ... else if isBuyer ...
+      let volColor: string | undefined;
+      if (isSeller) {
+        volColor = isUltra ? cfg.colSellUltra : isWhale ? cfg.colSellWhale : isMid ? cfg.colSellMid : cfg.colSellRetail;
+      } else if (isBuyer) {
+        volColor = isUltra ? cfg.colBuyUltra : isWhale ? cfg.colBuyWhale : isMid ? cfg.colBuyMid : cfg.colBuyRetail;
+      }
+      st.plot0[i] = volColor === undefined ? { time: b.time, value: v } : { time: b.time, value: v, color: volColor };
+      st.plot1[i] = { time: b.time, value: s, color: AVG_COL };
+
+      // Four bgcolor calls in this order (at most one is not na on a bar)
+      if (isSeller && isWhale) st.bgColors.push({ id: 'bgcolor0', time: b.time, color: bgSellWhale });
+      if (isSeller && isUltra) st.bgColors.push({ id: 'bgcolor1', time: b.time, color: bgSellUltra });
+      if (isBuyer && isWhale) st.bgColors.push({ id: 'bgcolor2', time: b.time, color: bgBuyWhale });
+      if (isBuyer && isUltra) st.bgColors.push({ id: 'bgcolor3', time: b.time, color: bgBuyUltra });
+    },
+    result(st) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, format: metadata.format },
+        plots: { plot0: st.plot0.slice(), plot1: st.plot1.slice() },
+        markers: [],
+        bgColors: st.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WhaleVolumeAbsorptionAggressionInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<WhaleVolumeAbsorptionAggressionInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const WhaleVolumeAbsorptionAggression = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

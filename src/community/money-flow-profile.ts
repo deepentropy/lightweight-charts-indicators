@@ -27,6 +27,7 @@ import { array, color, compare, str, type IndicatorResult, type InputConfig, typ
 import type { BoxData, LabelData, PineSize, PolylineData } from '../types';
 import { barInterval, barTime } from '../bar-time';
 import { currencyOf, foregroundColorOf, mintickOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MoneyFlowProfileInputs {
   /** Lookback Length / Fixed Range */
@@ -209,11 +210,10 @@ interface BoxObj {
 
 const SIZES: Record<string, PineSize> = { Tiny: 'tiny', Small: 'small', Normal: 'normal', Auto: 'auto' };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MoneyFlowProfileInputs> = {},
-  chart?: ChartContext,
-): IndicatorResult & { boxes: BoxData[]; labels: LabelData[]; polylines: PolylineData[] } {
+type Result = IndicatorResult & { boxes: BoxData[]; labels: LabelData[]; polylines: PolylineData[] };
+
+/** The drawings of the last bar, from the bars of the lookback (built again on each update: they move with a new bar) */
+function lastBarDrawings(bars: Bar[], inputs: Partial<MoneyFlowProfileInputs>, chart?: ChartContext): Result {
   // syminfo.mintick, syminfo.currency and chart.fg_color (text of the boxes)
   const MINTICK = mintickOf(chart);
   const CURRENCY = currencyOf(chart);
@@ -428,4 +428,24 @@ export function calculate(
   return result();
 }
 
-export const MoneyFlowProfile = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+// Nothing is calculated bar by bar: every output is a drawing of the last bar
+type MoneyFlowProfileRun = BarRunState<Record<string, never>>;
+
+function study(inputs: Partial<MoneyFlowProfileInputs>): BarStudy<MoneyFlowProfileRun, Result> {
+  return {
+    init: () => ({ steps: [], vars: {}, lists: [], series: [] }),
+    bar() {},
+    result: (_s, bars, chart) => lastBarDrawings(bars, inputs, chart),
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MoneyFlowProfileInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MoneyFlowProfileInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const MoneyFlowProfile = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

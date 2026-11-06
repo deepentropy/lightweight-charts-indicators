@@ -27,8 +27,10 @@
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, OutputDecl, OutputValues } from '../types';
-import { lowerTimeframe, upDownVolumeOfChartBars } from '../lower-tf-volume';
+import { lowerTimeframe } from '../lower-tf-volume';
+import { chartTimeframe } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface UpDownVolumeInputs {
   /** Use the custom lower timeframe instead of the automatic one */
@@ -65,65 +67,107 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; outputValues: OutputValues };
+
+interface UpDownVars {
+  /** isBuyVolume of the library rule (the chart bars as the intrabars) */
+  isBuyVolume: boolean;
+}
+
+interface UpDownRun extends BarRunState<UpDownVars> {
+  exact: boolean;
+  up: Point[];
+  down: Point[];
+  markers: MarkerData[];
+  deltaValues: Point[];
+}
+
+function study(inputs: Partial<UpDownVolumeInputs>): BarStudy<UpDownRun, Result> {
+  const { useCustomTimeframe, lowerTimeframe: customTimeframe } = { ...defaultInputs, ...inputs };
+  return {
+    // the chart timeframe is read from the bar spacing when the chart context has none
+    key: (bars, chart) => chartTimeframe(bars, chart),
+    init(bars, chart) {
+      const { exact } = lowerTimeframe(bars, useCustomTimeframe, customTimeframe, chart);
+      const s: UpDownRun = {
+        exact, up: [], down: [], markers: [], deltaValues: [],
+        steps: [], vars: { isBuyVolume: true }, lists: [], series: [],
+      };
+      s.series = [s.up, s.down, s.markers, s.deltaValues];
+      return s;
+    },
+    bar(s, i, bars) {
+      let upVol: number;
+      let downVol: number;
+      if (s.exact) {
+        // Lower timeframe = chart timeframe: the original values (the library rule of upDownVolumeOfChartBars)
+        const { open, close } = bars[i];
+        const prevClose = i > 0 ? bars[i - 1].close : NaN; // na comparisons are false
+        const v = s.vars;
+        if (gt(close, open)) v.isBuyVolume = true;
+        else if (gt(open, close)) v.isBuyVolume = false;
+        else if (gt(close, prevClose)) v.isBuyVolume = true;
+        else if (gt(prevClose, close)) v.isBuyVolume = false;
+        const volume = bars[i].volume ?? 0;
+        const pos = v.isBuyVolume ? volume : 0;
+        const neg = v.isBuyVolume ? 0 : -volume;
+        upVol = pos;
+        downVol = -neg;
+      } else {
+        const vol = bars[i].volume ?? 0;
+        // Estimate: direction from close vs previous close; first bar falls back to close vs open.
+        const ref = i > 0 ? bars[i - 1].close : bars[i].open;
+        const isUp = bars[i].close >= ref;
+        upVol = isUp ? vol : 0;
+        downVol = isUp ? 0 : vol;
+      }
+      const delta = upVol - downVol;
+
+      s.up[i] = { time: bars[i].time, value: upVol };
+      s.down[i] = { time: bars[i].time, value: -downVol }; // plotted below zero
+      // plotchar(delta, "delta", "—", location.absolute, color = delta > 0 ? color.green : color.red, size = size.tiny)
+      s.deltaValues[i] = { time: bars[i].time as number, value: delta };
+      s.markers[i] = {
+        time: bars[i].time,
+        position: 'atPriceMiddle',
+        price: delta,
+        shape: 'circle',
+        char: '—',
+        color: gt(delta, 0) ? '#4CAF50' : '#F23645',
+        size: 'tiny',
+        id: 'delta',
+      };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.up.slice(),
+          'plot1': s.down.slice(),
+        },
+        markers: s.markers.slice(),
+        outputValues: { delta: s.deltaValues.slice() },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<UpDownVolumeInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<UpDownVolumeInputs> = {},
   chart?: ChartContext,
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; outputValues: OutputValues } {
-  const { useCustomTimeframe, lowerTimeframe: customTimeframe } = { ...defaultInputs, ...inputs };
-  const { exact } = lowerTimeframe(bars, useCustomTimeframe, customTimeframe, chart);
-  const exactVolume = exact ? upDownVolumeOfChartBars(bars) : null;
-  const up: { time: number; value: number }[] = [];
-  const down: { time: number; value: number }[] = [];
-  const markers: MarkerData[] = [];
-  const deltaValues: { time: number; value: number }[] = [];
-
-  for (let i = 0; i < bars.length; i++) {
-    let upVol: number;
-    let downVol: number;
-    if (exactVolume) {
-      // Lower timeframe = chart timeframe: the original values
-      upVol = exactVolume.up[i];
-      downVol = -exactVolume.down[i];
-    } else {
-      const vol = bars[i].volume ?? 0;
-      // Estimate: direction from close vs previous close; first bar falls back to close vs open.
-      const ref = i > 0 ? bars[i - 1].close : bars[i].open;
-      const isUp = bars[i].close >= ref;
-      upVol = isUp ? vol : 0;
-      downVol = isUp ? 0 : vol;
-    }
-    const delta = upVol - downVol;
-
-    up.push({ time: bars[i].time, value: upVol });
-    down.push({ time: bars[i].time, value: -downVol }); // plotted below zero
-    // plotchar(delta, "delta", "—", location.absolute, color = delta > 0 ? color.green : color.red, size = size.tiny)
-    deltaValues.push({ time: bars[i].time as number, value: delta });
-    markers.push({
-      time: bars[i].time,
-      position: 'atPriceMiddle',
-      price: delta,
-      shape: 'circle',
-      char: '—',
-      color: gt(delta, 0) ? '#4CAF50' : '#F23645',
-      size: 'tiny',
-      id: 'delta',
-    });
-  }
-
-  return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
-    },
-    plots: {
-      'plot0': up,
-      'plot1': down,
-    },
-    markers,
-    outputValues: { delta: deltaValues },
-  };
+): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 /** Reference outputs: the two column plots, then the delta character. */
@@ -135,6 +179,7 @@ export const outputs: OutputDecl[] = [
 
 export const UpDownVolume = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

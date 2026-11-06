@@ -12,7 +12,9 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import { barTime, barInterval } from '../bar-time';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertcondition */
 export const alertConditions: AlertConditionDecl[] = [
@@ -55,45 +57,70 @@ export const metadata = {
   overlay: true,
 };
 
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface BreakoutRun extends BarRunState<Record<string, never>> {
+  longVal: number[];
+  shortVal: number[];
+  alertFlags: boolean[];
+  times: number[][];
+}
+
+function study(inputs: Partial<BreakoutIndicatorInputs>): BarStudy<BreakoutRun, Result> {
+  const { timeBreakout, longBreakout, shortBreakout, offset } = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const s: BreakoutRun = { longVal: [], shortVal: [], alertFlags: [], times: [[]], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [...s.times];
+      s.series = [s.longVal, s.shortVal, s.alertFlags];
+      return s;
+    },
+    bar(s, i, bars) {
+      // Pine values on bar i (time is the bar open time in ms)
+      const started = bars[i].time * 1000 >= timeBreakout;
+      s.longVal[i] = longBreakout > 0 && started ? longBreakout : NaN;
+      s.shortVal[i] = shortBreakout > 0 && started ? shortBreakout : NaN;
+      // longAlert = longBreakout > 0 and close > longBreakout and time >= timeBreakout (shortAlert: close < shortBreakout)
+      const longAlert = longBreakout > 0 && bars[i].close > longBreakout && started;
+      const shortAlert = shortBreakout > 0 && bars[i].close < shortBreakout && started;
+      const flag = longAlert || shortAlert;
+      s.alertFlags[i] = flag;
+      if (flag) s.times[0].push(bars[i].time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const interval = barInterval(bars);
+      // plot(..., offset = k): the value of bar i is drawn on bar i + k (k bars after the last bar for the last values)
+      const shifted = (vals: number[]) =>
+        Array.from({ length: n + Math.max(0, offset) }, (_, j) => {
+          const src = j - offset;
+          return { time: barTime(bars, j, interval), value: src >= 0 && src < n ? vals[src] : NaN };
+        });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: shifted(s.longVal), plot1: shifted(s.shortVal) },
+        // alertcondition(longAlert or shortAlert, "Breakout Alert!")
+        alerts: liveAlertStates(alertConditions, s.times, [n > 0 && s.alertFlags[n - 1]]),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BreakoutIndicatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<BreakoutIndicatorInputs> = {},
 ): IndicatorResult & { alerts: AlertConditionState[] } {
-  const { timeBreakout, longBreakout, shortBreakout, offset } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const interval = barInterval(bars);
-
-  // Pine values on bar i (time is the bar open time in ms)
-  const longVal: number[] = new Array(n);
-  const shortVal: number[] = new Array(n);
-  const alertFlags: boolean[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const started = bars[i].time * 1000 >= timeBreakout;
-    longVal[i] = longBreakout > 0 && started ? longBreakout : NaN;
-    shortVal[i] = shortBreakout > 0 && started ? shortBreakout : NaN;
-    // longAlert = longBreakout > 0 and close > longBreakout and time >= timeBreakout (shortAlert: close < shortBreakout)
-    const longAlert = longBreakout > 0 && bars[i].close > longBreakout && started;
-    const shortAlert = shortBreakout > 0 && bars[i].close < shortBreakout && started;
-    alertFlags[i] = longAlert || shortAlert;
-  }
-
-  // plot(..., offset = k): the value of bar i is drawn on bar i + k (k bars after the last bar for the last values)
-  const shifted = (vals: number[]) =>
-    Array.from({ length: n + Math.max(0, offset) }, (_, j) => {
-      const src = j - offset;
-      return { time: barTime(bars, j, interval), value: src >= 0 && src < n ? vals[src] : NaN };
-    });
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: shifted(longVal), plot1: shifted(shortVal) },
-    // alertcondition(longAlert or shortAlert, "Breakout Alert!")
-    alerts: alertStates(alertConditions, bars, [alertFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const BreakoutIndicator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

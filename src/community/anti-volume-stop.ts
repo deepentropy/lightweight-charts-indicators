@@ -7,7 +7,9 @@
  * Reference: "Anti-Volume Stop Loss" (community)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AntiVolumeStopInputs {
   length: number;
@@ -32,66 +34,82 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<AntiVolumeStopInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface AvsRun extends BarRunState<Record<string, never>> {
+  atr: ReturnType<typeof taStep.atr>;
+  avgVol: WindowSma;
+  stopArr: number[];
+  dirArr: number[];
+  plot0: Point[];
+}
+
+function study(inputs: Partial<AntiVolumeStopInputs>): BarStudy<AvsRun, IndicatorResult> {
   const { length } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const atrArr = ta.atr(bars, length).toArray();
-  const volSeries = new Series(bars, (b) => b.volume ?? 0);
-  const avgVolArr = ta.sma(volSeries, length).toArray();
-
-  const stopArr: number[] = new Array(n);
-  const dirArr: number[] = new Array(n); // 1 = long, -1 = short
-
-  for (let i = 0; i < n; i++) {
-    const atrVal = atrArr[i] ?? 0;
-    const avgVol = avgVolArr[i] ?? 1;
-    const vol = bars[i].volume ?? 0;
-    const volRatio = avgVol > 0 ? vol / avgVol : 1;
-    const stopDist = atrVal * volRatio;
-
-    if (i === 0) {
-      stopArr[i] = bars[i].close - stopDist;
-      dirArr[i] = 1;
-      continue;
-    }
-
-    const prevStop = stopArr[i - 1];
-    const prevDir = dirArr[i - 1];
-    const close = bars[i].close;
-
-    if (prevDir === 1) {
-      const newStop = close - stopDist;
-      if (close > prevStop) {
-        stopArr[i] = Math.max(newStop, prevStop);
-        dirArr[i] = 1;
-      } else {
-        stopArr[i] = close + stopDist;
-        dirArr[i] = -1;
-      }
-    } else {
-      const newStop = close + stopDist;
-      if (close < prevStop) {
-        stopArr[i] = Math.min(newStop, prevStop);
-        dirArr[i] = -1;
-      } else {
-        stopArr[i] = close - stopDist;
-        dirArr[i] = 1;
-      }
-    }
-  }
-
   const warmup = length;
-  const plot0 = stopArr.map((v, i) => {
-    if (i < warmup) return { time: bars[i].time, value: NaN };
-    const color = dirArr[i] === 1 ? '#26A69A' : '#EF5350';
-    return { time: bars[i].time, value: v, color };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    init() {
+      const atr = taStep.atr(length);
+      const avgVol = new WindowSma(length);
+      const s: AvsRun = { atr, avgVol, stopArr: [], dirArr: [], plot0: [], steps: [atr, avgVol], vars: {}, lists: [], series: [] };
+      s.series = [s.stopArr, s.dirArr, s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const atrVal = s.atr.step(b.high, b.low, b.close);
+      const avgVol = s.avgVol.step(b.volume ?? 0);
+      const vol = b.volume ?? 0;
+      const volRatio = avgVol > 0 ? vol / avgVol : 1;
+      const stopDist = atrVal * volRatio;
+      const close = b.close;
+
+      if (i === 0) {
+        s.stopArr[i] = close - stopDist;
+        s.dirArr[i] = 1;
+      } else {
+        const prevStop = s.stopArr[i - 1]!;
+        const prevDir = s.dirArr[i - 1]!;
+        if (prevDir === 1) {
+          const newStop = close - stopDist;
+          if (close > prevStop) {
+            s.stopArr[i] = Math.max(newStop, prevStop);
+            s.dirArr[i] = 1;
+          } else {
+            s.stopArr[i] = close + stopDist;
+            s.dirArr[i] = -1;
+          }
+        } else {
+          const newStop = close + stopDist;
+          if (close < prevStop) {
+            s.stopArr[i] = Math.min(newStop, prevStop);
+            s.dirArr[i] = -1;
+          } else {
+            s.stopArr[i] = close - stopDist;
+            s.dirArr[i] = 1;
+          }
+        }
+      }
+
+      if (i < warmup) s.plot0[i] = { time: b.time as number, value: NaN };
+      else s.plot0[i] = { time: b.time as number, value: s.stopArr[i]!, color: s.dirArr[i] === 1 ? '#26A69A' : '#EF5350' };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice() },
+      };
+    },
   };
 }
 
-export const AntiVolumeStop = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AntiVolumeStopInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AntiVolumeStopInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const AntiVolumeStop = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

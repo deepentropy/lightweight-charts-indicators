@@ -8,7 +8,9 @@
  * Reference: "MACDAS"
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MACDASInputs {
   fastperiod: number;
@@ -42,37 +44,65 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MACDASInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface MacdasRun extends BarRunState<Record<string, never>> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  sig: ReturnType<typeof taStep.ema>;
+  sigAS: ReturnType<typeof taStep.ema>;
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<MACDASInputs>): BarStudy<MacdasRun, IndicatorResult> {
   const { fastperiod, slowperiod, signalperiod, src } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
-
-  // Pine: macd = ema(close, fast) - ema(close, slow)
-  const fastEMA = ta.ema(source, fastperiod);
-  const slowEMA = ta.ema(source, slowperiod);
-  const macd = fastEMA.sub(slowEMA);
-
-  // Pine: signal = ema(macd, signalperiod)
-  const signal = ta.ema(macd, signalperiod);
-
-  // Pine: macdAS = macd - signal
-  const macdAS = macd.sub(signal);
-
-  // Pine: signalAS = ema(macdAS, signalperiod)
-  const signalAS = ta.ema(macdAS, signalperiod);
-
-  const macdASArr = macdAS.toArray();
-  const signalASArr = signalAS.toArray();
-
+  const value = barSource(src);
   const warmup = slowperiod + signalperiod;
-
-  const toPlot = (arr: (number | null)[]) =>
-    arr.map((v, i) => ({ time: bars[i].time, value: (i < warmup || v == null) ? NaN : v }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(macdASArr), 'plot1': toPlot(signalASArr) },
-    hlines: [{ value: 0, options: { color: '#000000', linestyle: 'solid', title: 'Zero' } }],
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const fast = taStep.ema(fastperiod);
+      const slow = taStep.ema(slowperiod);
+      const sig = taStep.ema(signalperiod);
+      const sigAS = taStep.ema(signalperiod);
+      const s: MacdasRun = {
+        fast, slow, sig, sigAS, plot0: [], plot1: [], steps: [fast, slow, sig, sigAS], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = value(bars[i]);
+      // Pine: macd = ema(close, fast) - ema(close, slow)
+      const macd = s.fast.step(v) - s.slow.step(v);
+      // Pine: signal = ema(macd, signalperiod)
+      const signal = s.sig.step(macd);
+      // Pine: macdAS = macd - signal
+      const macdAS = macd - signal;
+      // Pine: signalAS = ema(macdAS, signalperiod)
+      const signalAS = s.sigAS.step(macdAS);
+      const time = bars[i].time;
+      s.plot0[i] = { time, value: (i < warmup || macdAS == null) ? NaN : macdAS };
+      s.plot1[i] = { time, value: (i < warmup || signalAS == null) ? NaN : signalAS };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice() },
+        hlines: [{ value: 0, options: { color: '#000000', linestyle: 'solid', title: 'Zero' } }],
+      };
+    },
   };
 }
 
-export const MACDAS = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MACDASInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MACDASInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MACDAS = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

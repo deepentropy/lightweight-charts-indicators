@@ -11,8 +11,10 @@
  * Original notice: © vvedding
  */
 
-import { ta, color, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall, MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -55,41 +57,67 @@ const lt = (a: number, b: number) => b - a > EPS;
 /** Pine default plotshape text colour */
 const PINE_TEXT_COLOR = '#2962FF';
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<BuyTheDipSellTheRipInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alertCalls: AlertCall[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alertCalls: AlertCall[] };
+
+interface BtdRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  sma: WindowSma;
+  rsiArr: number[];
+  markers: MarkerData[];
+  alertCalls: AlertCall[];
+}
+
+function study(inputs: Partial<BuyTheDipSellTheRipInputs>): BarStudy<BtdRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const close = new Series(bars, (b) => b.close);
-  const rsiSeries = ta.rsi(close, cfg.rsiLength);
-  const rsi = rsiSeries.toArray().map((v) => v ?? NaN);
-  const rsiSma = ta.sma(rsiSeries, cfg.rsiSmaLength).toArray().map((v) => v ?? NaN);
-
-  const markers: MarkerData[] = [];
-  const alertCalls: AlertCall[] = [];
-  bars.forEach((b, i) => {
-    const rsi1 = i > 0 ? rsi[i - 1] : NaN;
-    const btd = lt(rsi1, cfg.oversold) && gt(rsi[i], rsi1);
-    const str = gt(rsi[i], cfg.overbought) && gt(rsiSma[i], cfg.overbought) && gt(rsi1, rsi[i]);
-    if (btd) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.lime, text: 'DIP',
-        textColor: PINE_TEXT_COLOR, size: 'small' });
-    }
-    if (str) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.red, text: 'RIP',
-        textColor: PINE_TEXT_COLOR, size: 'small' });
-    }
-    // if btd: alert("Buy the Dip!", alert.freq_once_per_bar_close); if str: alert("Sell the Rip!", ...)
-    if (btd) alertCalls.push({ time: b.time, message: 'Buy the Dip!', freq: 'once_per_bar_close' });
-    if (str) alertCalls.push({ time: b.time, message: 'Sell the Rip!', freq: 'once_per_bar_close' });
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    alertCalls,
+    init() {
+      const rsi = taStep.rsi(cfg.rsiLength);
+      const sma = new WindowSma(cfg.rsiSmaLength);
+      const s: BtdRun = {
+        rsi, sma, rsiArr: [], markers: [], alertCalls: [], steps: [rsi, sma], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.alertCalls];
+      s.series = [s.rsiArr];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const r = s.rsi.step(b.close);
+      const rsiSma = s.sma.step(r);
+      s.rsiArr[i] = r;
+      const rsi1 = i > 0 ? s.rsiArr[i - 1]! : NaN;
+      const btd = lt(rsi1, cfg.oversold) && gt(r, rsi1);
+      const str = gt(r, cfg.overbought) && gt(rsiSma, cfg.overbought) && gt(rsi1, r);
+      if (btd) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.lime, text: 'DIP',
+          textColor: PINE_TEXT_COLOR, size: 'small' });
+      }
+      if (str) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.red, text: 'RIP',
+          textColor: PINE_TEXT_COLOR, size: 'small' });
+      }
+      // if btd: alert("Buy the Dip!", alert.freq_once_per_bar_close); if str: alert("Sell the Rip!", ...)
+      if (btd) s.alertCalls.push({ time: b.time, message: 'Buy the Dip!', freq: 'once_per_bar_close' });
+      if (str) s.alertCalls.push({ time: b.time, message: 'Sell the Rip!', freq: 'once_per_bar_close' });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
 }
 
-export const BuyTheDipSellTheRip = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hasAlertFunction };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BuyTheDipSellTheRipInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BuyTheDipSellTheRipInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const BuyTheDipSellTheRip = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hasAlertFunction };

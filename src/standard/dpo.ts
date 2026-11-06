@@ -5,7 +5,9 @@
  * DPO = Close - SMA(Close, length)[length/2 + 1]
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DPOInputs {
   /** Period length */
@@ -38,50 +40,67 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<DPOInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface DpoRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  ma: number[];
+  dpoData: Point[];
+}
+
+function study(inputs: Partial<DPOInputs>): BarStudy<DpoRun, IndicatorResult> {
   const { length, centered } = { ...defaultInputs, ...inputs };
-
-  const close = new Series(bars, b => b.close);
-  const ma = ta.sma(close, length);
-  const maArr = ma.toArray();
-  const closeArr = close.toArray();
-
   const barsback = Math.floor(length / 2) + 1;
-
-  // DPO = close - ma[barsback] (non-centered)
-  // Centered: visually equivalent to Pine's close[barsback] - ma with offset = -barsback
-  // Which means at display position i: close[i] - ma[i + barsback]
-  const dpoData = bars.map((bar, i) => {
-    if (centered) {
-      const maIndex = i + barsback;
-      if (maIndex >= bars.length || maArr[maIndex] == null) {
-        return { time: bar.time, value: NaN };
-      }
-      return { time: bar.time, value: closeArr[i]! - maArr[maIndex]! };
-    } else {
-      // non-centered: close - ma[barsback]
-      const maIndex = i - barsback;
-      if (maIndex < 0 || maArr[maIndex] == null) {
-        return { time: bar.time, value: NaN };
-      }
-      return { time: bar.time, value: closeArr[i]! - maArr[maIndex]! };
-    }
-  });
-
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    init() {
+      const sma = new WindowSma(length);
+      const s: DpoRun = { sma, ma: [], dpoData: [], steps: [sma], vars: {}, lists: [], series: [] };
+      s.series = [s.ma, s.dpoData];
+      return s;
     },
-    plots: {
-      'plot0': dpoData,
+    bar(s, i, bars) {
+      const bar = bars[i];
+      const ma = s.sma.step(bar.close);
+      s.ma[i] = ma;
+      if (centered) {
+        // Centered: visually equivalent to Pine's close[barsback] - ma with offset = -barsback
+        // Which means at display position i: close[i] - ma[i + barsback] (written by bar i + barsback)
+        s.dpoData[i] = { time: bar.time, value: NaN };
+        const k = i - barsback;
+        if (k >= 0) s.dpoData[k] = { time: bars[k].time, value: bars[k].close - ma };
+      } else {
+        // non-centered: close - ma[barsback]
+        const maIndex = i - barsback;
+        s.dpoData[i] = maIndex < 0 ? { time: bar.time, value: NaN } : { time: bar.time, value: bar.close - s.ma[maIndex]! };
+      }
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.dpoData.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DPOInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DPOInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const DPO = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

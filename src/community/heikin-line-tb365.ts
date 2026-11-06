@@ -9,8 +9,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowStdev, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type MaType = 'None' | 'SMA' | 'SMA + Bollinger Bands' | 'EMA' | 'SMMA (RMA)' | 'WMA' | 'VWMA';
 
@@ -72,67 +74,118 @@ export const metadata = {
 };
 
 type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { visibility: Record<string, boolean> };
+type Ma = { step(v: number, volume: number): number; commit(): void };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<HeikinLineTb365Inputs> = {},
-): IndicatorResult & { visibility: Record<string, boolean> } {
+interface HeikinRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  ma: Ma | null;
+  dev: WindowStdev | null;
+  out: number[];
+  /** The EMA points of the bars with a drawn bar (written by the bar where the point is drawn) */
+  emaPlot: Point[];
+  maLine: Point[];
+  upper: Point[];
+  lower: Point[];
+}
+
+function study(inputs: Partial<HeikinLineTb365Inputs>): BarStudy<HeikinRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // out = ta.ema(src, len)
-  const out = A(ta.ema(getSourceSeries(bars, cfg.src), cfg.len));
-  const outS = S(out);
-
+  const value = barSource(cfg.src);
+  const offset = cfg.offset;
   // var enableMA / isBB: constant from the inputs
   const enableMA = cfg.maType !== 'None';
   const isBB = cfg.maType === 'SMA + Bollinger Bands';
-  let ma = new Array<number>(n).fill(NaN);
-  if (enableMA) {
-    let maS: Series;
+  const maStep = (): Ma | null => {
+    if (!enableMA) return null;
+    const len = cfg.maLength;
     switch (cfg.maType) {
-      case 'EMA': maS = ta.ema(outS, cfg.maLength); break;
-      case 'SMMA (RMA)': maS = ta.rma(outS, cfg.maLength); break;
-      case 'WMA': maS = ta.wma(outS, cfg.maLength); break;
-      case 'VWMA': maS = ta.vwma(outS, cfg.maLength, S(bars.map((b) => b.volume ?? NaN))); break;
-      default: maS = ta.sma(outS, cfg.maLength); break;
+      case 'EMA': { const m = taStep.ema(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'SMMA (RMA)': { const m = taStep.rma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+      case 'VWMA': return new WindowVwma(len);
+      default: { const m = new WindowSma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
     }
-    ma = A(maS);
-  }
-  // smoothingStDev = isBB ? ta.stdev(out, maLengthInput) * bbMultInput : na
-  const sd = isBB ? A(ta.stdev(outS, cfg.maLength)).map((v) => v * cfg.bbMult) : new Array<number>(n).fill(NaN);
-
-  // plot(out, "EMA", color.blue, offset = offset): the value of bar i is drawn on bar i + offset
-  const interval = barInterval(bars);
-  const emaPlot: Point[] = [];
-  for (let i = 0; i < n; i++) {
-    const j = i + cfg.offset;
-    if (j < 0) continue;
-    emaPlot.push({ time: barTime(bars, j, interval), value: out[i], color: color.blue });
-  }
-  const line = (f: (i: number) => number, c: string): Point[] => bars.map((b, i) => ({ time: b.time, value: f(i), color: c }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: emaPlot,
-      plot1: line((i) => ma[i], color.yellow),
-      plot2: line((i) => ma[i] + sd[i], color.green),
-      plot3: line((i) => ma[i] - sd[i], color.green),
-    },
-    fills: [
-      // fill(bbUpperBand, bbLowerBand, color = isBB ? color.new(color.green, 90) : na, display = isBB ? all : none)
-      { plot1: 'plot2', plot2: 'plot3', options: { title: 'Bollinger Bands Background Fill' },
-        colors: new Array<string>(n).fill(isBB ? BB_FILL : 'transparent') },
-    ],
-    visibility: { enableMA, isBB },
   };
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      // out = ta.ema(src, len)
+      const ema = taStep.ema(cfg.len);
+      const ma = maStep();
+      // smoothingStDev = isBB ? ta.stdev(out, maLengthInput) * bbMultInput : na
+      const dev = isBB ? new WindowStdev(cfg.maLength) : null;
+      const s: HeikinRun = {
+        ema, ma, dev, out: [], emaPlot: [], maLine: [], upper: [], lower: [],
+        steps: [ema, ...(ma ? [ma] : []), ...(dev ? [dev] : [])], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.out, s.maLine, s.upper, s.lower];
+      return s;
+    },
+    bar(s, k, bars) {
+      const b = bars[k];
+      const out = s.ema.step(value(b));
+      s.out[k] = out;
+      const ma = s.ma ? s.ma.step(out, b.volume ?? NaN) : NaN;
+      const sd = s.dev ? s.dev.step(out) * cfg.bbMult : NaN;
+      s.maLine[k] = { time: b.time, value: ma, color: color.yellow };
+      s.upper[k] = { time: b.time, value: ma + sd, color: color.green };
+      s.lower[k] = { time: b.time, value: ma - sd, color: color.green };
+      // plot(out, "EMA", color.blue, offset = offset): the value of bar i is drawn on bar i + offset (point i + offset
+      // for a negative offset, written by bar i; point i for a positive one, written by bar i + offset)
+      if (offset <= 0) {
+        const j = k + offset;
+        if (j >= 0) s.emaPlot[j] = { time: bars[j].time, value: out, color: color.blue };
+      } else {
+        const i = k - offset;
+        if (i >= 0) s.emaPlot[i] = { time: b.time, value: s.out[i], color: color.blue };
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      let emaPlot: Point[];
+      if (offset <= 0) {
+        emaPlot = s.emaPlot.slice(0, Math.max(0, n + offset));
+      } else {
+        // the points drawn after the last bar: future bar times
+        const first = Math.max(0, n - offset);
+        emaPlot = s.emaPlot.slice(0, first);
+        if (first < n) {
+          const interval = barInterval(bars);
+          for (let i = first; i < n; i++) emaPlot.push({ time: barTime(bars, i + offset, interval), value: s.out[i], color: color.blue });
+        }
+      }
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: emaPlot,
+          plot1: s.maLine.slice(),
+          plot2: s.upper.slice(),
+          plot3: s.lower.slice(),
+        },
+        fills: [
+          // fill(bbUpperBand, bbLowerBand, color = isBB ? color.new(color.green, 90) : na, display = isBB ? all : none)
+          { plot1: 'plot2', plot2: 'plot3', options: { title: 'Bollinger Bands Background Fill' },
+            colors: new Array<string>(n).fill(isBB ? BB_FILL : 'transparent') },
+        ],
+        visibility: { enableMA, isBB },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HeikinLineTb365Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<HeikinLineTb365Inputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const HeikinLineTb365 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

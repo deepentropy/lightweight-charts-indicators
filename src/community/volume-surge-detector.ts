@@ -11,8 +11,10 @@
  * Original notice: © SpeculationLab
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeSurgeDetectorInputs {
   /** SMA length of the volume */
@@ -78,34 +80,65 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+
+interface SurgeRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<VolumeSurgeDetectorInputs>): BarStudy<SurgeRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const sma = new WindowSma(cfg.maLength);
+      const s: SurgeRun = { sma, plot0: [], plot1: [], flags: [[], []], times: [[], []], steps: [sma], vars: {}, lists: [], series: [] };
+      s.lists = [...s.times];
+      s.series = [s.plot0, s.plot1, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = b.volume ?? NaN;
+      const ma = s.sma.step(volume);
+      // A plain division: x / 0 is +-infinity (0 / 0 NaN); the comparisons use the infinite value
+      const ratio = volume / ma;
+      const alert1 = gt(ratio, cfg.trigger1);
+      const alert2 = gt(ratio, cfg.trigger2);
+      s.flags[0][i] = alert1;
+      s.flags[1][i] = alert2;
+      if (alert1) s.times[0].push(b.time as number);
+      if (alert2) s.times[1].push(b.time as number);
+      const c = alert2 ? cfg.color2 : alert1 ? cfg.color1 : gt(b.close, b.open) ? cfg.volColor1 : cfg.volColor2;
+      s.plot0[i] = { time: b.time, value: volume, color: c };
+      s.plot1[i] = { time: b.time, value: ma, color: cfg.maColor };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, format: metadata.format },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        // alertcondition(alert1, "Volume Surge Trigger1") / alertcondition(alert2, "Volume Surge Trigger2")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeSurgeDetectorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<VolumeSurgeDetectorInputs> = {},
 ): IndicatorResult & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const ma = ta.sma(Series.fromArray(bars, volume), cfg.maLength).toArray().map((v) => v ?? NaN);
-
-  const alert1Flags: boolean[] = [];
-  const alert2Flags: boolean[] = [];
-  const plot0 = bars.map((b, i) => {
-    // A plain division: x / 0 is +-infinity (0 / 0 NaN); the comparisons use the infinite value
-    const ratio = volume[i] / ma[i];
-    const alert1 = gt(ratio, cfg.trigger1);
-    const alert2 = gt(ratio, cfg.trigger2);
-    alert1Flags.push(alert1);
-    alert2Flags.push(alert2);
-    const c = alert2 ? cfg.color2 : alert1 ? cfg.color1 : gt(b.close, b.open) ? cfg.volColor1 : cfg.volColor2;
-    return { time: b.time, value: volume[i], color: c };
-  });
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: ma[i], color: cfg.maColor }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, format: metadata.format },
-    plots: { plot0, plot1 },
-    // alertcondition(alert1, "Volume Surge Trigger1") / alertcondition(alert2, "Volume Surge Trigger2")
-    alerts: alertStates(alertConditions, bars, [alert1Flags, alert2Flags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -116,6 +149,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const VolumeSurgeDetector = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -8,7 +8,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type Series } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DynamicStopLossTakeProfitInputs {
   /** ATR length */
@@ -46,29 +48,53 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<DynamicStopLossTakeProfitInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface DsltpRun extends BarRunState<Record<string, never>> {
+  atr: ReturnType<typeof taStep.atr>;
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<DynamicStopLossTakeProfitInputs>): BarStudy<DsltpRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const atr = A(ta.atr(bars, cfg.atrLength));
   const isLong = cfg.tradeType === 'Long';
-
-  const plot0 = bars.map((b, i) => {
-    const sl = atr[i] * cfg.slMultiplier;
-    return { time: b.time, value: isLong ? b.close - sl : b.close + sl, color: color.red };
-  });
-  const plot1 = bars.map((b, i) => {
-    const tp = atr[i] * cfg.tpMultiplier;
-    return { time: b.time, value: isLong ? b.close + tp : b.close - tp, color: color.lime };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
+    init() {
+      const atr = taStep.atr(cfg.atrLength);
+      const s: DsltpRun = { atr, plot0: [], plot1: [], steps: [atr], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const sl = atr * cfg.slMultiplier;
+      s.plot0[i] = { time: b.time, value: isLong ? b.close - sl : b.close + sl, color: color.red };
+      const tp = atr * cfg.tpMultiplier;
+      s.plot1[i] = { time: b.time, value: isLong ? b.close + tp : b.close - tp, color: color.lime };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DynamicStopLossTakeProfitInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DynamicStopLossTakeProfitInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const DynamicStopLossTakeProfit = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

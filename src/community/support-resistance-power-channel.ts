@@ -16,10 +16,11 @@
  * Original notice: (c) ChartPrime
  */
 
-import { ta, str, color, compare, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, str, color, compare, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { LabelData, LineDrawingData, BoxData } from '../types';
 import { barInterval, barTime } from '../bar-time';
 import { foregroundColorOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SupportResistancePowerChannelInputs {
   /** Window in bars */
@@ -59,11 +60,49 @@ const MAX_LABELS = 12;
 /** Pine color.gray */
 const GRAY = '#787B86';
 
+type Result = IndicatorResult & { labels: LabelData[]; lines: LineDrawingData[]; boxes: BoxData[] };
+
+interface PowerRun extends BarRunState<Record<string, never>> {
+  atr: ReturnType<typeof taStep.atr>;
+  /** ta.atr(200) of each bar */
+  atrs: number[];
+}
+
+function study(inputs: Partial<SupportResistancePowerChannelInputs>): BarStudy<PowerRun, Result> {
+  return {
+    init() {
+      const atr = taStep.atr(200);
+      const s: PowerRun = { atr, atrs: [], steps: [atr], vars: {}, lists: [], series: [] };
+      s.series = [s.atrs];
+      return s;
+    },
+    bar(s, i, bars) {
+      s.atrs[i] = s.atr.step(bars[i].high, bars[i].low, bars[i].close);
+    },
+    // the drawings of the last bar (barstate.islast), from the last `length` bars
+    result: (s, bars, chart) => lastBar(bars, inputs, chart, s.atrs),
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SupportResistancePowerChannelInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<SupportResistancePowerChannelInputs> = {},
   chart?: ChartContext,
-): IndicatorResult & { labels: LabelData[]; lines: LineDrawingData[]; boxes: BoxData[] } {
+): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+function lastBar(
+  bars: Bar[],
+  inputs: Partial<SupportResistancePowerChannelInputs>,
+  chart: ChartContext | undefined,
+  atrs: number[],
+): Result {
   /** chart.fg_color (#DBDBDB, the foreground colour of a dark chart, without a chart context) */
   const FG_COLOR = foregroundColorOf(chart);
   const { length, extend, topColor, bottomColor } = { ...defaultInputs, ...inputs };
@@ -121,7 +160,7 @@ export function calculate(
   addLabel(last - indexOfMin, { price: min, text: '✖', color: 'transparent', textColor: bottomColor, size: 'normal', style: 'label_center' });
 
   // atr = ta.atr(200) * 0.5
-  const atr = (ta.atr(bars, 200).toArray()[last] ?? NaN) * 0.5;
+  const atr = (atrs[last] ?? NaN) * 0.5;
   const left = timeOf(last - length);
   if (drawn(left, max + atr)) {
     lines.push({ time1: left, price1: max + atr, time2: timeOf(last + extend + 30), price2: max + atr, color: topColor, style: 'solid' });
@@ -173,4 +212,4 @@ export function calculate(
   return result();
 }
 
-export const SupportResistancePowerChannel = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+export const SupportResistancePowerChannel = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

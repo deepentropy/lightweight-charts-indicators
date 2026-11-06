@@ -10,7 +10,9 @@
  * Original notice: Created By ChrisMoody on 7/25/2014
  */
 
-import { ta, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export interface CmParabolicSarInputs {
   /** Start, multiplied by 0.01 */
@@ -69,26 +71,158 @@ const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 /** A number used as a condition: na and 0 are false */
 const truthy = (v: number) => !isNaN(v) && v !== 0;
 
-export function calculate(bars: Bar[], inputs: Partial<CmParabolicSarInputs> = {}): IndicatorResult {
+/**
+ * `ta.sar(start, inc, max)` one bar at a time (no taStep machine): the state of the oakscriptjs array function kept
+ * between bars (the same doubles).
+ */
+class SarStep implements Committable {
+  private sarValue = NaN;
+  private extremePoint = NaN;
+  private acceleration: number;
+  private isUpTrend = false;
+  private nSar = NaN;
+  private nExtreme = NaN;
+  private nAcceleration: number;
+  private nUpTrend = false;
+  private stepped = false;
+
+  constructor(private readonly start: number, private readonly inc: number, private readonly max: number) {
+    this.acceleration = start;
+    this.nAcceleration = start;
+  }
+
+  step(bars: Bar[], i: number): number {
+    this.stepped = false;
+    if (i === 0) return NaN;
+    const { start, inc, max } = this;
+    const high = bars[i].high;
+    const low = bars[i].low;
+    let { sarValue, extremePoint, acceleration, isUpTrend } = this;
+    let isFirstTrendBar = false;
+
+    if (i === 1) {
+      if (bars[i].close > bars[i - 1].close) {
+        isUpTrend = true;
+        extremePoint = high;
+        sarValue = bars[i - 1].low;
+      } else {
+        isUpTrend = false;
+        extremePoint = low;
+        sarValue = bars[i - 1].high;
+      }
+      isFirstTrendBar = true;
+      acceleration = start;
+    }
+
+    sarValue = sarValue + acceleration * (extremePoint - sarValue);
+
+    if (isUpTrend) {
+      if (sarValue > low) {
+        isFirstTrendBar = true;
+        isUpTrend = false;
+        sarValue = Math.max(high, extremePoint);
+        extremePoint = low;
+        acceleration = start;
+      }
+    } else {
+      if (sarValue < high) {
+        isFirstTrendBar = true;
+        isUpTrend = true;
+        sarValue = Math.min(low, extremePoint);
+        extremePoint = high;
+        acceleration = start;
+      }
+    }
+
+    if (!isFirstTrendBar) {
+      if (isUpTrend) {
+        if (high > extremePoint) {
+          extremePoint = high;
+          acceleration = Math.min(acceleration + inc, max);
+        }
+      } else {
+        if (low < extremePoint) {
+          extremePoint = low;
+          acceleration = Math.min(acceleration + inc, max);
+        }
+      }
+    }
+
+    if (isUpTrend) {
+      sarValue = Math.min(sarValue, bars[i - 1].low);
+      if (i > 1) {
+        sarValue = Math.min(sarValue, bars[i - 2].low);
+      }
+    } else {
+      sarValue = Math.max(sarValue, bars[i - 1].high);
+      if (i > 1) {
+        sarValue = Math.max(sarValue, bars[i - 2].high);
+      }
+    }
+
+    this.nSar = sarValue;
+    this.nExtreme = extremePoint;
+    this.nAcceleration = acceleration;
+    this.nUpTrend = isUpTrend;
+    this.stepped = true;
+    return sarValue;
+  }
+
+  commit(): void {
+    if (this.stepped) {
+      this.sarValue = this.nSar;
+      this.extremePoint = this.nExtreme;
+      this.acceleration = this.nAcceleration;
+      this.isUpTrend = this.nUpTrend;
+    }
+    this.stepped = false;
+  }
+}
+
+type Point = { time: number; value: number; color: string };
+
+interface CmSarRun extends BarRunState<Record<string, never>> {
+  sar: SarStep;
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<CmParabolicSarInputs>): BarStudy<CmSarRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  // sarUp and sarDown are the same series: sar(start * .01, increment * .01, maximum * .10)
-  const sar = ta.sar(bars, cfg.start * 0.01, cfg.increment * 0.01, cfg.maximum * 0.1).toArray().map((v) => v ?? NaN);
-
-  const plot0: Array<{ time: number; value: number; color: string }> = [];
-  const plot1: typeof plot0 = [];
-  bars.forEach((b, i) => {
-    // colUp = close >= sarDown ? lime : na; colDown = close <= sarUp ? red : na
-    const colUp = ge(b.close, sar[i]) ? LIME : 'transparent';
-    const colDown = le(b.close, sar[i]) ? RED : 'transparent';
-    // plot(sus and sarUp ? sarUp : na): a value of 0 or na is not drawn
-    plot0.push({ time: b.time, value: cfg.sus && truthy(sar[i]) ? sar[i] : NaN, color: colUp });
-    plot1.push({ time: b.time, value: cfg.sds && truthy(sar[i]) ? sar[i] : NaN, color: colDown });
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
+    init() {
+      // sarUp and sarDown are the same series: sar(start * .01, increment * .01, maximum * .10)
+      const sar = new SarStep(cfg.start * 0.01, cfg.increment * 0.01, cfg.maximum * 0.1);
+      const s: CmSarRun = { sar, plot0: [], plot1: [], steps: [sar], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const sar = s.sar.step(bars, i);
+      // colUp = close >= sarDown ? lime : na; colDown = close <= sarUp ? red : na
+      const colUp = ge(b.close, sar) ? LIME : 'transparent';
+      const colDown = le(b.close, sar) ? RED : 'transparent';
+      // plot(sus and sarUp ? sarUp : na): a value of 0 or na is not drawn
+      s.plot0[i] = { time: b.time, value: cfg.sus && truthy(sar) ? sar : NaN, color: colUp };
+      s.plot1[i] = { time: b.time, value: cfg.sds && truthy(sar) ? sar : NaN, color: colDown };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+      };
+    },
   };
 }
 
-export const CmParabolicSar = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CmParabolicSarInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CmParabolicSarInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const CmParabolicSar = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

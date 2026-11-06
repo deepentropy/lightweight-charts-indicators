@@ -5,7 +5,9 @@
  * Uses a Gaussian distribution to reduce lag while maintaining smoothness.
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { AlmaStep, createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /**
  * ALMA indicator input parameters
@@ -53,6 +55,46 @@ export const metadata = {
   overlay: true,
 };
 
+type Point = { time: number; value: number };
+
+interface AlmaRun extends BarRunState<Record<string, never>> {
+  alma: AlmaStep;
+  plotData: Point[];
+}
+
+function study(inputs: Partial<ALMAInputs>): BarStudy<AlmaRun, IndicatorResult> {
+  const { lengthInput, offsetInput, sigmaInput } = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const alma = new AlmaStep(lengthInput, offsetInput, sigmaInput);
+      const s: AlmaRun = { alma, plotData: [], steps: [alma], vars: {}, lists: [], series: [] };
+      s.series = [s.plotData];
+      return s;
+    },
+    bar(s, i, bars) {
+      // ALMA of the close
+      s.plotData[i] = { time: bars[i].time, value: s.alma.step(bars[i].close) };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.plotData.slice(),
+        },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ALMAInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
 /**
  * Calculate ALMA indicator
  *
@@ -61,30 +103,7 @@ export const metadata = {
  * @returns Indicator result with plot data
  */
 export function calculate(bars: Bar[], inputs: Partial<ALMAInputs> = {}): IndicatorResult {
-  const { lengthInput, offsetInput, sigmaInput } = { ...defaultInputs, ...inputs };
-
-  // Use close price as source
-  const close = new Series(bars, (bar) => bar.close);
-
-  // Calculate ALMA
-  const alma = ta.alma(close, lengthInput, offsetInput, sigmaInput);
-
-  // Convert to plot format
-  const plotData = alma.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
-    },
-    plots: {
-      'plot0': plotData,
-    },
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /**
@@ -92,6 +111,7 @@ export function calculate(bars: Bar[], inputs: Partial<ALMAInputs> = {}): Indica
  */
 export const ALMA = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

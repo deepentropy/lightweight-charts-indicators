@@ -6,7 +6,9 @@
  * Reference: "Moving Average Colored EMA/SMA" (community)
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MAColoredInputs {
   emaLength: number;
@@ -37,33 +39,62 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MAColoredInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface MacRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  sma: WindowSma;
+  emaArr: number[];
+  smaArr: number[];
+  emaPlot: Point[];
+  smaPlot: Point[];
+}
+
+function study(inputs: Partial<MAColoredInputs>): BarStudy<MacRun, IndicatorResult> {
   const { emaLength, smaLength, src } = { ...defaultInputs, ...inputs };
-  const srcSeries = getSourceSeries(bars, src);
-
-  const emaArr = ta.ema(srcSeries, emaLength).toArray();
-  const smaArr = ta.sma(srcSeries, smaLength).toArray();
-
-  const emaPlot = emaArr.map((v, i) => {
-    if (i < emaLength) return { time: bars[i].time, value: NaN };
-    const val = v ?? NaN;
-    const prev = i > 0 ? (emaArr[i - 1] ?? val) : val;
+  const value = barSource(src);
+  const point = (arr: number[], i: number, length: number, time: number): Point => {
+    if (i < length) return { time, value: NaN };
+    const val = arr[i] ?? NaN;
+    const prev = i > 0 ? (arr[i - 1] ?? val) : val;
     const color = val > prev ? '#26A69A' : val < prev ? '#EF5350' : '#2962FF';
-    return { time: bars[i].time, value: val, color };
-  });
-
-  const smaPlot = smaArr.map((v, i) => {
-    if (i < smaLength) return { time: bars[i].time, value: NaN };
-    const val = v ?? NaN;
-    const prev = i > 0 ? (smaArr[i - 1] ?? val) : val;
-    const color = val > prev ? '#26A69A' : val < prev ? '#EF5350' : '#2962FF';
-    return { time: bars[i].time, value: val, color };
-  });
-
+    return { time, value: val, color };
+  };
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': emaPlot, 'plot1': smaPlot },
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const ema = taStep.ema(emaLength);
+      const sma = new WindowSma(smaLength);
+      const s: MacRun = {
+        ema, sma, emaArr: [], smaArr: [], emaPlot: [], smaPlot: [], steps: [ema, sma], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.emaArr, s.smaArr, s.emaPlot, s.smaPlot];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = value(b);
+      s.emaArr[i] = s.ema.step(v);
+      s.smaArr[i] = s.sma.step(v);
+      s.emaPlot[i] = point(s.emaArr, i, emaLength, b.time);
+      s.smaPlot[i] = point(s.smaArr, i, smaLength, b.time);
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.emaPlot.slice(), 'plot1': s.smaPlot.slice() },
+      };
+    },
   };
 }
 
-export const MAColored = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MAColoredInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MAColoredInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MAColored = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

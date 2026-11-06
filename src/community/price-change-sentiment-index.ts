@@ -10,8 +10,10 @@
  * Original notice: © TradeVizion
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PriceChangeSentimentIndexInputs {
   /** SMA length of the clamped value */
@@ -51,47 +53,71 @@ const EPS = 1e-10;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+type Point = { time: number; value: number };
+
+interface PcsiRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  plot0: Point[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<PriceChangeSentimentIndexInputs>): BarStudy<PcsiRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const overBg = String(color.new(color.red, 90));
+  const underBg = String(color.new(color.green, 90));
+  return {
+    init() {
+      const sma = new WindowSma(cfg.smoothingPeriod);
+      const s: PcsiRun = { sma, plot0: [], bgColors: [], steps: [sma], vars: {}, lists: [], series: [] };
+      s.lists = [s.bgColors];
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // changePct = (close - close[1]) / (high - low): a plain division (x / 0 is +-infinity, 0 / 0 is na)
+      const changePct = i > 0 ? (b.close - bars[i - 1].close) / (b.high - b.low) : NaN;
+      const normalized = 50 + changePct * 50;
+      // math.min(math.max(normalized, 0), 100): +-infinity is clamped to 100 / 0, na stays na
+      const clamped = Math.min(Math.max(normalized, 0), 100);
+      const smoothed = s.sma.step(clamped);
+      s.plot0[i] = { time: b.time, value: smoothed };
+      if (cfg.showBgColor) {
+        if (ge(smoothed, cfg.overBought)) s.bgColors.push({ time: b.time, color: overBg });
+        else if (le(smoothed, cfg.overSold)) s.bgColors.push({ time: b.time, color: underBg });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        hlines: [
+          { value: cfg.overBought, options: { title: 'Overbought', color: color.red, linestyle: 'dashed' } },
+          { value: cfg.overSold, options: { title: 'Oversold', color: color.green, linestyle: 'dashed' } },
+          { value: 50, options: { title: 'Midline', color: color.gray, linestyle: 'dotted' } },
+        ],
+        bgColors: s.bgColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PriceChangeSentimentIndexInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<PriceChangeSentimentIndexInputs> = {},
 ): IndicatorResult & { bgColors: BgColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const clamped = bars.map((b, i) => {
-    // changePct = (close - close[1]) / (high - low): a plain division (x / 0 is +-infinity, 0 / 0 is na)
-    const changePct = i > 0 ? (b.close - bars[i - 1].close) / (b.high - b.low) : NaN;
-    const normalized = 50 + changePct * 50;
-    // math.min(math.max(normalized, 0), 100): +-infinity is clamped to 100 / 0, na stays na
-    return Math.min(Math.max(normalized, 0), 100);
-  });
-  const smoothed = A(ta.sma(Series.fromArray(bars, clamped), cfg.smoothingPeriod));
-
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: smoothed[i] }));
-  const overBg = String(color.new(color.red, 90));
-  const underBg = String(color.new(color.green, 90));
-  const bgColors: BgColorData[] = [];
-  if (cfg.showBgColor) {
-    for (let i = 0; i < bars.length; i++) {
-      if (ge(smoothed[i], cfg.overBought)) bgColors.push({ time: bars[i].time, color: overBg });
-      else if (le(smoothed[i], cfg.overSold)) bgColors.push({ time: bars[i].time, color: underBg });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    hlines: [
-      { value: cfg.overBought, options: { title: 'Overbought', color: color.red, linestyle: 'dashed' } },
-      { value: cfg.overSold, options: { title: 'Oversold', color: color.green, linestyle: 'dashed' } },
-      { value: 50, options: { title: 'Midline', color: color.gray, linestyle: 'dotted' } },
-    ],
-    bgColors,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PriceChangeSentimentIndex = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

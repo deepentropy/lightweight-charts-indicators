@@ -16,7 +16,9 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PerfectHammerPatternInputs {
   /** Number of consecutive perfect candles */
@@ -49,13 +51,16 @@ const gt = (a: number, b: number) => a - b > EPS;
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<PerfectHammerPatternInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alerts: AlertConditionState[] };
+
+interface HammerRun extends BarRunState<Record<string, never>> {
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<PerfectHammerPatternInputs>): BarStudy<HammerRun, Result> {
   const { consecutivePatterns } = { ...defaultInputs, ...inputs };
-  // x[index] before the first bar is na: every comparison with it is false
-  const at = (i: number, k: number): Bar | null => (i - k >= 0 ? bars[i - k] : null);
   const NA_BAR = { open: NaN, high: NaN, low: NaN, close: NaN };
 
   const isDoji = (b: { open: number; close: number }) => le(Math.abs(b.close - b.open), DOJI_TOLERANCE);
@@ -69,41 +74,60 @@ export function calculate(
   const white = String(color.white);
   const green = String(color.green);
   const red = String(color.red);
-  const markers: MarkerData[] = [];
-  const bullFlags: boolean[] = [];
-  const bearFlags: boolean[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    let bullishPattern = true;
-    let bearishPattern = true;
-    for (let k = 0; k <= consecutivePatterns - 1; k++) {
-      const b = at(i, k) ?? NA_BAR;
-      bullishPattern = bullishPattern && isPerfectBullish(b);
-      bearishPattern = bearishPattern && isPerfectBearish(b);
-    }
-    const prior = at(i, consecutivePatterns) ?? NA_BAR;
-    bullishPattern = bullishPattern && (gt(prior.open, prior.close) || isDoji(prior));
-    bearishPattern = bearishPattern && (gt(prior.close, prior.open) || isDoji(prior));
-
-    // alertcondition(bullish_pattern, ...) / alertcondition(bearish_pattern, ...)
-    bullFlags.push(bullishPattern);
-    bearFlags.push(bearishPattern);
-    const time = bars[i].time;
-    if (bullishPattern) {
-      markers.push({ time, position: 'belowBar', shape: 'labelUp', color: green, text: 'H', textColor: white,
-        size: 'tiny' });
-    }
-    if (bearishPattern) {
-      markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: red, text: 'H', textColor: white,
-        size: 'tiny' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags]),
+    init() {
+      const s: HammerRun = { markers: [], flags: [[], []], times: [[], []], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.markers, ...s.times];
+      s.series = [...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      // x[index] before the first bar is na: every comparison with it is false
+      let bullishPattern = true;
+      let bearishPattern = true;
+      for (let k = 0; k <= consecutivePatterns - 1; k++) {
+        const b = i - k >= 0 ? bars[i - k] : NA_BAR;
+        bullishPattern = bullishPattern && isPerfectBullish(b);
+        bearishPattern = bearishPattern && isPerfectBearish(b);
+      }
+      const prior = i - consecutivePatterns >= 0 ? bars[i - consecutivePatterns] : NA_BAR;
+      bullishPattern = bullishPattern && (gt(prior.open, prior.close) || isDoji(prior));
+      bearishPattern = bearishPattern && (gt(prior.close, prior.open) || isDoji(prior));
+
+      // alertcondition(bullish_pattern, ...) / alertcondition(bearish_pattern, ...)
+      s.flags[0][i] = bullishPattern;
+      s.flags[1][i] = bearishPattern;
+      const time = bars[i].time;
+      if (bullishPattern) {
+        s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: green, text: 'H', textColor: white,
+          size: 'tiny' });
+        s.times[0].push(time as number);
+      }
+      if (bearishPattern) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: red, text: 'H', textColor: white,
+          size: 'tiny' });
+        s.times[1].push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PerfectHammerPatternInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PerfectHammerPatternInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -112,4 +136,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'Bearish Pattern Alert', message: 'Perfect Bearish Hammers Found!' },
 ];
 
-export const PerfectHammerPattern = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const PerfectHammerPattern = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

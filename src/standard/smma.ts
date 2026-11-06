@@ -5,7 +5,9 @@
  * SMMA = (prev_smma * (length - 1) + src) / length
  */
 
-import { getSourceSeries, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SMMAInputs {
   /** Period length */
@@ -34,34 +36,55 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SMMAInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface SmmaRun extends BarRunState<Record<string, never>> {
+  rma: ReturnType<typeof taStep.rma>;
+  smmaData: Point[];
+}
+
+function study(inputs: Partial<SMMAInputs>): BarStudy<SmmaRun, IndicatorResult> {
   const { length, src } = { ...defaultInputs, ...inputs };
-
-  const source = getSourceSeries(bars, src);
-
-  // SMMA is the same as RMA (Wilder's smoothing)
-  const smmaValues = ta.rma(source, length);
-  const smmaArr = smmaValues.toArray();
-
-  const smmaData = smmaArr.map((value: number | null, i: number) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
+  const value = barSource(src);
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      // SMMA is the same as RMA (Wilder's smoothing)
+      const rma = taStep.rma(length);
+      const s: SmmaRun = { rma, smmaData: [], steps: [rma], vars: {}, lists: [], series: [] };
+      s.series = [s.smmaData];
+      return s;
     },
-    plots: {
-      'plot0': smmaData,
+    bar(s, i, bars) {
+      s.smmaData[i] = { time: bars[i].time, value: s.rma.step(value(bars[i])) };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.smmaData.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SMMAInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SMMAInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const SMMA = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

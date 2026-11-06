@@ -7,7 +7,9 @@
  * - Lips (Green): 5-period SMMA, shifted 3 bars
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface WilliamsAlligatorInputs {
   /** Jaw period */
@@ -54,62 +56,75 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<WilliamsAlligatorInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface AlligatorRun extends BarRunState<Record<string, never>> {
+  rmas: ReturnType<typeof taStep.rma>[];
+  /** The SMMA of each line by bar */
+  values: number[][];
+  /** The shifted line of each SMMA */
+  lines: Point[][];
+}
+
+function study(inputs: Partial<WilliamsAlligatorInputs>): BarStudy<AlligatorRun, IndicatorResult> {
   const { jawLength, jawOffset, teethLength, teethOffset, lipsLength, lipsOffset } = { ...defaultInputs, ...inputs };
-
-  const hl2 = new Series(bars, b => (b.high + b.low) / 2);
-
-  const jawSMMA = ta.rma(hl2, jawLength).toArray();
-  const teethSMMA = ta.rma(hl2, teethLength).toArray();
-  const lipsSMMA = ta.rma(hl2, lipsLength).toArray();
-
-  // Apply offsets by shifting values backward in the array
-  // The PineScript offset shifts values forward on the chart (right)
-  // In the exported CSV, this means values appear at later bar indices
-  // To match, we shift values forward: value[i+offset] = calculated[i]
-  const applyOffset = (values: number[], offset: number): number[] => {
-    const result: number[] = new Array(values.length).fill(NaN);
-    for (let i = 0; i < values.length - offset; i++) {
-      result[i + offset] = values[i];
-    }
-    return result;
-  };
-
-  const jawShifted = applyOffset(jawSMMA, jawOffset);
-  const teethShifted = applyOffset(teethSMMA, teethOffset);
-  const lipsShifted = applyOffset(lipsSMMA, lipsOffset);
-
-  const jawData = jawShifted.map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const teethData = teethShifted.map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const lipsData = lipsShifted.map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
+  const offsets = [jawOffset, teethOffset, lipsOffset];
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    init() {
+      const rmas = [taStep.rma(jawLength), taStep.rma(teethLength), taStep.rma(lipsLength)];
+      const s: AlligatorRun = { rmas, values: [[], [], []], lines: [[], [], []], steps: rmas, vars: {}, lists: [], series: [] };
+      s.series = [...s.values, ...s.lines];
+      return s;
     },
-    plots: {
-      'plot0': jawData,
-      'plot1': teethData,
-      'plot2': lipsData,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const hl2 = (b.high + b.low) / 2;
+      for (let k = 0; k < 3; k++) {
+        const v = s.rmas[k].step(hl2);
+        const values = s.values[k];
+        const line = s.lines[k];
+        values[i] = v;
+        // Apply offsets by shifting values: value[i + offset] = calculated[i] (the PineScript offset shifts values
+        // forward on the chart); a negative offset: bar i writes its own point to na and the point of bar i + offset
+        const offset = offsets[k];
+        if (offset >= 0) {
+          line[i] = { time: b.time, value: i >= offset ? values[i - offset] ?? NaN : NaN };
+        } else {
+          line[i] = { time: b.time, value: NaN };
+          const j = i + offset;
+          if (j >= 0) line[j] = { time: bars[j].time, value: v ?? NaN };
+        }
+      }
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.lines[0].slice(),
+          'plot1': s.lines[1].slice(),
+          'plot2': s.lines[2].slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WilliamsAlligatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<WilliamsAlligatorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const WilliamsAlligator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

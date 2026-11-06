@@ -10,6 +10,8 @@
  */
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 // The Pine script has no inputs
 export interface PercentOffAllTimeHighInputs {}
@@ -36,25 +38,48 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(bars: Bar[], _inputs: Partial<PercentOffAllTimeHighInputs> = {}): IndicatorResult {
-  // GetATH(high): var ATH = high (first bar); if high > nz(ATH, -1e10) then ATH := high
-  let ath = NaN;
-  const plot0 = bars.map((b, i) => {
-    if (i === 0) ath = b.high;
-    if (gt(b.high, isNaN(ath) ? -1e10 : ath)) ath = b.high;
-    // A plain division: x / 0 is +-infinity (0 / 0 NaN); the plot shows na for both
-    const v = (b.close / ath - 1) * 100;
-    return { time: b.time, value: Number.isFinite(v) ? v : NaN, color: PLOT_COLOR };
-  });
+interface AthRun extends BarRunState<{ ath: number }> {
+  plot0: { time: number; value: number; color: string }[];
+}
 
+function study(): BarStudy<AthRun, IndicatorResult> {
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, format: metadata.format },
-    plots: { plot0 },
+    init() {
+      const s: AthRun = { plot0: [], steps: [], vars: { ath: NaN }, lists: [], series: [] };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      // GetATH(high): var ATH = high (first bar); if high > nz(ATH, -1e10) then ATH := high
+      if (i === 0) v.ath = b.high;
+      if (gt(b.high, isNaN(v.ath) ? -1e10 : v.ath)) v.ath = b.high;
+      // A plain division: x / 0 is +-infinity (0 / 0 NaN); the plot shows na for both
+      const val = (b.close / v.ath - 1) * 100;
+      s.plot0[i] = { time: b.time, value: Number.isFinite(val) ? val : NaN, color: PLOT_COLOR };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, format: metadata.format },
+        plots: { plot0: s.plot0.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<PercentOffAllTimeHighInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(bars: Bar[], _inputs: Partial<PercentOffAllTimeHighInputs> = {}): IndicatorResult {
+  return fullResult(createRun().update(bars));
 }
 
 export const PercentOffAllTimeHigh = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

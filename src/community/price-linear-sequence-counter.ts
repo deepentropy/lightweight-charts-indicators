@@ -10,7 +10,9 @@
  * Original notice: © RicardoSantos
  */
 
-import { getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PriceLinearSequenceCounterInputs {
   /** Length (declared in the Pine script, not used by its computation) */
@@ -54,59 +56,87 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 const nz = (x: number) => (isNaN(x) ? 0 : x);
 
-export function calculate(bars: Bar[], inputs: Partial<PriceLinearSequenceCounterInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface PlscVars {
+  prevPls: number;
+  prevNls: number;
+  prevPl: number;
+  prevNl: number;
+}
+
+interface PlscRun extends BarRunState<PlscVars> {
+  pls: Point[];
+  nls: Point[];
+  pl: Point[];
+  nl: Point[];
+}
+
+function study(inputs: Partial<PriceLinearSequenceCounterInputs>): BarStudy<PlscRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const sa = getSourceSeries(bars, cfg.sa).toArray().map((v) => v ?? NaN);
-  const sb = getSourceSeries(bars, cfg.sb).toArray().map((v) => v ?? NaN);
-
-  const pls: number[] = new Array(n);
-  const nls: number[] = new Array(n);
-  const pl: number[] = new Array(n);
-  const nl: number[] = new Array(n);
-  let prevPls = NaN;
-  let prevNls = NaN;
-  let prevPl = NaN;
-  let prevNl = NaN;
-  for (let i = 0; i < n; i++) {
-    const difrange = sb[i] - sa[i];
-    const posdifrange = ge(difrange, 0) ? difrange : 0;
-    const negdifrange = le(difrange, 0) ? difrange : 0;
-    // poslinearsequence := posdifrange > 0 ? nz(poslinearsequence[1]) + 1 : 0
-    const p = gt(posdifrange, 0) ? nz(prevPls) + 1 : 0;
-    // neglinearsequence := negdifrange < 0 ? nz(neglinearsequence[1]) - 1 : 0
-    const q = lt(negdifrange, 0) ? nz(prevNls) - 1 : 0;
-    // plinappex := nz(plinappex[1]) <= poslinearsequence ? poslinearsequence : nz(plinappex[1])
-    const a = le(nz(prevPl), p) ? p : nz(prevPl);
-    // nlinappex := nz(nlinappex[1]) >= neglinearsequence ? neglinearsequence : nz(nlinappex[1])
-    const b = ge(nz(prevNl), q) ? q : nz(prevNl);
-    pls[i] = p;
-    nls[i] = q;
-    pl[i] = a;
-    nl[i] = b;
-    prevPls = p;
-    prevNls = q;
-    prevPl = a;
-    prevNl = b;
-  }
-
-  const line = (v: number[], c: string) => bars.map((bar, i) => ({ time: bar.time, value: v[i], color: c }));
-
+  const sa = barSource(cfg.sa);
+  const sb = barSource(cfg.sb);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(pls, color.green),
-      plot1: line(nls, color.red),
-      plot2: line(pl, color.black),
-      plot3: line(nl, color.black),
+    fullRunReason: () => (isBarSource(cfg.sa) && isBarSource(cfg.sb) ? null : 'source of another study'),
+    init() {
+      const s: PlscRun = {
+        pls: [], nls: [], pl: [], nl: [], steps: [], lists: [], series: [],
+        vars: { prevPls: NaN, prevNls: NaN, prevPl: NaN, prevNl: NaN },
+      };
+      s.series = [s.pls, s.nls, s.pl, s.nl];
+      return s;
     },
-    // hline(0, '0', color.black): Pine default style dashed
-    hlines: [{ value: 0, options: { title: '0', color: color.black, linestyle: 'dashed' } }],
+    bar(s, i, bars) {
+      const bar = bars[i];
+      const v = s.vars;
+      const difrange = sb(bar) - sa(bar);
+      const posdifrange = ge(difrange, 0) ? difrange : 0;
+      const negdifrange = le(difrange, 0) ? difrange : 0;
+      // poslinearsequence := posdifrange > 0 ? nz(poslinearsequence[1]) + 1 : 0
+      const p = gt(posdifrange, 0) ? nz(v.prevPls) + 1 : 0;
+      // neglinearsequence := negdifrange < 0 ? nz(neglinearsequence[1]) - 1 : 0
+      const q = lt(negdifrange, 0) ? nz(v.prevNls) - 1 : 0;
+      // plinappex := nz(plinappex[1]) <= poslinearsequence ? poslinearsequence : nz(plinappex[1])
+      const a = le(nz(v.prevPl), p) ? p : nz(v.prevPl);
+      // nlinappex := nz(nlinappex[1]) >= neglinearsequence ? neglinearsequence : nz(nlinappex[1])
+      const b = ge(nz(v.prevNl), q) ? q : nz(v.prevNl);
+      s.pls[i] = { time: bar.time as number, value: p, color: color.green };
+      s.nls[i] = { time: bar.time as number, value: q, color: color.red };
+      s.pl[i] = { time: bar.time as number, value: a, color: color.black };
+      s.nl[i] = { time: bar.time as number, value: b, color: color.black };
+      v.prevPls = p;
+      v.prevNls = q;
+      v.prevPl = a;
+      v.prevNl = b;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.pls.slice(),
+          plot1: s.nls.slice(),
+          plot2: s.pl.slice(),
+          plot3: s.nl.slice(),
+        },
+        // hline(0, '0', color.black): Pine default style dashed
+        hlines: [{ value: 0, options: { title: '0', color: color.black, linestyle: 'dashed' } }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PriceLinearSequenceCounterInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PriceLinearSequenceCounterInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PriceLinearSequenceCounter = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

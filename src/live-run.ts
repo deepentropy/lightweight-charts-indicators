@@ -81,7 +81,7 @@ const FIELDS = 6;
 function copyBars(bars: readonly Bar[], n: number, copy: Float64Array, from: number): Float64Array {
   let values = copy;
   if (values.length < n * FIELDS) {
-    values = new Float64Array(Math.max(16, n * 2) * FIELDS);
+    values = new Float64Array((n + Math.max(64, n >> 3)) * FIELDS);
     values.set(copy.subarray(0, from * FIELDS));
   }
   for (let i = from; i < n; i++) {
@@ -159,7 +159,11 @@ export function createBarRun<S extends BarRunState<any>, R>(study: BarStudy<S, R
             confirmed = i;
           }
           study.bar(s, i, bars);
-          if (i < n - 1) for (const m of s.steps) m.commit();
+          if (i < n - 1) {
+            // read on every bar: a study may set its steps on its first bar
+            const steps = s.steps;
+            for (let k = 0; k < steps.length; k++) steps[k]!.commit();
+          }
         }
         if (n === 0) {
           saved = { vars: copyVars(s.vars), lists: s.lists.map((l) => l.length) };

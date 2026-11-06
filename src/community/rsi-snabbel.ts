@@ -7,7 +7,9 @@
  * Reference: "RSI Snabbel"
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RSISnabbelInputs {
   rsiLen1: number;
@@ -38,38 +40,59 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RSISnabbelInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface SnabbelRun extends BarRunState<Record<string, never>> {
+  fast: ReturnType<typeof taStep.rsi>;
+  slow: ReturnType<typeof taStep.rsi>;
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<RSISnabbelInputs>): BarStudy<SnabbelRun, IndicatorResult> {
   const { rsiLen1, rsiLen2, src } = { ...defaultInputs, ...inputs };
-
-  const source = getSourceSeries(bars, src);
-  const rsiFast = ta.rsi(source, rsiLen1);
-  const rsiSlow = ta.rsi(source, rsiLen2);
-  const fastArr = rsiFast.toArray();
-  const slowArr = rsiSlow.toArray();
-
+  const value = barSource(src);
   const warmup = Math.max(rsiLen1, rsiLen2);
-
-  const plot0 = fastArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (v == null || i < warmup) ? NaN : v,
-  }));
-
-  const plot1 = slowArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (v == null || i < warmup) ? NaN : v,
-  }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
-    hlines: [
-      { value: 80, options: { color: '#EF5350', linestyle: 'dashed' as const, title: 'Overbought' } },
-      { value: 55, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Upper Mid' } },
-      { value: 50, options: { color: '#000000', linestyle: 'dashed' as const, title: 'Midline' } },
-      { value: 45, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Lower Mid' } },
-      { value: 20, options: { color: '#4CAF50', linestyle: 'dashed' as const, title: 'Oversold' } },
-    ],
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const fast = taStep.rsi(rsiLen1);
+      const slow = taStep.rsi(rsiLen2);
+      const s: SnabbelRun = { fast, slow, plot0: [], plot1: [], steps: [fast, slow], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const v = value(b);
+      const f = s.fast.step(v);
+      const sl = s.slow.step(v);
+      s.plot0[i] = { time: b.time as number, value: (f == null || i < warmup) ? NaN : f };
+      s.plot1[i] = { time: b.time as number, value: (sl == null || i < warmup) ? NaN : sl };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice() },
+        hlines: [
+          { value: 80, options: { color: '#EF5350', linestyle: 'dashed' as const, title: 'Overbought' } },
+          { value: 55, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Upper Mid' } },
+          { value: 50, options: { color: '#000000', linestyle: 'dashed' as const, title: 'Midline' } },
+          { value: 45, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Lower Mid' } },
+          { value: 20, options: { color: '#4CAF50', linestyle: 'dashed' as const, title: 'Oversold' } },
+        ],
+      };
+    },
   };
 }
 
-export const RSISnabbel = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RSISnabbelInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RSISnabbelInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const RSISnabbel = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

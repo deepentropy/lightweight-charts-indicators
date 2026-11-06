@@ -5,7 +5,9 @@
  * Measures market volatility by calculating the average range between high and low prices.
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /**
  * ATR indicator input parameters
@@ -50,6 +52,64 @@ export const metadata = {
 };
 
 /**
+ * Calculate ATR indicator bar by bar
+ */
+type Point = { time: number; value: number };
+type Smoother = { step(v: number): number; commit(): void };
+
+interface AtrRun extends BarRunState<Record<string, never>> {
+  tr: ReturnType<typeof taStep.tr>;
+  ma: Smoother;
+  plotData: Point[];
+}
+
+function study(inputs: Partial<ATRInputs>): BarStudy<AtrRun, IndicatorResult> {
+  const { length, smoothing } = { ...defaultInputs, ...inputs };
+  const smoother = (): Smoother => {
+    switch (smoothing) {
+      case 'SMA': return new WindowSma(length);
+      case 'EMA': return taStep.ema(length);
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, length), commit: () => m.commit() }; }
+      case 'RMA':
+      default: return taStep.rma(length);
+    }
+  };
+  return {
+    init() {
+      // Calculate True Range
+      const tr = taStep.tr(true);
+      // Apply smoothing
+      const ma = smoother();
+      const s: AtrRun = { tr, ma, plotData: [], steps: [tr, ma], vars: {}, lists: [], series: [] };
+      s.series = [s.plotData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const value = s.ma.step(s.tr.step(b.high, b.low, b.close));
+      s.plotData[i] = { time: b.time as number, value: value ?? NaN };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.plotData.slice(),
+        },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ATRInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+/**
  * Calculate ATR indicator
  *
  * @param bars - OHLCV bar data
@@ -57,45 +117,7 @@ export const metadata = {
  * @returns Indicator result with plot data
  */
 export function calculate(bars: Bar[], inputs: Partial<ATRInputs> = {}): IndicatorResult {
-  const { length, smoothing } = { ...defaultInputs, ...inputs };
-
-  // Calculate True Range
-  const trueRange = ta.tr(bars, true);
-
-  // Apply smoothing
-  let atr: Series;
-  switch (smoothing) {
-    case 'SMA':
-      atr = ta.sma(trueRange, length);
-      break;
-    case 'EMA':
-      atr = ta.ema(trueRange, length);
-      break;
-    case 'WMA':
-      atr = ta.wma(trueRange, length);
-      break;
-    case 'RMA':
-    default:
-      atr = ta.rma(trueRange, length);
-      break;
-  }
-
-  // Convert to plot format
-  const plotData = atr.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
-    },
-    plots: {
-      'plot0': plotData,
-    },
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /**
@@ -103,6 +125,7 @@ export function calculate(bars: Bar[], inputs: Partial<ATRInputs> = {}): Indicat
  */
 export const ATR = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

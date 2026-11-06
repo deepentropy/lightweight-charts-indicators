@@ -9,7 +9,9 @@
  * Original notice: @author LazyBear
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ZeroLagEMAInputs {
   /** EMA length */
@@ -37,22 +39,47 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ZeroLagEMAInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface ZlemaRun extends BarRunState<Record<string, never>> {
+  ema1: ReturnType<typeof taStep.ema>;
+  ema2: ReturnType<typeof taStep.ema>;
+  plot0: Point[];
+}
+
+function study(inputs: Partial<ZeroLagEMAInputs>): BarStudy<ZlemaRun, IndicatorResult> {
   const { length } = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const ema1 = A(ta.ema(Series.fromArray(bars, bars.map((b) => b.close)), length));
-  const ema2 = A(ta.ema(Series.fromArray(bars, ema1), length));
-
-  const plot0 = bars.map((b, i) => {
-    const zlema = ema1[i] + (ema1[i] - ema2[i]);
-    return { time: b.time, value: Number.isFinite(zlema) ? zlema : NaN };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
+    init() {
+      const ema1 = taStep.ema(length);
+      const ema2 = taStep.ema(length);
+      const s: ZlemaRun = { ema1, ema2, plot0: [], steps: [ema1, ema2], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const e1 = s.ema1.step(b.close);
+      const e2 = s.ema2.step(e1);
+      const zlema = e1 + (e1 - e2);
+      s.plot0[i] = { time: b.time as number, value: Number.isFinite(zlema) ? zlema : NaN };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+      };
+    },
   };
 }
 
-export const ZeroLagEMA = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ZeroLagEMAInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ZeroLagEMAInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const ZeroLagEMA = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

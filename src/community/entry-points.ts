@@ -12,8 +12,10 @@
  * Reference: "Entry points" (community)
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EntryPointsInputs {
   period: number;
@@ -36,37 +38,58 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<EntryPointsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface EntryPointsRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<EntryPointsInputs>): BarStudy<EntryPointsRun, Result> {
   const { period } = { ...defaultInputs, ...inputs };
-  const closeSeries = getSourceSeries(bars, 'close');
-  const emaArr = ta.ema(closeSeries, period).toArray();
-
-  const markers: MarkerData[] = [];
-
-  for (let i = period; i < bars.length; i++) {
-    const ema = emaArr[i];
-    if (ema == null || isNaN(ema)) continue;
-
-    const { close, low, high, open } = bars[i];
-
-    // Pine: buy = close > b and low <= b and open > b or open < b and close > b
-    const buy = (close > ema && low <= ema && open > ema) || (open < ema && close > ema);
-    // Pine: sell = close < b and high >= b and open < b or open > b and close < b
-    const sell = (close < ema && high >= ema && open < ema) || (open > ema && close < ema);
-
-    if (buy) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: 'rgba(0,128,0,0.9)', text: 'Buy' });
-    }
-    if (sell) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: 'rgba(255,0,0,0.9)', text: 'Sell' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
+    init() {
+      const ema = taStep.ema(period);
+      const s: EntryPointsRun = { ema, markers: [], steps: [ema], vars: {}, lists: [], series: [] };
+      s.lists = [s.markers];
+      return s;
+    },
+    bar(s, i, bars) {
+      const ema = s.ema.step(bars[i].close);
+      if (i < period) return;
+      if (ema == null || isNaN(ema)) return;
+
+      const { close, low, high, open } = bars[i];
+
+      // Pine: buy = close > b and low <= b and open > b or open < b and close > b
+      const buy = (close > ema && low <= ema && open > ema) || (open < ema && close > ema);
+      // Pine: sell = close < b and high >= b and open < b or open > b and close < b
+      const sell = (close < ema && high >= ema && open < ema) || (open > ema && close < ema);
+
+      if (buy) {
+        s.markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: 'rgba(0,128,0,0.9)', text: 'Buy' });
+      }
+      if (sell) {
+        s.markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: 'rgba(255,0,0,0.9)', text: 'Sell' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const EntryPoints = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EntryPointsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EntryPointsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const EntryPoints = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

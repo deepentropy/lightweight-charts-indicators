@@ -5,7 +5,9 @@
  * A weighted moving average that gives more weight to recent prices.
  */
 
-import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowStdev, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EMAInputs {
   length: number;
@@ -47,48 +49,83 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<EMAInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+type Ma = { step(v: number, volume: number): number; commit(): void };
+
+interface EmaRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  ma: Ma | null;
+  dev: WindowStdev | null;
+  plotData: Point[];
+  maData: Point[];
+  bbUpperData: Point[];
+  bbLowerData: Point[];
+}
+
+function study(inputs: Partial<EMAInputs>): BarStudy<EmaRun, IndicatorResult> {
   const { length, src, maType, maLength, bbMult } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
-  const ema = ta.ema(source, length);
-
-  const plotData = ema.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
+  const value = barSource(src);
   const enableMA = maType !== 'None';
   const isBB = maType === 'SMA + Bollinger Bands';
-  let maData = bars.map(b => ({ time: b.time, value: NaN }));
-  let bbUpperData = bars.map(b => ({ time: b.time, value: NaN }));
-  let bbLowerData = bars.map(b => ({ time: b.time, value: NaN }));
-  const fills: FillData[] = [];
-
-  if (enableMA) {
-    let maSeries: Series;
+  const maStep = (): Ma | null => {
+    if (!enableMA) return null;
     switch (maType) {
-      case 'EMA': maSeries = ta.ema(ema, maLength); break;
-      case 'SMMA (RMA)': maSeries = ta.rma(ema, maLength); break;
-      case 'WMA': maSeries = ta.wma(ema, maLength); break;
-      case 'VWMA': maSeries = ta.vwma(ema, maLength, new Series(bars, b => b.volume ?? 0)); break;
-      default: maSeries = ta.sma(ema, maLength); break;
+      case 'EMA': { const m = taStep.ema(maLength); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'SMMA (RMA)': { const m = taStep.rma(maLength); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, maLength), commit: () => m.commit() }; }
+      case 'VWMA': return new WindowVwma(maLength);
+      default: { const m = new WindowSma(maLength); return { step: (v) => m.step(v), commit: () => m.commit() }; }
     }
-    const maArr = maSeries.toArray();
-    maData = maArr.map((v, i) => ({ time: bars[i].time, value: v ?? NaN }));
-
-    if (isBB) {
-      const stdevArr = ta.stdev(ema, maLength).toArray();
-      bbUpperData = maArr.map((v, i) => ({ time: bars[i].time, value: (v != null && stdevArr[i] != null) ? v + stdevArr[i]! * bbMult : NaN }));
-      bbLowerData = maArr.map((v, i) => ({ time: bars[i].time, value: (v != null && stdevArr[i] != null) ? v - stdevArr[i]! * bbMult : NaN }));
-      fills.push({ plot1: 'plot2', plot2: 'plot3', options: { color: '#089981', transp: 90, title: 'BB Background' } });
-    }
-  }
-
+  };
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plotData, 'plot1': maData, 'plot2': bbUpperData, 'plot3': bbLowerData },
-    fills,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const ema = taStep.ema(length);
+      const ma = maStep();
+      const dev = enableMA && isBB ? new WindowStdev(maLength) : null;
+      const s: EmaRun = {
+        ema, ma, dev, plotData: [], maData: [], bbUpperData: [], bbLowerData: [],
+        steps: [ema, ...(ma ? [ma] : []), ...(dev ? [dev] : [])], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.plotData, s.maData, s.bbUpperData, s.bbLowerData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const ema = s.ema.step(value(b));
+      s.plotData[i] = { time, value: ema };
+      // the MA of the EMA (VWMA: volume na read as 0)
+      const ma = s.ma ? s.ma.step(ema, b.volume ?? 0) : NaN;
+      s.maData[i] = { time, value: ma };
+      if (s.dev) {
+        const sd = s.dev.step(ema);
+        s.bbUpperData[i] = { time, value: ma + sd * bbMult };
+        s.bbLowerData[i] = { time, value: ma - sd * bbMult };
+      } else {
+        s.bbUpperData[i] = { time, value: NaN };
+        s.bbLowerData[i] = { time, value: NaN };
+      }
+    },
+    result(s) {
+      const fills: FillData[] = [];
+      if (enableMA && isBB) fills.push({ plot1: 'plot2', plot2: 'plot3', options: { color: '#089981', transp: 90, title: 'BB Background' } });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plotData.slice(), 'plot1': s.maData.slice(), 'plot2': s.bbUpperData.slice(), 'plot3': s.bbLowerData.slice() },
+        fills,
+      };
+    },
   };
 }
 
-export const EMA = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EMAInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EMAInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const EMA = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

@@ -12,6 +12,8 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type CandleStateInputs = Record<string, never>;
 
@@ -34,40 +36,65 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  _inputs: Partial<CandleStateInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const markers: MarkerData[] = [];
-  // plotshape(..., location = location.abovebar), default size (size.auto); id: shape<k> of the k-th plotshape
-  const up = (time: number, id: string) =>
-    markers.push({ id, time, position: 'aboveBar', shape: 'triangleUp', color: color.green, size: 'auto' });
-  const down = (time: number, id: string) =>
-    markers.push({ id, time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'auto' });
-  bars.forEach((b, i) => {
-    // high[1] / low[1] are na on the first bar: the comparisons are false
-    const barResult1 = i > 0 && gt(b.high, bars[i - 1].high);
-    const barResult2 = i > 0 && lt(b.low, bars[i - 1].low);
-    const isGreenCandle = gt(b.close, b.open);
-    const isRedCandle = lt(b.close, b.open);
-    const isType3 = barResult1 && barResult2;
-    // Pine plotshape order: Bar State Up, Bar State Down, Type 3 Red Base / Top, Type 3 Green Base / Top
-    if (barResult1 && !isType3) up(b.time, 'shape0');
-    if (barResult2 && !isType3) down(b.time, 'shape1');
-    if (isType3 && isRedCandle) {
-      up(b.time, 'shape2');
-      down(b.time, 'shape3');
-    }
-    if (isType3 && isGreenCandle) {
-      down(b.time, 'shape4');
-      up(b.time, 'shape5');
-    }
-  });
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface CandleStateRun extends BarRunState<Record<string, never>> {
+  markers: MarkerData[];
+}
+
+function study(): BarStudy<CandleStateRun, Result> {
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: metadata.precision },
-    plots: {},
-    markers,
+    init() {
+      const s: CandleStateRun = { markers: [], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.markers];
+      return s;
+    },
+    bar(s, i, bars) {
+      const markers = s.markers;
+      const b = bars[i];
+      // plotshape(..., location = location.abovebar), default size (size.auto); id: shape<k> of the k-th plotshape
+      const up = (time: number, id: string) =>
+        markers.push({ id, time, position: 'aboveBar', shape: 'triangleUp', color: color.green, size: 'auto' });
+      const down = (time: number, id: string) =>
+        markers.push({ id, time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'auto' });
+      // high[1] / low[1] are na on the first bar: the comparisons are false
+      const barResult1 = i > 0 && gt(b.high, bars[i - 1].high);
+      const barResult2 = i > 0 && lt(b.low, bars[i - 1].low);
+      const isGreenCandle = gt(b.close, b.open);
+      const isRedCandle = lt(b.close, b.open);
+      const isType3 = barResult1 && barResult2;
+      // Pine plotshape order: Bar State Up, Bar State Down, Type 3 Red Base / Top, Type 3 Green Base / Top
+      if (barResult1 && !isType3) up(b.time, 'shape0');
+      if (barResult2 && !isType3) down(b.time, 'shape1');
+      if (isType3 && isRedCandle) {
+        up(b.time, 'shape2');
+        down(b.time, 'shape3');
+      }
+      if (isType3 && isGreenCandle) {
+        down(b.time, 'shape4');
+        up(b.time, 'shape5');
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: metadata.precision },
+        plots: {},
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const CandleState = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<CandleStateInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  _inputs: Partial<CandleStateInputs> = {},
+): Result {
+  return fullResult(createRun(_inputs).update(bars));
+}
+
+export const CandleState = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

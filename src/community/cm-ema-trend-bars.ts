@@ -7,8 +7,10 @@
  * Reference: "CM_EMA TrendBars" by ChrisMoody
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CMEMATrendBarsInputs {
   emaLength: number;
@@ -35,30 +37,56 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<CMEMATrendBarsInputs> = {}): IndicatorResult {
-  const { emaLength, showEma } = { ...defaultInputs, ...inputs };
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
 
-  const closeSeries = getSourceSeries(bars, 'close');
-  const ema = ta.ema(closeSeries, emaLength);
-  const emaArr = ema.toArray();
-
-  const warmup = emaLength;
-  const barColors: BarColorData[] = [];
-
-  const emaPlot = emaArr.map((v, i) => {
-    if (i < warmup || v == null) return { time: bars[i].time, value: NaN };
-    const hlc3 = (bars[i].high + bars[i].low + bars[i].close) / 3;
-    const bullish = hlc3 >= v;
-    const color = bullish ? '#00E676' : '#FF5252';
-    barColors.push({ time: bars[i].time as number, color });
-    return { time: bars[i].time, value: showEma ? v : NaN, color };
-  });
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': emaPlot },
-    barColors,
-  } as Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
+interface CmEmaRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  emaPlot: Point[];
+  barColors: BarColorData[];
 }
 
-export const CMEMATrendBars = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+function study(inputs: Partial<CMEMATrendBarsInputs>): BarStudy<CmEmaRun, Result> {
+  const { emaLength, showEma } = { ...defaultInputs, ...inputs };
+  const warmup = emaLength;
+  return {
+    init() {
+      const ema = taStep.ema(emaLength);
+      const s: CmEmaRun = { ema, emaPlot: [], barColors: [], steps: [ema], vars: {}, lists: [], series: [] };
+      s.lists = [s.barColors];
+      s.series = [s.emaPlot];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.ema.step(b.close);
+      if (i < warmup || v == null) {
+        s.emaPlot[i] = { time: b.time as number, value: NaN };
+        return;
+      }
+      const hlc3 = (b.high + b.low + b.close) / 3;
+      const bullish = hlc3 >= v;
+      const color = bullish ? '#00E676' : '#FF5252';
+      s.barColors.push({ time: b.time as number, color });
+      s.emaPlot[i] = { time: b.time as number, value: showEma ? v : NaN, color };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.emaPlot.slice() },
+        barColors: s.barColors.slice(),
+      } as Result;
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CMEMATrendBarsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CMEMATrendBarsInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars)) as unknown as IndicatorResult;
+}
+
+export const CMEMATrendBars = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

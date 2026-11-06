@@ -10,6 +10,8 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BodyCandle50Inputs {
   /** Maximum body size in % of the high - low range */
@@ -38,29 +40,50 @@ const EPS = 1e-10;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<BodyCandle50Inputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface BodyRun extends BarRunState<Record<string, never>> {
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<BodyCandle50Inputs>): BarStudy<BodyRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const white = String(color.new(color.white, 0));
-  const markers: MarkerData[] = [];
-  for (const b of bars) {
-    const midCandleBody = (b.open + b.close) / 2;
-    const lowHighRange = ((b.high - b.low) / 100) * cfg.maxBodySize;
-    const candleBodySize = ge(b.close, b.open) ? b.close - b.open : b.open - b.close;
-    // plotchar(CandleBodySize <= LowHighRange ? MidCandleBody : na, char = '▪', color = color.new(color.white, 0),
-    //          location = location.absolute, size = size.tiny)
-    if (le(candleBodySize, lowHighRange) && !isNaN(midCandleBody)) {
-      markers.push({ time: b.time, position: 'atPriceMiddle', price: midCandleBody, shape: 'circle',
-        color: 'transparent', text: '▪', textColor: white, size: 'tiny' });
-    }
-  }
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
+    init() {
+      const s: BodyRun = { markers: [], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.markers];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const midCandleBody = (b.open + b.close) / 2;
+      const lowHighRange = ((b.high - b.low) / 100) * cfg.maxBodySize;
+      const candleBodySize = ge(b.close, b.open) ? b.close - b.open : b.open - b.close;
+      // plotchar(CandleBodySize <= LowHighRange ? MidCandleBody : na, char = '▪', color = color.new(color.white, 0),
+      //          location = location.absolute, size = size.tiny)
+      if (le(candleBodySize, lowHighRange) && !isNaN(midCandleBody)) {
+        s.markers.push({ time: b.time, position: 'atPriceMiddle', price: midCandleBody, shape: 'circle',
+          color: 'transparent', text: '▪', textColor: white, size: 'tiny' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const BodyCandle50 = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BodyCandle50Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BodyCandle50Inputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const BodyCandle50 = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

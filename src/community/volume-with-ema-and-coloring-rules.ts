@@ -8,7 +8,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeWithEmaAndColoringRulesInputs {
   /** EMA length of the volume */
@@ -39,26 +41,52 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<VolumeWithEmaAndColoringRulesInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface VolEmaRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<VolumeWithEmaAndColoringRulesInputs>): BarStudy<VolEmaRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const volEMA = A(ta.ema(Series.fromArray(bars, volume), cfg.emaLength));
-
-  // barColor = volume > volEMA ? color.blue : color.white
-  const plot0 = bars.map((b, i) => ({
-    time: b.time, value: volume[i], color: gt(volume[i], volEMA[i]) ? color.blue : color.white,
-  }));
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: volEMA[i], color: color.red }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, format: metadata.format },
-    plots: { plot0, plot1 },
+    init() {
+      const ema = taStep.ema(cfg.emaLength);
+      const s: VolEmaRun = { ema, plot0: [], plot1: [], steps: [ema], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = b.volume ?? NaN;
+      const volEMA = s.ema.step(volume);
+      // barColor = volume > volEMA ? color.blue : color.white
+      s.plot0[i] = { time: b.time, value: volume, color: gt(volume, volEMA) ? color.blue : color.white };
+      s.plot1[i] = { time: b.time, value: volEMA, color: color.red };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, format: metadata.format },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeWithEmaAndColoringRulesInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolumeWithEmaAndColoringRulesInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const VolumeWithEmaAndColoringRules = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -7,7 +7,9 @@
  * Based on the standard TRIX indicator.
  */
 
-import { Series, ta, type Bar, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig } from 'oakscriptjs';
+import { taStep, type Bar, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TRIXInputs {
   /** EMA period length */
@@ -45,41 +47,65 @@ export const metadata = {
  * 3. Calculate rate of change (1-bar difference)
  * 4. Multiply by 10000 for readability
  */
-export function calculate(bars: Bar[], inputs: Partial<TRIXInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface TrixRun extends BarRunState<Record<string, never>> {
+  ema1: ReturnType<typeof taStep.ema>;
+  ema2: ReturnType<typeof taStep.ema>;
+  ema3: ReturnType<typeof taStep.ema>;
+  change: ReturnType<typeof taStep.change>;
+  plotData: Point[];
+}
+
+function study(inputs: Partial<TRIXInputs>): BarStudy<TrixRun, IndicatorResult> {
   const { length } = { ...defaultInputs, ...inputs };
-
-  // Step 1: Take log of close prices
-  const logClose: number[] = bars.map(bar => Math.log(bar.close));
-  const logCloseSeries = new Series(bars, (_, i) => logClose[i]);
-
-  // Step 2: Apply EMA three times using ta module
-  const ema1 = ta.ema(logCloseSeries, length);
-  const ema2 = ta.ema(ema1, length);
-  const ema3 = ta.ema(ema2, length);
-
-  // Step 3: Calculate rate of change and multiply by 10000
-  const trixChange = ta.change(ema3, 1);
-  const trixArr = trixChange.toArray();
-
-  const plotData = trixArr.map((value, i) => ({
-    time: bars[i].time,
-    value: value !== null ? value * 10000 : NaN,
-  }));
-
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    init() {
+      const ema1 = taStep.ema(length);
+      const ema2 = taStep.ema(length);
+      const ema3 = taStep.ema(length);
+      const change = taStep.change(1);
+      const s: TrixRun = { ema1, ema2, ema3, change, plotData: [], steps: [ema1, ema2, ema3, change], vars: {}, lists: [], series: [] };
+      s.series = [s.plotData];
+      return s;
     },
-    plots: {
-      'plot0': plotData,
+    bar(s, i, bars) {
+      const b = bars[i];
+      // Step 1: Take log of close prices
+      const logClose = Math.log(b.close);
+      // Step 2: Apply EMA three times
+      const ema3 = s.ema3.step(s.ema2.step(s.ema1.step(logClose)));
+      // Step 3: Calculate rate of change and multiply by 10000
+      const value = s.change.step(ema3);
+      s.plotData[i] = { time: b.time as number, value: value !== null ? value * 10000 : NaN };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.plotData.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TRIXInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TRIXInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const TRIX = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

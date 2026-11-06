@@ -12,6 +12,8 @@
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BarReplayFixInputs {
   /** Candle Body Color: bullish */
@@ -79,34 +81,54 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<BarReplayFixInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const candles: PlotCandleData[] = [];
-  for (let i = 1; i < bars.length; i++) {
-    const p = bars[i - 1];
-    const bull = gt(p.close, p.open);
-    const bear = lt(p.close, p.open);
-    // plotcandle(open[1], high[1], low[1], close[1], color / wickcolor / bordercolor by the direction of bar [1])
-    candles.push({
-      time: bars[i].time,
-      open: p.open,
-      high: p.high,
-      low: p.low,
-      close: p.close,
-      color: bull ? cfg.bullishColor : bear ? cfg.bearishColor : cfg.dojiColor,
-      wickColor: bull ? cfg.bullishWickColor : bear ? cfg.bearishWickColor : cfg.dojiWickColor,
-      borderColor: bull ? cfg.bullishBorderColor : bear ? cfg.bearishBorderColor : cfg.dojiBorderColor,
-    });
-  }
+type Result = Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> };
 
+interface ReplayRun extends BarRunState<Record<string, never>> {
+  candles: PlotCandleData[];
+}
+
+function study(inputs: Partial<BarReplayFixInputs>): BarStudy<ReplayRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    plotCandles: { candles },
+    init() {
+      const s: ReplayRun = { candles: [], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.candles];
+      return s;
+    },
+    bar(s, i, bars) {
+      if (i < 1) return;
+      const p = bars[i - 1];
+      const bull = gt(p.close, p.open);
+      const bear = lt(p.close, p.open);
+      // plotcandle(open[1], high[1], low[1], close[1], color / wickcolor / bordercolor by the direction of bar [1])
+      s.candles.push({
+        time: bars[i].time,
+        open: p.open,
+        high: p.high,
+        low: p.low,
+        close: p.close,
+        color: bull ? cfg.bullishColor : bear ? cfg.bearishColor : cfg.dojiColor,
+        wickColor: bull ? cfg.bullishWickColor : bear ? cfg.bearishWickColor : cfg.dojiWickColor,
+        borderColor: bull ? cfg.bullishBorderColor : bear ? cfg.bearishBorderColor : cfg.dojiBorderColor,
+      });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        plotCandles: { candles: s.candles.slice() },
+      };
+    },
   };
 }
 
-export const BarReplayFix = { calculate, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BarReplayFixInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BarReplayFixInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const BarReplayFix = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig };

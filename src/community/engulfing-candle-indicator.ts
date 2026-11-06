@@ -13,6 +13,8 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 // The Pine script has no input
 export interface EngulfingCandleIndicatorInputs {}
@@ -35,57 +37,84 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  _inputs: Partial<EngulfingCandleIndicatorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  let lastBullishOpen = NaN;
-  let lastBearishOpen = NaN;
-  let lastBullishIndex = NaN;
-  let lastBearishIndex = NaN;
-  let lastSignal = '';
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
 
-  const markers: MarkerData[] = [];
-  bars.forEach((b, i) => {
-    const low1 = i > 0 ? bars[i - 1].low : NaN;
-    const high1 = i > 0 ? bars[i - 1].high : NaN;
+interface EngulfingVars {
+  lastBullishOpen: number;
+  lastBearishOpen: number;
+  lastBullishIndex: number;
+  lastBearishIndex: number;
+  lastSignal: string;
+}
 
-    const isBullish = gt(b.close, b.open);
-    const isBearish = lt(b.close, b.open);
+interface EngulfingRun extends BarRunState<EngulfingVars> {
+  markers: MarkerData[];
+}
 
-    if (isBullish) {
-      lastBullishOpen = b.open;
-      lastBullishIndex = i;
-    } else if (isBearish) {
-      lastBearishOpen = b.open;
-      lastBearishIndex = i;
-    }
-
-    // bar_index > lastIndex: na compares false (the index counts from the first bar; only the order matters)
-    const bullishEngulfing = !isNaN(lastBearishOpen) && gt(b.close, lastBearishOpen) && gt(b.close, low1)
-      && i > lastBearishIndex;
-    const bearishEngulfing = !isNaN(lastBullishOpen) && lt(b.close, lastBullishOpen) && lt(b.close, high1)
-      && i > lastBullishIndex;
-
-    const bullishEngulfingSignal = bullishEngulfing && lastSignal !== 'bullish';
-    const bearishEngulfingSignal = bearishEngulfing && lastSignal !== 'bearish';
-
-    if (bullishEngulfingSignal) lastSignal = 'bullish';
-    if (bearishEngulfingSignal) lastSignal = 'bearish';
-
-    if (bullishEngulfingSignal) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'tiny' });
-    }
-    if (bearishEngulfingSignal) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'tiny' });
-    }
-  });
-
+function study(): BarStudy<EngulfingRun, Result> {
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
+    init() {
+      const s: EngulfingRun = {
+        markers: [], steps: [],
+        vars: { lastBullishOpen: NaN, lastBearishOpen: NaN, lastBullishIndex: NaN, lastBearishIndex: NaN, lastSignal: '' },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const low1 = i > 0 ? bars[i - 1].low : NaN;
+      const high1 = i > 0 ? bars[i - 1].high : NaN;
+
+      const isBullish = gt(b.close, b.open);
+      const isBearish = lt(b.close, b.open);
+
+      if (isBullish) {
+        v.lastBullishOpen = b.open;
+        v.lastBullishIndex = i;
+      } else if (isBearish) {
+        v.lastBearishOpen = b.open;
+        v.lastBearishIndex = i;
+      }
+
+      // bar_index > lastIndex: na compares false (the index counts from the first bar; only the order matters)
+      const bullishEngulfing = !isNaN(v.lastBearishOpen) && gt(b.close, v.lastBearishOpen) && gt(b.close, low1)
+        && i > v.lastBearishIndex;
+      const bearishEngulfing = !isNaN(v.lastBullishOpen) && lt(b.close, v.lastBullishOpen) && lt(b.close, high1)
+        && i > v.lastBullishIndex;
+
+      const bullishEngulfingSignal = bullishEngulfing && v.lastSignal !== 'bullish';
+      const bearishEngulfingSignal = bearishEngulfing && v.lastSignal !== 'bearish';
+
+      if (bullishEngulfingSignal) v.lastSignal = 'bullish';
+      if (bearishEngulfingSignal) v.lastSignal = 'bearish';
+
+      if (bullishEngulfingSignal) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'tiny' });
+      }
+      if (bearishEngulfingSignal) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'tiny' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const EngulfingCandleIndicator = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<EngulfingCandleIndicatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(bars: Bar[], _inputs: Partial<EngulfingCandleIndicatorInputs> = {}): Result {
+  return fullResult(createRun(_inputs).update(bars));
+}
+
+export const EngulfingCandleIndicator = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

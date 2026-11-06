@@ -9,7 +9,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CleanVolumeBarsInputs {
   /** Volume SMA length */
@@ -41,30 +43,56 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(bars: Bar[], inputs: Partial<CleanVolumeBarsInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface CleanVolumeRun extends BarRunState<Record<string, never>> {
+  ma: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+}
+
+function study(inputs: Partial<CleanVolumeBarsInputs>): BarStudy<CleanVolumeRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const volMA = ta.sma(Series.fromArray(bars, volume), cfg.length).toArray().map((v) => v ?? NaN);
-
-  const isBull = bars.map((b) => ge(b.close, b.open));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
+    init() {
+      const ma = new WindowSma(cfg.length);
+      const s: CleanVolumeRun = { ma, plot0: [], plot1: [], plot2: [], steps: [ma], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1, s.plot2];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = b.volume ?? NaN;
+      const volMA = s.ma.step(volume) ?? NaN;
+      const isBull = ge(b.close, b.open);
       // plot(volume, 'Volume', style = plot.style_columns, color = isBull ? color.green : color.red)
-      plot0: bars.map((b, i) => ({ time: b.time, value: volume[i], color: isBull[i] ? color.green : color.red })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: volMA[i], color: color.yellow })),
+      s.plot0[i] = { time: b.time, value: volume, color: isBull ? color.green : color.red };
+      s.plot1[i] = { time: b.time, value: volMA, color: color.yellow };
       // hiColor := volume > volMA ? (isBull ? color.white : color.black) : na
-      plot2: bars.map((b, i) => ({
-        time: b.time, value: volume[i],
-        color: gt(volume[i], volMA[i]) ? (isBull[i] ? color.white : color.black) : 'transparent',
-      })),
+      s.plot2[i] = { time: b.time, value: volume, color: gt(volume, volMA) ? (isBull ? color.white : color.black) : 'transparent' };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CleanVolumeBarsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CleanVolumeBarsInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const CleanVolumeBars = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

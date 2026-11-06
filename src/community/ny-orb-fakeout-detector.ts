@@ -12,6 +12,8 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface NyOrbFakeoutDetectorInputs {}
 
@@ -43,47 +45,80 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ORB_START = Date.UTC(2025, 5, 3, 13, 30, 0) / 1000;
 const ORB_END = Date.UTC(2025, 5, 3, 13, 45, 0) / 1000;
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+type Point = { time: number; value: number; color: string };
+
+interface OrbVars {
+  /** var float orb_high = na, var float orb_low = na */
+  orbHigh: number;
+  orbLow: number;
+}
+
+interface OrbRun extends BarRunState<OrbVars> {
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+}
+
+function study(): BarStudy<OrbRun, Result> {
+  return {
+    init() {
+      const s: OrbRun = {
+        plot0: [], plot1: [], markers: [],
+        steps: [], vars: { orbHigh: NaN, orbLow: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const inOrb = b.time >= ORB_START && b.time <= ORB_END;
+      if (inOrb) {
+        v.orbHigh = isNaN(v.orbHigh) ? b.high : Math.max(v.orbHigh, b.high);
+        v.orbLow = isNaN(v.orbLow) ? b.low : Math.min(v.orbLow, b.low);
+      }
+      if (b.time > ORB_END && !inOrb) {
+        v.orbHigh = NaN;
+        v.orbLow = NaN;
+      }
+      const orbHigh = v.orbHigh;
+      s.plot0[i] = { time: b.time, value: orbHigh, color: color.green };
+      s.plot1[i] = { time: b.time, value: v.orbLow, color: color.red };
+      // breakout_up = close > orb_high and open < orb_high and high - close > (high - low) * 0.5
+      const breakoutUp = gt(b.close, orbHigh) && lt(b.open, orbHigh) && gt(b.high - b.close, (b.high - b.low) * 0.5);
+      // plotshape(breakout_up): shape.xcross above the bar, default colour
+      if (breakoutUp) s.markers.push({ time: b.time, position: 'aboveBar', shape: 'xcross', color: PINE_BLUE });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plot0.slice(),
+          plot1: s.plot1.slice(),
+        },
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<NyOrbFakeoutDetectorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
 export function calculate(
   bars: Bar[],
   _inputs: Partial<NyOrbFakeoutDetectorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const n = bars.length;
-  const high: number[] = new Array(n);
-  const low: number[] = new Array(n);
-  const markers: MarkerData[] = [];
-  let orbHigh = NaN; // var float orb_high = na
-  let orbLow = NaN;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const inOrb = b.time >= ORB_START && b.time <= ORB_END;
-    if (inOrb) {
-      orbHigh = isNaN(orbHigh) ? b.high : Math.max(orbHigh, b.high);
-      orbLow = isNaN(orbLow) ? b.low : Math.min(orbLow, b.low);
-    }
-    if (b.time > ORB_END && !inOrb) {
-      orbHigh = NaN;
-      orbLow = NaN;
-    }
-    high[i] = orbHigh;
-    low[i] = orbLow;
-    // breakout_up = close > orb_high and open < orb_high and high - close > (high - low) * 0.5
-    const breakoutUp = gt(b.close, orbHigh) && lt(b.open, orbHigh) && gt(b.high - b.close, (b.high - b.low) * 0.5);
-    // plotshape(breakout_up): shape.xcross above the bar, default colour
-    if (breakoutUp) markers.push({ time: b.time, position: 'aboveBar', shape: 'xcross', color: PINE_BLUE });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: high[i], color: color.green })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: low[i], color: color.red })),
-    },
-    markers,
-  };
+): Result {
+  return fullResult(createRun(_inputs).update(bars));
 }
 
 export const NyOrbFakeoutDetector = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

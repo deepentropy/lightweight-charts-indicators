@@ -9,6 +9,8 @@
  */
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface LucidSarInputs {
   start: number;
@@ -39,71 +41,106 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<LucidSarInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface LucidSarVars {
+  af: number;
+  ep: number;
+}
+
+interface LucidSarRun extends BarRunState<LucidSarVars> {
+  sarArr: number[];
+  sarDirArr: number[];
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<LucidSarInputs>): BarStudy<LucidSarRun, IndicatorResult> {
   const { start, inc, max } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  // Manual SAR computation
-  const sarArr: number[] = new Array(n);
-  const sarDirArr: number[] = new Array(n);
-  let af = start;
-  let ep = bars[0].high;
-  sarArr[0] = bars[0].low;
-  sarDirArr[0] = 1;
-
-  for (let i = 1; i < n; i++) {
-    const prevDir = sarDirArr[i - 1];
-    let sar = sarArr[i - 1] + af * (ep - sarArr[i - 1]);
-
-    if (prevDir === 1) {
-      sar = Math.min(sar, bars[i - 1].low);
-      if (i >= 2) sar = Math.min(sar, bars[i - 2].low);
-      if (bars[i].low < sar) {
-        sarDirArr[i] = -1;
-        sar = ep;
-        ep = bars[i].low;
-        af = start;
-      } else {
-        sarDirArr[i] = 1;
-        if (bars[i].high > ep) {
-          ep = bars[i].high;
-          af = Math.min(af + inc, max);
-        }
-      }
-    } else {
-      sar = Math.max(sar, bars[i - 1].high);
-      if (i >= 2) sar = Math.max(sar, bars[i - 2].high);
-      if (bars[i].high > sar) {
-        sarDirArr[i] = 1;
-        sar = ep;
-        ep = bars[i].high;
-        af = start;
-      } else {
-        sarDirArr[i] = -1;
-        if (bars[i].low < ep) {
-          ep = bars[i].low;
-          af = Math.min(af + inc, max);
-        }
-      }
-    }
-    sarArr[i] = sar;
-  }
-
-  // Split into up (bullish) and down (bearish) series
-  const plot0 = sarArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < 1 ? NaN : (sarDirArr[i] === 1 ? v : NaN),
-  }));
-
-  const plot1 = sarArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < 1 ? NaN : (sarDirArr[i] === -1 ? v : NaN),
-  }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
+    init() {
+      const s: LucidSarRun = {
+        sarArr: [], sarDirArr: [], plot0: [], plot1: [], steps: [], vars: { af: start, ep: NaN }, lists: [], series: [],
+      };
+      s.series = [s.sarArr, s.sarDirArr, s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      // Manual SAR computation
+      const v = s.vars;
+      const sarArr = s.sarArr;
+      const sarDirArr = s.sarDirArr;
+      const time = bars[i].time;
+      if (i === 0) {
+        v.ep = bars[0].high;
+        sarArr[0] = bars[0].low;
+        sarDirArr[0] = 1;
+        s.plot0[0] = { time, value: NaN };
+        s.plot1[0] = { time, value: NaN };
+        return;
+      }
+      let af = v.af;
+      let ep = v.ep;
+      const b = bars[i];
+      const prevDir = sarDirArr[i - 1];
+      const prevSar = sarArr[i - 1];
+      let sar = prevSar + af * (ep - prevSar);
+
+      if (prevDir === 1) {
+        sar = Math.min(sar, bars[i - 1].low);
+        if (i >= 2) sar = Math.min(sar, bars[i - 2].low);
+        if (b.low < sar) {
+          sarDirArr[i] = -1;
+          sar = ep;
+          ep = b.low;
+          af = start;
+        } else {
+          sarDirArr[i] = 1;
+          if (b.high > ep) {
+            ep = b.high;
+            af = Math.min(af + inc, max);
+          }
+        }
+      } else {
+        sar = Math.max(sar, bars[i - 1].high);
+        if (i >= 2) sar = Math.max(sar, bars[i - 2].high);
+        if (b.high > sar) {
+          sarDirArr[i] = 1;
+          sar = ep;
+          ep = b.high;
+          af = start;
+        } else {
+          sarDirArr[i] = -1;
+          if (b.low < ep) {
+            ep = b.low;
+            af = Math.min(af + inc, max);
+          }
+        }
+      }
+      sarArr[i] = sar;
+      v.af = af;
+      v.ep = ep;
+
+      // Split into up (bullish) and down (bearish) series
+      s.plot0[i] = { time, value: sarDirArr[i] === 1 ? sar : NaN };
+      s.plot1[i] = { time, value: sarDirArr[i] === -1 ? sar : NaN };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice() },
+      };
+    },
   };
 }
 
-export const LucidSar = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<LucidSarInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<LucidSarInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const LucidSar = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

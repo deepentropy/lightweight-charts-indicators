@@ -9,8 +9,10 @@
  * Reference: "AK_TREND ID (M)" by Algokid
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AKTrendIDInputs {
   input1: number;
@@ -41,46 +43,65 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<AKTrendIDInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
+type Point = { time: number; value: number; color?: string };
+
+interface AkRun extends BarRunState<Record<string, never>> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  plot0: Point[];
+  plot1: Point[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<AKTrendIDInputs>): BarStudy<AkRun, Result> {
   const { input1, input2, src } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const srcSeries = getSourceSeries(bars, src);
-  const fastArr = ta.ema(srcSeries, input1).toArray();
-  const slowArr = ta.ema(srcSeries, input2).toArray();
-
+  const value = barSource(src);
   const warmup = Math.max(input1, input2);
-  const barColors: BarColorData[] = [];
-
-  const plot0 = bars.map((b, i) => ({
-    time: b.time,
-    value: i < warmup ? NaN : 0,
-  }));
-
-  const plot1 = bars.map((b, i) => {
-    const f = fastArr[i];
-    const s = slowArr[i];
-    if (i < warmup || f == null || s == null || isNaN(f) || isNaN(s)) {
-      return { time: b.time, value: NaN };
-    }
-    const bspread = (f - s) * 1.001;
-    return { time: b.time, value: bspread, color: bspread > 0 ? '#00FF00' : '#FF0000' };
-  });
-
-  for (let i = warmup; i < n; i++) {
-    const f = fastArr[i];
-    const s = slowArr[i];
-    if (f != null && s != null) {
-      const bspread = (f - s) * 1.001;
-      barColors.push({ time: bars[i].time, color: bspread > 0 ? '#008000' : '#FF0000' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
-    barColors,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const fast = taStep.ema(input1);
+      const slow = taStep.ema(input2);
+      const s: AkRun = { fast, slow, plot0: [], plot1: [], barColors: [], steps: [fast, slow], vars: {}, lists: [], series: [] };
+      s.lists = [s.barColors];
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = value(b);
+      const f = s.fast.step(v);
+      const sl = s.slow.step(v);
+      s.plot0[i] = { time: b.time, value: i < warmup ? NaN : 0 };
+      if (i < warmup || f == null || sl == null || isNaN(f) || isNaN(sl)) {
+        s.plot1[i] = { time: b.time, value: NaN };
+      } else {
+        const bspread = (f - sl) * 1.001;
+        s.plot1[i] = { time: b.time, value: bspread, color: bspread > 0 ? '#00FF00' : '#FF0000' };
+      }
+      if (i >= warmup && f != null && sl != null) {
+        const bspread = (f - sl) * 1.001;
+        s.barColors.push({ time: b.time, color: bspread > 0 ? '#008000' : '#FF0000' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice() },
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const AKTrendID = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AKTrendIDInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AKTrendIDInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const AKTrendID = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

@@ -10,6 +10,8 @@
  */
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PullbackDepthInputs {
   /** Maximum number of bars searched back */
@@ -38,35 +40,60 @@ export const metadata = {
 const EPS = 1e-10;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<PullbackDepthInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
+type Point = { time: number; value: number; color: string };
 
-  const plot0 = bars.map((b, i) => {
-    // actualLookback = math.max(1, math.min(lookback, bar_index))
-    const actualLookback = Math.max(1, Math.min(cfg.lookback, i));
-    let barsBack = NaN;
-    if (i > 0) {
-      barsBack = actualLookback;
-      for (let k = 1; k <= actualLookback; k++) {
-        // low[k] < low (low[k] before the first bar is na: false)
-        if (i - k >= 0 && lt(bars[i - k].low, b.low)) {
-          barsBack = k;
-          break;
+interface PullbackRun extends BarRunState<Record<string, never>> {
+  plot0: Point[];
+}
+
+function study(inputs: Partial<PullbackDepthInputs>): BarStudy<PullbackRun, IndicatorResult> {
+  const { lookback } = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const s: PullbackRun = { plot0: [], steps: [], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // actualLookback = math.max(1, math.min(lookback, bar_index))
+      const actualLookback = Math.max(1, Math.min(lookback, i));
+      let barsBack = NaN;
+      if (i > 0) {
+        barsBack = actualLookback;
+        const low = b.low;
+        for (let k = 1; k <= actualLookback; k++) {
+          // low[k] < low (low[k] before the first bar is na: false)
+          if (i - k >= 0 && lt(bars[i - k].low, low)) {
+            barsBack = k;
+            break;
+          }
         }
       }
-    }
-    return { time: b.time, value: -barsBack, color: color.red };
-  });
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    hlines: [{ value: 0, options: { title: 'Zero', color: String(color.new(color.gray, 70)), linestyle: 'dashed' } }],
+      s.plot0[i] = { time: b.time, value: -barsBack, color: color.red };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        hlines: [{ value: 0, options: { title: 'Zero', color: String(color.new(color.gray, 70)), linestyle: 'dashed' } }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PullbackDepthInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PullbackDepthInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PullbackDepth = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

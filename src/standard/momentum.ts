@@ -5,7 +5,9 @@
  * Measures the rate of change of price over a specified period.
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MomentumInputs {
   length: number;
@@ -32,20 +34,44 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MomentumInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface MomRun extends BarRunState<Record<string, never>> {
+  m: { step(v: number): number; commit(): void };
+  plotData: Point[];
+}
+
+function study(inputs: Partial<MomentumInputs>): BarStudy<MomRun, IndicatorResult> {
   const { length, src } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
-  const mom = ta.mom(source, length);
-
-  const plotData = mom.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
+  const value = barSource(src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plotData },
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const m = taStep.mom(length);
+      const s: MomRun = { m, plotData: [], steps: [m], vars: {}, lists: [], series: [] };
+      s.series = [s.plotData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      s.plotData[i] = { time: b.time as number, value: s.m.step(value(b)) ?? NaN };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plotData.slice() },
+      };
+    },
   };
 }
 
-export const Momentum = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MomentumInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MomentumInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const Momentum = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

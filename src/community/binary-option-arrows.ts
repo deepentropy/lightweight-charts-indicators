@@ -11,6 +11,8 @@
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type ArrowConfig, type ArrowData } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BinaryOptionArrowsInputs {
   /** Expiry in bars */
@@ -39,62 +41,84 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<BinaryOptionArrowsInputs> = {},
-): IndicatorResult & { arrows: ArrowData[]; bgColors: BgColorData[] } {
+type Result = IndicatorResult & { arrows: ArrowData[]; bgColors: BgColorData[] };
+
+interface BoaRun extends BarRunState<Record<string, never>> {
+  call: boolean[];
+  put: boolean[];
+  arrows: ArrowData[];
+  bgColors: BgColorData[];
+}
+
+const lime = '#00FF00';
+const red = '#FF0000';
+// bgcolor(..., transp=70)
+const winBg = 'rgba(0, 255, 0, 0.3)';
+const loseBg = 'rgba(255, 0, 0, 0.3)';
+
+function study(inputs: Partial<BinaryOptionArrowsInputs>): BarStudy<BoaRun, Result> {
   const { expiry } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const E = Math.max(1, Math.floor(expiry));
-
-  // na history (bars before the first) makes every comparison false
-  const call = new Array<boolean>(n).fill(false);
-  const put = new Array<boolean>(n).fill(false);
-  for (let i = 5; i < n; i++) {
-    const b = bars[i];
-    const p = bars[i - 1];
-    const open5 = bars[i - 5].open;
-    // Bearish_harami = close[1] > open[1] and open > close and open <= close[1] and open[1] <= close
-    //                  and open - close < close[1] - open[1] and open[5] < open
-    put[i] = p.close > p.open && b.open > b.close && b.open <= p.close && p.open <= b.close
-      && b.open - b.close < p.close - p.open && open5 < b.open;
-    // Bullish_harami = open[1] > close[1] and close > open and close <= open[1] and close[1] <= open
-    //                  and close - open < open[1] - close[1] and open[5] > open
-    call[i] = p.open > p.close && b.close > b.open && b.close <= p.open && p.close <= b.open
-      && b.close - b.open < p.open - p.close && open5 > b.open;
-  }
-
-  const lime = '#00FF00';
-  const red = '#FF0000';
-  // bgcolor(..., transp=70)
-  const winBg = 'rgba(0, 255, 0, 0.3)';
-  const loseBg = 'rgba(255, 0, 0, 0.3)';
-
-  const arrows: ArrowData[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // ARROW = CALL - PUT (1, -1 or 0: no arrow on 0)
-    const arrow = (call[i] ? 1 : 0) - (put[i] ? 1 : 0);
-    if (arrow !== 0) arrows.push({ time: t, id: 'arrow0', value: arrow, color: arrow > 0 ? lime : red });
-    // WIN = (CALL[E] and close[E] < close) or (PUT[E] and close[E] > close)
-    // LOSE = (CALL[E] and close[E] >= close) or (PUT[E] and close[E] <= close)
-    if (i >= E) {
-      const cE = bars[i - E].close;
-      const c = bars[i].close;
-      const win = (call[i - E] && cE < c) || (put[i - E] && cE > c);
-      const lose = (call[i - E] && cE >= c) || (put[i - E] && cE <= c);
-      if (win) bgColors.push({ id: 'bgcolor0', time: t, color: winBg });
-      else if (lose) bgColors.push({ id: 'bgcolor0', time: t, color: loseBg });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    arrows,
-    bgColors,
+    init() {
+      const s: BoaRun = { call: [], put: [], arrows: [], bgColors: [], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.arrows, s.bgColors];
+      s.series = [s.call, s.put];
+      return s;
+    },
+    bar(s, i, bars) {
+      // na history (bars before the first) makes every comparison false
+      let put = false;
+      let call = false;
+      if (i >= 5) {
+        const b = bars[i];
+        const p = bars[i - 1];
+        const open5 = bars[i - 5].open;
+        // Bearish_harami = close[1] > open[1] and open > close and open <= close[1] and open[1] <= close
+        //                  and open - close < close[1] - open[1] and open[5] < open
+        put = p.close > p.open && b.open > b.close && b.open <= p.close && p.open <= b.close
+          && b.open - b.close < p.close - p.open && open5 < b.open;
+        // Bullish_harami = open[1] > close[1] and close > open and close <= open[1] and close[1] <= open
+        //                  and close - open < open[1] - close[1] and open[5] > open
+        call = p.open > p.close && b.close > b.open && b.close <= p.open && p.close <= b.open
+          && b.close - b.open < p.open - p.close && open5 > b.open;
+      }
+      s.call[i] = call;
+      s.put[i] = put;
+
+      const t = bars[i].time;
+      // ARROW = CALL - PUT (1, -1 or 0: no arrow on 0)
+      const arrow = (call ? 1 : 0) - (put ? 1 : 0);
+      if (arrow !== 0) s.arrows.push({ time: t, id: 'arrow0', value: arrow, color: arrow > 0 ? lime : red });
+      // WIN = (CALL[E] and close[E] < close) or (PUT[E] and close[E] > close)
+      // LOSE = (CALL[E] and close[E] >= close) or (PUT[E] and close[E] <= close)
+      if (i >= E) {
+        const cE = bars[i - E].close;
+        const c = bars[i].close;
+        const win = (s.call[i - E] && cE < c) || (s.put[i - E] && cE > c);
+        const lose = (s.call[i - E] && cE >= c) || (s.put[i - E] && cE <= c);
+        if (win) s.bgColors.push({ id: 'bgcolor0', time: t, color: winBg });
+        else if (lose) s.bgColors.push({ id: 'bgcolor0', time: t, color: loseBg });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        arrows: s.arrows.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
 }
 
-export const BinaryOptionArrows = { calculate, metadata, defaultInputs, inputConfig, plotConfig, arrowConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BinaryOptionArrowsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BinaryOptionArrowsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const BinaryOptionArrows = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, arrowConfig };

@@ -8,8 +8,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type VolumeSpikeIndicatorInputs = Record<string, never>;
 
@@ -30,32 +32,52 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(
-  bars: Bar[],
-  _inputs: Partial<VolumeSpikeIndicatorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface VolumeSpikeRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  markers: MarkerData[];
+}
+
+function study(): BarStudy<VolumeSpikeRun, Result> {
   const length = 20; // Moving average period
   const spikeMultiplier = 4; // Spike multiplier
-
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const volumeSMA = ta.sma(Series.fromArray(bars, volume), length).toArray().map((v) => v ?? NaN);
-
   const red = String(color.red);
-  const markers: MarkerData[] = [];
-  bars.forEach((b, i) => {
-    const isVolumeSpike = gt(volume[i], volumeSMA[i] * spikeMultiplier);
-    if (!isVolumeSpike) return;
-    // plotshape(isVolumeSpike, style = shape.cross, location.abovebar, color.red, size.small, title = "Cross")
-    markers.push({ time: b.time, position: 'aboveBar', shape: 'cross', color: red, size: 'small' });
-    // plotshape(isVolumeSpike, style = shape.xcross, location.abovebar, color.red, size.small, title = "X-Cross")
-    markers.push({ time: b.time, position: 'aboveBar', shape: 'xcross', color: red, size: 'small' });
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
+    init() {
+      const sma = new WindowSma(length);
+      const s: VolumeSpikeRun = { sma, markers: [], steps: [sma], vars: {}, lists: [], series: [] };
+      s.lists = [s.markers];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = b.volume ?? NaN;
+      const volumeSMA = s.sma.step(volume);
+      const isVolumeSpike = gt(volume, volumeSMA * spikeMultiplier);
+      if (!isVolumeSpike) return;
+      // plotshape(isVolumeSpike, style = shape.cross, location.abovebar, color.red, size.small, title = "Cross")
+      s.markers.push({ time: b.time, position: 'aboveBar', shape: 'cross', color: red, size: 'small' });
+      // plotshape(isVolumeSpike, style = shape.xcross, location.abovebar, color.red, size.small, title = "X-Cross")
+      s.markers.push({ time: b.time, position: 'aboveBar', shape: 'xcross', color: red, size: 'small' });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const VolumeSpikeIndicator = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<VolumeSpikeIndicatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(bars: Bar[], _inputs: Partial<VolumeSpikeIndicatorInputs> = {}): Result {
+  return fullResult(createRun(_inputs).update(bars));
+}
+
+export const VolumeSpikeIndicator = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

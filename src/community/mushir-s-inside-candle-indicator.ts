@@ -10,6 +10,8 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type MushirInsideCandleInputs = Record<string, never>;
 
@@ -31,25 +33,45 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  _inputs: Partial<MushirInsideCandleInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const black = color.black;
-  const markers: MarkerData[] = [];
-  for (let i = 1; i < bars.length; i++) {
-    const b = bars[i];
-    const isInside = lt(b.high, bars[i - 1].high) && gt(b.low, bars[i - 1].low);
-    // plotshape(isInside, title = "Inside Candle Detected", style = shape.circle, location = location.abovebar,
-    //           color = color.black, size = size.tiny)
-    if (isInside) markers.push({ time: b.time, position: 'aboveBar', shape: 'circle', color: black, size: 'tiny' });
-  }
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
 
+interface InsideRun extends BarRunState<Record<string, never>> {
+  markers: MarkerData[];
+}
+
+function study(): BarStudy<InsideRun, Result> {
+  const black = color.black;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
+    init() {
+      const s: InsideRun = { markers: [], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.markers];
+      return s;
+    },
+    bar(s, i, bars) {
+      if (i < 1) return;
+      const b = bars[i];
+      const isInside = lt(b.high, bars[i - 1].high) && gt(b.low, bars[i - 1].low);
+      // plotshape(isInside, title = "Inside Candle Detected", style = shape.circle, location = location.abovebar,
+      //           color = color.black, size = size.tiny)
+      if (isInside) s.markers.push({ time: b.time, position: 'aboveBar', shape: 'circle', color: black, size: 'tiny' });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const MushirInsideCandle = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<MushirInsideCandleInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(bars: Bar[], _inputs: Partial<MushirInsideCandleInputs> = {}): Result {
+  return fullResult(createRun(_inputs).update(bars));
+}
+
+export const MushirInsideCandle = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

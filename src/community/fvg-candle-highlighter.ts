@@ -11,6 +11,8 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 // The Pine script has no inputs
 export interface FvgCandleHighlighterInputs {}
@@ -33,26 +35,50 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  _inputs: Partial<FvgCandleHighlighterInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+interface FvgRun extends BarRunState<Record<string, never>> {
+  barColors: BarColorData[];
+}
+
+function study(): BarStudy<FvgRun, Result> {
   const bullColor = String(color.new(color.lime, 70));
   const bearColor = String(color.new(color.red, 70));
-  const barColors: BarColorData[] = [];
-  // bars 0 and 1: high[2] / low[2] are na, no gap
-  for (let i = 2; i < bars.length; i++) {
-    const isBullFVG = gt(bars[i].low, bars[i - 2].high);
-    const isBearFVG = lt(bars[i].high, bars[i - 2].low);
-    // barcolor(..., offset = -1): the colour of bar i is drawn on bar i - 1
-    if (isBullFVG) barColors.push({ time: bars[i - 1].time, color: bullColor });
-    else if (isBearFVG) barColors.push({ time: bars[i - 1].time, color: bearColor });
-  }
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    barColors,
+    init() {
+      const s: FvgRun = { barColors: [], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      // bars 0 and 1: high[2] / low[2] are na, no gap
+      if (i < 2) return;
+      const isBullFVG = gt(bars[i].low, bars[i - 2].high);
+      const isBearFVG = lt(bars[i].high, bars[i - 2].low);
+      // barcolor(..., offset = -1): the colour of bar i is drawn on bar i - 1
+      if (isBullFVG) s.barColors.push({ time: bars[i - 1].time, color: bullColor });
+      else if (isBearFVG) s.barColors.push({ time: bars[i - 1].time, color: bearColor });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const FvgCandleHighlighter = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<FvgCandleHighlighterInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  _inputs: Partial<FvgCandleHighlighterInputs> = {},
+): Result {
+  return fullResult(createRun(_inputs).update(bars));
+}
+
+export const FvgCandleHighlighter = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

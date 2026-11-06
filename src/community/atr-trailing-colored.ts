@@ -11,7 +11,9 @@
  * Reference: "Average True Range Trailing Stops Strategy, by Sylvain Vervoort" (community, HPotter)
  */
 
-import { ta, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ATRTrailingColoredInputs {
   length: number;
@@ -45,44 +47,74 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ATRTrailingColoredInputs> = {}): Omit<IndicatorResult, 'markers'> {
-  const { length, mult } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
+type Result = Omit<IndicatorResult, 'markers'>;
+type Point = { time: number; value: number; color?: string };
 
-  const atrArr = ta.atr(bars, length).toArray();
-
-  const stopArr: number[] = new Array(n);
-  const posArr: number[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    const a = atrArr[i];
-    const nLoss = a == null ? NaN : mult * a;
-    const close = bars[i].close;
-    const prevClose = i > 0 ? bars[i - 1].close : NaN;
-    // nz(xATRTrailingStop[1], 0)
-    const prevStop = i > 0 && !isNaN(stopArr[i - 1]) ? stopArr[i - 1] : 0;
-
-    let stop: number;
-    if (close > prevStop && prevClose > prevStop) stop = Math.max(prevStop, close - nLoss);
-    else if (close < prevStop && prevClose < prevStop) stop = Math.min(prevStop, close + nLoss);
-    else stop = close > prevStop ? close - nLoss : close + nLoss;
-    stopArr[i] = stop;
-
-    if (prevClose < prevStop && close > prevStop) posArr[i] = 1;
-    else if (prevClose > prevStop && close < prevStop) posArr[i] = -1;
-    else posArr[i] = i > 0 ? posArr[i - 1] : 0;
-  }
-
-  const plot0 = stopArr.map((v, i) => {
-    if (isNaN(v)) return { time: bars[i].time, value: NaN };
-    const c = posArr[i] === -1 ? RED : posArr[i] === 1 ? GREEN : BLUE;
-    return { time: bars[i].time, value: v, color: c };
-  });
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
-  } as Omit<IndicatorResult, 'markers'>;
+interface AtrtsVars {
+  /** xATRTrailingStop[1] */
+  prevStopRaw: number;
+  /** pos[1] */
+  prevPos: number;
 }
 
-export const ATRTrailingColored = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+interface AtrtsRun extends BarRunState<AtrtsVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  plot0: Point[];
+}
+
+function study(inputs: Partial<ATRTrailingColoredInputs>): BarStudy<AtrtsRun, Result> {
+  const { length, mult } = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const atr = taStep.atr(length);
+      const s: AtrtsRun = { atr, plot0: [], steps: [atr], vars: { prevStopRaw: NaN, prevPos: 0 }, lists: [], series: [] };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const nLoss = mult * s.atr.step(b.high, b.low, b.close);
+      const close = b.close;
+      const prevClose = i > 0 ? bars[i - 1].close : NaN;
+      // nz(xATRTrailingStop[1], 0)
+      const prevStop = i > 0 && !isNaN(v.prevStopRaw) ? v.prevStopRaw : 0;
+
+      let stop: number;
+      if (close > prevStop && prevClose > prevStop) stop = Math.max(prevStop, close - nLoss);
+      else if (close < prevStop && prevClose < prevStop) stop = Math.min(prevStop, close + nLoss);
+      else stop = close > prevStop ? close - nLoss : close + nLoss;
+      v.prevStopRaw = stop;
+
+      let pos: number;
+      if (prevClose < prevStop && close > prevStop) pos = 1;
+      else if (prevClose > prevStop && close < prevStop) pos = -1;
+      else pos = i > 0 ? v.prevPos : 0;
+      v.prevPos = pos;
+
+      if (isNaN(stop)) {
+        s.plot0[i] = { time: b.time, value: NaN };
+      } else {
+        const c = pos === -1 ? RED : pos === 1 ? GREEN : BLUE;
+        s.plot0[i] = { time: b.time, value: stop, color: c };
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice() },
+      } as Result;
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ATRTrailingColoredInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ATRTrailingColoredInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const ATRTrailingColored = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

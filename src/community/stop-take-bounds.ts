@@ -11,6 +11,8 @@
  */
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface StopTakeBoundsInputs {
   /** Distance of the stop loss from the close, in % */
@@ -45,26 +47,54 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<StopTakeBoundsInputs> = {}): IndicatorResult {
-  const { stopDistancePercent, takeProfitMultiplier } = { ...defaultInputs, ...inputs };
-  // The Pine script also computes a `direction` (ta.valuewhen of ta.cross(close, close[1])) that no output uses.
-  const dist = bars.map((b) => b.close * (stopDistancePercent / 100));
-  const line = (f: (c: number, d: number) => number, c: string) =>
-    bars.map((b, i) => ({ time: b.time, value: f(b.close, dist[i]), color: c }));
+type Point = { time: number; value: number; color: string };
 
+interface StopTakeRun extends BarRunState<Record<string, never>> {
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+}
+
+function study(inputs: Partial<StopTakeBoundsInputs>): BarStudy<StopTakeRun, IndicatorResult> {
+  const { stopDistancePercent, takeProfitMultiplier } = { ...defaultInputs, ...inputs };
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line((c, d) => c - d, STOP_COL),
-      plot1: line((c, d) => c + d * takeProfitMultiplier, TAKE_COL),
-      plot2: line((c, d) => c + d, STOP_COL),
-      plot3: line((c, d) => c - d * takeProfitMultiplier, TAKE_COL),
+    init() {
+      const s: StopTakeRun = { plot0: [], plot1: [], plot2: [], plot3: [], steps: [], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1, s.plot2, s.plot3];
+      return s;
+    },
+    bar(s, i, bars) {
+      // The Pine script also computes a `direction` (ta.valuewhen of ta.cross(close, close[1])) that no output uses.
+      const b = bars[i];
+      const c = b.close;
+      const d = c * (stopDistancePercent / 100);
+      s.plot0[i] = { time: b.time, value: c - d, color: STOP_COL };
+      s.plot1[i] = { time: b.time, value: c + d * takeProfitMultiplier, color: TAKE_COL };
+      s.plot2[i] = { time: b.time, value: c + d, color: STOP_COL };
+      s.plot3[i] = { time: b.time, value: c - d * takeProfitMultiplier, color: TAKE_COL };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<StopTakeBoundsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<StopTakeBoundsInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const StopTakeBounds = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

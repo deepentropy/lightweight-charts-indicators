@@ -7,6 +7,8 @@
  */
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ChaikinMFInputs {
   /** Period length */
@@ -35,69 +37,77 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ChaikinMFInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface CmfRun extends BarRunState<Record<string, never>> {
+  ad: number[];
+  vol: number[];
+  plotData: Point[];
+}
+
+function study(inputs: Partial<ChaikinMFInputs>): BarStudy<CmfRun, IndicatorResult> {
   const { length } = { ...defaultInputs, ...inputs };
-
-  // Calculate Money Flow Multiplier and Money Flow Volume for each bar
-  // ad = close==high and close==low or high==low ? 0 : ((2*close-low-high)/(high-low))*volume
-  const ad: number[] = [];
-  const vol: number[] = [];
-
-  for (let i = 0; i < bars.length; i++) {
-    const { high, low, close, volume } = bars[i];
-    const v = volume ?? 0;
-    vol.push(v);
-
-    if ((close === high && close === low) || high === low) {
-      ad.push(0);
-    } else {
-      ad.push(((2 * close - low - high) / (high - low)) * v);
-    }
-  }
-
-  // CMF = Sum(ad, length) / Sum(volume, length)
-  const cmf: number[] = [];
-
-  for (let i = 0; i < bars.length; i++) {
-    if (i < length - 1) {
-      cmf.push(NaN);
-      continue;
-    }
-
-    let sumAD = 0;
-    let sumVol = 0;
-
-    for (let j = i - length + 1; j <= i; j++) {
-      sumAD += ad[j];
-      sumVol += vol[j];
-    }
-
-    if (sumVol === 0) {
-      cmf.push(0);
-    } else {
-      cmf.push(sumAD / sumVol);
-    }
-  }
-
-  const plotData = cmf.map((value, i) => ({
-    time: bars[i].time,
-    value,
-  }));
-
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    init() {
+      const s: CmfRun = { ad: [], vol: [], plotData: [], steps: [], vars: {}, lists: [], series: [] };
+      s.series = [s.ad, s.vol, s.plotData];
+      return s;
     },
-    plots: {
-      'plot0': plotData,
+    bar(s, i, bars) {
+      const ad = s.ad;
+      const vol = s.vol;
+      // Calculate Money Flow Multiplier and Money Flow Volume for each bar
+      // ad = close==high and close==low or high==low ? 0 : ((2*close-low-high)/(high-low))*volume
+      const bar = bars[i];
+      const high = bar.high;
+      const low = bar.low;
+      const close = bar.close;
+      const v = bar.volume ?? 0;
+      vol[i] = v;
+      ad[i] = (close === high && close === low) || high === low ? 0 : ((2 * close - low - high) / (high - low)) * v;
+
+      // CMF = Sum(ad, length) / Sum(volume, length)
+      let value: number;
+      if (i < length - 1) {
+        value = NaN;
+      } else {
+        let sumAD = 0;
+        let sumVol = 0;
+        for (let j = i - length + 1; j <= i; j++) {
+          sumAD += ad[j];
+          sumVol += vol[j];
+        }
+        value = sumVol === 0 ? 0 : sumAD / sumVol;
+      }
+      s.plotData[i] = { time: bar.time, value };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.plotData.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ChaikinMFInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ChaikinMFInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const ChaikinMF = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

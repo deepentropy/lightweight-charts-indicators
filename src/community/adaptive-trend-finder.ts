@@ -20,12 +20,13 @@
  */
 
 import {
-  color, str, getSourceSeries, barInterval, barTime,
+  color, str, barInterval, barTime,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { LineDrawingData, LinefillData, TableData, TableCellData, TablePosition } from '../types';
 import { chartTimeframe } from '../anchor-period';
 import { symbolTypeOf, type ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type LineStyleName = 'Solid' | 'Dotted' | 'Dashed';
 type ExtendName = 'Extend Right' | 'Extend Both' | 'Extend None' | 'Extend Left';
@@ -209,105 +210,137 @@ function calcDev(logSource: number[], last: number, length: number): Deviation {
   return { stdDev, pearsonR, slope, intercept };
 }
 
+type Result = Omit<IndicatorResult, 'lines' | 'linefills' | 'tables'> & {
+  lines: LineDrawingData[]; linefills: LinefillData[]; tables: TableData[];
+};
+
+interface TrendFinderRun extends BarRunState<Record<string, never>> {
+  /** Logarithm of the source of each bar */
+  logSource: number[];
+}
+
+function study(inputs: Partial<AdaptiveTrendFinderInputs>): BarStudy<TrendFinderRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const source = barSource(cfg.source);
+  return {
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const s: TrendFinderRun = { logSource: [], steps: [], vars: {}, lists: [], series: [] };
+      s.series = [s.logSource];
+      return s;
+    },
+    bar(s, i, bars) {
+      s.logSource[i] = Math.log(source(bars[i]) ?? NaN);
+    },
+    // everything is drawn on the last bar from the source of the bars before it
+    result(s, bars, chart) {
+      const n = bars.length;
+      const result = {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+      };
+      if (n === 0) return { ...result, lines: [], linefills: [], tables: [] };
+
+      const last = n - 1;
+      const logSource = s.logSource;
+      const periods = cfg.periodMode ? LONG_PERIODS : SHORT_PERIODS;
+      const devs = periods.map((length) => calcDev(logSource, last, length));
+
+      // The highest Pearson's R; the first period that has it is selected, the last one when none compares equal
+      let highestPearsonR = devs[0].pearsonR;
+      for (const d of devs) {
+        if (gt(d.pearsonR, highestPearsonR)) highestPearsonR = d.pearsonR;
+      }
+      let selected = devs.findIndex((d) => eq(d.pearsonR, highestPearsonR));
+      if (selected < 0) selected = devs.length - 1;
+      const detectedPeriod = periods[selected];
+      const { slope: detectedSlope, intercept: detectedIntercept, stdDev: detectedStdDev } = devs[selected];
+
+      // Channel: start and end price from the slope and the intercept
+      const startPrice = Math.exp(detectedIntercept + detectedSlope * (detectedPeriod - 1));
+      const endPrice = Math.exp(detectedIntercept);
+      const interval = barInterval(bars);
+      const startTime = barTime(bars, last - detectedPeriod + 1, interval);
+      const endTime = bars[last].time;
+      const extend = EXTEND[cfg.extendStyle] ?? 'left';
+      const styleOf = (name: LineStyleName) => LINE_STYLE[name] ?? 'solid';
+      const channelColor = String(color.new(cfg.channelColor, cfg.channelTransparency));
+      const band = Math.exp(cfg.devMultiplier * detectedStdDev);
+
+      const baseLine: LineDrawingData = {
+        time1: startTime, price1: startPrice, time2: endTime, price2: endPrice, width: cfg.midlineWidth, extend,
+        color: String(color.new(cfg.midlineColor, cfg.midlineTransparency)), style: styleOf(cfg.midlineStyle),
+      };
+      const upperLine: LineDrawingData = {
+        time1: startTime, price1: startPrice * band, time2: endTime, price2: endPrice * band, width: 1, extend,
+        color: channelColor, style: styleOf(cfg.channelLineStyle),
+      };
+      const lowerLine: LineDrawingData = {
+        time1: startTime, price1: startPrice / band, time2: endTime, price2: endPrice / band, width: 1, extend,
+        color: channelColor, style: styleOf(cfg.channelLineStyle),
+      };
+      const fillColor = String(color.new(cfg.channelColor, cfg.fillTransparency));
+      const linefills: LinefillData[] = [
+        { line1: upperLine, line2: baseLine, color: fillColor },
+        { line1: baseLine, line2: lowerLine, color: fillColor },
+      ];
+
+      // Table
+      const textSize = cfg.textSize === 'Large' ? 'large' : cfg.textSize === 'Small' ? 'small' : 'normal';
+      const cells: TableCellData[] = [];
+      if (cfg.showAutoSelectedPeriod) {
+        const text = (cfg.periodMode ? 'Auto-Selected Period (Long Term): ' : 'Auto-Selected Period: ') + str.tostring(detectedPeriod);
+        cells.push({ column: 0, row: 0, text, textColor: String(color.new(cfg.channelColor, 0)), textSize });
+      }
+      if (cfg.showTrendStrength) {
+        const text = cfg.showPearson
+          ? "Pearson's R: " + str.tostring(gt(detectedSlope, 0.0) ? -highestPearsonR : highestPearsonR, '#.###')
+          : 'Trend Strength: ' + confidence(highestPearsonR);
+        cells.push({ column: 0, row: 1, text, textColor: cfg.channelColor, textSize });
+      }
+      // Annualized return of the trend, on daily and weekly bars only
+      const tf = chartTimeframe(bars, chart);
+      const isDaily = tf.endsWith('D');
+      const isWeekly = tf.endsWith('W');
+      if (cfg.showTrendAnnualizedReturn && (isDaily || isWeekly)) {
+        let cagr = NaN;
+        if (last >= detectedPeriod) {
+          // get_tf_multiplier(): 365 daily bars a year when syminfo.type is "crypto", else 252; 52 weekly bars
+          const multiplier = isDaily ? (symbolTypeOf(chart) === 'crypto' ? 365 : 252) : 52;
+          const startClosePrice = bars[last - (detectedPeriod - 1)].close;
+          cagr = Math.pow(bars[last].close / startClosePrice, multiplier / detectedPeriod) - 1;
+        }
+        const text = 'Trend Annualized Return: ' + (!Number.isNaN(cagr) ? str.tostring(cagr * 100, '#.#') + '%' : 'N/A');
+        cells.push({ column: 0, row: 2, text, textColor: cfg.channelColor, textSize });
+      }
+      const table: TableData = {
+        position: cfg.periodMode ? 'bottom_center' : POSITION[cfg.tablePosition] ?? 'middle_left',
+        columns: 2,
+        rows: 3,
+        cells,
+      };
+
+      return { ...result, lines: [baseLine, upperLine, lowerLine], linefills, tables: [table] };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdaptiveTrendFinderInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<AdaptiveTrendFinderInputs> = {},
   chart?: ChartContext,
-): Omit<IndicatorResult, 'lines' | 'linefills' | 'tables'> & {
-  lines: LineDrawingData[]; linefills: LinefillData[]; tables: TableData[];
-} {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const result = {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-  };
-  if (n === 0) return { ...result, lines: [], linefills: [], tables: [] };
-
-  const last = n - 1;
-  const logSource = getSourceSeries(bars, cfg.source).toArray().map((v) => Math.log(v ?? NaN));
-  const periods = cfg.periodMode ? LONG_PERIODS : SHORT_PERIODS;
-  const devs = periods.map((length) => calcDev(logSource, last, length));
-
-  // The highest Pearson's R; the first period that has it is selected, the last one when none compares equal
-  let highestPearsonR = devs[0].pearsonR;
-  for (const d of devs) {
-    if (gt(d.pearsonR, highestPearsonR)) highestPearsonR = d.pearsonR;
-  }
-  let selected = devs.findIndex((d) => eq(d.pearsonR, highestPearsonR));
-  if (selected < 0) selected = devs.length - 1;
-  const detectedPeriod = periods[selected];
-  const { slope: detectedSlope, intercept: detectedIntercept, stdDev: detectedStdDev } = devs[selected];
-
-  // Channel: start and end price from the slope and the intercept
-  const startPrice = Math.exp(detectedIntercept + detectedSlope * (detectedPeriod - 1));
-  const endPrice = Math.exp(detectedIntercept);
-  const interval = barInterval(bars);
-  const startTime = barTime(bars, last - detectedPeriod + 1, interval);
-  const endTime = bars[last].time;
-  const extend = EXTEND[cfg.extendStyle] ?? 'left';
-  const styleOf = (name: LineStyleName) => LINE_STYLE[name] ?? 'solid';
-  const channelColor = String(color.new(cfg.channelColor, cfg.channelTransparency));
-  const band = Math.exp(cfg.devMultiplier * detectedStdDev);
-
-  const baseLine: LineDrawingData = {
-    time1: startTime, price1: startPrice, time2: endTime, price2: endPrice, width: cfg.midlineWidth, extend,
-    color: String(color.new(cfg.midlineColor, cfg.midlineTransparency)), style: styleOf(cfg.midlineStyle),
-  };
-  const upperLine: LineDrawingData = {
-    time1: startTime, price1: startPrice * band, time2: endTime, price2: endPrice * band, width: 1, extend,
-    color: channelColor, style: styleOf(cfg.channelLineStyle),
-  };
-  const lowerLine: LineDrawingData = {
-    time1: startTime, price1: startPrice / band, time2: endTime, price2: endPrice / band, width: 1, extend,
-    color: channelColor, style: styleOf(cfg.channelLineStyle),
-  };
-  const fillColor = String(color.new(cfg.channelColor, cfg.fillTransparency));
-  const linefills: LinefillData[] = [
-    { line1: upperLine, line2: baseLine, color: fillColor },
-    { line1: baseLine, line2: lowerLine, color: fillColor },
-  ];
-
-  // Table
-  const textSize = cfg.textSize === 'Large' ? 'large' : cfg.textSize === 'Small' ? 'small' : 'normal';
-  const cells: TableCellData[] = [];
-  if (cfg.showAutoSelectedPeriod) {
-    const text = (cfg.periodMode ? 'Auto-Selected Period (Long Term): ' : 'Auto-Selected Period: ') + str.tostring(detectedPeriod);
-    cells.push({ column: 0, row: 0, text, textColor: String(color.new(cfg.channelColor, 0)), textSize });
-  }
-  if (cfg.showTrendStrength) {
-    const text = cfg.showPearson
-      ? "Pearson's R: " + str.tostring(gt(detectedSlope, 0.0) ? -highestPearsonR : highestPearsonR, '#.###')
-      : 'Trend Strength: ' + confidence(highestPearsonR);
-    cells.push({ column: 0, row: 1, text, textColor: cfg.channelColor, textSize });
-  }
-  // Annualized return of the trend, on daily and weekly bars only
-  const tf = chartTimeframe(bars, chart);
-  const isDaily = tf.endsWith('D');
-  const isWeekly = tf.endsWith('W');
-  if (cfg.showTrendAnnualizedReturn && (isDaily || isWeekly)) {
-    let cagr = NaN;
-    if (last >= detectedPeriod) {
-      // get_tf_multiplier(): 365 daily bars a year when syminfo.type is "crypto", else 252; 52 weekly bars
-      const multiplier = isDaily ? (symbolTypeOf(chart) === 'crypto' ? 365 : 252) : 52;
-      const startClosePrice = bars[last - (detectedPeriod - 1)].close;
-      cagr = Math.pow(bars[last].close / startClosePrice, multiplier / detectedPeriod) - 1;
-    }
-    const text = 'Trend Annualized Return: ' + (!Number.isNaN(cagr) ? str.tostring(cagr * 100, '#.#') + '%' : 'N/A');
-    cells.push({ column: 0, row: 2, text, textColor: cfg.channelColor, textSize });
-  }
-  const table: TableData = {
-    position: cfg.periodMode ? 'bottom_center' : POSITION[cfg.tablePosition] ?? 'middle_left',
-    columns: 2,
-    rows: 3,
-    cells,
-  };
-
-  return { ...result, lines: [baseLine, upperLine, lowerLine], linefills, tables: [table] };
+): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 export const AdaptiveTrendFinder = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

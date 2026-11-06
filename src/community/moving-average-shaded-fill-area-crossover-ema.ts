@@ -11,9 +11,11 @@
  */
 
 import {
-  ta, color, getSourceSeries,
+  taStep, color,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType, type FillConfig,
 } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MovingAverageShadedFillAreaCrossoverEmaInputs {
   src: SourceType;
@@ -55,24 +57,57 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MovingAverageShadedFillAreaCrossoverEmaInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface FillRun extends BarRunState<Record<string, never>> {
+  e1: ReturnType<typeof taStep.ema>;
+  e2: ReturnType<typeof taStep.ema>;
+  plot0: Point[];
+  plot1: Point[];
+  colors: string[];
+}
+
+function study(inputs: Partial<MovingAverageShadedFillAreaCrossoverEmaInputs>): BarStudy<FillRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const src = getSourceSeries(bars, cfg.src);
-  const pema1 = ta.ema(src, cfg.ema1).toArray().map((v) => v ?? NaN);
-  const pema2 = ta.ema(src, cfg.ema2).toArray().map((v) => v ?? NaN);
-
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: pema1[i] }));
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: pema2[i] }));
-  // pema1 > pema2 (Pine > with 1e-10; na compares false)
-  const colors = bars.map((_b, i) => (pema1[i] - pema2[i] > 1e-10 ? FILL_UP : FILL_DN));
-
+  const value = barSource(cfg.src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    fills: [{ id: 'fill0', plot1: 'plot0', plot2: 'plot1', options: { title: 'Plots Background' }, colors }],
-  } as IndicatorResult;
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const e1 = taStep.ema(cfg.ema1);
+      const e2 = taStep.ema(cfg.ema2);
+      const s: FillRun = { e1, e2, plot0: [], plot1: [], colors: [], steps: [e1, e2], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1, s.colors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = value(b);
+      const pema1 = s.e1.step(v);
+      const pema2 = s.e2.step(v);
+      s.plot0[i] = { time: b.time as number, value: pema1 };
+      s.plot1[i] = { time: b.time as number, value: pema2 };
+      // pema1 > pema2 (Pine > with 1e-10; na compares false)
+      s.colors[i] = pema1 - pema2 > 1e-10 ? FILL_UP : FILL_DN;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        fills: [{ id: 'fill0', plot1: 'plot0', plot2: 'plot1', options: { title: 'Plots Background' }, colors: s.colors.slice() }],
+      } as IndicatorResult;
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MovingAverageShadedFillAreaCrossoverEmaInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MovingAverageShadedFillAreaCrossoverEmaInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MovingAverageShadedFillAreaCrossoverEma = {
-  calculate, metadata, defaultInputs, inputConfig, plotConfig, fillConfig,
+  calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, fillConfig,
 };

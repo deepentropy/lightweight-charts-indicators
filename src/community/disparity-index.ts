@@ -10,7 +10,9 @@
  * Commodities Dec 2009.
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DisparityIndexInputs {
   /** EMA length of the first line */
@@ -54,33 +56,58 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<DisparityIndexInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface DixRun extends BarRunState<Record<string, never>> {
+  emas: ReturnType<typeof taStep.ema>[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<DisparityIndexInputs>): BarStudy<DixRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-
-  // xRes = 100 * (close - ema) / ema: a plain division (x / 0 is +-infinity, shown as na)
-  const line = (len: number, show: boolean, col: string) => {
-    const ema = A(ta.ema(close, len));
-    return bars.map((b, i) => {
-      const v = (100 * (b.close - ema[i])) / ema[i];
-      return { time: b.time, value: show && Number.isFinite(v) ? v : NaN, color: col };
-    });
-  };
-
+  const lines = [
+    { len: cfg.lengthFirst, show: cfg.showFirst, col: color.red },
+    { len: cfg.lengthSecond, show: cfg.showSecond, col: color.blue },
+    { len: cfg.lengthThird, show: cfg.showThird, col: color.green },
+  ];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(cfg.lengthFirst, cfg.showFirst, color.red),
-      plot1: line(cfg.lengthSecond, cfg.showSecond, color.blue),
-      plot2: line(cfg.lengthThird, cfg.showThird, color.green),
+    init() {
+      const emas = lines.map((l) => taStep.ema(l.len));
+      const plots: Point[][] = [[], [], []];
+      return { emas, plots, steps: emas, vars: {}, lists: [], series: plots };
     },
-    hlines: [{ value: 0, options: { title: '0', color: String(color.new(color.yellow, 0)), linestyle: 'dotted' } }],
+    bar(s, i, bars) {
+      const b = bars[i];
+      // xRes = 100 * (close - ema) / ema: a plain division (x / 0 is +-infinity, shown as na)
+      for (let k = 0; k < 3; k++) {
+        const l = lines[k];
+        const ema = s.emas[k].step(b.close);
+        const v = (100 * (b.close - ema)) / ema;
+        s.plots[k][i] = { time: b.time, value: l.show && Number.isFinite(v) ? v : NaN, color: l.col };
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+        hlines: [{ value: 0, options: { title: '0', color: String(color.new(color.yellow, 0)), linestyle: 'dotted' } }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DisparityIndexInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DisparityIndexInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const DisparityIndex = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -12,6 +12,8 @@
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { LineDrawingData, LabelData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AutoKeyLevelsInputs {
   /** Bars on each side required to confirm a pivot */
@@ -41,67 +43,89 @@ export const metadata = {
 const RESISTANCE = '#F23645';
 const SUPPORT = '#089981';
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AutoKeyLevelsInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[]; labels: LabelData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[]; labels: LabelData[] };
+
+interface Pivot { barIndex: number; price: number; kind: 'high' | 'low'; }
+
+interface KeyLevelsRun extends BarRunState<Record<string, never>> {
+  pivots: Pivot[];
+}
+
+function study(inputs: Partial<AutoKeyLevelsInputs>): BarStudy<KeyLevelsRun, Result> {
   const { pivotLength: p, maxLevels } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  interface Pivot { barIndex: number; price: number; kind: 'high' | 'low'; }
-  const pivots: Pivot[] = [];
-
-  for (let i = p; i < n - p; i++) {
-    let isHigh = true;
-    let isLow = true;
-    for (let j = 1; j <= p; j++) {
-      if (bars[i].high <= bars[i - j].high || bars[i].high <= bars[i + j].high) isHigh = false;
-      if (bars[i].low >= bars[i - j].low || bars[i].low >= bars[i + j].low) isLow = false;
-      if (!isHigh && !isLow) break;
-    }
-    if (isHigh) pivots.push({ barIndex: i, price: bars[i].high, kind: 'high' });
-    if (isLow) pivots.push({ barIndex: i, price: bars[i].low, kind: 'low' });
-  }
-
-  // Keep the most recent `maxLevels` pivots.
-  const kept = pivots.slice(-maxLevels);
-  const lastTime = n > 0 ? bars[n - 1].time : 0;
-
-  const lines: LineDrawingData[] = kept.map((pv) => ({
-    time1: bars[pv.barIndex].time,
-    price1: pv.price,
-    time2: lastTime,
-    price2: pv.price,
-    color: pv.kind === 'high' ? RESISTANCE : SUPPORT,
-    width: 1,
-    style: 'dashed',
-    extend: 'right',
-  }));
-
-  const labels: LabelData[] = kept.map((pv) => ({
-    time: lastTime,
-    price: pv.price,
-    text: pv.price.toFixed(2),
-    textColor: pv.kind === 'high' ? RESISTANCE : SUPPORT,
-    color: 'transparent',
-    style: 'label_left',
-    size: 'small',
-  }));
-
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    init() {
+      const s: KeyLevelsRun = { pivots: [], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.pivots];
+      return s;
     },
-    plots: {},
-    lines,
-    labels,
+    bar(s, k, bars) {
+      // the pivot of bar i = k - p: confirmed by the p bars after it, the last one being bar k
+      const i = k - p;
+      if (i < p) return;
+      let isHigh = true;
+      let isLow = true;
+      for (let j = 1; j <= p; j++) {
+        if (bars[i].high <= bars[i - j].high || bars[i].high <= bars[i + j].high) isHigh = false;
+        if (bars[i].low >= bars[i - j].low || bars[i].low >= bars[i + j].low) isLow = false;
+        if (!isHigh && !isLow) break;
+      }
+      if (isHigh) s.pivots.push({ barIndex: i, price: bars[i].high, kind: 'high' });
+      if (isLow) s.pivots.push({ barIndex: i, price: bars[i].low, kind: 'low' });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // Keep the most recent `maxLevels` pivots.
+      const kept = s.pivots.slice(-maxLevels);
+      const lastTime = n > 0 ? bars[n - 1].time : 0;
+
+      const lines: LineDrawingData[] = kept.map((pv) => ({
+        time1: bars[pv.barIndex].time,
+        price1: pv.price,
+        time2: lastTime,
+        price2: pv.price,
+        color: pv.kind === 'high' ? RESISTANCE : SUPPORT,
+        width: 1,
+        style: 'dashed',
+        extend: 'right',
+      }));
+
+      const labels: LabelData[] = kept.map((pv) => ({
+        time: lastTime,
+        price: pv.price,
+        text: pv.price.toFixed(2),
+        textColor: pv.kind === 'high' ? RESISTANCE : SUPPORT,
+        color: 'transparent',
+        style: 'label_left',
+        size: 'small',
+      }));
+
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {},
+        lines,
+        labels,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AutoKeyLevelsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AutoKeyLevelsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AutoKeyLevels = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

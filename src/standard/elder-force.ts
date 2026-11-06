@@ -6,7 +6,9 @@
  * EFI = EMA(change(close) * volume, length)
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ElderForceInputs {
   /** EMA period length */
@@ -35,40 +37,56 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ElderForceInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface EfiRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  efiData: Point[];
+}
+
+function study(inputs: Partial<ElderForceInputs>): BarStudy<EfiRun, IndicatorResult> {
   const { length } = { ...defaultInputs, ...inputs };
-
-  // Calculate change(close) * volume
-  const force: number[] = [NaN];
-  for (let i = 1; i < bars.length; i++) {
-    const change = bars[i].close - bars[i - 1].close;
-    force.push(change * (bars[i].volume ?? 0));
-  }
-
-  // EMA of force
-  const forceSeries = new Series(bars, (_, i) => force[i]);
-  const efi = ta.ema(forceSeries, length);
-  const efiArr = efi.toArray();
-
-  const efiData = efiArr.map((value: number | null, i: number) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    init() {
+      const ema = taStep.ema(length);
+      const s: EfiRun = { ema, efiData: [], steps: [ema], vars: {}, lists: [], series: [] };
+      s.series = [s.efiData];
+      return s;
     },
-    plots: {
-      'plot0': efiData,
+    bar(s, i, bars) {
+      // Calculate change(close) * volume
+      const force = i === 0 ? NaN : (bars[i].close - bars[i - 1].close) * (bars[i].volume ?? 0);
+      // EMA of force
+      const value = s.ema.step(force);
+      s.efiData[i] = { time: bars[i].time, value: value ?? NaN };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.efiData.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ElderForceInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ElderForceInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const ElderForceIndex = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -12,6 +12,8 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ManipulationCandleInputs {}
 
@@ -36,27 +38,47 @@ const lt = (a: number, b: number) => b - a > EPS;
 const BUY_COLOR = String(color.rgb(165, 214, 167, 18));
 const SELL_COLOR = String(color.rgb(161, 79, 58, 40));
 
-export function calculate(
-  bars: Bar[],
-  _inputs: Partial<ManipulationCandleInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
-  const barColors: BarColorData[] = [];
-  for (let i = 1; i < bars.length; i++) {
-    const prev = bars[i - 1];
-    const cur = bars[i];
-    const bodyHighPrev = Math.max(prev.open, prev.close);
-    const bodyLowPrev = Math.min(prev.open, prev.close);
-    const isSell = gt(cur.high, prev.high) && lt(cur.close, bodyLowPrev);
-    const isBuy = lt(cur.low, prev.low) && gt(cur.close, bodyHighPrev);
-    if (isBuy) barColors.push({ time: cur.time, color: BUY_COLOR });
-    else if (isSell) barColors.push({ time: cur.time, color: SELL_COLOR });
-  }
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
 
+interface ManipulationRun extends BarRunState<Record<string, never>> {
+  barColors: BarColorData[];
+}
+
+function study(): BarStudy<ManipulationRun, Result> {
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    barColors,
+    init() {
+      const s: ManipulationRun = { barColors: [], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      if (i < 1) return;
+      const prev = bars[i - 1];
+      const cur = bars[i];
+      const bodyHighPrev = Math.max(prev.open, prev.close);
+      const bodyLowPrev = Math.min(prev.open, prev.close);
+      const isSell = gt(cur.high, prev.high) && lt(cur.close, bodyLowPrev);
+      const isBuy = lt(cur.low, prev.low) && gt(cur.close, bodyHighPrev);
+      if (isBuy) s.barColors.push({ time: cur.time, color: BUY_COLOR });
+      else if (isSell) s.barColors.push({ time: cur.time, color: SELL_COLOR });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const ManipulationCandle = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<ManipulationCandleInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(bars: Bar[], _inputs: Partial<ManipulationCandleInputs> = {}): Result {
+  return fullResult(createRun(_inputs).update(bars));
+}
+
+export const ManipulationCandle = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

@@ -8,7 +8,9 @@
  * Reference: "Average Sentiment Oscillator" (community)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AverageSentimentOscInputs {
   length: number;
@@ -37,40 +39,54 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<AverageSentimentOscInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface AsoRun extends BarRunState<Record<string, never>> {
+  bull: WindowSma;
+  bear: WindowSma;
+  bullPlot: Point[];
+  bearPlot: Point[];
+}
+
+function study(inputs: Partial<AverageSentimentOscInputs>): BarStudy<AsoRun, IndicatorResult> {
   const { length } = { ...defaultInputs, ...inputs };
-
-  // Raw bull/bear per bar: bull if close > open, bear if close < open
-  const rawBull: number[] = [];
-  const rawBear: number[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    rawBull.push(bars[i].close >= bars[i].open ? 1 : 0);
-    rawBear.push(bars[i].close < bars[i].open ? 1 : 0);
-  }
-
-  // SMA of raw signals * 100 to get percentage
-  const bullSeries = new Series(bars, (_b, i) => rawBull[i]);
-  const bearSeries = new Series(bars, (_b, i) => rawBear[i]);
-  const bullSMA = ta.sma(bullSeries, length).mul(100);
-  const bearSMA = ta.sma(bearSeries, length).mul(100);
-  const bullArr = bullSMA.toArray();
-  const bearArr = bearSMA.toArray();
-
   const warmup = length;
-  const bullPlot = bullArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || v == null) ? NaN : v,
-  }));
-  const bearPlot = bearArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || v == null) ? NaN : v,
-  }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': bullPlot, 'plot1': bearPlot },
-    hlines: hlineConfig.map(h => ({ value: h.value, options: h.options })),
+    init() {
+      const bull = new WindowSma(length);
+      const bear = new WindowSma(length);
+      const s: AsoRun = { bull, bear, bullPlot: [], bearPlot: [], steps: [bull, bear], vars: {}, lists: [], series: [] };
+      s.series = [s.bullPlot, s.bearPlot];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // Raw bull/bear per bar: bull if close > open, bear if close < open
+      const rawBull = b.close >= b.open ? 1 : 0;
+      const rawBear = b.close < b.open ? 1 : 0;
+      // SMA of raw signals * 100 to get percentage
+      const bullV = s.bull.step(rawBull) * 100;
+      const bearV = s.bear.step(rawBear) * 100;
+      s.bullPlot[i] = { time: b.time, value: (i < warmup || bullV == null) ? NaN : bullV };
+      s.bearPlot[i] = { time: b.time, value: (i < warmup || bearV == null) ? NaN : bearV };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.bullPlot.slice(), 'plot1': s.bearPlot.slice() },
+        hlines: hlineConfig.map(h => ({ value: h.value, options: h.options })),
+      };
+    },
   };
 }
 
-export const AverageSentimentOscillator = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AverageSentimentOscInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AverageSentimentOscInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const AverageSentimentOscillator = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

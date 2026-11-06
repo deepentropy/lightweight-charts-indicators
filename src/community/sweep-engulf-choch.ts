@@ -14,7 +14,9 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall, MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -58,49 +60,78 @@ export const metadata = {
 const gt = (a: number, b: number) => a - b > 1e-10;
 const lt = (a: number, b: number) => b - a > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<SweepEngulfChochInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alertCalls: AlertCall[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alertCalls: AlertCall[] } & { alerts: AlertConditionState[] };
+
+interface SweepRun extends BarRunState<Record<string, never>> {
+  markers: MarkerData[];
+  alertCalls: AlertCall[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<SweepEngulfChochInputs>): BarStudy<SweepRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const markers: MarkerData[] = [];
-  const bullFlags: boolean[] = new Array(bars.length).fill(false);
-  const bearFlags: boolean[] = new Array(bars.length).fill(false);
-  const alertCalls: AlertCall[] = [];
-
-  // bars 0 and 1: close[2] / open[2] are na, every comparison is false
-  for (let i = 2; i < bars.length; i++) {
-    const b = bars[i];
-    const b1 = bars[i - 1];
-    const b2 = bars[i - 2];
-    const bullishEntry = lt(b2.close, b2.open) && lt(b1.low, b2.low) && gt(b1.close, b2.close) && gt(b.close, b2.open);
-    const bearishEntry = gt(b2.close, b2.open) && gt(b1.high, b2.high) && gt(b1.close, b2.open) && lt(b.close, b2.open);
-    // alertcondition(showBullish and bullishEntry) / alertcondition(showBearish and bearishEntry)
-    bullFlags[i] = cfg.showBullish && bullishEntry;
-    bearFlags[i] = cfg.showBearish && bearishEntry;
-    // if enableAlert: alert(..., alert.freq_once_per_bar_close) on each entry
-    if (cfg.enableAlert) {
-      const t = b.time as number;
-      if (bullishEntry) alertCalls.push({ time: t, message: 'Bullish Entry Signal Detected!', freq: 'once_per_bar_close' });
-      if (bearishEntry) alertCalls.push({ time: t, message: 'Bearish Entry Signal Detected!', freq: 'once_per_bar_close' });
-    }
-    // plotshape(showBullish and bullishEntry, 'Bullish Entry', location.belowbar, color.green, shape.triangleup, size.tiny)
-    if (cfg.showBullish && bullishEntry) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'tiny' });
-    }
-    // plotshape(showBearish and bearishEntry, 'Bearish Entry', location.abovebar, color.red, shape.triangledown, size.tiny)
-    if (cfg.showBearish && bearishEntry) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'tiny' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags]),
-    alertCalls,
+    init() {
+      const s: SweepRun = { markers: [], alertCalls: [], flags: [[], []], times: [[], []], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.markers, s.alertCalls, ...s.times];
+      s.series = [...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      // bars 0 and 1: close[2] / open[2] are na, every comparison is false
+      if (i < 2) {
+        s.flags[0][i] = false;
+        s.flags[1][i] = false;
+        return;
+      }
+      const b = bars[i];
+      const b1 = bars[i - 1];
+      const b2 = bars[i - 2];
+      const bullishEntry = lt(b2.close, b2.open) && lt(b1.low, b2.low) && gt(b1.close, b2.close) && gt(b.close, b2.open);
+      const bearishEntry = gt(b2.close, b2.open) && gt(b1.high, b2.high) && gt(b1.close, b2.open) && lt(b.close, b2.open);
+      // alertcondition(showBullish and bullishEntry) / alertcondition(showBearish and bearishEntry)
+      const bull = cfg.showBullish && bullishEntry;
+      const bear = cfg.showBearish && bearishEntry;
+      s.flags[0][i] = bull;
+      s.flags[1][i] = bear;
+      if (bull) s.times[0].push(b.time as number);
+      if (bear) s.times[1].push(b.time as number);
+      // if enableAlert: alert(..., alert.freq_once_per_bar_close) on each entry
+      if (cfg.enableAlert) {
+        const t = b.time as number;
+        if (bullishEntry) s.alertCalls.push({ time: t, message: 'Bullish Entry Signal Detected!', freq: 'once_per_bar_close' });
+        if (bearishEntry) s.alertCalls.push({ time: t, message: 'Bearish Entry Signal Detected!', freq: 'once_per_bar_close' });
+      }
+      // plotshape(showBullish and bullishEntry, 'Bullish Entry', location.belowbar, color.green, shape.triangleup, size.tiny)
+      if (cfg.showBullish && bullishEntry) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'tiny' });
+      }
+      // plotshape(showBearish and bearishEntry, 'Bearish Entry', location.abovebar, color.red, shape.triangledown, size.tiny)
+      if (cfg.showBearish && bearishEntry) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'tiny' });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
 }
 
-export const SweepEngulfChoch = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions, hasAlertFunction };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SweepEngulfChochInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SweepEngulfChochInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const SweepEngulfChoch = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions, hasAlertFunction };

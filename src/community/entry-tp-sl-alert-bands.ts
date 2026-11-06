@@ -14,7 +14,9 @@
  */
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EntryTpSlAlertBandsInputs {
   entry: number;
@@ -73,10 +75,16 @@ export const metadata = {
 /** Pine float comparisons: a > b only when a - b > 1e-10 (na compares false) */
 const gt = (a: number, b: number) => a - b > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<EntryTpSlAlertBandsInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+
+interface BandsRun extends BarRunState<Record<string, never>> {
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<EntryTpSlAlertBandsInputs>): BarStudy<BandsRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { entry, takeProfit, stopLoss, upperPct, lowerPct } = cfg;
 
@@ -93,26 +101,70 @@ export function calculate(
     if (gt(upDist, 0.0)) upperAlert = entry - (upDist * upperPct) / 100.0;
     if (gt(downDist, 0.0)) lowerAlert = entry + (downDist * lowerPct) / 100.0;
   }
+  const entryV = cfg.showEntry ? entry : NaN;
+  const tpV = cfg.showTP ? takeProfit : NaN;
+  const slV = cfg.showSL ? stopLoss : NaN;
 
-  // crossAbove = ta.crossover(close, upperAlert); crossBelow = ta.crossunder(close, lowerAlert)
-  const close = bars.map((b) => b.close);
-  const crossAbove = crossedOver(close, upperAlert);
-  const crossBelow = crossedUnder(close, lowerAlert);
-  const crossAny = crossAbove.map((v, i) => v || crossBelow[i]);
-
-  const line = (value: number, c: string) => bars.map((b) => ({ time: b.time, value, color: c }));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(cfg.showEntry ? entry : NaN, color.lime),
-      plot1: line(cfg.showTP ? takeProfit : NaN, color.aqua),
-      plot2: line(cfg.showSL ? stopLoss : NaN, color.red),
-      plot3: bars.map((b) => ({ time: b.time, value: b.close, color: color.white })),
-      plot4: line(upperAlert, color.green),
-      plot5: line(lowerAlert, color.fuchsia),
+    init() {
+      const s: BandsRun = {
+        plots: [[], [], [], [], [], []], flags: [[], [], []], times: [[], [], []], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.lists = [...s.times];
+      s.series = [...s.plots, ...s.flags];
+      return s;
     },
-    alerts: alertStates(alertConditions, bars, [crossAbove, crossBelow, crossAny]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const p = s.plots;
+      p[0][i] = { time: t, value: entryV, color: color.lime };
+      p[1][i] = { time: t, value: tpV, color: color.aqua };
+      p[2][i] = { time: t, value: slV, color: color.red };
+      p[3][i] = { time: t, value: b.close, color: color.white };
+      p[4][i] = { time: t, value: upperAlert, color: color.green };
+      p[5][i] = { time: t, value: lowerAlert, color: color.fuchsia };
+      // crossAbove = ta.crossover(close, upperAlert); crossBelow = ta.crossunder(close, lowerAlert)
+      const pc = i > 0 ? bars[i - 1].close : NaN;
+      const crossAbove = b.close > upperAlert && pc <= upperAlert;
+      const crossBelow = b.close < lowerAlert && pc >= lowerAlert;
+      const crossAny = crossAbove || crossBelow;
+      s.flags[0][i] = crossAbove;
+      s.flags[1][i] = crossBelow;
+      s.flags[2][i] = crossAny;
+      if (crossAbove) s.times[0].push(t as number);
+      if (crossBelow) s.times[1].push(t as number);
+      if (crossAny) s.times[2].push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(),
+          plot1: p[1].slice(),
+          plot2: p[2].slice(),
+          plot3: p[3].slice(),
+          plot4: p[4].slice(),
+          plot5: p[5].slice(),
+        },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EntryTpSlAlertBandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<EntryTpSlAlertBandsInputs> = {},
+): IndicatorResult & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -124,6 +176,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const EntryTpSlAlertBands = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

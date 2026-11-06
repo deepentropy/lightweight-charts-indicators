@@ -10,7 +10,9 @@
  * Original notice: © TheUltimator5
  */
 
-import { taCore, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type TremorTrackerMAType = 'SMA' | 'EMA' | 'WMA';
 
@@ -68,32 +70,65 @@ export const metadata = {
 const EPS = 1e-10;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<TremorTrackerInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  // volatility = ((high / low) - 1) * 100: a plain division (a low of 0 gives +infinity, as in Pine)
-  const volatility = bars.map((b) => (b.high / b.low - 1) * 100);
-  const volMA = cfg.maType === 'EMA' ? taCore.ema(volatility, cfg.volLength)
-    : cfg.maType === 'WMA' ? taCore.wma(volatility, cfg.volLength)
-      : taCore.sma(volatility, cfg.volLength);
-  const avgVol = taCore.sma(volatility, cfg.avgVolLookback);
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+type Point = { time: number; value: number; color: string };
+type Ma = { step(v: number): number; commit(): void };
 
+interface TremorRun extends BarRunState<Record<string, never>> {
+  volMA: Ma;
+  avgVol: Ma;
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<TremorTrackerInputs>): BarStudy<TremorRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: cfg.showVolMA ? fin(volMA[i]) : NaN, color: color.blue })),
-      plot1: bars.map((b, i) => {
-        const volRatio = volatility[i] / avgVol[i];
-        const c = lt(volRatio, cfg.lowLimit) ? color.lime : lt(volRatio, cfg.highLimit) ? color.yellow : color.fuchsia;
-        return { time: b.time, value: cfg.showRawVol ? fin(volatility[i]) : NaN, color: c };
-      }),
+    init() {
+      let volMA: Ma;
+      if (cfg.maType === 'EMA') volMA = taStep.ema(cfg.volLength);
+      else if (cfg.maType === 'WMA') {
+        const m = taStep.wma();
+        volMA = { step: (v) => m.step(v, cfg.volLength), commit: () => m.commit() };
+      } else volMA = new WindowSma(cfg.volLength);
+      const avgVol = new WindowSma(cfg.avgVolLookback);
+      const s: TremorRun = { volMA, avgVol, plot0: [], plot1: [], steps: [volMA, avgVol], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1];
+      return s;
     },
-    hlines: [{ value: 0, options: { title: 'Baseline (0)', color: color.gray, linestyle: 'dashed' } }],
+    bar(s, i, bars) {
+      const b = bars[i];
+      // volatility = ((high / low) - 1) * 100: a plain division (a low of 0 gives +infinity, as in Pine)
+      const volatility = (b.high / b.low - 1) * 100;
+      const volMA = s.volMA.step(volatility);
+      const avgVol = s.avgVol.step(volatility);
+      s.plot0[i] = { time: b.time, value: cfg.showVolMA ? fin(volMA) : NaN, color: color.blue };
+      const volRatio = volatility / avgVol;
+      const c = lt(volRatio, cfg.lowLimit) ? color.lime : lt(volRatio, cfg.highLimit) ? color.yellow : color.fuchsia;
+      s.plot1[i] = { time: b.time, value: cfg.showRawVol ? fin(volatility) : NaN, color: c };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [{ value: 0, options: { title: 'Baseline (0)', color: color.gray, linestyle: 'dashed' } }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TremorTrackerInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TremorTrackerInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const TremorTracker = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -13,6 +13,8 @@
 
 import { type Bar, type BarColorConfig, type IndicatorResult, type InputConfig, type PlotConfig, type ShapeConfig } from 'oakscriptjs';
 import type { BgColorData, MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BuySellVolumeTotalsForPeriodInputs {
   /** Start of the period (ms) */
@@ -69,64 +71,99 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<BuySellVolumeTotalsForPeriodInputs> = {}): IndicatorResult {
+type Result = IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] };
+
+interface BuySellVars {
+  totalBuyVolume: number;
+  totalSellVolume: number;
+}
+
+interface BuySellRun extends BarRunState<BuySellVars> {
+  /** Time unit of the bars (seconds: 1000) */
+  ms: number;
+  plot0: { time: number; value: number }[];
+  plot1: { time: number; value: number }[];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<BuySellVolumeTotalsForPeriodInputs>): BarStudy<BuySellRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const ms = n > 0 && bars[0].time < 1e12 ? 1000 : 1;
-
-  const plot0: { time: number; value: number }[] = [];
-  const plot1: { time: number; value: number }[] = [];
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
   const chars = [GREEN, RED, YELLOW];
-
-  let totalBuyVolume = 0;
-  let totalSellVolume = 0;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time * ms;
-    const inDateRange = cfg.useEndTime ? t >= cfg.startTime && t <= cfg.endTime : t >= cfg.startTime;
-    if (!inDateRange) {
-      totalBuyVolume = 0;
-      totalSellVolume = 0;
-    }
-    const vol = b.volume ?? NaN;
-    const flat = eq(b.high, b.low);
-    const buyVolume = flat ? 0 : (vol * (b.close - b.low)) / (b.high - b.low);
-    const sellVolume = flat ? 0 : (vol * (b.high - b.close)) / (b.high - b.low);
-    if (inDateRange) {
-      totalBuyVolume += buyVolume;
-      totalSellVolume += sellVolume;
-    }
-    const ratio = gt(totalSellVolume, 0) ? totalBuyVolume / totalSellVolume : 0;
-    const isAccumulation = gt(totalBuyVolume, totalSellVolume);
-
-    // plotchar(..., location.top): na and 0 draw no character
-    [totalBuyVolume, totalSellVolume, ratio].forEach((v, k) => {
-      if (Number.isFinite(v) && v !== 0) {
-        markers.push({
-          id: `char${k}`, time: b.time, position: 'top', shape: 'circle', color: 'transparent', text: '',
-          textColor: chars[k],
-        });
-      }
-    });
-
-    plot0.push({ time: b.time, value: Number.isFinite(vol) ? vol : NaN });
-    plot1.push({ time: b.time, value: Number.isFinite(buyVolume) ? buyVolume : NaN });
-    // bgcolor(color.new(accDistrColor, inDateRange ? 70 : 100)): transparent outside the period
-    if (inDateRange) bgColors.push({ id: 'bgcolor0', time: b.time, color: isAccumulation ? BG_GREEN : BG_RED });
-  }
-
+  const timeUnit = (bars: Bar[]) => (bars.length > 0 && bars[0].time < 1e12 ? 1000 : 1);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    markers,
-    bgColors,
-  } as IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] };
+    // the time unit of the first bar
+    key: (bars) => String(timeUnit(bars)),
+    init(bars) {
+      const s: BuySellRun = {
+        ms: timeUnit(bars), plot0: [], plot1: [], markers: [], bgColors: [],
+        steps: [], vars: { totalBuyVolume: 0, totalSellVolume: 0 }, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.bgColors];
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time * s.ms;
+      const inDateRange = cfg.useEndTime ? t >= cfg.startTime && t <= cfg.endTime : t >= cfg.startTime;
+      if (!inDateRange) {
+        v.totalBuyVolume = 0;
+        v.totalSellVolume = 0;
+      }
+      const vol = b.volume ?? NaN;
+      const flat = eq(b.high, b.low);
+      const buyVolume = flat ? 0 : (vol * (b.close - b.low)) / (b.high - b.low);
+      const sellVolume = flat ? 0 : (vol * (b.high - b.close)) / (b.high - b.low);
+      if (inDateRange) {
+        v.totalBuyVolume += buyVolume;
+        v.totalSellVolume += sellVolume;
+      }
+      const totalBuyVolume = v.totalBuyVolume;
+      const totalSellVolume = v.totalSellVolume;
+      const ratio = gt(totalSellVolume, 0) ? totalBuyVolume / totalSellVolume : 0;
+      const isAccumulation = gt(totalBuyVolume, totalSellVolume);
+
+      // plotchar(..., location.top): na and 0 draw no character
+      for (let k = 0; k < 3; k++) {
+        const x = k === 0 ? totalBuyVolume : k === 1 ? totalSellVolume : ratio;
+        if (Number.isFinite(x) && x !== 0) {
+          s.markers.push({
+            id: `char${k}`, time: b.time, position: 'top', shape: 'circle', color: 'transparent', text: '',
+            textColor: chars[k],
+          });
+        }
+      }
+
+      s.plot0[i] = { time: b.time, value: Number.isFinite(vol) ? vol : NaN };
+      s.plot1[i] = { time: b.time, value: Number.isFinite(buyVolume) ? buyVolume : NaN };
+      // bgcolor(color.new(accDistrColor, inDateRange ? 70 : 100)): transparent outside the period
+      if (inDateRange) s.bgColors.push({ id: 'bgcolor0', time: b.time, color: isAccumulation ? BG_GREEN : BG_RED });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+      } as Result;
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BuySellVolumeTotalsForPeriodInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BuySellVolumeTotalsForPeriodInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars)) as IndicatorResult;
 }
 
 export const BuySellVolumeTotalsForPeriod = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

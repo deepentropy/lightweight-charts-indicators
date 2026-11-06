@@ -13,6 +13,8 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface NoWickCandlesInputs {}
 
@@ -40,32 +42,52 @@ const DOWN_COLOR = String(color.rgb(172, 48, 48));
 const NO_LOWER_WICK_BAR = '#F0B65EEF';
 const NO_UPPER_WICK_BAR = '#F0B65E';
 
-export function calculate(
-  bars: Bar[],
-  _inputs: Partial<NoWickCandlesInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  for (const b of bars) {
-    const noLowerWick = eq(b.open, b.low);
-    const noUpperWick = eq(b.open, b.high);
-    if (gt(b.close, b.open) && noLowerWick) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: UP_COLOR, size: 'small' });
-    }
-    if (lt(b.close, b.open) && noUpperWick) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: DOWN_COLOR, size: 'small' });
-    }
-    // Two barcolor calls: the later one (open == high) is drawn over the first
-    if (noUpperWick) barColors.push({ time: b.time, color: NO_UPPER_WICK_BAR });
-    else if (noLowerWick) barColors.push({ time: b.time, color: NO_LOWER_WICK_BAR });
-  }
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
 
+interface NoWickRun extends BarRunState<Record<string, never>> {
+  markers: MarkerData[];
+  barColors: BarColorData[];
+}
+
+function study(): BarStudy<NoWickRun, Result> {
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    barColors,
+    init() {
+      const s: NoWickRun = { markers: [], barColors: [], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.markers, s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const noLowerWick = eq(b.open, b.low);
+      const noUpperWick = eq(b.open, b.high);
+      if (gt(b.close, b.open) && noLowerWick) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: UP_COLOR, size: 'small' });
+      }
+      if (lt(b.close, b.open) && noUpperWick) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: DOWN_COLOR, size: 'small' });
+      }
+      // Two barcolor calls: the later one (open == high) is drawn over the first
+      if (noUpperWick) s.barColors.push({ time: b.time, color: NO_UPPER_WICK_BAR });
+      else if (noLowerWick) s.barColors.push({ time: b.time, color: NO_LOWER_WICK_BAR });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const NoWickCandles = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<NoWickCandlesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(bars: Bar[], _inputs: Partial<NoWickCandlesInputs> = {}): Result {
+  return fullResult(createRun(_inputs).update(bars));
+}
+
+export const NoWickCandles = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

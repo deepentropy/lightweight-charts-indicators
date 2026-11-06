@@ -5,7 +5,9 @@
  * Uses SMA by default.
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MACrossInputs {
   /** Short MA period */
@@ -36,53 +38,79 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MACrossInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface MaCrossRun extends BarRunState<Record<string, never>> {
+  short: WindowSma;
+  long: WindowSma;
+  shortArr: number[];
+  longArr: number[];
+  shortData: Point[];
+  longData: Point[];
+  crossData: Point[];
+}
+
+function study(inputs: Partial<MACrossInputs>): BarStudy<MaCrossRun, IndicatorResult> {
   const { shortLength, longLength } = { ...defaultInputs, ...inputs };
-
-  const close = new Series(bars, b => b.close);
-
-  // Calculate SMAs
-  const shortMA = ta.sma(close, shortLength);
-  const longMA = ta.sma(close, longLength);
-
-  const shortArr = shortMA.toArray();
-  const longArr = longMA.toArray();
-
-  const shortData = shortArr.map((value: number | null, i: number) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const longData = longArr.map((value: number | null, i: number) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  // Cross plot: show short MA value at crossover points, NaN elsewhere
-  const crossData = shortArr.map((s: number | null, i: number) => {
-    if (i === 0) return { time: bars[i].time, value: NaN };
-    const sP = shortArr[i - 1], l = longArr[i], lP = longArr[i - 1];
-    if (s == null || sP == null || l == null || lP == null) return { time: bars[i].time, value: NaN };
-    const isCross = (sP <= lP && s > l) || (sP >= lP && s < l);
-    return { time: bars[i].time, value: isCross ? s : NaN };
-  });
-
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    init() {
+      // Calculate SMAs
+      const short = new WindowSma(shortLength);
+      const long = new WindowSma(longLength);
+      const s: MaCrossRun = {
+        short, long, shortArr: [], longArr: [], shortData: [], longData: [], crossData: [],
+        steps: [short, long], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.shortArr, s.longArr, s.shortData, s.longData, s.crossData];
+      return s;
     },
-    plots: {
-      'plot0': shortData,
-      'plot1': longData,
-      'plot2': crossData,
+    bar(s, i, bars) {
+      const time = bars[i]!.time as number;
+      const close = bars[i]!.close;
+      const sv = s.short.step(close);
+      const l = s.long.step(close);
+      s.shortArr[i] = sv;
+      s.longArr[i] = l;
+      s.shortData[i] = { time, value: sv };
+      s.longData[i] = { time, value: l };
+      // Cross plot: show short MA value at crossover points, NaN elsewhere
+      if (i === 0) {
+        s.crossData[i] = { time, value: NaN };
+        return;
+      }
+      const sP = s.shortArr[i - 1]!, lP = s.longArr[i - 1]!;
+      const isCross = (sP <= lP && sv > l) || (sP >= lP && sv < l);
+      s.crossData[i] = { time, value: isCross ? sv : NaN };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.shortData.slice(),
+          'plot1': s.longData.slice(),
+          'plot2': s.crossData.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MACrossInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MACrossInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const MACross = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

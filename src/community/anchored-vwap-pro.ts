@@ -11,9 +11,11 @@
  */
 
 import {
-  getSourceSeries, color,
+  color,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type AnchoredVwapProBandStyle = 'Solid' | 'Dotted' | 'Dashed';
 
@@ -101,53 +103,84 @@ const nz = (x: number) => (Number.isFinite(x) ? x : 0);
 /** Plots show na for na and +-infinity */
 const plotValue = (x: number) => (Number.isFinite(x) ? x : NaN);
 
-export function calculate(bars: Bar[], inputs: Partial<AnchoredVwapProInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface AvwapVars {
+  cumVol: number;
+  cumVolSrc: number;
+  cumDev: number;
+}
+
+interface AvwapRun extends BarRunState<AvwapVars> {
+  plots: Point[][];
+}
+
+function study(inputs: Partial<AnchoredVwapProInputs>): BarStudy<AvwapRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.source).toArray().map((v) => v ?? NaN);
+  const value = barSource(cfg.source);
   // anchorTime = timestamp("Etc/UTC", year, month, day, 0, 0) (bar times are in seconds)
   const anchorTime = Date.UTC(cfg.anchorYear, cfg.anchorMonth - 1, cfg.anchorDay, 0, 0) / 1000;
-
-  const vwap: number[] = new Array(n);
-  const stdDev: number[] = new Array(n);
-  let cumVol = NaN; // var float cumVol = na
-  let cumVolSrc = NaN; // var float cumVolSrc = na
-  let cumDev = NaN; // var float cumDev = na
-  for (let i = 0; i < n; i++) {
-    const volume = bars[i].volume ?? NaN;
-    const after = bars[i].time >= anchorTime;
-    if (after) {
-      cumVol = nz(cumVol) + volume;
-      cumVolSrc = nz(cumVolSrc) + src[i] * volume;
-    } else {
-      cumVol = NaN;
-      cumVolSrc = NaN;
-    }
-    vwap[i] = cumVolSrc / cumVol;
-    const priceDev = Math.pow(src[i] - vwap[i], 2) * volume;
-    cumDev = after ? nz(cumDev) + priceDev : NaN;
-    stdDev[i] = Math.sqrt(cumDev / cumVol);
-  }
-
-  const band = (mult: number, sign: number, show: boolean) => (i: number) =>
-    (show ? vwap[i] + sign * mult * stdDev[i] : NaN);
-  const series = (f: (i: number) => number, c: string) =>
-    bars.map((b, i) => ({ time: b.time, value: plotValue(f(i)), color: c }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: series((i) => vwap[i], cfg.vwapColor),
-      plot1: series(band(cfg.bandMult1, 1, cfg.showBand1), cfg.band1Color),
-      plot2: series(band(cfg.bandMult1, -1, cfg.showBand1), cfg.band1Color),
-      plot3: series(band(cfg.bandMult2, 1, cfg.showBand2), cfg.band2Color),
-      plot4: series(band(cfg.bandMult2, -1, cfg.showBand2), cfg.band2Color),
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const s: AvwapRun = {
+        plots: [[], [], [], [], []], steps: [],
+        // var float cumVol = na, var float cumVolSrc = na, var float cumDev = na
+        vars: { cumVol: NaN, cumVolSrc: NaN, cumDev: NaN },
+        lists: [], series: [],
+      };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const src = value(b) ?? NaN;
+      const volume = b.volume ?? NaN;
+      const after = b.time >= anchorTime;
+      if (after) {
+        v.cumVol = nz(v.cumVol) + volume;
+        v.cumVolSrc = nz(v.cumVolSrc) + src * volume;
+      } else {
+        v.cumVol = NaN;
+        v.cumVolSrc = NaN;
+      }
+      const vwap = v.cumVolSrc / v.cumVol;
+      const priceDev = Math.pow(src - vwap, 2) * volume;
+      v.cumDev = after ? nz(v.cumDev) + priceDev : NaN;
+      const stdDev = Math.sqrt(v.cumDev / v.cumVol);
+
+      // the bands: vwap +- mult * stdDev
+      const p = s.plots;
+      const time = b.time;
+      p[0][i] = { time, value: plotValue(vwap), color: cfg.vwapColor };
+      p[1][i] = { time, value: plotValue(cfg.showBand1 ? vwap + 1 * cfg.bandMult1 * stdDev : NaN), color: cfg.band1Color };
+      p[2][i] = { time, value: plotValue(cfg.showBand1 ? vwap + -1 * cfg.bandMult1 * stdDev : NaN), color: cfg.band1Color };
+      p[3][i] = { time, value: plotValue(cfg.showBand2 ? vwap + 1 * cfg.bandMult2 * stdDev : NaN), color: cfg.band2Color };
+      p[4][i] = { time, value: plotValue(cfg.showBand2 ? vwap + -1 * cfg.bandMult2 * stdDev : NaN), color: cfg.band2Color };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice() },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AnchoredVwapProInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AnchoredVwapProInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const AnchoredVwapPro = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

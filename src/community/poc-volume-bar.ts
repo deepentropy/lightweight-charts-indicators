@@ -8,7 +8,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PocVolumeBarInputs {
   /** Lookback bars for the highest volume */
@@ -38,25 +40,49 @@ const EPS = 1e-10;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(bars: Bar[], inputs: Partial<PocVolumeBarInputs> = {}): IndicatorResult {
+interface PocRun extends BarRunState<Record<string, never>> {
+  highest: WindowExtreme;
+  plot0: { time: number; value: number; color: string }[];
+}
+
+function study(inputs: Partial<PocVolumeBarInputs>): BarStudy<PocRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const highestVol = ta.highest(Series.fromArray(bars, volume), cfg.length).toArray().map((v) => v ?? NaN);
-
-  const plot0 = bars.map((b, i) => {
-    const isPOC = eq(volume[i], highestVol[i]);
-    const baseColor = ge(b.close, b.open) ? color.aqua : color.blue;
-    return { time: b.time, value: volume[i], color: isPOC ? color.yellow : baseColor };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
+    init() {
+      const highest = new WindowExtreme(false, cfg.length);
+      const s: PocRun = { highest, plot0: [], steps: [highest], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = b.volume ?? NaN;
+      const highestVol = s.highest.step(volume);
+      const isPOC = eq(volume, highestVol);
+      const baseColor = ge(b.close, b.open) ? color.aqua : color.blue;
+      s.plot0[i] = { time: b.time, value: volume, color: isPOC ? color.yellow : baseColor };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PocVolumeBarInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PocVolumeBarInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PocVolumeBar = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

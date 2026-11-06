@@ -10,6 +10,8 @@
  */
 
 import { math, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface HthWdGannSquareRootLevelsInputs {
   /** Base price of the levels */
@@ -45,30 +47,58 @@ export const metadata = {
 /** Angle fractions (45, 90, 180 ... degrees) */
 const ANGLE_FRACTIONS = [0.25, 0.50, 1.00, 1.50];
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<HthWdGannSquareRootLevelsInputs> = {},
-): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface GannRun extends BarRunState<Record<string, never>> {
+  /** plot0 .. plot8 */
+  plots: Point[][];
+}
+
+function study(inputs: Partial<HthWdGannSquareRootLevelsInputs>): BarStudy<GannRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const sqrtPrice = math.sqrt(cfg.basePrice);
   const res = ANGLE_FRACTIONS.map((f) => math.pow(sqrtPrice + f, 2));
   const sup = ANGLE_FRACTIONS.map((f) => math.pow(sqrtPrice - f, 2));
-  const levels = [...res, ...sup, cfg.basePrice];
+  const levels = [...res, ...sup, cfg.basePrice].map((level) => (Number.isFinite(level) ? level : NaN));
   const colors = [...res.map(() => color.red), ...sup.map(() => color.green), color.blue];
-
-  const plots: IndicatorResult['plots'] = {};
-  levels.forEach((level, k) => {
-    plots[`plot${k}`] = bars.map((b) => ({ time: b.time, value: Number.isFinite(level) ? level : NaN, color: colors[k] }));
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    init() {
+      const s: GannRun = { plots: levels.map(() => []), steps: [], vars: {}, lists: [], series: [] };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time as number;
+      for (let k = 0; k < levels.length; k++) s.plots[k]![i] = { time, value: levels[k]!, color: colors[k]! };
+    },
+    result(s) {
+      const plots: IndicatorResult['plots'] = {};
+      s.plots.forEach((p, k) => {
+        plots[`plot${k}`] = p.slice();
+      });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HthWdGannSquareRootLevelsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<HthWdGannSquareRootLevelsInputs> = {},
+): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const HthWdGannSquareRootLevels = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

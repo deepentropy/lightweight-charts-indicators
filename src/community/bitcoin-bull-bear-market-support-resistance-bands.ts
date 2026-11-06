@@ -8,7 +8,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type BtcMsrMAType = 'SMA' | 'EMA' | 'SMMA (RMA)' | 'WMA' | 'VWMA';
 
@@ -105,49 +107,92 @@ export const metadata = {
 const EPS = 1e-10;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(bars: Bar[], inputs: Partial<BitcoinBullBearMarketBandsInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+type Ma = { step(v: number, volume: number): number; commit(): void };
+
+interface BtcRun extends BarRunState<Record<string, never>> {
+  /** The MA of each shown line (null: hidden, na) */
+  mas: (Ma | null)[];
+  plots: Point[][];
+  colors: string[];
+}
+
+/** One moving average stepped bar by bar */
+function maStep(length: number, type: BtcMsrMAType): Ma | null {
+  switch (type) {
+    case 'SMA': { const m = new WindowSma(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'EMA': { const m = taStep.ema(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'SMMA (RMA)': { const m = taStep.rma(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, length), commit: () => m.commit() }; }
+    case 'VWMA': { const m = new WindowVwma(length); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+    default: return null;
+  }
+}
+
+function study(inputs: Partial<BitcoinBullBearMarketBandsInputs>): BarStudy<BtcRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const volume = Series.fromArray(bars, bars.map((b) => b.volume ?? NaN));
-
-  const ma = (source: Series, length: number, type: BtcMsrMAType): number[] => {
-    switch (type) {
-      case 'SMA': return A(ta.sma(source, length));
-      case 'EMA': return A(ta.ema(source, length));
-      case 'SMMA (RMA)': return A(ta.rma(source, length));
-      case 'WMA': return A(ta.wma(source, length));
-      case 'VWMA': return A(ta.vwma(source, length, volume));
-      default: return new Array(n).fill(NaN);
-    }
-  };
   const c = cfg as unknown as Record<string, unknown>;
-  const mas = [1, 2, 3, 4].map((k) => (c[`showMa${k}`]
-    ? ma(getSourceSeries(bars, c[`ma${k}Source`] as SourceType), c[`ma${k}Length`] as number, c[`ma${k}Type`] as BtcMsrMAType)
-    : new Array(n).fill(NaN)));
-
-  const plots: IndicatorResult['plots'] = {};
-  [1, 2, 3, 4].forEach((k) => {
-    const col = c[`ma${k}Color`] as string;
-    plots[`plot${k - 1}`] = bars.map((b, i) => ({ time: b.time, value: mas[k - 1][i], color: col }));
-  });
-
+  const shown = [1, 2, 3, 4].map((k) => !!c[`showMa${k}`]);
+  const sources = [1, 2, 3, 4].map((k) => c[`ma${k}Source`] as SourceType);
+  const values = sources.map((src) => barSource(src));
+  const cols = [1, 2, 3, 4].map((k) => c[`ma${k}Color`] as string);
   // fillColor = ma1 >= ma2 ? color.new(color.red, fill_opacity) : color.new(color.green, fill_opacity)
   // fill(p1, p2, color = show_fill and show_ma1 and show_ma2 ? fillColor : na)
   const red = String(color.new(color.red, cfg.fillOpacity));
   const green = String(color.new(color.green, cfg.fillOpacity));
   const on = cfg.showFill && cfg.showMa1 && cfg.showMa2;
-  const colors = bars.map((_b, i) => (on ? (ge(mas[0][i], mas[1][i]) ? red : green) : 'transparent'));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills: [{ plot1: 'plot0', plot2: 'plot1', colors }],
+    fullRunReason: () => (sources.every((src, k) => !shown[k] || isBarSource(src)) ? null : 'source of another study'),
+    init() {
+      const mas = [1, 2, 3, 4].map((k, j) => (shown[j]
+        ? maStep(c[`ma${k}Length`] as number, c[`ma${k}Type`] as BtcMsrMAType)
+        : null));
+      const s: BtcRun = {
+        mas, plots: [[], [], [], []], colors: [],
+        steps: mas.filter((m): m is Ma => m !== null), vars: {}, lists: [], series: [],
+      };
+      s.series = [...s.plots, s.colors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const time = b.time as number;
+      const volume = b.volume ?? NaN;
+      let m1 = NaN;
+      let m2 = NaN;
+      for (let j = 0; j < 4; j++) {
+        const m = s.mas[j];
+        const v = m ? m.step(values[j]!(b), volume) : NaN;
+        if (j === 0) m1 = v;
+        else if (j === 1) m2 = v;
+        s.plots[j]![i] = { time, value: v, color: cols[j]! };
+      }
+      s.colors[i] = on ? (ge(m1, m2) ? red : green) : 'transparent';
+    },
+    result(s) {
+      const plots: IndicatorResult['plots'] = {};
+      for (let j = 0; j < 4; j++) plots[`plot${j}`] = s.plots[j]!.slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: [{ plot1: 'plot0', plot2: 'plot1', colors: s.colors.slice() }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BitcoinBullBearMarketBandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BitcoinBullBearMarketBandsInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const BitcoinBullBearMarketBands = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

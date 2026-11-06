@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType, type Series } from 'oakscriptjs';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { AlmaStep, barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AlmaBandsInputs {
   /** Window of ALMA 1 */
@@ -79,32 +81,80 @@ export const metadata = {
 /** Pine a > b: a - b > 1e-10 (false with na) */
 const gt = (a: number, b: number) => a - b > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AlmaBandsInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface AlmaBandsRun extends BarRunState<Record<string, never>> {
+  a1: AlmaStep;
+  a2: AlmaStep;
+  alma1: number[];
+  alma2: number[];
+  plot0: Point[];
+  plot1: Point[];
+  fillColors: string[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<AlmaBandsInputs>): BarStudy<AlmaBandsRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = getSourceSeries(bars, cfg.almaSource);
-
-  const alma1 = A(ta.alma(src, cfg.almaLength, cfg.almaOffset, cfg.almaSigma));
-  const alma2 = A(ta.alma(src, cfg.alma2Length, cfg.alma2Offset, cfg.alma2Sigma));
-
+  const value = barSource(cfg.almaSource);
   // fillColor = alma1 > alma2 ? color.new(#00FFFF, t) : color.new(#FF0000, t); fill(..., showFill ? fillColor : na)
   const up = String(color.new('#00FFFF', cfg.almaFillTransparency));
   const down = String(color.new('#FF0000', cfg.almaFillTransparency));
-  const fillColors = bars.map((_b, i) => (cfg.showFill ? (gt(alma1[i], alma2[i]) ? up : down) : 'transparent'));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: cfg.showAlma1 ? alma1[i] : NaN, color: ALMA_COLOR })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: cfg.showAlma2 ? alma2[i] : NaN, color: ALMA_COLOR })),
+    fullRunReason: () => (isBarSource(cfg.almaSource) ? null : 'source of another study'),
+    init() {
+      const a1 = new AlmaStep(cfg.almaLength, cfg.almaOffset, cfg.almaSigma);
+      const a2 = new AlmaStep(cfg.alma2Length, cfg.alma2Offset, cfg.alma2Sigma);
+      const s: AlmaBandsRun = {
+        a1, a2, alma1: [], alma2: [], plot0: [], plot1: [], fillColors: [], flags: [[], []], times: [[], []],
+        steps: [a1, a2], vars: {}, lists: [], series: [],
+      };
+      s.lists = [...s.times];
+      s.series = [s.alma1, s.alma2, s.plot0, s.plot1, s.fillColors, ...s.flags];
+      return s;
     },
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'ALMA Fill' }, colors: fillColors }],
-    // bullish_crossover = ta.crossover(alma1, alma2), bearish_crossover = ta.crossunder(alma1, alma2)
-    alerts: alertStates(alertConditions, bars, [crossedOver(alma1, alma2), crossedUnder(alma1, alma2)]),
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const t = b.time as number;
+      const v = value(b);
+      const alma1 = s.a1.step(v);
+      const alma2 = s.a2.step(v);
+      s.alma1[i] = alma1;
+      s.alma2[i] = alma2;
+      s.fillColors[i] = cfg.showFill ? (gt(alma1, alma2) ? up : down) : 'transparent';
+      s.plot0[i] = { time: t, value: cfg.showAlma1 ? alma1 : NaN, color: ALMA_COLOR };
+      s.plot1[i] = { time: t, value: cfg.showAlma2 ? alma2 : NaN, color: ALMA_COLOR };
+      // bullish_crossover = ta.crossover(alma1, alma2), bearish_crossover = ta.crossunder(alma1, alma2)
+      const p1 = i > 0 ? s.alma1[i - 1]! : NaN;
+      const p2 = i > 0 ? s.alma2[i - 1]! : NaN;
+      const over = alma1 > alma2 && p1 <= p2;
+      const under = alma1 < alma2 && p1 >= p2;
+      s.flags[0]![i] = over;
+      s.flags[1]![i] = under;
+      if (over) s.times[0]!.push(t);
+      if (under) s.times[1]!.push(t);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'ALMA Fill' }, colors: s.fillColors.slice() }],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AlmaBandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AlmaBandsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -115,6 +165,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const AlmaBands = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -30,6 +30,7 @@ import { array, color, compare, math, str, type IndicatorResult, type InputConfi
 import type { BoxData, LabelData, LineDrawingData, PineSize, PolylineData } from '../types';
 import { barInterval, barTime } from '../bar-time';
 import { backgroundColorOf, currencyOf, foregroundColorOf, mintickOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DeltaFlowProfileInputs {
   /** Money Flow Profile */
@@ -155,11 +156,10 @@ interface BoxObj {
 interface LineObj { x1: number; y1: number; x2: number; y2: number; color: string }
 interface Point { x: number; y: number }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DeltaFlowProfileInputs> = {},
-  chart?: ChartContext,
-): IndicatorResult & { boxes: BoxData[]; lines: LineDrawingData[]; labels: LabelData[]; polylines: PolylineData[] } {
+type Result = IndicatorResult & { boxes: BoxData[]; lines: LineDrawingData[]; labels: LabelData[]; polylines: PolylineData[] };
+
+/** The drawings of the last bar, from the last bars */
+function lastBarDrawings(bars: Bar[], inputs: Partial<DeltaFlowProfileInputs>, chart?: ChartContext): Result {
   // syminfo.mintick, syminfo.currency, chart.fg_color and chart.bg_color
   const MINTICK = mintickOf(chart);
   const CURRENCY = currencyOf(chart);
@@ -403,4 +403,24 @@ export function calculate(
   return result();
 }
 
-export const DeltaFlowProfile = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+// Nothing is calculated bar by bar: every output is a drawing of the last bar
+type DeltaFlowProfileRun = BarRunState<Record<string, never>>;
+
+function study(inputs: Partial<DeltaFlowProfileInputs>): BarStudy<DeltaFlowProfileRun, Result> {
+  return {
+    init: () => ({ steps: [], vars: {}, lists: [], series: [] }),
+    bar() {},
+    result: (_s, bars, chart) => lastBarDrawings(bars, inputs, chart),
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DeltaFlowProfileInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DeltaFlowProfileInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const DeltaFlowProfile = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

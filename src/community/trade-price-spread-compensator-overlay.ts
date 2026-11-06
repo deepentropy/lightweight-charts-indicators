@@ -12,6 +12,8 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TradePriceSpreadCompensatorOverlayInputs {
   /** Spread in pips */
@@ -48,10 +50,14 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TradePriceSpreadCompensatorOverlayInputs> = {},
-): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
+type Result = IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> };
+
+interface SpreadRun extends BarRunState<Record<string, never>> {
+  ask: PlotCandleData[];
+  bid: PlotCandleData[];
+}
+
+function study(inputs: Partial<TradePriceSpreadCompensatorOverlayInputs>): BarStudy<SpreadRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const pipValue = 1.0 / cfg.decUnit;
   const spread = cfg.spreadPips * pipValue;
@@ -60,27 +66,47 @@ export function calculate(
   // display = showAsk / showBid ? display.all : display.none: a hidden candle series has no output
   const showAsk = cfg.anchorMode === 'Ask' || cfg.anchorMode === 'Both';
   const showBid = cfg.anchorMode === 'Bid' || cfg.anchorMode === 'Both';
-
-  const ask: PlotCandleData[] = [];
-  const bid: PlotCandleData[] = [];
-  for (const b of bars) {
-    if (showAsk) {
-      ask.push({ time: b.time, open: b.close, high: b.high + spread, low: b.low + spread, close: b.close + spread,
-        color: col, wickColor: col, borderColor: col });
-    }
-    if (showBid) {
-      bid.push({ time: b.time, open: b.close, high: b.high - spread, low: b.low - spread, close: b.close - spread,
-        color: col, wickColor: col, borderColor: col });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    plotCandles: { ask, bid },
+    init() {
+      const s: SpreadRun = { ask: [], bid: [], steps: [], vars: {}, lists: [], series: [] };
+      // one candle per bar of a shown series (a hidden one stays empty)
+      if (showAsk) s.series.push(s.ask);
+      if (showBid) s.series.push(s.bid);
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      if (showAsk) {
+        s.ask[i] = { time: b.time, open: b.close, high: b.high + spread, low: b.low + spread, close: b.close + spread,
+          color: col, wickColor: col, borderColor: col };
+      }
+      if (showBid) {
+        s.bid[i] = { time: b.time, open: b.close, high: b.high - spread, low: b.low - spread, close: b.close - spread,
+          color: col, wickColor: col, borderColor: col };
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        plotCandles: { ask: s.ask.slice(), bid: s.bid.slice() },
+      };
+    },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TradePriceSpreadCompensatorOverlayInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<TradePriceSpreadCompensatorOverlayInputs> = {},
+): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const TradePriceSpreadCompensatorOverlay = {
-  calculate, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig,
+  calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig,
 };

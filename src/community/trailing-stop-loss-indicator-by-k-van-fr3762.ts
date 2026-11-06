@@ -17,6 +17,7 @@
 import { timeframe, mapToChart, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import { chartTimeframe, higherTimeframeBars } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrailingStopLossIndicatorByKVanFr3762Inputs {
   /** Timeframe of the computation */
@@ -60,32 +61,84 @@ function k1Of(bars: ReadonlyArray<Bar>): number[] {
   return out;
 }
 
+interface TslVars {
+  /** valuewhen(low > low[1], low[1], 0) and occurrence 1 */
+  last: number;
+  beforeLast: number;
+}
+
+interface TslRun extends BarRunState<TslVars> {
+  /** The values on another timeframe than the chart's (calculated on the whole bar set), else null */
+  pre: number[] | null;
+  plot0: { time: number; value: number }[];
+}
+
+function study(inputs: Partial<TrailingStopLossIndicatorByKVanFr3762Inputs>): BarStudy<TslRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  /** Another timeframe than the chart's on the bars of the last update (set by key) */
+  let other = false;
+  return {
+    key(bars, chart) {
+      const chartTf = chartTimeframe(bars, chart);
+      other = !(cfg.res.trim() === '' || chartTf === '' || timeframe.in_seconds(cfg.res) === timeframe.in_seconds(chartTf));
+      return chartTf;
+    },
+    fullRunReason: () => (other ? 'another timeframe, calculated on the whole bar set' : null),
+    init(bars, chart) {
+      let pre: number[] | null = null;
+      if (other) {
+        const chartTf = chartTimeframe(bars, chart);
+        if (timeframe.in_seconds(cfg.res) < timeframe.in_seconds(chartTf)) {
+          throw new Error(`Trailing Stop Loss: the timeframe "${cfg.res}" is lower than the chart timeframe "${chartTf}": the chart bars do not have that data`);
+        }
+        // security(syminfo.tickerid, res, K1) without lookahead: the value of the latest completed period
+        const { htf, group, latest } = higherTimeframeBars(bars, cfg.res, chart);
+        pre = mapToChart(k1Of(htf), group, latest, false, false);
+      }
+      const s: TslRun = { pre, plot0: [], steps: [], vars: { last: NaN, beforeLast: NaN }, lists: [], series: [] };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      let tsl: number;
+      if (s.pre) {
+        tsl = s.pre[i];
+      } else {
+        // K1 = valuewhen(low > low[1], low[1], 1) on the chart bars (k1Of, bar by bar)
+        const v = s.vars;
+        if (i > 0 && gt(bars[i].low, bars[i - 1].low)) {
+          v.beforeLast = v.last;
+          v.last = bars[i - 1].low;
+        }
+        tsl = v.beforeLast;
+      }
+      s.plot0[i] = { time: bars[i].time, value: tsl };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrailingStopLossIndicatorByKVanFr3762Inputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<TrailingStopLossIndicatorByKVanFr3762Inputs> = {},
   chart?: ChartContext,
 ): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const chartTf = chartTimeframe(bars, chart);
-  let tsl: number[];
-  if (cfg.res.trim() === '' || chartTf === '' || timeframe.in_seconds(cfg.res) === timeframe.in_seconds(chartTf)) {
-    tsl = k1Of(bars);
-  } else if (timeframe.in_seconds(cfg.res) < timeframe.in_seconds(chartTf)) {
-    throw new Error(`Trailing Stop Loss: the timeframe "${cfg.res}" is lower than the chart timeframe "${chartTf}": the chart bars do not have that data`);
-  } else {
-    // security(syminfo.tickerid, res, K1) without lookahead: the value of the latest completed period
-    const { htf, group, latest } = higherTimeframeBars(bars, cfg.res, chart);
-    tsl = mapToChart(k1Of(htf), group, latest, false, false);
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: bars.map((b, i) => ({ time: b.time, value: tsl[i] })) },
-  };
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 export const TrailingStopLossIndicatorByKVanFr3762 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

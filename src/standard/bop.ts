@@ -5,7 +5,9 @@
  * Measures the strength of buyers vs sellers by comparing close-open to high-low range.
  */
 
-import { Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /**
  * BOP indicator input parameters (none required)
@@ -40,6 +42,45 @@ export const metadata = {
   overlay: false,
 };
 
+type Point = { time: number; value: number };
+
+interface BopRun extends BarRunState<Record<string, never>> {
+  plotData: Point[];
+}
+
+function study(): BarStudy<BopRun, IndicatorResult> {
+  return {
+    init() {
+      const s: BopRun = { plotData: [], steps: [], vars: {}, lists: [], series: [] };
+      s.series = [s.plotData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const bar = bars[i];
+      // Calculate BOP: (close - open) / (high - low)
+      const bop = (bar.close - bar.open) / (bar.high - bar.low);
+      s.plotData[i] = { time: bar.time as number, value: bop ?? NaN };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.plotData.slice(),
+        },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<BOPInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(), chart);
+}
+
 /**
  * Calculate BOP indicator
  *
@@ -50,31 +91,7 @@ export const metadata = {
  * @returns Indicator result with plot data
  */
 export function calculate(bars: Bar[], _inputs: Partial<BOPInputs> = {}): IndicatorResult {
-  // Create OHLC series
-  const open = new Series(bars, (bar) => bar.open);
-  const high = new Series(bars, (bar) => bar.high);
-  const low = new Series(bars, (bar) => bar.low);
-  const close = new Series(bars, (bar) => bar.close);
-
-  // Calculate BOP: (close - open) / (high - low)
-  const bop = close.sub(open).div(high.sub(low));
-
-  // Convert to plot format
-  const plotData = bop.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
-    },
-    plots: {
-      'plot0': plotData,
-    },
-  };
+  return fullResult(createRun(_inputs).update(bars));
 }
 
 /**
@@ -82,6 +99,7 @@ export function calculate(bars: Bar[], _inputs: Partial<BOPInputs> = {}): Indica
  */
 export const BOP = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

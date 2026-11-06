@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface HighVolumeBuyersSellersInputs {
   length: number;
@@ -48,44 +50,63 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<HighVolumeBuyersSellersInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface HvRun extends BarRunState<Record<string, never>> {
+  volMa: WindowSma;
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<HighVolumeBuyersSellersInputs>): BarStudy<HvRun, Result> {
   const { length, mult, multExtreme, showExtreme } = { ...defaultInputs, ...inputs };
-  const volMa = ta.sma(new Series(bars, (b) => b.volume ?? NaN), length).toArray();
   const green = String(color.new(color.green, 0));
   const red = String(color.new(color.red, 0));
-
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const b = bars[i];
-    const vol = b.volume ?? NaN;
-    const ma = volMa[i] == null ? NaN : (volMa[i] as number);
-    const isHighVol = gt(vol, ma * mult);
-    const isExtremeVol = gt(vol, ma * multExtreme);
-    const isGreen = gt(b.close, b.open);
-    const isRed = lt(b.close, b.open);
-    const t = b.time as number;
-    if (isHighVol && isGreen && (!isExtremeVol || !showExtreme)) {
-      markers.push({ time: t, position: 'belowBar', shape: 'circle', color: green, size: 'tiny' });
-    }
-    if (isHighVol && isRed && (!isExtremeVol || !showExtreme)) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: red, size: 'tiny' });
-    }
-    if (showExtreme && isExtremeVol && isGreen) {
-      markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: green, size: 'small' });
-    }
-    if (showExtreme && isExtremeVol && isRed) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: red, size: 'small' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
+    init() {
+      const volMa = new WindowSma(length);
+      const s: HvRun = { volMa, markers: [], steps: [volMa], vars: {}, lists: [], series: [] };
+      s.lists = [s.markers];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const vol = b.volume ?? NaN;
+      const ma = s.volMa.step(vol);
+      const isHighVol = gt(vol, ma * mult);
+      const isExtremeVol = gt(vol, ma * multExtreme);
+      const isGreen = gt(b.close, b.open);
+      const isRed = lt(b.close, b.open);
+      const t = b.time as number;
+      if (isHighVol && isGreen && (!isExtremeVol || !showExtreme)) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'circle', color: green, size: 'tiny' });
+      }
+      if (isHighVol && isRed && (!isExtremeVol || !showExtreme)) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: red, size: 'tiny' });
+      }
+      if (showExtreme && isExtremeVol && isGreen) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: green, size: 'small' });
+      }
+      if (showExtreme && isExtremeVol && isRed) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: red, size: 'small' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const HighVolumeBuyersSellers = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HighVolumeBuyersSellersInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<HighVolumeBuyersSellersInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const HighVolumeBuyersSellers = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

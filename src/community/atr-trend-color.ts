@@ -11,7 +11,9 @@
  * Original notice: © Aleksin_Aleksandar
  */
 
-import { ta, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AtrTrendColorInputs {
   /** ATR period */
@@ -46,43 +48,66 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const nz = (v: number) => (Number.isFinite(v) ? v : 0);
 
-export function calculate(bars: Bar[], inputs: Partial<AtrTrendColorInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface AtcVars {
+  /** trail1[1] */
+  prevTrail: number;
+}
+
+interface AtcRun extends BarRunState<AtcVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  plot0: Point[];
+}
+
+function study(inputs: Partial<AtrTrendColorInputs>): BarStudy<AtcRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const atr = ta.atr(bars, cfg.nATRPeriod1).toArray().map((v) => v ?? NaN);
-  const trail: number[] = new Array(n);
-  let prevTrail = NaN; // trail1[1]
-  for (let i = 0; i < n; i++) {
-    const close = bars[i].close;
-    const prevClose = i > 0 ? bars[i - 1].close : NaN;
-    const nLoss = atr[i] * cfg.nATRMultip1;
-    const p = nz(prevTrail);
-    // math.max / math.min with an na argument give na
-    let t: number;
-    if (gt(close, p) && gt(prevClose, p)) t = Math.max(p, close - nLoss);
-    else if (lt(close, p) && lt(prevClose, p)) t = Math.min(p, close + nLoss);
-    else if (gt(close, p)) t = close - nLoss;
-    else t = close + nLoss;
-    trail[i] = t;
-    prevTrail = t;
-  }
-
-  const plot0 = bars.map((b, i) => {
-    const bullish = gt(b.close, trail[i]);
-    const bearish = lt(b.close, trail[i]);
-    const c = bullish ? color.lime : bearish ? color.red : color.gray;
-    return { time: b.time, value: trail[i], color: c };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
+    init() {
+      const atr = taStep.atr(cfg.nATRPeriod1);
+      const s: AtcRun = { atr, plot0: [], steps: [atr], vars: { prevTrail: NaN }, lists: [], series: [] };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = b.close;
+      const prevClose = i > 0 ? bars[i - 1].close : NaN;
+      const nLoss = s.atr.step(b.high, b.low, close) * cfg.nATRMultip1;
+      const p = nz(s.vars.prevTrail);
+      // math.max / math.min with an na argument give na
+      let t: number;
+      if (gt(close, p) && gt(prevClose, p)) t = Math.max(p, close - nLoss);
+      else if (lt(close, p) && lt(prevClose, p)) t = Math.min(p, close + nLoss);
+      else if (gt(close, p)) t = close - nLoss;
+      else t = close + nLoss;
+      s.vars.prevTrail = t;
+      const bullish = gt(close, t);
+      const bearish = lt(close, t);
+      const c = bullish ? color.lime : bearish ? color.red : color.gray;
+      s.plot0[i] = { time: b.time, value: t, color: c };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AtrTrendColorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AtrTrendColorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AtrTrendColor = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -7,7 +7,9 @@
  * Reference: community indicator
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface OBVOscillatorInputs {
   length: number;
@@ -32,47 +34,73 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<OBVOscillatorInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface ObvOscRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  obvArr: number[];
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<OBVOscillatorInputs>): BarStudy<ObvOscRun, IndicatorResult> {
   const { length } = { ...defaultInputs, ...inputs };
-
-  // Compute cumulative OBV
-  const obvArr: number[] = new Array(bars.length);
-  obvArr[0] = bars[0]?.volume ?? 0;
-  for (let i = 1; i < bars.length; i++) {
-    const vol = bars[i].volume ?? 0;
-    if (bars[i].close > bars[i - 1].close) {
-      obvArr[i] = obvArr[i - 1] + vol;
-    } else if (bars[i].close < bars[i - 1].close) {
-      obvArr[i] = obvArr[i - 1] - vol;
-    } else {
-      obvArr[i] = obvArr[i - 1];
-    }
-  }
-
-  // EMA of OBV
-  const obvSeries = new Series(bars, (_b, i) => obvArr[i]);
-  const obvEmaArr = ta.ema(obvSeries, length).toArray();
-
   const warmup = length;
-
-  const plot0 = obvArr.map((obv, i) => {
-    const ema = obvEmaArr[i];
-    if (i < warmup || ema == null) return { time: bars[i].time, value: NaN };
-    const osc = obv - ema;
-    const color = osc >= 0 ? '#26A69A' : '#EF5350';
-    return { time: bars[i].time, value: osc, color };
-  });
-
-  // Area plot: same data, silver color (Pine: plot(obv_osc, color=silver, transp=70, style=area))
-  const plot1 = plot0.map(p => ({ time: p.time, value: p.value }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
-    hlines: [
-      { value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } },
-    ],
+    init() {
+      const ema = taStep.ema(length);
+      const s: ObvOscRun = { ema, obvArr: [], plot0: [], plot1: [], steps: [ema], vars: {}, lists: [], series: [] };
+      s.series = [s.obvArr, s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      // Cumulative OBV
+      const b = bars[i];
+      let obv: number;
+      if (i === 0) {
+        obv = b.volume ?? 0;
+      } else {
+        const vol = b.volume ?? 0;
+        const prev = s.obvArr[i - 1];
+        if (b.close > bars[i - 1].close) obv = prev + vol;
+        else if (b.close < bars[i - 1].close) obv = prev - vol;
+        else obv = prev;
+      }
+      s.obvArr[i] = obv;
+
+      // EMA of OBV
+      const ema = s.ema.step(obv);
+      let p: Point;
+      if (i < warmup || ema == null) {
+        p = { time: b.time, value: NaN };
+      } else {
+        const osc = obv - ema;
+        const color = osc >= 0 ? '#26A69A' : '#EF5350';
+        p = { time: b.time, value: osc, color };
+      }
+      s.plot0[i] = p;
+      // Area plot: same data, silver color (Pine: plot(obv_osc, color=silver, transp=70, style=area))
+      s.plot1[i] = { time: p.time, value: p.value };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice() },
+        hlines: [
+          { value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } },
+        ],
+      };
+    },
   };
 }
 
-export const OBVOscillator = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<OBVOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<OBVOscillatorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const OBVOscillator = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

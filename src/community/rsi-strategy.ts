@@ -10,8 +10,10 @@
  * Original notice: Copyright by HPotter v1.0 19/05/2014
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RsiStrategyInputs {
   length: number;
@@ -42,26 +44,49 @@ export const metadata = {
 // Pine comparison: a > b only when a - b > 1e-10; na compares false
 const EPS = 1e-10;
 
-export function calculate(bars: Bar[], inputs: Partial<RsiStrategyInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
+
+interface RsiStrategyRun extends BarRunState<{ pos: number }> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<RsiStrategyInputs>): BarStudy<RsiStrategyRun, Result> {
   const { length, oversold, overbought } = { ...defaultInputs, ...inputs };
-  const rsi = ta.rsi(new Series(bars, (b) => b.close), length).toArray();
-
-  const barColors: BarColorData[] = [];
-  let pos = 0;
-  for (let i = 0; i < bars.length; i++) {
-    const r = rsi[i];
-    const v = r == null || Number.isNaN(r) ? NaN : r;
-    if (v - overbought > EPS) pos = 1;
-    else if (oversold - v > EPS) pos = -1;
-    // else: nz(pos[1], 0), the previous value
-    barColors.push({ time: bars[i].time as number, color: pos === -1 ? '#FF0000' : pos === 1 ? '#008000' : '#0000FF' });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    barColors,
+    init() {
+      const rsi = taStep.rsi(length);
+      const s: RsiStrategyRun = { rsi, barColors: [], steps: [rsi], vars: { pos: 0 }, lists: [], series: [] };
+      s.lists = [s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const r = s.rsi.step(bars[i]!.close);
+      const v = r == null || Number.isNaN(r) ? NaN : r;
+      const vars = s.vars;
+      if (v - overbought > EPS) vars.pos = 1;
+      else if (oversold - v > EPS) vars.pos = -1;
+      // else: nz(pos[1], 0), the previous value
+      const pos = vars.pos;
+      s.barColors.push({ time: bars[i]!.time as number, color: pos === -1 ? '#FF0000' : pos === 1 ? '#008000' : '#0000FF' });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const RsiStrategy = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RsiStrategyInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RsiStrategyInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const RsiStrategy = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

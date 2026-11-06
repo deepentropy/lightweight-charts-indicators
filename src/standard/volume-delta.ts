@@ -27,8 +27,10 @@
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
-import { lowerTimeframe, upDownVolumeOfChartBars } from '../lower-tf-volume';
+import { lowerTimeframe } from '../lower-tf-volume';
+import { chartTimeframe } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeDeltaInputs {
   /** Use the custom lower timeframe instead of the automatic one */
@@ -70,51 +72,89 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VolumeDeltaInputs> = {}, chart?: ChartContext): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
+type Result = Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> };
+
+interface VolumeDeltaVars {
+  /** The side of the last intrabar (library rule of upDownVolumeOfChartBars) */
+  isBuyVolume: boolean;
+}
+
+interface VolumeDeltaRun extends BarRunState<VolumeDeltaVars> {
+  candles: PlotCandleData[];
+}
+
+function study(inputs: Partial<VolumeDeltaInputs>): BarStudy<VolumeDeltaRun, Result> {
   const { useCustomTimeframe, lowerTimeframe: customTimeframe } = { ...defaultInputs, ...inputs };
-  const { exact } = lowerTimeframe(bars, useCustomTimeframe, customTimeframe, chart);
-  const exactDelta = exact ? upDownVolumeOfChartBars(bars).delta : [];
-  const candles: PlotCandleData[] = [];
-
-  for (let i = 0; i < bars.length; i++) {
-    const bar = bars[i];
-    const volume = bar.volume ?? 0;
-
-    let delta: number;
-    if (exact) {
-      delta = exactDelta[i];
-    } else if (bar.close > bar.open) {
-      delta = volume;
-    } else if (bar.close < bar.open) {
-      delta = -volume;
-    } else {
-      delta = 0;
-    }
-
-    // open=0, close=delta, high=max(0,delta), low=min(0,delta)
-    // col = lastVolume > 0 ? color.teal : color.red
-    const col = gt(delta, 0) ? '#089981' : '#F23645';
-    candles.push({
-      time: bar.time as number,
-      open: 0,
-      high: Math.max(0, delta),
-      low: Math.min(0, delta),
-      close: delta,
-      color: col,
-      borderColor: col,
-      wickColor: col,
-    });
-  }
-
+  let exact = false;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    plotCandles: { delta: candles },
+    // the chart timeframe comes from the bar gaps (or the chart context)
+    key: (bars, chart) => chartTimeframe(bars, chart),
+    init(bars, chart) {
+      exact = lowerTimeframe(bars, useCustomTimeframe, customTimeframe, chart).exact;
+      const s: VolumeDeltaRun = { candles: [], steps: [], vars: { isBuyVolume: true }, lists: [], series: [] };
+      s.series = [s.candles];
+      return s;
+    },
+    bar(s, i, bars) {
+      const bar = bars[i];
+      const volume = bar.volume ?? 0;
+
+      let delta: number;
+      if (exact) {
+        // the chart bars are the intrabars (upDownVolumeOfChartBars, one bar at a time)
+        const prevClose = i > 0 ? bars[i - 1].close : NaN; // na comparisons are false
+        const v = s.vars;
+        if (gt(bar.close, bar.open)) v.isBuyVolume = true;
+        else if (gt(bar.open, bar.close)) v.isBuyVolume = false;
+        else if (gt(bar.close, prevClose)) v.isBuyVolume = true;
+        else if (gt(prevClose, bar.close)) v.isBuyVolume = false;
+        const pos = v.isBuyVolume ? volume : 0;
+        const neg = v.isBuyVolume ? 0 : -volume;
+        delta = pos + neg;
+      } else if (bar.close > bar.open) {
+        delta = volume;
+      } else if (bar.close < bar.open) {
+        delta = -volume;
+      } else {
+        delta = 0;
+      }
+
+      // open=0, close=delta, high=max(0,delta), low=min(0,delta)
+      // col = lastVolume > 0 ? color.teal : color.red
+      const col = gt(delta, 0) ? '#089981' : '#F23645';
+      s.candles[i] = {
+        time: bar.time as number,
+        open: 0,
+        high: Math.max(0, delta),
+        low: Math.min(0, delta),
+        close: delta,
+        color: col,
+        borderColor: col,
+        wickColor: col,
+      };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        plotCandles: { delta: s.candles.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeDeltaInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolumeDeltaInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 export const VolumeDelta = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

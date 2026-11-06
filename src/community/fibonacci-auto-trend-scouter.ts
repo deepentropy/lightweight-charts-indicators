@@ -41,12 +41,13 @@
  */
 
 import {
-  ta, Series, getSourceSeries, color, timeframe, str, array, resample, mapToChart,
+  ta, taCore, taStep, getSourceSeries, color, timeframe, str, array, resample, mapToChart,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
-import { periodStarts, chartTimeframe, securityBars } from '../anchor-period';
+import { periodStarts, chartTimeframe, securityBars, hasCalendar } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
 import type { LabelData, LineDrawingData } from '../types';
+import { barSource, createBarRun, fullResult, isBarSource, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type Pair = 'Front' | 'Mid' | 'Back';
 type Dash = 'Solid' | 'Dashed' | 'Dotted';
@@ -280,9 +281,6 @@ interface Ball { v: number; x: number; y: number }
 
 /** One swing tracker (the long or the short one) */
 interface Track {
-  /** Offset to the highest / lowest bar of the period, per bar */
-  highBars: number[];
-  lowBars: number[];
   /** True: the swing test reads the extreme as a condition (0 is false), as the short tracker of the original */
   asCondition: boolean;
   direction: number;
@@ -312,69 +310,54 @@ function fibSource(balls: Ball[]): { minX: number; minY: number; maxX: number; m
   return { minX, minY, maxX, maxY, dir: lt(minX, maxX) ? 1 : gt(minX, maxX) ? -1 : 0 };
 }
 
-/** The trackers and their step, to be called on every bar in order */
-function createTracks(bars: Bar[], cfg: FibonacciAutoTrendScouterInputs): { md: Track; sm: Track; step: (i: number) => void; ms: number[] } {
-  const unit = bars.length > 0 && bars[0].time >= 1e12 ? 1 : 1000;
-  const ms = bars.map((b) => b.time * unit);
-  const srcSeries = getSourceSeries(bars, cfg.src);
-  const src = srcSeries.toArray().map((v) => v ?? NaN);
-  const useSrc = cfg.trendData === 'Source';
-  const hic = useSrc ? src : bars.map((b) => b.high);
-  const loc = useSrc ? src : bars.map((b) => b.low);
-  const hicSeries = useSrc ? srcSeries : Series.fromArray(bars, hic);
-  const locSeries = useSrc ? srcSeries : Series.fromArray(bars, loc);
-  const offsets = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const track = (period: number, asCondition: boolean): Track => ({
-    highBars: offsets(ta.highestbars(hicSeries, period)),
-    lowBars: offsets(ta.lowestbars(locSeries, period)),
-    asCondition, direction: 0, bag: [], ready: false, balls: NO_BALLS, changed: false, fibs: [],
-  });
-  const md = track(cfg.mediumPeriod, false);
-  const sm = track(cfg.smallPeriod, true);
+const addPoint = (bag: number[], value: number, time: number, price: number) => {
+  bag.unshift(value, time, price);
+  if (bag.length > MAX_BAG) bag.length -= 3;
+};
 
-  const add = (bag: number[], value: number, time: number, price: number) => {
-    bag.unshift(value, time, price);
-    if (bag.length > MAX_BAG) bag.length -= 3;
-  };
+/**
+ * One bar of a tracker: `highZero` / `lowZero` are ta.highestbars / ta.lowestbars(period) == 0 (the bar holds the
+ * extreme of the period), `hic` / `loc` the extremes of the bar, `ms` its time (ms), `src` its source price
+ */
+function stepTrack(t: Track, i: number, highZero: boolean, lowZero: boolean, hic: number, loc: number, ms: number, src: number): void {
+  const highCoord = highZero ? hic : NaN;
+  const lowCoord = lowZero ? loc : NaN;
+  const newHigh = (t.asCondition ? truthy(highCoord) : !isNaN(highCoord)) && isNaN(lowCoord);
+  const newLow = (t.asCondition ? truthy(lowCoord) : !isNaN(lowCoord)) && isNaN(highCoord);
+  const before = t.direction;
+  t.direction = newHigh ? 1 : newLow ? -1 : t.direction;
+  const value = t.direction === 1 ? highCoord : lowCoord;
+  // change(direction) is na on the first bar
+  if (i > 0 && t.direction !== before) {
+    addPoint(t.bag, value, ms, src);
+  } else if (t.bag.length === 0) {
+    addPoint(t.bag, value, ms, src);
+  } else if ((t.direction === 1 && gt(value, t.bag[0])) || (t.direction === -1 && lt(value, t.bag[0]))) {
+    t.bag[0] = value;
+    t.bag[1] = ms;
+    t.bag[2] = src;
+  }
 
-  const stepTrack = (t: Track, i: number) => {
-    const highCoord = t.highBars[i] === 0 ? hic[i] : NaN;
-    const lowCoord = t.lowBars[i] === 0 ? loc[i] : NaN;
-    const newHigh = (t.asCondition ? truthy(highCoord) : !isNaN(highCoord)) && isNaN(lowCoord);
-    const newLow = (t.asCondition ? truthy(lowCoord) : !isNaN(lowCoord)) && isNaN(highCoord);
-    const before = t.direction;
-    t.direction = newHigh ? 1 : newLow ? -1 : t.direction;
-    const value = t.direction === 1 ? highCoord : lowCoord;
-    // change(direction) is na on the first bar
-    if (i > 0 && t.direction !== before) {
-      add(t.bag, value, ms[i], src[i]);
-    } else if (t.bag.length === 0) {
-      add(t.bag, value, ms[i], src[i]);
-    } else if ((t.direction === 1 && gt(value, t.bag[0])) || (t.direction === -1 && lt(value, t.bag[0]))) {
-      t.bag[0] = value;
-      t.bag[1] = ms[i];
-      t.bag[2] = src[i];
-    }
+  const previous = t.balls[0];
+  t.ready = t.bag.length > 18;
+  t.balls = t.ready
+    ? Array.from({ length: 7 }, (_v, k) => ({ v: t.bag[3 * k], x: Math.round(t.bag[3 * k + 1]), y: t.bag[3 * k + 2] }))
+    : NO_BALLS;
+  const first = t.balls[0];
+  t.changed = truthy(first.y - previous.y) || truthy(first.x - previous.x) || truthy(first.v - previous.v);
 
-    const previous = t.balls[0];
-    t.ready = t.bag.length > 18;
-    t.balls = t.ready
-      ? Array.from({ length: 7 }, (_v, k) => ({ v: t.bag[3 * k], x: Math.round(t.bag[3 * k + 1]), y: t.bag[3 * k + 2] }))
-      : NO_BALLS;
-    const first = t.balls[0];
-    t.changed = truthy(first.y - previous.y) || truthy(first.x - previous.x) || truthy(first.v - previous.v);
-
-    if (t.ready && t.changed) {
-      const { minY, maxY, dir } = fibSource(t.balls);
-      // getFibRetracements(dir, L, H) with L = the older end of the range: the levels go from the newer end (0) back
-      const L = dir === 1 ? minY : maxY;
-      const H = dir === 1 ? maxY : minY;
-      t.fibs = [H, ...[23.6, 38.2, 50.0, 61.8, 78.6].map((p) => H - (H - L) * (p / 100)), L];
-    }
-  };
-
-  return { md, sm, ms, step: (i) => { stepTrack(md, i); stepTrack(sm, i); } };
+  if (t.ready && t.changed) {
+    const { minY, maxY, dir } = fibSource(t.balls);
+    // getFibRetracements(dir, L, H) with L = the older end of the range: the levels go from the newer end (0) back
+    const L = dir === 1 ? minY : maxY;
+    const H = dir === 1 ? maxY : minY;
+    t.fibs = [H, ...[23.6, 38.2, 50.0, 61.8, 78.6].map((p) => H - (H - L) * (p / 100)), L];
+  }
 }
+
+const newTrack = (asCondition: boolean): Track => ({
+  asCondition, direction: 0, bag: [], ready: false, balls: NO_BALLS, changed: false, fibs: [],
+});
 
 type Point = [time: number, price: number];
 
@@ -467,44 +450,365 @@ function timeframeBars(bars: Bar[], tf: string, name: string, context?: ChartCon
   return { htf, toChart: (values) => mapToChart(values, group, group, true, false) };
 }
 
-export function calculate(bars: Bar[], inputs: Partial<FibonacciAutoTrendScouterInputs> = {}, chart?: ChartContext): IndicatorResult {
+const DAY = 86400000;
+
+/** Start (UNIX ms, UTC) of the D / W / M calendar period of the day `day` (the UTC rule of `periodStarts`) */
+function calendarPeriodStart(day: number, info: ReturnType<typeof timeframe.info>): number {
+  const WEEK = 7 * DAY;
+  const n = info.multiplier;
+  const d = new Date(day);
+  const year = d.getUTCFullYear();
+  if (info.isdaily) {
+    if (n === 1) return day;
+    const jan1 = Date.UTC(year, 0, 1);
+    return jan1 + Math.floor((day - jan1) / DAY / n) * n * DAY;
+  }
+  if (info.isweekly) {
+    const monday = day - ((d.getUTCDay() + 6) % 7) * DAY;
+    if (n === 1) return monday;
+    const jan1 = Date.UTC(new Date(monday).getUTCFullYear(), 0, 1);
+    const firstMonday = jan1 + ((8 - new Date(jan1).getUTCDay()) % 7) * DAY;
+    return firstMonday + Math.floor((monday - firstMonday) / WEEK / n) * n * WEEK;
+  }
+  return Date.UTC(year, Math.floor(d.getUTCMonth() / n) * n, 1);
+}
+
+/** True when a bar of the set is on a Saturday or a Sunday (UTC): the days of `periodStarts` start at 00:00 UTC */
+function hasWeekendBars(bars: ReadonlyArray<{ time: number }>): boolean {
+  const ms = bars.length > 0 && bars[0].time >= 1e12;
+  return bars.some((b) => {
+    const wd = new Date(ms ? b.time : b.time * 1000).getUTCDay();
+    return wd === 0 || wd === 6;
+  });
+}
+
+/**
+ * The periods of a timeframe bar by bar: 'chart' (each chart bar is a bar of the timeframe), 'utc' (the periods of
+ * the UTC rule of `periodStarts`, grouped as `resample` does)
+ */
+interface TfState {
+  mode: 'chart' | 'utc';
+  info: ReturnType<typeof timeframe.info> | null;
+  /** Length (ms) of an intraday period */
+  len: number;
+  /** periodStarts state: UTC day of the bar before, session start of its day, calendar key, period start, nD count */
+  prevDay: number;
+  sessionStart: number;
+  prevKey: number;
+  start: number;
+  tradingYear: number;
+  tradingDays: number;
+  prevTradingDay: number;
+  /** Period start of the current period (in the unit of the bar times) */
+  out: number;
+  /** First chart bar of the current period */
+  first: number;
+}
+
+function tfState(mode: TfState['mode'], tf: string): TfState {
+  const info = mode === 'utc' ? timeframe.info(tf) : null;
+  return {
+    mode, info, len: info?.isintraday ? timeframe.in_seconds(tf) * 1000 : 0,
+    prevDay: NaN, sessionStart: NaN, prevKey: NaN, start: NaN, tradingYear: NaN, tradingDays: -1, prevTradingDay: NaN,
+    out: NaN, first: 0,
+  };
+}
+
+/** True when chart bar `i` (`t`: its time in ms) opens a new period of the timeframe (periodStarts / resample) */
+function opensPeriod(st: TfState, i: number, t: number, everyDay: boolean, ms: boolean): boolean {
+  if (st.mode === 'chart') return true;
+  const info = st.info!;
+  const day = Math.floor(t / DAY) * DAY;
+  if (day !== st.prevDay) st.sessionStart = everyDay ? day : t;
+  st.prevDay = day;
+  if (info.isintraday) {
+    st.start = st.len >= DAY ? st.sessionStart : st.sessionStart + Math.floor((t - st.sessionStart) / st.len) * st.len;
+  } else if (info.isdaily && info.multiplier > 1 && !everyDay) {
+    // n trading days (UTC days with bars) counted from the first trading day of the year
+    const year = new Date(day).getUTCFullYear();
+    if (year !== st.tradingYear) {
+      st.tradingYear = year;
+      st.tradingDays = -1;
+    }
+    if (day !== st.prevTradingDay) {
+      st.tradingDays++;
+      st.prevTradingDay = day;
+      if (st.tradingDays % info.multiplier === 0) st.start = t;
+    }
+  } else {
+    const key = calendarPeriodStart(day, info);
+    if (key !== st.prevKey) st.start = everyDay ? key : t;
+    st.prevKey = key;
+  }
+  const out = ms ? st.start : Math.floor(st.start / 1000);
+  // resample: a new bar of the timeframe when the period start differs from the bar before's
+  const opens = i === 0 || out !== st.out;
+  st.out = out;
+  return opens;
+}
+
+type PlotPoint = { time: number; value: number; color?: string };
+
+/** The ema of a level on the completed bars of its timeframe (out of the run state: caught up from `finals`) */
+interface LevelEma {
+  m: ReturnType<typeof taStep.ema>;
+  /** Completed bars of the timeframe committed into `m` */
+  committed: number;
+}
+
+/** A level of another timeframe bar by bar: its periods and the bar of the timeframe so far */
+interface LevelState {
+  tf: TfState;
+  /** The bar of the timeframe so far (resample: open of the first bar, highest high, lowest low, last close, volume sum) */
+  bar: Bar;
+  /** ema of the current bar of the timeframe so far */
+  cur: number;
+}
+
+interface FatsVars {
+  md: Track;
+  sm: Track;
+  levels: (LevelState | null)[];
+}
+
+interface FatsRun extends BarRunState<FatsVars> {
+  /** ta.highestbars / ta.lowestbars of the two trackers (long, short), created on the first bar */
+  extremes: WindowExtreme[];
+  emas: (LevelEma | null)[];
+  /** Source values of the completed bars of each level's timeframe */
+  finals: number[][];
+  /** Level values from the whole bar set (exchange calendar) */
+  pre: (number[] | null)[] | null;
+  /** Plot points of each level: drawn, and not drawn (outside the last `Size` bars) */
+  shown: PlotPoint[][];
+  hidden: PlotPoint[][];
+}
+
+function study(inputs: Partial<FibonacciAutoTrendScouterInputs>): BarStudy<FatsRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
+  const src = barSource(cfg.src);
+  const useSrc = cfg.trendData === 'Source';
+  const active = LEVELS.map((k) => cfg[`htf${k}Show`] || cfg[`htf${k}Label`]);
+  const levelSrc = LEVELS.map((k) => barSource(cfg[`htf${k}Source`]));
+  let inMs = false;
+  let everyDay = false;
+  /** The point of chart bar j for a level value */
+  const point = (k: Level, time: number, value: number): PlotPoint => (Number.isFinite(value)
+    ? { time, value, color: cfg[`htf${k}Color`] }
+    : { time, value: NaN });
+  return {
+    // with the exchange calendar the bars of the level timeframes come from the calendar of the whole bar set
+    fullRunReason: (chart) => (![cfg.src, ...LEVELS.map((k) => cfg[`htf${k}Source`])].every(isBarSource)
+      ? 'source of another study' : hasCalendar(chart) ? 'exchange calendar periods' : null),
+    // the chart timeframe from the bar gaps, the time unit of the first bar and the weekend bars of the set (the
+    // start of the UTC days of the periods)
+    key: (bars, chart) => `${chartTimeframe(bars, chart)}|${bars.length > 0 && bars[0].time >= 1e12}|${hasWeekendBars(bars)}`,
+    init(bars, chart) {
+      inMs = bars.length > 0 && bars[0].time >= 1e12;
+      everyDay = hasWeekendBars(bars);
+      const chartTf = chartTimeframe(bars, chart);
+      const calendar = hasCalendar(chart);
+      const levels: (LevelState | null)[] = [];
+      const emas: (LevelEma | null)[] = [];
+      const pre: (number[] | null)[] = [];
+      // Levels of other timeframes: ema(source, length) on the bars of the timeframe (the checks of timeframeBars and
+      // of ta.ema in the order of the original)
+      for (const k of LEVELS) {
+        if (!active[k - 1]) {
+          levels.push(null);
+          emas.push(null);
+          pre.push(null);
+          continue;
+        }
+        const tf = cfg[`htf${k}Timeframe`];
+        if (calendar) {
+          // the periods of the exchange calendar: the level values from the whole bar set
+          const { htf, toChart } = timeframeBars(bars, tf, `Higher TF Level ${k}`, chart);
+          pre.push(toChart(ta.ema(getSourceSeries(htf, cfg[`htf${k}Source`]), cfg[`htf${k}Length`]).toArray().map((v) => v ?? NaN)));
+          levels.push(null);
+          emas.push(null);
+          continue;
+        }
+        let mode: TfState['mode'] = 'chart';
+        if (!(tf.trim() === '' || chartTf === '' || timeframe.in_seconds(tf) === timeframe.in_seconds(chartTf))) {
+          if (timeframe.in_seconds(tf) < timeframe.in_seconds(chartTf)) {
+            throw new Error(`Fibonacci Auto Trend Scouter: the timeframe "${tf}" of Higher TF Level ${k} is lower than the chart timeframe "${chartTf}": the chart bars do not have that data (choose another timeframe or switch "Show Plot" and "Show Label" of that level off)`);
+          }
+          // the checks of periodStarts (a tick timeframe)
+          periodStarts([], tf);
+          mode = 'utc';
+        }
+        emas.push({ m: taStep.ema(cfg[`htf${k}Length`]), committed: 0 });
+        levels.push({ tf: tfState(mode, tf), bar: { time: 0, open: NaN, high: NaN, low: NaN, close: NaN, volume: NaN }, cur: NaN });
+        pre.push(null);
+      }
+      const s: FatsRun = {
+        extremes: [], emas, finals: LEVELS.map(() => []), pre: calendar ? pre : null,
+        shown: LEVELS.map(() => []), hidden: LEVELS.map(() => []),
+        steps: [],
+        vars: { md: newTrack(false), sm: newTrack(true), levels },
+        lists: [], series: [],
+      };
+      // the trackers' machines are created on the first bar: committed through this step
+      s.steps = [{ commit: () => { for (const m of s.extremes) m.commit(); } }];
+      s.lists = s.finals;
+      s.series = [...s.shown, ...s.hidden];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const v = s.vars;
+      const t = inMs ? time : time * 1000;
+      // Levels of other timeframes
+      for (const k of LEVELS) {
+        s.hidden[k - 1][i] = { time, value: NaN };
+        if (s.pre) {
+          const values = s.pre[k - 1];
+          if (values) {
+            s.shown[k - 1][i] = point(k, time, values[i]);
+          }
+          continue;
+        }
+        // changed in place: copyVars copies them at the end of the last confirmed bar
+        const lv = v.levels[k - 1];
+        if (!lv) continue;
+        const st = lv.tf;
+        const hb = lv.bar;
+        const opens = opensPeriod(st, i, t, everyDay, inMs);
+        if (opens && i > 0) {
+          // the bar of the timeframe before is complete: its chart bars show its value (lookahead, no gaps)
+          for (let j = st.first; j < i; j++) {
+            s.shown[k - 1][j] = point(k, bars[j].time, lv.cur);
+          }
+          s.finals[k - 1].push(levelSrc[k - 1](hb));
+        }
+        if (opens) {
+          st.first = i;
+          hb.time = st.out;
+          hb.open = b.open;
+          hb.high = b.high;
+          hb.low = b.low;
+          hb.close = b.close;
+          hb.volume = b.volume ?? NaN;
+        } else {
+          hb.high = Math.max(hb.high, b.high);
+          hb.low = Math.min(hb.low, b.low);
+          hb.close = b.close;
+          hb.volume = (hb.volume ?? 0) + (b.volume ?? NaN);
+        }
+        // the ema of the completed bars (caught up; rebuilt when a recalculated bar no longer completes a period)
+        const e = s.emas[k - 1]!;
+        const finals = s.finals[k - 1];
+        if (e.committed > finals.length) {
+          e.m = taStep.ema(cfg[`htf${k}Length`]);
+          e.committed = 0;
+        }
+        while (e.committed < finals.length) {
+          e.m.step(finals[e.committed]);
+          e.m.commit();
+          e.committed++;
+        }
+        lv.cur = e.m.step(levelSrc[k - 1](st.mode === 'chart' ? b : hb));
+      }
+
+      // The trackers: ta.highestbars / ta.lowestbars(period) == 0 on the bar holding the extreme of the period
+      if (i === 0) {
+        // created on the first bar (the original has no tracker without bars), in the order of the ta calls
+        taCore.highestbars([], cfg.mediumPeriod);
+        const mdHigh = new WindowExtreme(false, cfg.mediumPeriod);
+        taCore.lowestbars([], cfg.mediumPeriod);
+        const mdLow = new WindowExtreme(true, cfg.mediumPeriod);
+        taCore.highestbars([], cfg.smallPeriod);
+        const smHigh = new WindowExtreme(false, cfg.smallPeriod);
+        taCore.lowestbars([], cfg.smallPeriod);
+        const smLow = new WindowExtreme(true, cfg.smallPeriod);
+        s.extremes = [mdHigh, mdLow, smHigh, smLow];
+      }
+      const price = src(b);
+      const hic = useSrc ? price : b.high;
+      const loc = useSrc ? price : b.low;
+      const own = Number.isFinite(hic);
+      const ownLow = Number.isFinite(loc);
+      const [mdHigh, mdLow, smHigh, smLow] = s.extremes;
+      const zero = (m: WindowExtreme, x: number, kept: boolean) => {
+        const e = m.step(x);
+        return kept && e === x;
+      };
+      const mdH = zero(mdHigh, hic, own);
+      const mdL = zero(mdLow, loc, ownLow);
+      const smH = zero(smHigh, hic, own);
+      const smL = zero(smLow, loc, ownLow);
+      const ms = time * (inMs ? 1 : 1000);
+      stepTrack(v.md, i, mdH, mdL, hic, loc, ms, price);
+      stepTrack(v.sm, i, smH, smL, hic, loc, ms, price);
+    },
+    copyVars: (v) => ({
+      md: { ...v.md, bag: v.md.bag.slice() },
+      sm: { ...v.sm, bag: v.sm.bag.slice() },
+      levels: v.levels.map((lv) => (lv ? { tf: { ...lv.tf }, bar: { ...lv.bar }, cur: lv.cur } : null)),
+    }),
+    result(s, bars) {
+      const n = bars.length;
+      const last = n - 1;
+      const v = s.vars;
+      // the value of each level on the last bar (null: not calculated)
+      const levelLast: (number | null)[] = LEVELS.map((k) => {
+        if (s.pre) return s.pre[k - 1] ? s.pre[k - 1]![last] : null;
+        return v.levels[k - 1] ? v.levels[k - 1]!.cur : null;
+      });
+      const plots: Record<string, PlotPoint[]> = {};
+      LEVELS.forEach((k) => {
+        const hidden = s.hidden[k - 1];
+        // show_last = Size: only the last `Size` bars are drawn
+        const from = n - cfg[`htf${k}Size`];
+        const drawn = active[k - 1] && cfg[`htf${k}Show`];
+        const cut = Math.min(n, Math.max(0, from));
+        const points = drawn ? hidden.slice(0, cut).concat(s.shown[k - 1].slice(cut)) : hidden.slice();
+        const lv = v.levels[k - 1];
+        if (drawn && lv && n > 0) {
+          // the last bar of the timeframe is still open: its chart bars show its value so far
+          for (let j = Math.max(lv.tf.first, cut); j < n; j++) points[j] = point(k, bars[j].time, lv.cur);
+        }
+        plots[`plot${k - 1}`] = points;
+      });
+      const lines: LineDrawingData[] = [];
+      const labels: LabelData[] = [];
+      if (n > 0) lastBarDrawings(bars, cfg, v.md, v.sm, levelLast, lines, labels);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots, lines, labels,
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FibonacciAutoTrendScouterInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<FibonacciAutoTrendScouterInputs> = {}, chart?: ChartContext): IndicatorResult {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+/** The drawings of the last bar: the original deletes and redraws its objects on every bar */
+function lastBarDrawings(
+  bars: Bar[],
+  cfg: FibonacciAutoTrendScouterInputs,
+  md: Track,
+  sm: Track,
+  levelLast: (number | null)[],
+  lines: LineDrawingData[],
+  labels: LabelData[],
+): void {
   const n = bars.length;
   const last = n - 1;
-
-  // Levels of other timeframes: ema(source, length) on the bars of the timeframe
-  const levels = LEVELS.map((k) => {
-    if (!cfg[`htf${k}Show`] && !cfg[`htf${k}Label`]) return null;
-    const { htf, toChart } = timeframeBars(bars, cfg[`htf${k}Timeframe`], `Higher TF Level ${k}`, chart);
-    return toChart(ta.ema(getSourceSeries(htf, cfg[`htf${k}Source`]), cfg[`htf${k}Length`]).toArray().map((v) => v ?? NaN));
-  });
-  const plots: Record<string, Array<{ time: number; value: number; color?: string }>> = {};
-  LEVELS.forEach((k) => {
-    const values = levels[k - 1];
-    // show_last = Size: only the last `Size` bars are drawn
-    const from = n - cfg[`htf${k}Size`];
-    plots[`plot${k - 1}`] = bars.map((b, i) => (values && cfg[`htf${k}Show`] && i >= from && Number.isFinite(values[i])
-      ? { time: b.time, value: values[i], color: cfg[`htf${k}Color`] }
-      : { time: b.time, value: NaN }));
-  });
-
-  const lines: LineDrawingData[] = [];
-  const labels: LabelData[] = [];
-  const result = (): IndicatorResult => ({
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots, lines, labels,
-  });
-  if (n === 0) return result();
-
-  const tracks = createTracks(bars, cfg);
-  for (let i = 0; i < n; i++) tracks.step(i);
-  const { md, sm, ms } = tracks;
-
-  // Everything below is the state of the last bar: the original deletes and redraws its objects on every bar
-  const bar = bars[last];
-  const now = ms[last];
-  const candle = last > 0 ? now - ms[last - 1] : NaN;
   const unit = bars[0].time >= 1e12 ? 1 : 1000;
+  const ms = (i: number) => bars[i].time * unit;
+  const bar = bars[last];
+  const now = ms(last);
+  const candle = last > 0 ? now - ms(last - 1) : NaN;
   type LineOptions = Pick<LineDrawingData, 'color' | 'width' | 'style' | 'extend'>;
   // An object with an na coordinate is not drawn
   const addLine = (x1: number, y1: number, x2: number, y2: number, options: LineOptions) => {
@@ -684,20 +988,19 @@ export function calculate(bars: Bar[], inputs: Partial<FibonacciAutoTrendScouter
 
   // Labels of the levels of other timeframes, 2 bars after the last bar
   LEVELS.forEach((k) => {
-    const values = levels[k - 1];
-    if (!cfg[`htf${k}Label`] || !values) return;
+    const value = levelLast[k - 1];
+    if (!cfg[`htf${k}Label`] || value === null) return;
     const txt = timeframeToString(cfg[`htf${k}Timeframe`]);
-    addLabel(now + candle * 2, values[last], {
+    addLabel(now + candle * 2, value, {
       color: CLEAR_BLACK,
       textColor: cfg[`htf${k}Color`],
       style: 'label_left',
       size: 'normal',
       text: `\u140A ${txt}`,
-      tooltip: `HTF  [ ${txt} ] ${str.tostring(values[last], '#.##')}`,
+      tooltip: `HTF  [ ${txt} ] ${str.tostring(value, '#.##')}`,
     });
   });
-
-  return result();
 }
 
-export const FibonacciAutoTrendScouter = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+
+export const FibonacciAutoTrendScouter = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

@@ -11,6 +11,8 @@
  */
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface LeveragedLiquidationZonesInputs {
   show100x: boolean;
@@ -77,42 +79,80 @@ export const metadata = {
 
 type Point = { time: number; value: number; color: string };
 
-export function calculate(bars: Bar[], inputs: Partial<LeveragedLiquidationZonesInputs> = {}): IndicatorResult {
+interface LiquidationRun extends BarRunState<Record<string, never>> {
+  /** plot0 .. plot7 */
+  plots: Point[][];
+  /** fill colours, one per bar (25x, 50x, 75x, 100x) */
+  fills: string[][];
+}
+
+function study(inputs: Partial<LeveragedLiquidationZonesInputs>): BarStudy<LiquidationRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-
-  // ref_price = close[1]; liq_band(price, lev) => [price + price / lev, price - price / lev]
-  const band = (show: boolean, lev: number, upper: boolean, col: string): Point[] => bars.map((b, i) => {
-    const price = i > 0 ? bars[i - 1].close : NaN;
-    const delta = price / lev;
-    return { time: b.time, value: show ? (upper ? price + delta : price - delta) : NaN, color: col };
-  });
-
-  // fill colours, one per bar
-  const fill = (col: string) => new Array<string>(bars.length).fill(col);
-
+  const levels: Array<[show: boolean, lev: number, col: string]> = [
+    [cfg.show25x, 25, cfg.color25x],
+    [cfg.show50x, 50, cfg.color50x],
+    [cfg.show75x, 75, cfg.color75x],
+    [cfg.show100x, 100, cfg.color100x],
+  ];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: band(cfg.show25x, 25, true, cfg.color25x),
-      plot1: band(cfg.show25x, 25, false, cfg.color25x),
-      plot2: band(cfg.show50x, 50, true, cfg.color50x),
-      plot3: band(cfg.show50x, 50, false, cfg.color50x),
-      plot4: band(cfg.show75x, 75, true, cfg.color75x),
-      plot5: band(cfg.show75x, 75, false, cfg.color75x),
-      plot6: band(cfg.show100x, 100, true, cfg.color100x),
-      plot7: band(cfg.show100x, 100, false, cfg.color100x),
+    init() {
+      const s: LiquidationRun = {
+        plots: Array.from({ length: 8 }, () => []), fills: [[], [], [], []], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.series = [...s.plots, ...s.fills];
+      return s;
     },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { color: cfg.color25x }, colors: fill(cfg.color25x) },
-      { plot1: 'plot2', plot2: 'plot3', options: { color: cfg.color50x }, colors: fill(cfg.color50x) },
-      { plot1: 'plot4', plot2: 'plot5', options: { color: cfg.color75x }, colors: fill(cfg.color75x) },
-      { plot1: 'plot6', plot2: 'plot7', options: { color: cfg.color100x }, colors: fill(cfg.color100x) },
-    ],
+    bar(s, i, bars) {
+      const b = bars[i];
+      // ref_price = close[1]; liq_band(price, lev) => [price + price / lev, price - price / lev]
+      const price = i > 0 ? bars[i - 1].close : NaN;
+      for (let k = 0; k < 4; k++) {
+        const level = levels[k]!;
+        const show = level[0];
+        const col = level[2];
+        const delta = price / level[1];
+        s.plots[k * 2]![i] = { time: b.time as number, value: show ? price + delta : NaN, color: col };
+        s.plots[k * 2 + 1]![i] = { time: b.time as number, value: show ? price - delta : NaN, color: col };
+        s.fills[k]![i] = col;
+      }
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0]!.slice(),
+          plot1: p[1]!.slice(),
+          plot2: p[2]!.slice(),
+          plot3: p[3]!.slice(),
+          plot4: p[4]!.slice(),
+          plot5: p[5]!.slice(),
+          plot6: p[6]!.slice(),
+          plot7: p[7]!.slice(),
+        },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { color: cfg.color25x }, colors: s.fills[0]!.slice() },
+          { plot1: 'plot2', plot2: 'plot3', options: { color: cfg.color50x }, colors: s.fills[1]!.slice() },
+          { plot1: 'plot4', plot2: 'plot5', options: { color: cfg.color75x }, colors: s.fills[2]!.slice() },
+          { plot1: 'plot6', plot2: 'plot7', options: { color: cfg.color100x }, colors: s.fills[3]!.slice() },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<LeveragedLiquidationZonesInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<LeveragedLiquidationZonesInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const LeveragedLiquidationZones = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

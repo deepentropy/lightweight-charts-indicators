@@ -12,9 +12,11 @@
  * Reference: "Liquidity Levels [LuxAlgo]" by LuxAlgo
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { LineDrawingData, BoxData } from '../types';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface LiquidityLevelsInputs {
   length: number;
@@ -67,110 +69,130 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<LiquidityLevelsInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[]; boxes: BoxData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[]; boxes: BoxData[] };
+
+interface LiquidityVars {
+  /** Liquidity levels, newest first (changed in place: copied by copyVars) */
+  pals: number[];
+}
+
+interface LiquidityRun extends BarRunState<LiquidityVars> {
+  phv: PivotStep;
+}
+
+function study(inputs: Partial<LiquidityLevelsInputs>): BarStudy<LiquidityRun, Result> {
   const { length, show, lineCol, lvlStyle, relativeColUp, relativeColDn, fixedCol, showHist, distWin, upCol, dnCol } =
     { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
   // barstate.isfirst: one line per level, colour fixed_col or a random colour ('Random' mode)
-  const lineColors: string[] = [];
-  for (let i = 0; i < show; i++) {
-    if (lineCol === 'Random') {
-      const r = () => Math.round(Math.random() * 255);
-      lineColors.push(`rgb(${r()},${r()},${r()})`);
-    } else {
-      lineColors.push(fixedCol);
-    }
-  }
-
-  // Compute pivot highs on volume
-  const volSeries = new Series(bars, (b) => b.volume ?? 0);
-  const phvArr = ta.pivothigh(volSeries, length, length).toArray();
-
-  // Collect liquidity levels: on volume pivot (`if phv`: not na and not 0), record close[length]
-  const pals: number[] = [];
-
-  for (let i = 0; i < n; i++) {
-    const phv = phvArr[i];
-    if (phv != null && !isNaN(phv) && phv !== 0 && i >= length) {
-      // Pine: close[length] on the confirmation bar = close of the pivot bar
-      pals.unshift(bars[i - length].close);
-      if (pals.length > show) {
-        pals.pop();
-      }
-    }
-  }
-
-  // Sort levels (required for histogram binary search)
-  pals.sort((a, b) => a - b);
-
-  const lines: LineDrawingData[] = [];
-  const boxes: BoxData[] = [];
-
-  if (n === 0) {
-    return {
-      metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-      plots: {},
-      lines,
-      boxes,
-    };
-  }
-
-  const lastBar = bars[n - 1];
-
-  // Levels: line from n-1 to n, extend.left, width 1; 'Relative' mode colours by close > level
-  pals.forEach((lvl, index) => {
-    const col = lineCol === 'Relative' ? (lastBar.close > lvl ? relativeColUp : relativeColDn) : lineColors[index];
-    lines.push({
-      time1: bars[Math.max(0, n - 2)].time,
-      price1: lvl,
-      time2: lastBar.time,
-      price2: lvl,
-      color: col,
-      width: 1,
-      style: lvlStyle,
-      extend: 'left',
-    });
-  });
-
-  // Histogram (Pine, barstate.islast): over the last distwin bars, idx = pals.binary_search_rightmost(close[i]);
-  // when 1 <= idx < show the bar counts as bullish (close > open) or bearish in bin idx - 1. Box per bin:
-  // bull from n to n + bull, bear from n + bull to n + bull + bear (n = bar_index of the last bar), between
-  // pals[index] and pals[index + 1]. The right edges are on bars after the last bar (time of that future bar).
-  if (showHist && show >= 2 && pals.length >= 2) {
-    const bull = new Array<number>(show - 1).fill(0);
-    const bear = new Array<number>(show - 1).fill(0);
-    for (let i = 0; i <= distWin - 1 && i < n; i++) {
-      const b = bars[n - 1 - i];
-      const idx = binarySearchRightmost(pals, b.close);
-      if (idx >= 1 && idx < show) {
-        if (b.close > b.open) bull[idx - 1]++;
-        else bear[idx - 1]++;
-      }
-    }
-    const interval = barInterval(bars);
-    const at = (k: number) => barTime(bars, n - 1 + k, interval);
-    for (let index = 0; index < Math.min(show - 1, pals.length - 1); index++) {
-      boxes.push({ time1: at(0), price1: pals[index], time2: at(bull[index]), price2: pals[index + 1], bgColor: upCol, borderColor: 'transparent' });
-      boxes.push({
-        time1: at(bull[index]), price1: pals[index], time2: at(bull[index] + bear[index]), price2: pals[index + 1],
-        bgColor: dnCol, borderColor: 'transparent',
-      });
-    }
-  }
-
+  let lineColors: string[] = [];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    lines,
-    boxes,
+    init() {
+      lineColors = [];
+      for (let i = 0; i < show; i++) {
+        if (lineCol === 'Random') {
+          const r = () => Math.round(Math.random() * 255);
+          lineColors.push(`rgb(${r()},${r()},${r()})`);
+        } else {
+          lineColors.push(fixedCol);
+        }
+      }
+      // Compute pivot highs on volume
+      const phv = new PivotStep(length, length, true);
+      return { phv, steps: [phv], vars: { pals: [] }, lists: [], series: [] };
+    },
+    bar(s, i, bars) {
+      const phv = s.phv.step(i, bars[i].volume ?? 0);
+      // Collect liquidity levels: on volume pivot (`if phv`: not na and not 0), record close[length]
+      if (!isNaN(phv) && phv !== 0 && i >= length) {
+        const pals = s.vars.pals;
+        // Pine: close[length] on the confirmation bar = close of the pivot bar
+        pals.unshift(bars[i - length].close);
+        if (pals.length > show) {
+          pals.pop();
+        }
+      }
+    },
+    copyVars: (v) => ({ pals: v.pals.slice() }),
+    result(s, bars) {
+      const n = bars.length;
+      // Sort levels (required for histogram binary search)
+      const pals = s.vars.pals.slice().sort((a, b) => a - b);
+
+      const lines: LineDrawingData[] = [];
+      const boxes: BoxData[] = [];
+
+      if (n === 0) {
+        return {
+          metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+          plots: {},
+          lines,
+          boxes,
+        };
+      }
+
+      const lastBar = bars[n - 1];
+
+      // Levels: line from n-1 to n, extend.left, width 1; 'Relative' mode colours by close > level
+      pals.forEach((lvl, index) => {
+        const col = lineCol === 'Relative' ? (lastBar.close > lvl ? relativeColUp : relativeColDn) : lineColors[index];
+        lines.push({
+          time1: bars[Math.max(0, n - 2)].time,
+          price1: lvl,
+          time2: lastBar.time,
+          price2: lvl,
+          color: col,
+          width: 1,
+          style: lvlStyle,
+          extend: 'left',
+        });
+      });
+
+      // Histogram (Pine, barstate.islast): over the last distwin bars, idx = pals.binary_search_rightmost(close[i]);
+      // when 1 <= idx < show the bar counts as bullish (close > open) or bearish in bin idx - 1. Box per bin:
+      // bull from n to n + bull, bear from n + bull to n + bull + bear (n = bar_index of the last bar), between
+      // pals[index] and pals[index + 1]. The right edges are on bars after the last bar (time of that future bar).
+      if (showHist && show >= 2 && pals.length >= 2) {
+        const bull = new Array<number>(show - 1).fill(0);
+        const bear = new Array<number>(show - 1).fill(0);
+        for (let i = 0; i <= distWin - 1 && i < n; i++) {
+          const b = bars[n - 1 - i];
+          const idx = binarySearchRightmost(pals, b.close);
+          if (idx >= 1 && idx < show) {
+            if (b.close > b.open) bull[idx - 1]++;
+            else bear[idx - 1]++;
+          }
+        }
+        const interval = barInterval(bars);
+        const at = (k: number) => barTime(bars, n - 1 + k, interval);
+        for (let index = 0; index < Math.min(show - 1, pals.length - 1); index++) {
+          boxes.push({ time1: at(0), price1: pals[index], time2: at(bull[index]), price2: pals[index + 1], bgColor: upCol, borderColor: 'transparent' });
+          boxes.push({
+            time1: at(bull[index]), price1: pals[index], time2: at(bull[index] + bear[index]), price2: pals[index + 1],
+            bgColor: dnCol, borderColor: 'transparent',
+          });
+        }
+      }
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        lines,
+        boxes,
+      };
+    },
   };
 }
 
-export const LiquidityLevels = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<LiquidityLevelsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<LiquidityLevelsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const LiquidityLevels = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };
 
 /**
  * Pine array.binary_search_rightmost on an ascending array: the index of the last element equal to `value`, else

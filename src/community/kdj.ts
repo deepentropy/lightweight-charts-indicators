@@ -13,6 +13,8 @@
 
 import type { Bar, IndicatorResult, InputConfig, PlotConfig } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface KDJInputs {
   period: number;
@@ -41,60 +43,77 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<KDJInputs> = {}): IndicatorResult {
-  const { period, signal } = { ...defaultInputs, ...inputs };
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] };
 
-  const kArr: number[] = [];
-  const dArr: number[] = [];
-  const jArr: number[] = [];
-
-  let pK = 0;
-  let pD = 0;
-
-  for (let i = 0; i < bars.length; i++) {
-    const c = bars[i].close;
-
-    // Highest high and lowest low over period
-    let hh = bars[i].high;
-    let ll = bars[i].low;
-    const lookback = Math.min(i + 1, period);
-    for (let j = 0; j < lookback; j++) {
-      const b = bars[i - j];
-      if (b.high > hh) hh = b.high;
-      if (b.low < ll) ll = b.low;
-    }
-
-    const rsv = hh !== ll ? 100 * (c - ll) / (hh - ll) : 0;
-
-    // bcwsma(s, l, m) = (m * s + (l - m) * prev) / l  where m=1
-    // This is equivalent to RMA with alpha = 1/signal
-    pK = (rsv + (signal - 1) * pK) / signal;
-    pD = (pK + (signal - 1) * pD) / signal;
-    const pJ = 3 * pK - 2 * pD;
-
-    kArr.push(pK);
-    dArr.push(pD);
-    jArr.push(pJ);
-  }
-
-  const warmup = period - 1;
-  const toPlot = (arr: number[]) =>
-    arr.map((value, i) => ({ time: bars[i].time, value: i < warmup ? NaN : value }));
-
-  // bgcolor: green when J > D, red otherwise, 70% transparency
-  const bgColors: BgColorData[] = [];
-  for (let i = warmup; i < bars.length; i++) {
-    bgColors.push({
-      time: bars[i].time as number,
-      color: jArr[i] > dArr[i] ? 'rgba(0,128,0,0.3)' : 'rgba(255,0,0,0.3)',
-    });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(kArr), 'plot1': toPlot(dArr), 'plot2': toPlot(jArr) },
-    bgColors,
-  } as Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] };
+interface KdjRun extends BarRunState<{ pK: number; pD: number }> {
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  bgColors: BgColorData[];
 }
 
-export const KDJ = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+function study(inputs: Partial<KDJInputs>): BarStudy<KdjRun, Result> {
+  const { period, signal } = { ...defaultInputs, ...inputs };
+  const warmup = period - 1;
+  return {
+    init() {
+      const s: KdjRun = { plot0: [], plot1: [], plot2: [], bgColors: [], steps: [], vars: { pK: 0, pD: 0 }, lists: [], series: [] };
+      s.lists = [s.bgColors];
+      s.series = [s.plot0, s.plot1, s.plot2];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const c = bars[i].close;
+
+      // Highest high and lowest low over period
+      let hh = bars[i].high;
+      let ll = bars[i].low;
+      const lookback = Math.min(i + 1, period);
+      for (let j = 0; j < lookback; j++) {
+        const b = bars[i - j];
+        if (b.high > hh) hh = b.high;
+        if (b.low < ll) ll = b.low;
+      }
+
+      const rsv = hh !== ll ? 100 * (c - ll) / (hh - ll) : 0;
+
+      // bcwsma(s, l, m) = (m * s + (l - m) * prev) / l  where m=1
+      // This is equivalent to RMA with alpha = 1/signal
+      v.pK = (rsv + (signal - 1) * v.pK) / signal;
+      v.pD = (v.pK + (signal - 1) * v.pD) / signal;
+      const pK = v.pK;
+      const pD = v.pD;
+      const pJ = 3 * pK - 2 * pD;
+
+      const time = bars[i].time;
+      s.plot0[i] = { time, value: i < warmup ? NaN : pK };
+      s.plot1[i] = { time, value: i < warmup ? NaN : pD };
+      s.plot2[i] = { time, value: i < warmup ? NaN : pJ };
+
+      // bgcolor: green when J > D, red otherwise, 70% transparency
+      if (i >= warmup) {
+        s.bgColors.push({ time: time as number, color: pJ > pD ? 'rgba(0,128,0,0.3)' : 'rgba(255,0,0,0.3)' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice(), 'plot2': s.plot2.slice() },
+        bgColors: s.bgColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<KDJInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<KDJInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars)) as IndicatorResult;
+}
+
+export const KDJ = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

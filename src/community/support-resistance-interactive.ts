@@ -24,10 +24,11 @@
  * Original notice: © LonesomeTheBlue
  */
 
-import { ta, str, math, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { str, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall, BoxData, LabelData } from '../types';
 import { barInterval, barTime } from '../bar-time';
 import { mintickOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -114,12 +115,57 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Result = Omit<IndicatorResult, 'boxes' | 'labels'> & { boxes: BoxData[]; labels: LabelData[]; alertCalls: AlertCall[] };
+
+interface SriRun extends BarRunState<Record<string, never>> {
+  highest: WindowExtreme;
+  lowest: WindowExtreme;
+  /** ta.highest(300) / ta.lowest(300) of each bar */
+  hh: number[];
+  ll: number[];
+}
+
+function study(inputs: Partial<SupportResistanceInteractiveInputs>): BarStudy<SriRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const highest = new WindowExtreme(false, 300);
+      const lowest = new WindowExtreme(true, 300);
+      const s: SriRun = { highest, lowest, hh: [], ll: [], steps: [highest, lowest], vars: {}, lists: [], series: [] };
+      s.series = [s.hh, s.ll];
+      return s;
+    },
+    bar(s, i, bars) {
+      s.hh[i] = s.highest.step(bars[i].high);
+      s.ll[i] = s.lowest.step(bars[i].low);
+    },
+    result(s, bars, chart) {
+      return lastBar(cfg, bars, chart, s.hh, s.ll);
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SupportResistanceInteractiveInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<SupportResistanceInteractiveInputs> = {},
   chart?: ChartContext,
-): Omit<IndicatorResult, 'boxes' | 'labels'> & { boxes: BoxData[]; labels: LabelData[]; alertCalls: AlertCall[] } {
-  const cfg = { ...defaultInputs, ...inputs };
+): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+/** The drawings and alerts of the last bar (if barstate.islast) */
+function lastBar(
+  cfg: SupportResistanceInteractiveInputs,
+  bars: Bar[],
+  chart: ChartContext | undefined,
+  hhs: number[],
+  lls: number[],
+): Result {
   const n = bars.length;
   // syminfo.mintick
   const MINTICK = mintickOf(chart);
@@ -130,8 +176,8 @@ export function calculate(
   if (n > 0) {
     const last = n - 1;
     // thold = (ta.highest(300) - ta.lowest(300)) * math.max(threshold, 0.1) / 100
-    const hh = ta.highest(new Series(bars, (b) => b.high), 300).toArray()[last] ?? NaN;
-    const ll = ta.lowest(new Series(bars, (b) => b.low), 300).toArray()[last] ?? NaN;
+    const hh = hhs[last] ?? NaN;
+    const ll = lls[last] ?? NaN;
     const thold = ((hh - ll) * Math.max(cfg.threshold, 0.1)) / 100;
     // var srarray = array.from(srnum > 0 ? level 1 : na, ...)
     const levels = [cfg.sr1, cfg.sr2, cfg.sr3, cfg.sr4, cfg.sr5].map((v, k) => (cfg.srnum > k ? v : NaN));
@@ -213,6 +259,7 @@ export function calculate(
 
 export const SupportResistanceInteractive = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

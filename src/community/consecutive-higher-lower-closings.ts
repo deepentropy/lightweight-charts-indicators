@@ -14,7 +14,9 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ConsecutiveHigherLowerClosingsInputs {
   /** Consecutive higher values for a BUY */
@@ -60,10 +62,25 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ConsecutiveHigherLowerClosingsInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface ChlcVars {
+  upCount: number;
+  downCount: number;
+  /** 1 = last signal BUY, -1 = last signal SELL */
+  lastSignal: number;
+  prev: number;
+  /** The signals of the last bar calculated (the alerts' triggered state) */
+  buy: boolean;
+  sell: boolean;
+}
+
+interface ChlcRun extends BarRunState<ChlcVars> {
+  markers: MarkerData[];
+  times: number[][];
+}
+
+function study(inputs: Partial<ConsecutiveHigherLowerClosingsInputs>): BarStudy<ChlcRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   // value = close, then open / high / low / close by the first input that is on
   const pick = (b: Bar): number => {
@@ -72,60 +89,78 @@ export function calculate(
     if (cfg.useLow) return b.low;
     return b.close;
   };
-
-  const markers: MarkerData[] = [];
   const textColor = color.blue; // no textcolor: the Pine plotshape default text colour
-  let upCount = 0;
-  let downCount = 0;
-  let lastSignal = 0; // 1 = last signal BUY, -1 = last signal SELL
-  let prev = NaN;
-  const buyFlags: boolean[] = [], sellFlags: boolean[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const value = pick(bars[i]);
-    const valueDiff = value - prev; // value - value[1] (na on bar 0)
-    prev = value;
-    if (gt(valueDiff, 0)) {
-      upCount += 1;
-      downCount = 0;
-    } else if (lt(valueDiff, 0)) {
-      downCount += 1;
-      upCount = 0;
-    } else {
-      upCount = 0;
-      downCount = 0;
-    }
-    const rawBuy = upCount === cfg.consecutiveHigherValues;
-    const rawSell = downCount === cfg.consecutiveLowerValues;
-    let buySignal = false;
-    let sellSignal = false;
-    if (rawBuy && lastSignal !== 1) {
-      buySignal = true;
-      lastSignal = 1;
-    }
-    if (rawSell && lastSignal !== -1) {
-      sellSignal = true;
-      lastSignal = -1;
-    }
-    buyFlags.push(buySignal);
-    sellFlags.push(sellSignal);
-    const t = bars[i].time;
-    // plotshape(buySignal, "Buy Signal", shape.triangleup, location.belowbar, color.lime, size.small, text = "BUY")
-    if (buySignal) {
-      markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: color.lime, text: 'BUY', textColor, size: 'small' });
-    }
-    // plotshape(sellSignal, "Sell Signal", shape.triangledown, location.abovebar, color.red, size.small, text = "SELL")
-    if (sellSignal) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: color.red, text: 'SELL', textColor, size: 'small' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    // alertcondition(buySignal, "Buy Alert") / alertcondition(sellSignal, "Sell Alert")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
+    init() {
+      const s: ChlcRun = {
+        markers: [], times: [[], []],
+        steps: [], vars: { upCount: 0, downCount: 0, lastSignal: 0, prev: NaN, buy: false, sell: false }, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const value = pick(bars[i]);
+      const valueDiff = value - v.prev; // value - value[1] (na on bar 0)
+      v.prev = value;
+      if (gt(valueDiff, 0)) {
+        v.upCount += 1;
+        v.downCount = 0;
+      } else if (lt(valueDiff, 0)) {
+        v.downCount += 1;
+        v.upCount = 0;
+      } else {
+        v.upCount = 0;
+        v.downCount = 0;
+      }
+      const rawBuy = v.upCount === cfg.consecutiveHigherValues;
+      const rawSell = v.downCount === cfg.consecutiveLowerValues;
+      let buySignal = false;
+      let sellSignal = false;
+      if (rawBuy && v.lastSignal !== 1) {
+        buySignal = true;
+        v.lastSignal = 1;
+      }
+      if (rawSell && v.lastSignal !== -1) {
+        sellSignal = true;
+        v.lastSignal = -1;
+      }
+      const t = bars[i].time;
+      // plotshape(buySignal, "Buy Signal", shape.triangleup, location.belowbar, color.lime, size.small, text = "BUY")
+      if (buySignal) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: color.lime, text: 'BUY', textColor, size: 'small' });
+      }
+      // plotshape(sellSignal, "Sell Signal", shape.triangledown, location.abovebar, color.red, size.small, text = "SELL")
+      if (sellSignal) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: color.red, text: 'SELL', textColor, size: 'small' });
+      }
+      // alertcondition(buySignal, "Buy Alert") / alertcondition(sellSignal, "Sell Alert")
+      v.buy = buySignal;
+      v.sell = sellSignal;
+      if (buySignal) s.times[0].push(t as number);
+      if (sellSignal) s.times[1].push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const v = s.vars;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, [n > 0 && v.buy, n > 0 && v.sell]),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ConsecutiveHigherLowerClosingsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ConsecutiveHigherLowerClosingsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -135,5 +170,5 @@ export const alertConditions: AlertConditionDecl[] = [
 ];
 
 export const ConsecutiveHigherLowerClosings = {
-  calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions,
+  calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions,
 };

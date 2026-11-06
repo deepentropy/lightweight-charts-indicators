@@ -11,7 +11,9 @@
  * Based on the standard Accumulation/Distribution indicator.
  */
 
-import { taCore, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AccumulationDistributionInputs {}
 
@@ -32,35 +34,56 @@ export const metadata = {
 /** Pine float equality: within 1e-10 (na compares false) */
 const eq = (a: number, b: number) => Math.abs(a - b) <= 1e-10;
 
-export function calculate(bars: Bar[], _inputs: Partial<AccumulationDistributionInputs> = {}): IndicatorResult {
-  const n = bars.length;
+interface AdVars {
+  /** var cumVol = 0.; cumVol += nz(volume) */
+  cumVol: number;
+}
 
-  // var cumVol = 0.; cumVol += nz(volume); runtime error on the last bar when it is 0
-  let cumVol = 0;
-  for (const b of bars) {
-    const v = b.volume ?? NaN;
-    cumVol += Number.isFinite(v) ? v : 0;
-  }
-  if (n > 0 && eq(cumVol, 0)) {
-    throw new Error('No volume is provided by the data vendor.');
-  }
+interface AdRun extends BarRunState<AdVars> {
+  cum: ReturnType<typeof taStep.cum>;
+  plot0: { time: number; value: number }[];
+}
 
-  const mfv: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const { high, low, close } = bars[i];
-    const volume = bars[i].volume ?? NaN;
-    mfv[i] = (eq(close, high) && eq(close, low)) || eq(high, low)
-      ? 0
-      : ((2 * close - low - high) / (high - low)) * volume;
-  }
-  const ad = taCore.cum(mfv);
-
+function study(): BarStudy<AdRun, IndicatorResult> {
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: ad.map((v, i) => ({ time: bars[i].time, value: Number.isFinite(v) ? v : NaN })),
+    init() {
+      const cum = taStep.cum();
+      const s: AdRun = { cum, plot0: [], steps: [cum], vars: { cumVol: 0 }, lists: [], series: [] };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const { high, low, close } = bars[i];
+      const volume = bars[i].volume ?? NaN;
+      s.vars.cumVol += Number.isFinite(volume) ? volume : 0;
+      const mfv = (eq(close, high) && eq(close, low)) || eq(high, low)
+        ? 0
+        : ((2 * close - low - high) / (high - low)) * volume;
+      const v = s.cum.step(mfv);
+      s.plot0[i] = { time: bars[i].time, value: Number.isFinite(v) ? v : NaN };
+    },
+    result(s, bars) {
+      // runtime error on the last bar when cumVol is 0
+      if (bars.length > 0 && eq(s.vars.cumVol, 0)) {
+        throw new Error('No volume is provided by the data vendor.');
+      }
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plot0.slice(),
+        },
+      };
     },
   };
 }
 
-export const AccumulationDistribution = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<AccumulationDistributionInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(bars: Bar[], _inputs: Partial<AccumulationDistributionInputs> = {}): IndicatorResult {
+  return fullResult(createRun(_inputs).update(bars));
+}
+
+export const AccumulationDistribution = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

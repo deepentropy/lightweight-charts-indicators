@@ -10,7 +10,9 @@
  * Reference: "MACD 4C" by vkno422
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MACD4CInputs {
   fastLength: number;
@@ -43,32 +45,57 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MACD4CInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface Macd4cRun extends BarRunState<Record<string, never>> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  macdArr: number[];
+  data: Point[];
+}
+
+function study(inputs: Partial<MACD4CInputs>): BarStudy<Macd4cRun, IndicatorResult> {
   const { fastLength, slowLength, src } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
-
-  const fastEMA = ta.ema(source, fastLength);
-  const slowEMA = ta.ema(source, slowLength);
-  const macdLine = fastEMA.sub(slowEMA);
-  const macdArr = macdLine.toArray();
-
-  const data = macdArr.map((value, i) => {
-    const v = value ?? NaN;
-    const prev = i > 0 ? (macdArr[i - 1] ?? NaN) : NaN;
-    let color: string;
-    if (v > 0) {
-      color = v > prev ? '#00FF00' : '#008000'; // lime : green
-    } else {
-      color = v < prev ? '#800000' : '#FF0000'; // maroon : red
-    }
-    return { time: bars[i].time, value: v, color };
-  });
-
+  const value = barSource(src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': data },
-    hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'solid', title: 'Zero' } }],
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const fast = taStep.ema(fastLength);
+      const slow = taStep.ema(slowLength);
+      const s: Macd4cRun = { fast, slow, macdArr: [], data: [], steps: [fast, slow], vars: {}, lists: [], series: [] };
+      s.series = [s.macdArr, s.data];
+      return s;
+    },
+    bar(s, i, bars) {
+      const x = value(bars[i]);
+      const v = s.fast.step(x) - s.slow.step(x);
+      s.macdArr[i] = v;
+      const prev = i > 0 ? (s.macdArr[i - 1] ?? NaN) : NaN;
+      let color: string;
+      if (v > 0) {
+        color = v > prev ? '#00FF00' : '#008000'; // lime : green
+      } else {
+        color = v < prev ? '#800000' : '#FF0000'; // maroon : red
+      }
+      s.data[i] = { time: bars[i].time as number, value: v, color };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.data.slice() },
+        hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'solid', title: 'Zero' } }],
+      };
+    },
   };
 }
 
-export const MACD4C = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MACD4CInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MACD4CInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MACD4C = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

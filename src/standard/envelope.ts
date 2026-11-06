@@ -5,7 +5,9 @@
  * at a fixed percentage distance from the basis.
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EnvelopeInputs {
   /** Period length */
@@ -44,52 +46,68 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<EnvelopeInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface EnvelopeRun extends BarRunState<Record<string, never>> {
+  basis: { step(v: number): number; commit(): void };
+  basisData: Point[];
+  upperData: Point[];
+  lowerData: Point[];
+}
+
+function study(inputs: Partial<EnvelopeInputs>): BarStudy<EnvelopeRun, IndicatorResult> {
   const { length, percent, src, exponential } = { ...defaultInputs, ...inputs };
-
-  const source = getSourceSeries(bars, src);
-  const basis = exponential ? ta.ema(source, length) : ta.sma(source, length);
-
+  const value = barSource(src);
   const k = percent / 100;
-  const upper = basis.mul(1 + k);
-  const lower = basis.mul(1 - k);
-
-  const basisData = basis.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const upperData = upper.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const lowerData = lower.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const fills: FillData[] = [
-    { plot1: 'plot1', plot2: 'plot2', options: { color: '#2196F3', transp: 95, title: 'Background' } },
-  ];
-
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const basis = exponential ? taStep.ema(length) : new WindowSma(length);
+      const s: EnvelopeRun = { basis, basisData: [], upperData: [], lowerData: [], steps: [basis], vars: {}, lists: [], series: [] };
+      s.series = [s.basisData, s.upperData, s.lowerData];
+      return s;
     },
-    plots: {
-      'plot0': basisData,
-      'plot1': upperData,
-      'plot2': lowerData,
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      const basis = s.basis.step(value(bars[i]));
+      s.basisData[i] = { time, value: basis };
+      s.upperData[i] = { time, value: basis * (1 + k) };
+      s.lowerData[i] = { time, value: basis * (1 - k) };
     },
-    fills,
+    result(s) {
+      const fills: FillData[] = [
+        { plot1: 'plot1', plot2: 'plot2', options: { color: '#2196F3', transp: 95, title: 'Background' } },
+      ];
+
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.basisData.slice(),
+          'plot1': s.upperData.slice(),
+          'plot2': s.lowerData.slice(),
+        },
+        fills,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EnvelopeInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EnvelopeInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const Envelope = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

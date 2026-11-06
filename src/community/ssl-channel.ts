@@ -8,7 +8,9 @@
  * Reference: "SSL channel"
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { IndicatorResult, InputConfig, PlotConfig, Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 // Pine comparison operators: equal within 1e-10; a comparison with na is false
 const EPS = 1e-10;
@@ -39,37 +41,57 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SSLChannelInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface SslRun extends BarRunState<{ hlv: number }> {
+  smaHigh: WindowSma;
+  smaLow: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<SSLChannelInputs>): BarStudy<SslRun, IndicatorResult> {
   const { period } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const smaHighArr = ta.sma(new Series(bars, (b) => b.high), period).toArray();
-  const smaLowArr = ta.sma(new Series(bars, (b) => b.low), period).toArray();
-
-  const sslDown: number[] = new Array(n);
-  const sslUp: number[] = new Array(n);
-  let hlv = 0;
-
-  for (let i = 0; i < n; i++) {
-    const smaH = smaHighArr[i] ?? 0;
-    const smaL = smaLowArr[i] ?? 0;
-    const c = bars[i].close;
-
-    if (gt(c, smaH)) hlv = 1;
-    else if (lt(c, smaL)) hlv = -1;
-
-    sslDown[i] = hlv < 0 ? smaH : smaL;
-    sslUp[i] = hlv < 0 ? smaL : smaH;
-  }
-
   const warmup = period;
-  const plot0 = sslDown.map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : v }));
-  const plot1 = sslUp.map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : v }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
+    init() {
+      const smaHigh = new WindowSma(period);
+      const smaLow = new WindowSma(period);
+      const s: SslRun = { smaHigh, smaLow, plot0: [], plot1: [], steps: [smaHigh, smaLow], vars: { hlv: 0 }, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const smaH = s.smaHigh.step(b.high) ?? 0;
+      const smaL = s.smaLow.step(b.low) ?? 0;
+      const c = b.close;
+
+      if (gt(c, smaH)) s.vars.hlv = 1;
+      else if (lt(c, smaL)) s.vars.hlv = -1;
+      const hlv = s.vars.hlv;
+
+      const sslDown = hlv < 0 ? smaH : smaL;
+      const sslUp = hlv < 0 ? smaL : smaH;
+      s.plot0[i] = { time: b.time, value: i < warmup ? NaN : sslDown };
+      s.plot1[i] = { time: b.time, value: i < warmup ? NaN : sslUp };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice() },
+      };
+    },
   };
 }
 
-export const SSLChannel = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SSLChannelInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SSLChannelInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const SSLChannel = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

@@ -13,6 +13,8 @@
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall, BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -32,32 +34,54 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  _inputs: Partial<BullishEngulfingFinderInputs> = {},
-): IndicatorResult & { barColors: BarColorData[]; alertCalls: AlertCall[] } {
-  const barColors: BarColorData[] = [];
-  const alertCalls: AlertCall[] = [];
+type Result = IndicatorResult & { barColors: BarColorData[]; alertCalls: AlertCall[] };
 
-  // bar 0: open[1] / close[1] are na, the signal is false
-  for (let i = 1; i < bars.length; i++) {
-    const p = bars[i - 1];
-    const b = bars[i];
-    const signal = p.open > p.close && b.close > b.open && b.close >= p.open && p.close >= b.open
-      && b.close - b.open > p.open - p.close;
-    if (!signal) continue;
-    // if signal: alert("Bullish Engulfing Formed", alert.freq_once_per_bar_close)
-    alertCalls.push({ time: b.time, message: 'Bullish Engulfing Formed', freq: 'once_per_bar_close' });
-    // barcolor(signal ? color.yellow : na)
-    barColors.push({ id: 'barcolor0', time: b.time, color: '#FFEB3B' });
-  }
+interface EngulfingRun extends BarRunState<Record<string, never>> {
+  barColors: BarColorData[];
+  alertCalls: AlertCall[];
+}
 
+function study(): BarStudy<EngulfingRun, Result> {
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    barColors,
-    alertCalls,
+    init() {
+      const s: EngulfingRun = { barColors: [], alertCalls: [], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.barColors, s.alertCalls];
+      return s;
+    },
+    bar(s, i, bars) {
+      // bar 0: open[1] / close[1] are na, the signal is false
+      if (i < 1) return;
+      const p = bars[i - 1];
+      const b = bars[i];
+      const signal = p.open > p.close && b.close > b.open && b.close >= p.open && p.close >= b.open
+        && b.close - b.open > p.open - p.close;
+      if (!signal) return;
+      // if signal: alert("Bullish Engulfing Formed", alert.freq_once_per_bar_close)
+      s.alertCalls.push({ time: b.time, message: 'Bullish Engulfing Formed', freq: 'once_per_bar_close' });
+      // barcolor(signal ? color.yellow : na)
+      s.barColors.push({ id: 'barcolor0', time: b.time, color: '#FFEB3B' });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        barColors: s.barColors.slice(),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
 }
 
-export const BullishEngulfingFinder = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hasAlertFunction };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<BullishEngulfingFinderInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  _inputs: Partial<BullishEngulfingFinderInputs> = {},
+): Result {
+  return fullResult(createRun(_inputs).update(bars));
+}
+
+export const BullishEngulfingFinder = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hasAlertFunction };

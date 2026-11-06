@@ -14,8 +14,10 @@
  * Original notice: © AlgoCollective
  */
 
-import { ta, Series, color, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall, MarkerData, BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -71,43 +73,34 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<EremaSignalsInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[]; alertCalls: AlertCall[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[]; alertCalls: AlertCall[] };
+
+interface EremaVars {
+  /** re1_1 .. re8_1 (var float = 0.0), changed in place */
+  re1: number[];
+  /** ema[1] (na on bar 0) */
+  emaPrev: number;
+}
+
+interface EremaRun extends BarRunState<EremaVars> {
+  ma: { step(v: number, volume: number): number; commit(): void };
+  /** re_k_0 of the bar (recomputed on every bar) */
+  re0: number[];
+  reverseEma: number[];
+  maArr: number[];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  alertCalls: AlertCall[];
+}
+
+function study(inputs: Partial<EremaSignalsInputs>): BarStudy<EremaRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const alpha = cfg.alpha;
   const delta = 1 - alpha;
   const warmupPeriod = 75;
 
   // var float ema / re1_1 .. re8_1 = 0.0; re_k_0 are recomputed on every bar
   const p = [2, 4, 8, 16, 32, 64, 128].map((e) => math.pow(delta, e));
-  const re1 = new Array<number>(8).fill(0);
-  let emaPrev = NaN; // ema[1] (na on bar 0)
-  const reverseEma = new Array<number>(n).fill(NaN);
-  for (let i = 0; i < n; i++) {
-    const close = bars[i].close;
-    // ema := alpha * close + delta * nz(ema[1], close)
-    const ema = alpha * close + delta * (isNaN(emaPrev) ? close : emaPrev);
-    // re1_0 := delta * ema + nz(ema[1], ema)
-    const re0 = new Array<number>(8);
-    re0[0] = delta * ema + (isNaN(emaPrev) ? ema : emaPrev);
-    for (let k = 1; k < 8; k++) re0[k] = p[k - 1] * re0[k - 1] + re1[k - 1];
-    for (let k = 0; k < 8; k++) re1[k] = re0[k];
-    emaPrev = ema;
-    // reverseEma = na; if bar_index > warmupPeriod: reverseEma := ema - alpha * re8_0
-    if (i > warmupPeriod) reverseEma[i] = ema - alpha * re0[7];
-  }
-
-  // maValue = switch maType (only the selected call runs)
-  const rs = Series.fromArray(bars, reverseEma);
-  const maSeries =
-    cfg.maType === 'EMA' ? ta.ema(rs, cfg.maLength)
-    : cfg.maType === 'WMA' ? ta.wma(rs, cfg.maLength)
-    : cfg.maType === 'VWMA' ? ta.vwma(rs, cfg.maLength, new Series(bars, (b) => b.volume ?? NaN))
-    : ta.sma(rs, cfg.maLength);
-  const ma = maSeries.toArray().map((v) => v ?? NaN);
 
   const bullColor = color.rgb(0, 180, 0);
   const bearColor = color.rgb(255, 0, 0);
@@ -116,50 +109,97 @@ export function calculate(
   const bullBg = String(color.new(bullColor, 95));
   const bearBg = String(color.new(bearColor, 95));
 
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  const alertCalls: AlertCall[] = [];
-  for (let i = 0; i < n; i++) {
-    let buySignal = false;
-    let sellSignal = false;
-    if (i > warmupPeriod + 5) {
-      const r = reverseEma[i];
-      const r1 = reverseEma[i - 1];
-      const m = ma[i];
-      const m1 = ma[i - 1];
-      if (cfg.signalType === 'Zero Cross') {
-        buySignal = gt(r, 0) && le(r1, 0);
-        sellSignal = lt(r, 0) && ge(r1, 0);
-      } else if (cfg.signalType === 'MA Cross') {
-        buySignal = gt(r, m) && le(r1, m1);
-        sellSignal = lt(r, m) && ge(r1, m1);
-      } else if (cfg.signalType === 'Zero & MA Cross') {
-        buySignal = gt(r, 0) && gt(r, m) && (le(r1, 0) || le(r1, m1));
-        sellSignal = lt(r, 0) && lt(r, m) && (ge(r1, 0) || ge(r1, m1));
-      }
+  // maValue = switch maType (only the selected call runs)
+  const maStep = (): EremaRun['ma'] => {
+    switch (cfg.maType) {
+      case 'EMA': { const m = taStep.ema(cfg.maLength); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, cfg.maLength), commit: () => m.commit() }; }
+      case 'VWMA': { const m = new WindowVwma(cfg.maLength); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+      default: { const m = new WindowSma(cfg.maLength); return { step: (v) => m.step(v), commit: () => m.commit() }; }
     }
-    const t = bars[i].time;
-    // if alertsOn: if buySignal alert("Ehlers Reverse EMA: Buy Signal") / if sellSignal alert("... Sell Signal")
-    if (cfg.alertsOn) {
-      if (buySignal) alertCalls.push({ time: t, message: 'Ehlers Reverse EMA: Buy Signal', freq: 'once_per_bar' });
-      if (sellSignal) alertCalls.push({ time: t, message: 'Ehlers Reverse EMA: Sell Signal', freq: 'once_per_bar' });
-    }
-    // plotshape(buySignal, 'Buy Signal', location.belowbar, bullColor, shape.triangleup, size.normal)
-    if (buySignal) markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: bull, size: 'normal' });
-    // plotshape(sellSignal, 'Sell Signal', location.abovebar, bearColor, shape.triangledown, size.normal)
-    if (sellSignal) markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: bear, size: 'normal' });
-    // bgcolor(buySignal ? color.new(bullColor, 95) : sellSignal ? color.new(bearColor, 95) : na)
-    if (buySignal) bgColors.push({ time: t, color: bullBg });
-    else if (sellSignal) bgColors.push({ time: t, color: bearBg });
-  }
+  };
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    bgColors,
-    alertCalls,
+    init() {
+      const ma = maStep();
+      const s: EremaRun = {
+        ma, re0: new Array<number>(8), reverseEma: [], maArr: [], markers: [], bgColors: [], alertCalls: [],
+        steps: [ma], vars: { re1: new Array<number>(8).fill(0), emaPrev: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.bgColors, s.alertCalls];
+      s.series = [s.reverseEma, s.maArr];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const re1 = v.re1;
+      const re0 = s.re0;
+      const close = b.close;
+      const emaPrev = v.emaPrev;
+      // ema := alpha * close + delta * nz(ema[1], close)
+      const ema = alpha * close + delta * (isNaN(emaPrev) ? close : emaPrev);
+      // re1_0 := delta * ema + nz(ema[1], ema)
+      re0[0] = delta * ema + (isNaN(emaPrev) ? ema : emaPrev);
+      for (let k = 1; k < 8; k++) re0[k] = p[k - 1] * re0[k - 1] + re1[k - 1];
+      for (let k = 0; k < 8; k++) re1[k] = re0[k];
+      v.emaPrev = ema;
+      // reverseEma = na; if bar_index > warmupPeriod: reverseEma := ema - alpha * re8_0
+      const r = i > warmupPeriod ? ema - alpha * re0[7] : NaN;
+      s.reverseEma[i] = r;
+      const m = s.ma.step(r, b.volume ?? NaN);
+      s.maArr[i] = m;
+
+      let buySignal = false;
+      let sellSignal = false;
+      if (i > warmupPeriod + 5) {
+        const r1 = s.reverseEma[i - 1];
+        const m1 = s.maArr[i - 1];
+        if (cfg.signalType === 'Zero Cross') {
+          buySignal = gt(r, 0) && le(r1, 0);
+          sellSignal = lt(r, 0) && ge(r1, 0);
+        } else if (cfg.signalType === 'MA Cross') {
+          buySignal = gt(r, m) && le(r1, m1);
+          sellSignal = lt(r, m) && ge(r1, m1);
+        } else if (cfg.signalType === 'Zero & MA Cross') {
+          buySignal = gt(r, 0) && gt(r, m) && (le(r1, 0) || le(r1, m1));
+          sellSignal = lt(r, 0) && lt(r, m) && (ge(r1, 0) || ge(r1, m1));
+        }
+      }
+      const t = b.time;
+      // if alertsOn: if buySignal alert("Ehlers Reverse EMA: Buy Signal") / if sellSignal alert("... Sell Signal")
+      if (cfg.alertsOn) {
+        if (buySignal) s.alertCalls.push({ time: t, message: 'Ehlers Reverse EMA: Buy Signal', freq: 'once_per_bar' });
+        if (sellSignal) s.alertCalls.push({ time: t, message: 'Ehlers Reverse EMA: Sell Signal', freq: 'once_per_bar' });
+      }
+      // plotshape(buySignal, 'Buy Signal', location.belowbar, bullColor, shape.triangleup, size.normal)
+      if (buySignal) s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: bull, size: 'normal' });
+      // plotshape(sellSignal, 'Sell Signal', location.abovebar, bearColor, shape.triangledown, size.normal)
+      if (sellSignal) s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: bear, size: 'normal' });
+      // bgcolor(buySignal ? color.new(bullColor, 95) : sellSignal ? color.new(bearColor, 95) : na)
+      if (buySignal) s.bgColors.push({ time: t, color: bullBg });
+      else if (sellSignal) s.bgColors.push({ time: t, color: bearBg });
+    },
+    copyVars: (v) => ({ re1: v.re1.slice(), emaPrev: v.emaPrev }),
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
 }
 
-export const EremaSignals = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hasAlertFunction };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EremaSignalsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EremaSignalsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const EremaSignals = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hasAlertFunction };

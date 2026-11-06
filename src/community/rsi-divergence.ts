@@ -8,7 +8,9 @@
  * Reference: "RSI Divergence"
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RSIDivergenceInputs {
   lenFast: number;
@@ -38,30 +40,56 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RSIDivergenceInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface RsiDivRun extends BarRunState<Record<string, never>> {
+  fast: ReturnType<typeof taStep.rsi>;
+  slow: ReturnType<typeof taStep.rsi>;
+  plot0: Point[];
+}
+
+function study(inputs: Partial<RSIDivergenceInputs>): BarStudy<RsiDivRun, IndicatorResult> {
   const { lenFast, lenSlow, src } = { ...defaultInputs, ...inputs };
-
-  const source = getSourceSeries(bars, src);
-  const rsiFast = ta.rsi(source, lenFast).toArray();
-  const rsiSlow = ta.rsi(source, lenSlow).toArray();
-
+  const value = barSource(src);
   const warmup = Math.max(lenFast, lenSlow);
-
-  const plot0 = bars.map((b, i) => {
-    const f = rsiFast[i];
-    const s = rsiSlow[i];
-    if (i < warmup || f == null || s == null) {
-      return { time: b.time, value: NaN };
-    }
-    const div = f - s;
-    return { time: b.time, value: div, color: div > 0 ? '#00FF00' : '#FF0000' };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
-    hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Zero' } }],
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const fast = taStep.rsi(lenFast);
+      const slow = taStep.rsi(lenSlow);
+      const s: RsiDivRun = { fast, slow, plot0: [], steps: [fast, slow], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = value(b);
+      const f = s.fast.step(v);
+      const sl = s.slow.step(v);
+      if (i < warmup || f == null || sl == null) {
+        s.plot0[i] = { time: b.time, value: NaN };
+        return;
+      }
+      const div = f - sl;
+      s.plot0[i] = { time: b.time, value: div, color: div > 0 ? '#00FF00' : '#FF0000' };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice() },
+        hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Zero' } }],
+      };
+    },
   };
 }
 
-export const RSIDivergence = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RSIDivergenceInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RSIDivergenceInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const RSIDivergence = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

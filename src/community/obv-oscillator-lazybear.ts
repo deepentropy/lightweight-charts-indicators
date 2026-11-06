@@ -8,7 +8,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ObvOscillatorLazybearInputs {
   /** EMA length */
@@ -50,32 +52,52 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<ObvOscillatorLazybearInputs> = {}): IndicatorResult {
+interface ObvLbRun extends BarRunState<Record<string, never>> {
+  cum: ReturnType<typeof taStep.cum>;
+  ema: ReturnType<typeof taStep.ema>;
+  plot0: Array<{ time: number; value: number; color: string }>;
+  plot1: Array<{ time: number; value: number }>;
+}
+
+function study(inputs: Partial<ObvOscillatorLazybearInputs>): BarStudy<ObvLbRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  // obv(src) => cum(change(src) > 0 ? volume : change(src) < 0 ? -volume : 0 * volume)
-  const step = bars.map((b, i) => {
-    const change = i > 0 ? b.close - bars[i - 1].close : NaN;
-    const volume = b.volume ?? NaN;
-    return gt(change, 0) ? volume : lt(change, 0) ? -volume : 0 * volume;
-  });
-  const os = ta.cum(Series.fromArray(bars, step));
-  const osValues = os.toArray();
-  const average = ta.ema(os, cfg.length).toArray();
-
-  const plot0: Array<{ time: number; value: number; color: string }> = [];
-  const plot1: Array<{ time: number; value: number }> = [];
-  bars.forEach((b, i) => {
-    const osc = (osValues[i] ?? NaN) - (average[i] ?? NaN);
-    // obc_color = obv_osc > 0 ? green : red
-    plot0.push({ time: b.time, value: osc, color: gt(osc, 0) ? GREEN : RED });
-    plot1.push({ time: b.time, value: osc });
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    hlines: [{ value: 0, options: { title: 'Level', color: '#787B86', linestyle: 'dashed', linewidth: 1 } }],
+    init() {
+      const cum = taStep.cum();
+      const ema = taStep.ema(cfg.length);
+      const s: ObvLbRun = { cum, ema, plot0: [], plot1: [], steps: [cum, ema], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // obv(src) => cum(change(src) > 0 ? volume : change(src) < 0 ? -volume : 0 * volume)
+      const change = i > 0 ? b.close - bars[i - 1].close : NaN;
+      const volume = b.volume ?? NaN;
+      const os = s.cum.step(gt(change, 0) ? volume : lt(change, 0) ? -volume : 0 * volume);
+      const average = s.ema.step(os);
+      const osc = (os ?? NaN) - (average ?? NaN);
+      // obc_color = obv_osc > 0 ? green : red
+      s.plot0[i] = { time: b.time, value: osc, color: gt(osc, 0) ? GREEN : RED };
+      s.plot1[i] = { time: b.time, value: osc };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [{ value: 0, options: { title: 'Level', color: '#787B86', linestyle: 'dashed', linewidth: 1 } }],
+      };
+    },
   };
 }
 
-export const ObvOscillatorLazybear = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ObvOscillatorLazybearInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ObvOscillatorLazybearInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const ObvOscillatorLazybear = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig };

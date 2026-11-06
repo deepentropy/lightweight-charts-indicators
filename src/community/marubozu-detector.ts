@@ -10,9 +10,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -61,58 +63,86 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MarubozuDetectorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface MarubozuRun extends BarRunState<Record<string, never>> {
+  atr: ReturnType<typeof taStep.atr>;
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<MarubozuDetectorInputs>): BarStudy<MarubozuRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const shadowTolerance = cfg.shadowTolerance / 100;
   const minBodyPercent = cfg.minBodyPercent / 100;
-  const atr14 = ta.atr(bars, 14).toArray().map((v) => v ?? NaN);
-
   const bullBar = String(color.new(color.green, 60));
   const bearBar = String(color.new(color.red, 60));
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const bullFlags: boolean[] = [], bearFlags: boolean[] = [];
-  bars.forEach((b, i) => {
-    const candleRange = b.high - b.low;
-    const body = Math.abs(b.close - b.open);
-    const upperShadow = b.high - Math.max(b.open, b.close);
-    const lowerShadow = Math.min(b.open, b.close) - b.low;
-
-    const isLongBody = ge(body, minBodyPercent * candleRange);
-    const smallShadows = le(upperShadow, shadowTolerance * candleRange) && le(lowerShadow, shadowTolerance * candleRange);
-    const isLargeEnough = cfg.useMinSize ? ge(candleRange, cfg.minSizeMult * atr14[i]) : true;
-
-    const bullishMarubozu = isLongBody && smallShadows && isLargeEnough && gt(b.close, b.open);
-    const bearishMarubozu = isLongBody && smallShadows && isLargeEnough && lt(b.close, b.open);
-    bullFlags.push(bullishMarubozu);
-    bearFlags.push(bearishMarubozu);
-
-    // barcolor(bullishMarubozu ? color.new(color.green, 60) : bearishMarubozu ? color.new(color.red, 60) : na)
-    if (bullishMarubozu) barColors.push({ time: b.time, color: bullBar });
-    else if (bearishMarubozu) barColors.push({ time: b.time, color: bearBar });
-
-    // plotshape(..., style = shape.labelup / labeldown, size = size.small, textcolor = color.white)
-    if (bullishMarubozu) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BULL\nMARU',
-        textColor: color.white, size: 'small' });
-    }
-    if (bearishMarubozu) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'BEAR\nMARU',
-        textColor: color.white, size: 'small' });
-    }
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    barColors,
-    // alertcondition(bullishMarubozu, "Bullish Marubozu") and alertcondition(bearishMarubozu, "Bearish Marubozu")
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags]),
+    init() {
+      const atr = taStep.atr(14);
+      const s: MarubozuRun = {
+        atr, markers: [], barColors: [], flags: [[], []], times: [[], []], steps: [atr], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.barColors, ...s.times];
+      s.series = [...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const atr14 = s.atr.step(b.high, b.low, b.close);
+      const candleRange = b.high - b.low;
+      const body = Math.abs(b.close - b.open);
+      const upperShadow = b.high - Math.max(b.open, b.close);
+      const lowerShadow = Math.min(b.open, b.close) - b.low;
+
+      const isLongBody = ge(body, minBodyPercent * candleRange);
+      const smallShadows = le(upperShadow, shadowTolerance * candleRange) && le(lowerShadow, shadowTolerance * candleRange);
+      const isLargeEnough = cfg.useMinSize ? ge(candleRange, cfg.minSizeMult * atr14) : true;
+
+      const bullishMarubozu = isLongBody && smallShadows && isLargeEnough && gt(b.close, b.open);
+      const bearishMarubozu = isLongBody && smallShadows && isLargeEnough && lt(b.close, b.open);
+      s.flags[0]![i] = bullishMarubozu;
+      s.flags[1]![i] = bearishMarubozu;
+      if (bullishMarubozu) s.times[0]!.push(b.time as number);
+      if (bearishMarubozu) s.times[1]!.push(b.time as number);
+
+      // barcolor(bullishMarubozu ? color.new(color.green, 60) : bearishMarubozu ? color.new(color.red, 60) : na)
+      if (bullishMarubozu) s.barColors.push({ time: b.time, color: bullBar });
+      else if (bearishMarubozu) s.barColors.push({ time: b.time, color: bearBar });
+
+      // plotshape(..., style = shape.labelup / labeldown, size = size.small, textcolor = color.white)
+      if (bullishMarubozu) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BULL\nMARU',
+          textColor: color.white, size: 'small' });
+      }
+      if (bearishMarubozu) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'BEAR\nMARU',
+          textColor: color.white, size: 'small' });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        // alertcondition(bullishMarubozu, "Bullish Marubozu") and alertcondition(bearishMarubozu, "Bearish Marubozu")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
 }
 
-export const MarubozuDetector = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MarubozuDetectorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MarubozuDetectorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MarubozuDetector = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

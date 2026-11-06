@@ -21,8 +21,14 @@
  */
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
-import { lowerTimeframe, upDownVolumeOfChartBars } from '../lower-tf-volume';
+import { lowerTimeframe } from '../lower-tf-volume';
+import { chartTimeframe } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+
+/** Pine float comparisons: a > b only when a - b > 1e-10 (na compares false) */
+const EPS = 1e-10;
+const gt = (a: number, b: number) => a - b > EPS;
 
 export interface NetVolumeInputs {
   /** Use the custom lower timeframe instead of the automatic one */
@@ -57,53 +63,84 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<NetVolumeInputs> = {}, chart?: ChartContext): IndicatorResult {
+interface NetVolumeVars {
+  /** The side of the last intrabar (library rule of upDownVolumeOfChartBars) */
+  isBuyVolume: boolean;
+}
+
+interface NetVolumeRun extends BarRunState<NetVolumeVars> {
+  plotData: { time: number; value: number }[];
+}
+
+function study(inputs: Partial<NetVolumeInputs>): BarStudy<NetVolumeRun, IndicatorResult> {
   const { useCustomTimeframe, lowerTimeframe: customTimeframe } = { ...defaultInputs, ...inputs };
-  const { exact } = lowerTimeframe(bars, useCustomTimeframe, customTimeframe, chart);
-  const exactDelta = exact ? upDownVolumeOfChartBars(bars).delta : [];
-  const deltaValues: number[] = [];
-
-  for (let i = 0; i < bars.length; i++) {
-    const bar = bars[i];
-    const volume = bar.volume ?? 0;
-
-    // Original delta (lower timeframe = chart timeframe), else estimate from close vs open
-    let delta: number;
-    if (exact) {
-      delta = exactDelta[i];
-    } else if (bar.close > bar.open) {
-      // Bullish bar - all volume is "up volume"
-      delta = volume;
-    } else if (bar.close < bar.open) {
-      // Bearish bar - all volume is "down volume"
-      delta = -volume;
-    } else {
-      // Neutral bar - no clear direction
-      delta = 0;
-    }
-
-    deltaValues.push(delta);
-  }
-
-  const plotData = deltaValues.map((value, i) => ({
-    time: bars[i].time,
-    value: value,
-  }));
-
+  let exact = false;
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    // the chart timeframe comes from the bar gaps (or the chart context)
+    key: (bars, chart) => chartTimeframe(bars, chart),
+    init(bars, chart) {
+      exact = lowerTimeframe(bars, useCustomTimeframe, customTimeframe, chart).exact;
+      const s: NetVolumeRun = { plotData: [], steps: [], vars: { isBuyVolume: true }, lists: [], series: [] };
+      s.series = [s.plotData];
+      return s;
     },
-    plots: {
-      'plot0': plotData,
+    bar(s, i, bars) {
+      const bar = bars[i];
+      const volume = bar.volume ?? 0;
+
+      // Original delta (lower timeframe = chart timeframe), else estimate from close vs open
+      let delta: number;
+      if (exact) {
+        // the chart bars are the intrabars (upDownVolumeOfChartBars, one bar at a time)
+        const prevClose = i > 0 ? bars[i - 1].close : NaN; // na comparisons are false
+        const v = s.vars;
+        if (gt(bar.close, bar.open)) v.isBuyVolume = true;
+        else if (gt(bar.open, bar.close)) v.isBuyVolume = false;
+        else if (gt(bar.close, prevClose)) v.isBuyVolume = true;
+        else if (gt(prevClose, bar.close)) v.isBuyVolume = false;
+        const pos = v.isBuyVolume ? volume : 0;
+        const neg = v.isBuyVolume ? 0 : -volume;
+        delta = pos + neg;
+      } else if (bar.close > bar.open) {
+        // Bullish bar - all volume is "up volume"
+        delta = volume;
+      } else if (bar.close < bar.open) {
+        // Bearish bar - all volume is "down volume"
+        delta = -volume;
+      } else {
+        // Neutral bar - no clear direction
+        delta = 0;
+      }
+
+      s.plotData[i] = { time: bar.time, value: delta };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.plotData.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<NetVolumeInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<NetVolumeInputs> = {}, chart?: ChartContext): IndicatorResult {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
 export const NetVolume = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

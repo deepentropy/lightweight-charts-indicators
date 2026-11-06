@@ -21,6 +21,8 @@
 import { array, compare, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { LineDrawingData } from '../types';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeProfileInputs {
   /** Lookback */
@@ -116,95 +118,114 @@ const VOL_CSS = [
 ];
 const POC_GRADIENT = '#5AB1BB';
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<VolumeProfileInputs> = {},
-): IndicatorResult & { lines: LineDrawingData[] } {
+/** Row volumes of the `length` bars that end on bar i; undefined before `length` bars (highest / lowest are na) */
+function profile(bars: Bar[], i: number, length: number, row: number): { levels: number[]; sumv: number[] } | undefined {
+  if (i < length - 1) return undefined;
+  let highest = -Infinity;
+  let lowest = Infinity;
+  for (let k = 0; k < length; k++) {
+    highest = Math.max(highest, bars[i - k].high);
+    lowest = Math.min(lowest, bars[i - k].low);
+  }
+  const levels: number[] = [];
+  for (let j = 0; j <= row; j++) levels.push(lowest + (j / row) * (highest - lowest));
+  // sum := high[k] > levels[j] and low[k] < levels[j + 1] ? sum + volume[k] : sum
+  // The rows crossed by a bar are consecutive (the levels do not decrease): jLo .. jHi
+  const sumv: number[] = new Array(row).fill(0);
+  const scale = row / (highest - lowest);
+  for (let k = 0; k < length; k++) {
+    const b = bars[i - k];
+    const v = b.volume ?? NaN;
+    const guess = (p: number) => {
+      const g = Math.floor((p - lowest) * scale);
+      return g >= 0 ? Math.min(g, row - 1) : 0; // also for a NaN guess (a flat range)
+    };
+    let jHi = guess(b.high);
+    while (jHi < row - 1 && compare.gt(b.high, levels[jHi + 1])) jHi++;
+    while (jHi >= 0 && !compare.gt(b.high, levels[jHi])) jHi--;
+    let jLo = guess(b.low);
+    while (jLo > 0 && compare.lt(b.low, levels[jLo])) jLo--;
+    while (jLo < row && !compare.lt(b.low, levels[jLo + 1])) jLo++;
+    for (let j = jLo; j <= jHi; j++) sumv[j] += v;
+  }
+  return { levels, sumv };
+}
+
+type Result = IndicatorResult & { lines: LineDrawingData[] };
+
+interface VolumeProfileRun extends BarRunState<Record<string, never>> {
+  plot0: { time: number; value: number }[];
+}
+
+function study(inputs: Partial<VolumeProfileInputs>): BarStudy<VolumeProfileRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { length, row } = cfg;
-  const n = bars.length;
-  const last = n - 1;
-
-  // Row volumes of the `length` bars that end on bar i; undefined before `length` bars (highest / lowest are na)
-  const profile = (i: number): { levels: number[]; sumv: number[] } | undefined => {
-    if (i < length - 1) return undefined;
-    let highest = -Infinity;
-    let lowest = Infinity;
-    for (let k = 0; k < length; k++) {
-      highest = Math.max(highest, bars[i - k].high);
-      lowest = Math.min(lowest, bars[i - k].low);
-    }
-    const levels: number[] = [];
-    for (let j = 0; j <= row; j++) levels.push(lowest + (j / row) * (highest - lowest));
-    // sum := high[k] > levels[j] and low[k] < levels[j + 1] ? sum + volume[k] : sum
-    // The rows crossed by a bar are consecutive (the levels do not decrease): jLo .. jHi
-    const sumv: number[] = new Array(row).fill(0);
-    const scale = row / (highest - lowest);
-    for (let k = 0; k < length; k++) {
-      const b = bars[i - k];
-      const v = b.volume ?? NaN;
-      const guess = (p: number) => {
-        const g = Math.floor((p - lowest) * scale);
-        return g >= 0 ? Math.min(g, row - 1) : 0; // also for a NaN guess (a flat range)
-      };
-      let jHi = guess(b.high);
-      while (jHi < row - 1 && compare.gt(b.high, levels[jHi + 1])) jHi++;
-      while (jHi >= 0 && !compare.gt(b.high, levels[jHi])) jHi--;
-      let jLo = guess(b.low);
-      while (jLo > 0 && compare.lt(b.low, levels[jLo])) jLo--;
-      while (jLo < row && !compare.lt(b.low, levels[jLo + 1])) jLo++;
-      for (let j = jLo; j <= jHi; j++) sumv[j] += v;
-    }
-    return { levels, sumv };
-  };
-
-  // Rolling POC: avg(Alvl, Blvl), the two levels of the first row with the largest volume
-  const plot0 = bars.map((b) => ({ time: b.time, value: NaN }));
-  if (cfg.showRpoc) {
-    for (let i = length - 1; i < n; i++) {
-      const p = profile(i);
-      if (!p) continue;
-      const idx = array.indexof(p.sumv, array.max(p.sumv));
-      if (idx < 0) throw new Error(`Index ${idx} is out of bounds, array size is ${p.levels.length}`);
-      plot0[i].value = (p.levels[idx] + p.levels[idx + 1]) / 2;
-    }
-  }
-
-  // The lines of the last bar
-  const lines: LineDrawingData[] = [];
-  const p = n > 0 ? profile(last) : undefined;
-  if (p) {
-    const interval = barInterval(bars);
-    const time = (x: number) => barTime(bars, x, interval);
-    const max = array.max(p.sumv);
-    let poc: LineDrawingData | undefined;
-    for (let j = 0; j < row; j++) {
-      const mult = p.sumv[j] / max;
-      if (Number.isNaN(mult)) continue; // a line with an na coordinate is not drawn
-      const get = p.levels[j];
-      const len = math.round(((length * cfg.width) / 100) * mult);
-      const [x1, x2] = cfg.flip ? [last, last - len] : [last - length + 1, last - length + len];
-      lines.push({
-        time1: time(x1), price1: get, time2: time(x2), price2: get,
-        color: cfg.grad ? VOL_CSS[math.round(mult * 99)] : cfg.solid, width: cfg.barWidth,
-      });
-      if (compare.eq(mult, 1)) {
-        const avg = (get + p.levels[j + 1]) / 2;
-        const [px1, px2] = cfg.flip ? [last, last - length + 1] : [last - length + 1, last];
-        poc = {
-          time1: time(px1), price1: avg, time2: time(px2), price2: avg,
-          color: cfg.grad ? POC_GRADIENT : cfg.pocColor, style: 'dotted', width: cfg.barWidth,
-        };
-      }
-    }
-    if (poc) lines.push(poc);
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    lines,
+    init() {
+      const s: VolumeProfileRun = { plot0: [], steps: [], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      // Rolling POC: avg(Alvl, Blvl), the two levels of the first row with the largest volume
+      s.plot0[i] = { time: bars[i].time as number, value: NaN };
+      if (cfg.showRpoc && i >= length - 1) {
+        const p = profile(bars, i, length, row);
+        if (!p) return;
+        const idx = array.indexof(p.sumv, array.max(p.sumv));
+        if (idx < 0) throw new Error(`Index ${idx} is out of bounds, array size is ${p.levels.length}`);
+        s.plot0[i].value = (p.levels[idx] + p.levels[idx + 1]) / 2;
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const last = n - 1;
+      // The lines of the last bar (built from the bars on each update: they move when a bar is added)
+      const lines: LineDrawingData[] = [];
+      const p = n > 0 ? profile(bars, last, length, row) : undefined;
+      if (p) {
+        const interval = barInterval(bars);
+        const time = (x: number) => barTime(bars, x, interval);
+        const max = array.max(p.sumv);
+        let poc: LineDrawingData | undefined;
+        for (let j = 0; j < row; j++) {
+          const mult = p.sumv[j] / max;
+          if (Number.isNaN(mult)) continue; // a line with an na coordinate is not drawn
+          const get = p.levels[j];
+          const len = math.round(((length * cfg.width) / 100) * mult);
+          const [x1, x2] = cfg.flip ? [last, last - len] : [last - length + 1, last - length + len];
+          lines.push({
+            time1: time(x1), price1: get, time2: time(x2), price2: get,
+            color: cfg.grad ? VOL_CSS[math.round(mult * 99)] : cfg.solid, width: cfg.barWidth,
+          });
+          if (compare.eq(mult, 1)) {
+            const avg = (get + p.levels[j + 1]) / 2;
+            const [px1, px2] = cfg.flip ? [last, last - length + 1] : [last - length + 1, last];
+            poc = {
+              time1: time(px1), price1: avg, time2: time(px2), price2: avg,
+              color: cfg.grad ? POC_GRADIENT : cfg.pocColor, style: 'dotted', width: cfg.barWidth,
+            };
+          }
+        }
+        if (poc) lines.push(poc);
+      }
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        lines,
+      };
+    },
   };
 }
 
-export const VolumeProfile = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeProfileInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolumeProfileInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const VolumeProfile = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

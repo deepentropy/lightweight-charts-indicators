@@ -6,7 +6,9 @@
  * Reference: "Moving Average Shaded Fill Area Crossover" (community)
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MAShadedFillInputs {
   fastLen: number;
@@ -37,38 +39,63 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MAShadedFillInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface MasfRun extends BarRunState<Record<string, never>> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  plot0: Point[];
+  plot1: Point[];
+  fillColors: string[];
+}
+
+function study(inputs: Partial<MAShadedFillInputs>): BarStudy<MasfRun, IndicatorResult> {
   const { fastLen, slowLen, src } = { ...defaultInputs, ...inputs };
-  const srcSeries = getSourceSeries(bars, src);
-
-  const fastArr = ta.ema(srcSeries, fastLen).toArray();
-  const slowArr = ta.ema(srcSeries, slowLen).toArray();
+  const value = barSource(src);
   const warmup = Math.max(fastLen, slowLen);
-
-  const plot0 = fastArr.map((v, i) => {
-    if (i < warmup) return { time: bars[i].time, value: NaN };
-    const fv = v ?? 0;
-    const sv = slowArr[i] ?? 0;
-    return { time: bars[i].time, value: fv, color: fv > sv ? '#00E676' : '#FF5252' };
-  });
-
-  const plot1 = slowArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : (v ?? NaN),
-  }));
-
-  const fillColors = bars.map((_b, i) => {
-    if (i < warmup) return 'transparent';
-    const fv = fastArr[i] ?? 0;
-    const sv = slowArr[i] ?? 0;
-    return fv > sv ? '#00E67640' : '#FF525240';
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
-    fills: [{ plot1: 'plot0', plot2: 'plot1', colors: fillColors }],
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const fast = taStep.ema(fastLen);
+      const slow = taStep.ema(slowLen);
+      const s: MasfRun = { fast, slow, plot0: [], plot1: [], fillColors: [], steps: [fast, slow], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1, s.fillColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time as number;
+      const x = value(bars[i]);
+      const f = s.fast.step(x);
+      const v = s.slow.step(x);
+      if (i < warmup) {
+        s.plot0[i] = { time, value: NaN };
+        s.plot1[i] = { time, value: NaN };
+        s.fillColors[i] = 'transparent';
+        return;
+      }
+      const fv = f ?? 0;
+      const sv = v ?? 0;
+      s.plot0[i] = { time, value: fv, color: fv > sv ? '#00E676' : '#FF5252' };
+      s.plot1[i] = { time, value: v ?? NaN };
+      s.fillColors[i] = fv > sv ? '#00E67640' : '#FF525240';
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice() },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', colors: s.fillColors.slice() }],
+      };
+    },
   };
 }
 
-export const MAShadedFill = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MAShadedFillInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MAShadedFillInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MAShadedFill = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

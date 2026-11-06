@@ -12,6 +12,8 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type HeikinAshiColoredRegularOhlcCandlesInputs = Record<string, never>;
 
@@ -37,45 +39,76 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Result = Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> };
+
+interface HaVars {
+  /** haOpen[1], haClose[1] */
+  prevHaOpen: number;
+  prevHaClose: number;
+}
+
+interface HaRun extends BarRunState<HaVars> {
+  candles: PlotCandleData[];
+}
+
+function study(): BarStudy<HaRun, Result> {
+  return {
+    init() {
+      const s: HaRun = { candles: [], steps: [], vars: { prevHaOpen: NaN, prevHaClose: NaN }, lists: [], series: [] };
+      s.series = [s.candles];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const haClose = (b.open + b.high + b.low + b.close) / 4;
+      // var float haOpen = na; haOpen := na(haOpen[1]) ? (open + close) / 2 : (haOpen[1] + haClose[1]) / 2
+      const haOpen = isNaN(v.prevHaOpen) ? (b.open + b.close) / 2 : (v.prevHaOpen + v.prevHaClose) / 2;
+      const isBull = gt(haClose, haOpen);
+      const isBear = lt(haClose, haOpen);
+      const candleColor = isBull ? color.lime : isBear ? color.red : color.gray;
+      // plotcandle(open, high, low, close, color = candleColor, wickcolor = candleColor, bordercolor = candleColor)
+      s.candles[i] = {
+        time: b.time,
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+        color: candleColor,
+        wickColor: candleColor,
+        borderColor: candleColor,
+      };
+      v.prevHaOpen = haOpen;
+      v.prevHaClose = haClose;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        plotCandles: { candles: s.candles.slice() },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(
+  _inputs: Partial<HeikinAshiColoredRegularOhlcCandlesInputs> = {},
+  chart: ChartContext = {},
+): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
 export function calculate(
   bars: Bar[],
   _inputs: Partial<HeikinAshiColoredRegularOhlcCandlesInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
-  const candles: PlotCandleData[] = [];
-  let prevHaOpen = NaN;
-  let prevHaClose = NaN;
-  for (let i = 0; i < bars.length; i++) {
-    const b = bars[i];
-    const haClose = (b.open + b.high + b.low + b.close) / 4;
-    // var float haOpen = na; haOpen := na(haOpen[1]) ? (open + close) / 2 : (haOpen[1] + haClose[1]) / 2
-    const haOpen = isNaN(prevHaOpen) ? (b.open + b.close) / 2 : (prevHaOpen + prevHaClose) / 2;
-    const isBull = gt(haClose, haOpen);
-    const isBear = lt(haClose, haOpen);
-    const candleColor = isBull ? color.lime : isBear ? color.red : color.gray;
-    // plotcandle(open, high, low, close, color = candleColor, wickcolor = candleColor, bordercolor = candleColor)
-    candles.push({
-      time: b.time,
-      open: b.open,
-      high: b.high,
-      low: b.low,
-      close: b.close,
-      color: candleColor,
-      wickColor: candleColor,
-      borderColor: candleColor,
-    });
-    prevHaOpen = haOpen;
-    prevHaClose = haClose;
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    plotCandles: { candles },
-  };
+): Result {
+  return fullResult(createRun().update(bars));
 }
 
 export const HeikinAshiColoredRegularOhlcCandles = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

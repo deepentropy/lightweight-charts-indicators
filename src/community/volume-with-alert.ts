@@ -9,8 +9,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeWithAlertInputs {
   /** Volume level of the yellow columns and of the alert */
@@ -50,33 +52,61 @@ export const metadata = {
 const EPS = 1e-10;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<VolumeWithAlertInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color?: string };
+
+interface VolumeAlertRun extends BarRunState<Record<string, never>> {
+  ma: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+  flags: boolean[];
+  times: number[];
+}
+
+function study(inputs: Partial<VolumeWithAlertInputs>): BarStudy<VolumeAlertRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const vol = bars.map((b) => b.volume ?? NaN);
-  const maVol = ta.sma(Series.fromArray(bars, vol), cfg.maLength).toArray().map((v) => v ?? NaN);
-
-  const triggeredFlags: boolean[] = [];
-  const plot0 = bars.map((b, i) => {
-    const isBullish = ge(b.close, b.open);
-    const baseColor = isBullish ? color.teal : color.red;
-    // triggered = vol >= threshold (alertcondition "Volume exceeds threshold")
-    const triggered = ge(vol[i], cfg.threshold);
-    triggeredFlags.push(triggered);
-    return { time: b.time, value: vol[i], color: triggered ? color.yellow : baseColor };
-  });
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: maVol[i] }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    hlines: [
-      { value: cfg.threshold, options: { title: 'Threshold Line', color: String(color.new(color.orange, 40)), linestyle: 'dashed', linewidth: 1 } },
-    ],
-    alerts: alertStates(alertConditions, bars, [triggeredFlags]),
+    init() {
+      const ma = new WindowSma(cfg.maLength);
+      const s: VolumeAlertRun = { ma, plot0: [], plot1: [], flags: [], times: [], steps: [ma], vars: {}, lists: [], series: [] };
+      s.lists = [s.times];
+      s.series = [s.plot0, s.plot1, s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const vol = b.volume ?? NaN;
+      const maVol = s.ma.step(vol) ?? NaN;
+      const isBullish = ge(b.close, b.open);
+      const baseColor = isBullish ? color.teal : color.red;
+      // triggered = vol >= threshold (alertcondition "Volume exceeds threshold")
+      const triggered = ge(vol, cfg.threshold);
+      s.flags[i] = triggered;
+      if (triggered) s.times.push(b.time as number);
+      s.plot0[i] = { time: b.time, value: vol, color: triggered ? color.yellow : baseColor };
+      s.plot1[i] = { time: b.time, value: maVol };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [
+          { value: cfg.threshold, options: { title: 'Threshold Line', color: String(color.new(color.orange, 40)), linestyle: 'dashed', linewidth: 1 } },
+        ],
+        alerts: liveAlertStates(alertConditions, [s.times], [n > 0 && s.flags[n - 1]]),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeWithAlertInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolumeWithAlertInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertcondition */
@@ -86,6 +116,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const VolumeWithAlert = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

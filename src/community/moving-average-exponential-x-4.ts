@@ -7,7 +7,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, type Bar, type IndicatorResult, type InputConfig, type PlotConfig, type SourceType } from 'oakscriptjs';
+import { taStep, type Bar, type IndicatorResult, type InputConfig, type PlotConfig, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MovingAverageExponentialX4Inputs {
   len50: number;
@@ -57,7 +59,14 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MovingAverageExponentialX4Inputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface EmaX4Run extends BarRunState<Record<string, never>> {
+  emas: ReturnType<typeof taStep.ema>[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<MovingAverageExponentialX4Inputs>): BarStudy<EmaX4Run, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const pairs: [number, SourceType][] = [
     [cfg.len50, cfg.src50],
@@ -65,23 +74,45 @@ export function calculate(bars: Bar[], inputs: Partial<MovingAverageExponentialX
     [cfg.len200, cfg.src200],
     [cfg.len400, cfg.src400],
   ];
-  const plots: IndicatorResult['plots'] = {};
-  pairs.forEach(([len, src], k) => {
-    const out = ta.ema(getSourceSeries(bars, src), len).toArray();
-    plots[`plot${k}`] = bars.map((b, i) => {
-      const v = out[i];
-      return { time: b.time, value: v == null || !Number.isFinite(v) ? NaN : v, color: COLORS[k] };
-    });
-  });
-
+  const values = pairs.map(([, src]) => barSource(src));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    fullRunReason: () => (pairs.every(([, src]) => isBarSource(src)) ? null : 'source of another study'),
+    init() {
+      const emas = pairs.map(([len]) => taStep.ema(len));
+      const s: EmaX4Run = { emas, plots: [[], [], [], []], steps: [...emas], vars: {}, lists: [], series: [] };
+      s.series = [...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      for (let k = 0; k < 4; k++) {
+        const v = s.emas[k].step(values[k](b));
+        s.plots[k][i] = { time: b.time, value: v == null || !Number.isFinite(v) ? NaN : v, color: COLORS[k] };
+      }
+    },
+    result(s) {
+      const plots: IndicatorResult['plots'] = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MovingAverageExponentialX4Inputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MovingAverageExponentialX4Inputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MovingAverageExponentialX4 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

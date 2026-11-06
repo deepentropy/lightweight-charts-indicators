@@ -10,6 +10,8 @@
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BoxData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PriceVolumeProfileInputs {
   rows: number;
@@ -56,10 +58,10 @@ function gradientColor(values: number[], index: number): string {
   return `rgb(${r},${g},0)`;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<PriceVolumeProfileInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { boxes: BoxData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { boxes: BoxData[] };
+
+/** The profile of the last `lookback` bars (drawn from the last bar: built from the whole bar set on each update) */
+function profile(bars: Bar[], inputs: Partial<PriceVolumeProfileInputs>): Result {
   const { rows, display, lookback, poc } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -203,6 +205,27 @@ export function calculate(
   };
 }
 
+function study(inputs: Partial<PriceVolumeProfileInputs>): BarStudy<BarRunState<Record<string, never>>, Result> {
+  return {
+    init: () => ({ steps: [], vars: {}, lists: [], series: [] }),
+    // no per-bar output: the boxes are built from the last bars in result
+    bar() {},
+    result: (_s, bars) => profile(bars, inputs),
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PriceVolumeProfileInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<PriceVolumeProfileInputs> = {},
+): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 function formatVolume(v: number): string {
   if (v >= 1_000_000_000) return (v / 1_000_000_000).toFixed(1) + 'B';
   if (v >= 1_000_000) return (v / 1_000_000).toFixed(1) + 'M';
@@ -210,4 +233,4 @@ function formatVolume(v: number): string {
   return v.toFixed(0);
 }
 
-export const PriceVolumeProfile = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+export const PriceVolumeProfile = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

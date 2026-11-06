@@ -6,6 +6,8 @@
  */
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VortexInputs {
   /** Period length */
@@ -31,92 +33,102 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VortexInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface VortexRun extends BarRunState<Record<string, never>> {
+  vmPlus: number[];
+  vmMinus: number[];
+  trueRange: number[];
+  viPlusData: Point[];
+  viMinusData: Point[];
+}
+
+function study(inputs: Partial<VortexInputs>): BarStudy<VortexRun, IndicatorResult> {
   const { length } = { ...defaultInputs, ...inputs };
-
-  // VM+ = |high - low[1]|
-  // VM- = |low - high[1]|
-  // True Range = max(high - low, |high - close[1]|, |low - close[1]|)
-  // VI+ = sum(VM+, length) / sum(TR, length)
-  // VI- = sum(VM-, length) / sum(TR, length)
-
-  const vmPlus: number[] = [NaN];
-  const vmMinus: number[] = [NaN];
-  const trueRange: number[] = [NaN];
-
-  for (let i = 1; i < bars.length; i++) {
-    const high = bars[i].high;
-    const low = bars[i].low;
-    const prevHigh = bars[i - 1].high;
-    const prevLow = bars[i - 1].low;
-    const prevClose = bars[i - 1].close;
-
-    vmPlus.push(Math.abs(high - prevLow));
-    vmMinus.push(Math.abs(low - prevHigh));
-
-    const tr = Math.max(
-      high - low,
-      Math.abs(high - prevClose),
-      Math.abs(low - prevClose)
-    );
-    trueRange.push(tr);
-  }
-
-  // Calculate VI+ and VI-
-  const viPlusValues: number[] = [];
-  const viMinusValues: number[] = [];
-
-  for (let i = 0; i < bars.length; i++) {
-    if (i < length) {
-      viPlusValues.push(NaN);
-      viMinusValues.push(NaN);
-      continue;
-    }
-
-    let sumVMPlus = 0;
-    let sumVMMinus = 0;
-    let sumTR = 0;
-
-    for (let j = i - length + 1; j <= i; j++) {
-      if (!isNaN(vmPlus[j])) sumVMPlus += vmPlus[j];
-      if (!isNaN(vmMinus[j])) sumVMMinus += vmMinus[j];
-      if (!isNaN(trueRange[j])) sumTR += trueRange[j];
-    }
-
-    if (sumTR === 0) {
-      viPlusValues.push(NaN);
-      viMinusValues.push(NaN);
-    } else {
-      viPlusValues.push(sumVMPlus / sumTR);
-      viMinusValues.push(sumVMMinus / sumTR);
-    }
-  }
-
-  const viPlusData = viPlusValues.map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const viMinusData = viMinusValues.map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    init() {
+      const s: VortexRun = {
+        vmPlus: [], vmMinus: [], trueRange: [], viPlusData: [], viMinusData: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.vmPlus, s.vmMinus, s.trueRange, s.viPlusData, s.viMinusData];
+      return s;
     },
-    plots: {
-      'plot0': viPlusData,
-      'plot1': viMinusData,
+    bar(s, i, bars) {
+      // VM+ = |high - low[1]|
+      // VM- = |low - high[1]|
+      // True Range = max(high - low, |high - close[1]|, |low - close[1]|)
+      // VI+ = sum(VM+, length) / sum(TR, length)
+      // VI- = sum(VM-, length) / sum(TR, length)
+      const { vmPlus, vmMinus, trueRange } = s;
+      if (i === 0) {
+        vmPlus[0] = NaN;
+        vmMinus[0] = NaN;
+        trueRange[0] = NaN;
+      } else {
+        const high = bars[i].high;
+        const low = bars[i].low;
+        const prevHigh = bars[i - 1].high;
+        const prevLow = bars[i - 1].low;
+        const prevClose = bars[i - 1].close;
+        vmPlus[i] = Math.abs(high - prevLow);
+        vmMinus[i] = Math.abs(low - prevHigh);
+        trueRange[i] = Math.max(
+          high - low,
+          Math.abs(high - prevClose),
+          Math.abs(low - prevClose)
+        );
+      }
+
+      // Calculate VI+ and VI-
+      let viPlus = NaN;
+      let viMinus = NaN;
+      if (!(i < length)) {
+        let sumVMPlus = 0;
+        let sumVMMinus = 0;
+        let sumTR = 0;
+        for (let j = i - length + 1; j <= i; j++) {
+          if (!isNaN(vmPlus[j])) sumVMPlus += vmPlus[j];
+          if (!isNaN(vmMinus[j])) sumVMMinus += vmMinus[j];
+          if (!isNaN(trueRange[j])) sumTR += trueRange[j];
+        }
+        if (sumTR !== 0) {
+          viPlus = sumVMPlus / sumTR;
+          viMinus = sumVMMinus / sumTR;
+        }
+      }
+      const time = bars[i].time as number;
+      s.viPlusData[i] = { time, value: viPlus };
+      s.viMinusData[i] = { time, value: viMinus };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.viPlusData.slice(),
+          'plot1': s.viMinusData.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VortexInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VortexInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const VortexIndicator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,
