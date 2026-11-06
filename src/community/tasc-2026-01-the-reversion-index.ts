@@ -9,7 +9,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { Series, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface Tasc202601TheReversionIndexInputs {
   /** Normalization length of the data */
@@ -38,53 +40,95 @@ export const metadata = {
 const nz = (x: number, y = 0) => (Number.isFinite(x) ? x : y);
 
 /** superSmoother(Series, Period): the coefficients are `var` (computed on the first bar) */
-function superSmoother(src: number[], period: number): number[] {
+function superSmootherCoefs(period: number): [number, number, number] {
   const ALPHA = (Math.PI * Math.sqrt(2.0)) / period;
   const BETA = math.exp(-ALPHA);
   const COEF2 = -math.pow(BETA, 2);
   const COEF1 = math.cos(ALPHA) * 2.0 * BETA;
   const COEF0 = 1.0 - COEF1 - COEF2;
-  const out: number[] = new Array(src.length);
-  for (let i = 0; i < src.length; i++) {
-    // math.avg(Series, nz(Series[1], Series))
-    const prev = i > 0 ? src[i - 1] : NaN;
-    const sma2 = (src[i] + nz(prev, src[i])) / 2;
-    const s1 = i > 0 ? out[i - 1] : NaN;
-    const s2 = i > 1 ? out[i - 2] : NaN;
-    out[i] = COEF0 * sma2 + COEF1 * nz(s1) + COEF2 * nz(s2);
-  }
-  return out;
+  return [COEF0, COEF1, COEF2];
+}
+
+type Point = { time: number; value: number; color?: string };
+
+interface RiVars {
+  /** ri of the bar before */
+  prevRi: number;
+  /** The smooth / trigger filters of the two bars before */
+  sm1: number;
+  sm2: number;
+  tr1: number;
+  tr2: number;
+}
+
+interface RiRun extends BarRunState<RiVars> {
+  ds: WindowSum;
+  ads: WindowSum;
+  smData: Point[];
+  trData: Point[];
+}
+
+function study(inputs: Partial<Tasc202601TheReversionIndexInputs>): BarStudy<RiRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const [s0, s1, s2] = superSmootherCoefs(8);
+  const [t0, t1, t2] = superSmootherCoefs(4);
+  const v = (x: number) => (Number.isFinite(x) ? x : NaN);
+  return {
+    init() {
+      // the length check of math.sum (the same runtime error)
+      math.sum([], cfg.length);
+      const ds = new WindowSum(cfg.length);
+      const ads = new WindowSum(cfg.length);
+      return {
+        ds, ads, smData: [], trData: [], steps: [ds, ads],
+        vars: { prevRi: NaN, sm1: NaN, sm2: NaN, tr1: NaN, tr2: NaN },
+        lists: [], series: [],
+      } as RiRun;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const vars = s.vars;
+      const d = i > 0 ? b.close - bars[i - 1].close : NaN;
+      const dsum = s.ds.step(d);
+      const asum = s.ads.step(Math.abs(d));
+      // ratio = ads != 0.0 ? ds / ads : 0.0 (`!=` within 1e-10; na != 0 is false)
+      const ri = !isNaN(asum) && Math.abs(asum) > 1e-10 ? dsum / asum : 0.0;
+      // math.avg(Series, nz(Series[1], Series))
+      const prev = i > 0 ? vars.prevRi : NaN;
+      const sma2 = (ri + nz(prev, ri)) / 2;
+      const sm = s0 * sma2 + s1 * nz(i > 0 ? vars.sm1 : NaN) + s2 * nz(i > 1 ? vars.sm2 : NaN);
+      const tr = t0 * sma2 + t1 * nz(i > 0 ? vars.tr1 : NaN) + t2 * nz(i > 1 ? vars.tr2 : NaN);
+      vars.prevRi = ri;
+      vars.sm2 = vars.sm1;
+      vars.sm1 = sm;
+      vars.tr2 = vars.tr1;
+      vars.tr1 = tr;
+      s.smData[i] = { time: b.time, value: v(sm), color: '#F23645' };
+      s.trData[i] = { time: b.time, value: v(tr), color: '#2962FF' };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.smData.slice(), plot1: s.trData.slice() },
+        // hline(0): Pine defaults (colour #787B86, dashed, width 1)
+        hlines: [{ value: 0, options: { title: 'Level', color: '#787B86', linestyle: 'dashed', linewidth: 1 } }],
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<Tasc202601TheReversionIndexInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(bars: Bar[], inputs: Partial<Tasc202601TheReversionIndexInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const d = bars.map((b, i) => (i > 0 ? b.close - bars[i - 1].close : NaN));
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const ds = A(math.sum(Series.fromArray(bars, d), cfg.length));
-  const ads = A(math.sum(Series.fromArray(bars, d.map((x) => Math.abs(x))), cfg.length));
-  const ri: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    // ratio = ads != 0.0 ? ds / ads : 0.0 (`!=` within 1e-10; na != 0 is false)
-    ri[i] = !isNaN(ads[i]) && Math.abs(ads[i]) > 1e-10 ? ds[i] / ads[i] : 0.0;
-  }
-  const sm = superSmoother(ri, 8);
-  const tr = superSmoother(ri, 4);
-  const v = (x: number) => (Number.isFinite(x) ? x : NaN);
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: v(sm[i]), color: '#F23645' })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: v(tr[i]), color: '#2962FF' })),
-    },
-    // hline(0): Pine defaults (colour #787B86, dashed, width 1)
-    hlines: [{ value: 0, options: { title: 'Level', color: '#787B86', linestyle: 'dashed', linewidth: 1 } }],
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const Tasc202601TheReversionIndex = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

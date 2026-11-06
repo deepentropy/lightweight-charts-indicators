@@ -9,7 +9,9 @@
  * Based on the standard "Negative Volume Index" indicator.
  */
 
-import { ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface NVIInputs {
   /** Signal EMA length */
@@ -35,29 +37,70 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<NVIInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface NviRun extends BarRunState<{ index: number }> {
+  ema: ReturnType<typeof taStep.ema>;
+  nviData: Point[];
+  emaData: Point[];
+}
+
+function study(inputs: Partial<NVIInputs>): BarStudy<NviRun, IndicatorResult> {
   const { signalLength } = { ...defaultInputs, ...inputs };
-
-  // nvi = ta.nvi * 1000.0; ema = ta.ema(nvi, maLengthInput)
-  const nviSeries = ta.nvi(bars).mul(1000);
-  const nvi = nviSeries.toArray();
-  const ema = ta.ema(nviSeries, signalLength).toArray();
-
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    init() {
+      const ema = taStep.ema(signalLength);
+      const s: NviRun = { ema, nviData: [], emaData: [], steps: [ema], vars: { index: NaN }, lists: [], series: [] };
+      s.series = [s.nviData, s.emaData];
+      return s;
     },
-    plots: {
-      'plot0': nvi.map((value, i) => ({ time: bars[i].time, value: value ?? NaN })),
-      'plot1': ema.map((value, i) => ({ time: bars[i].time, value: value ?? NaN })),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      // ta.nvi: index := index[1] + (close - close[1]) / close[1] * index[1] when the volume falls (nz(index[1]) == 0: 1)
+      const prev = !v.index ? 1 : v.index;
+      const c = b.close;
+      const prevC = i === 0 ? NaN : bars[i - 1].close;
+      let index = prev;
+      if (c && prevC) {
+        const pv = i === 0 ? NaN : bars[i - 1].volume ?? NaN;
+        const prevV = i === 0 || Number.isNaN(pv) ? 0 : pv;
+        if ((b.volume ?? NaN) < prevV) index = prev + ((c - prevC) / prevC) * prev;
+      }
+      v.index = index;
+      // nvi = ta.nvi * 1000.0; ema = ta.ema(nvi, maLengthInput)
+      const nvi = index * 1000;
+      s.nviData[i] = { time: b.time, value: nvi };
+      s.emaData[i] = { time: b.time, value: s.ema.step(nvi) };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.nviData.slice(),
+          'plot1': s.emaData.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<NVIInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<NVIInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const NegativeVolumeIndex = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

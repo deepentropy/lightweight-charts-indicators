@@ -10,8 +10,10 @@
  * Original notice: © TradeTechanalysis
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface WyckoffEffortVsResultInputs {
   /** Length of the volume SMA */
@@ -45,45 +47,66 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<WyckoffEffortVsResultInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const avgVolume = ta.sma(Series.fromArray(bars, volume), cfg.avgVolumeLength).toArray().map((v) => v ?? NaN);
+type Result = IndicatorResult & { barColors: BarColorData[] };
+type Point = { time: number; value: number; color: string };
 
+interface WyckoffRun extends BarRunState<Record<string, never>> {
+  avgVolume: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<WyckoffEffortVsResultInputs>): BarStudy<WyckoffRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const accColor = String(color.new(color.red, 60));
   const distColor = String(color.new(color.green, 60));
   const accLine = String(color.new(color.red, 0));
   const distLine = String(color.new(color.green, 0));
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time as number;
-    const isHighVolume = gt(volume[i], avgVolume[i] * cfg.volumeMultiplier);
-    const isEffortAccumulation = gt(b.open, b.close) && isHighVolume;
-    const isEffortDistribution = gt(b.close, b.open) && isHighVolume;
-    // barcolor(accumulation ? color.new(color.red, 60) : distribution ? color.new(color.green, 60) : na)
-    if (isEffortAccumulation) barColors.push({ time: t, color: accColor });
-    else if (isEffortDistribution) barColors.push({ time: t, color: distColor });
-    plot0.push({ time: t, value: isEffortAccumulation ? b.open : NaN, color: accLine });
-    plot1.push({ time: t, value: isEffortDistribution ? b.open : NaN, color: distLine });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    barColors,
+    init() {
+      const avgVolume = new WindowSma(cfg.avgVolumeLength);
+      const s: WyckoffRun = { avgVolume, plot0: [], plot1: [], barColors: [], steps: [avgVolume], vars: {}, lists: [], series: [] };
+      s.lists = [s.barColors];
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time as number;
+      const volume = b.volume ?? NaN;
+      const avgVolume = s.avgVolume.step(volume);
+      const isHighVolume = gt(volume, avgVolume * cfg.volumeMultiplier);
+      const isEffortAccumulation = gt(b.open, b.close) && isHighVolume;
+      const isEffortDistribution = gt(b.close, b.open) && isHighVolume;
+      // barcolor(accumulation ? color.new(color.red, 60) : distribution ? color.new(color.green, 60) : na)
+      if (isEffortAccumulation) s.barColors.push({ time: t, color: accColor });
+      else if (isEffortDistribution) s.barColors.push({ time: t, color: distColor });
+      s.plot0[i] = { time: t, value: isEffortAccumulation ? b.open : NaN, color: accLine };
+      s.plot1[i] = { time: t, value: isEffortDistribution ? b.open : NaN, color: distLine };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WyckoffEffortVsResultInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<WyckoffEffortVsResultInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const WyckoffEffortVsResult = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

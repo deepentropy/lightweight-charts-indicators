@@ -12,8 +12,10 @@
  * Original notice: © HPotter, Copyright by HPotter v1.01
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import { alertStates, crossedOver, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface KineticSlippageIndexInputs {
   /** True range period (not used by the computation of the original script) */
@@ -58,40 +60,70 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface KsiRun extends BarRunState<Record<string, never>> {
+  tr: ReturnType<typeof taStep.tr>;
+  emaVol: ReturnType<typeof taStep.ema>;
+  sig: ReturnType<typeof taStep.ema>;
+  ksiPine: number[];
+  plot0: { time: Bar['time']; value: number; color: string }[];
+  plot1: { time: Bar['time']; value: number; color: string }[];
+}
+
+function study(inputs: Partial<KineticSlippageIndexInputs>): BarStudy<KsiRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const tr = taStep.tr(true);
+      const emaVol = taStep.ema(cfg.volEmaLength);
+      const sig = taStep.ema(cfg.sigLength);
+      const s: KsiRun = { tr, emaVol, sig, ksiPine: [], plot0: [], plot1: [], steps: [tr, emaVol, sig], vars: {}, lists: [], series: [] };
+      s.series = [s.ksiPine, s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const trueRange = s.tr.step(b.high, b.low, b.close) ?? NaN;
+      const volume = b.volume ?? NaN;
+      const emaVolume = s.emaVol.step(volume) ?? NaN;
+      // emaVolume > 0 ? tr^2 / (volume * emaVolume) : 0. Pine tr^2 / 0 is +infinity, but the plot draws nothing for it,
+      // ta.ema skips it like na (its value is na on that bar, so ksi > signal is false): NaN gives the same outputs
+      let ksi = 0;
+      if (gt(emaVolume, 0)) {
+        const den = volume * emaVolume;
+        ksi = (den === 0 ? NaN : Math.pow(trueRange, 2) / den) * 1000000;
+      }
+      const signal = s.sig.step(ksi) ?? NaN;
+      // isSpike = ta.crossover(ksi, sigSpike): with the Pine value of tr^2 / 0 (+infinity, na for 0 / 0)
+      s.ksiPine[i] = isNaN(ksi) && volume * emaVolume === 0 && Math.pow(trueRange, 2) > 0 ? Infinity : ksi;
+      s.plot0[i] = { time: b.time, value: ksi, color: gt(ksi, signal) ? upColor : downColor };
+      s.plot1[i] = { time: b.time, value: signal, color: color.orange };
+    },
+    result(s, bars) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [
+          { value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dashed' } },
+          { value: cfg.sigSpike, options: { title: 'Spike Line', color: color.orange, linestyle: 'dashed' } },
+        ],
+        alerts: alertStates(alertConditions, bars, [crossedOver(s.ksiPine, cfg.sigSpike)]),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<KineticSlippageIndexInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<KineticSlippageIndexInputs> = {},
 ): IndicatorResult & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const trueRange = A(ta.tr(bars, true));
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const emaVolume = A(ta.ema(S(volume), cfg.volEmaLength));
-  const ksi = bars.map((_b, i) => {
-    // emaVolume > 0 ? tr^2 / (volume * emaVolume) : 0. Pine tr^2 / 0 is +infinity, but the plot draws nothing for it,
-    // ta.ema skips it like na (its value is na on that bar, so ksi > signal is false): NaN gives the same outputs
-    if (!gt(emaVolume[i], 0)) return 0;
-    const den = volume[i] * emaVolume[i];
-    return (den === 0 ? NaN : Math.pow(trueRange[i], 2) / den) * 1000000;
-  });
-  const signal = A(ta.ema(S(ksi), cfg.sigLength));
-  // isSpike = ta.crossover(ksi, sigSpike): with the Pine value of tr^2 / 0 (+infinity, na for 0 / 0)
-  const ksiPine = ksi.map((v, i) => (isNaN(v) && volume[i] * emaVolume[i] === 0 && Math.pow(trueRange[i], 2) > 0 ? Infinity : v));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: ksi[i], color: gt(ksi[i], signal[i]) ? upColor : downColor })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: signal[i], color: color.orange })),
-    },
-    hlines: [
-      { value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dashed' } },
-      { value: cfg.sigSpike, options: { title: 'Spike Line', color: color.orange, linestyle: 'dashed' } },
-    ],
-    alerts: alertStates(alertConditions, bars, [crossedOver(ksiPine, cfg.sigSpike)]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -105,6 +137,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const KineticSlippageIndex = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

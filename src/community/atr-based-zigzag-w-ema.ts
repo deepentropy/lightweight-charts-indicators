@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AtrBasedZigzagWEmaInputs {
   atrLength: number;
@@ -53,56 +55,86 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AtrBasedZigzagWEmaInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+interface ZigzagVars {
+  LL: number;
+  HH: number;
+  trend: number;
+}
+
+interface ZigzagRun extends BarRunState<ZigzagVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  ema: ReturnType<typeof taStep.ema>;
+  plot0: { time: number; value: number; color: string }[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<AtrBasedZigzagWEmaInputs>): BarStudy<ZigzagRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const atr = A(ta.atr(bars, cfg.atrLength));
-  const smooth = A(ta.ema(Series.fromArray(bars, bars.map((b) => (b.high + b.low) / 2)), cfg.lineSmoothLength));
-
-  const trendOf: number[] = new Array(n);
-  let LL = NaN; // var float LL = na
-  let HH = NaN; // var float HH = na
-  let trend = 1; // var int trend = 1
-  for (let i = 0; i < n; i++) {
-    const { high, low } = bars[i];
-    // LL := na(LL[1]) ? low : LL[1]; HH := na(HH[1]) ? high : HH[1]
-    if (isNaN(LL)) LL = low;
-    if (isNaN(HH)) HH = high;
-    const band = atr[i] * cfg.atrMult;
-    if (trend > 0) {
-      if (ge(high, HH)) HH = high;
-      else if (gt(HH - band, low)) {
-        trend = -1;
-        LL = low;
-      }
-    } else if (ge(LL, low)) {
-      LL = low;
-    } else if (gt(high, LL + band)) {
-      trend = 1;
-      HH = high;
-    }
-    trendOf[i] = trend;
-  }
-
-  const colorOf = (i: number) => (trendOf[i] === 1 ? cfg.upTrendColor : cfg.downTrendColor);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(smoothLine, color = trend == 1 ? upTrendColor : downTrendColor, linewidth = 3, title = 'Trend Line')
-      plot0: bars.map((b, i) => ({ time: b.time, value: smooth[i], color: colorOf(i) })),
+    init() {
+      const atr = taStep.atr(cfg.atrLength);
+      const ema = taStep.ema(cfg.lineSmoothLength);
+      const s: ZigzagRun = {
+        atr, ema, plot0: [], barColors: [], steps: [atr, ema],
+        // var float LL = na; var float HH = na; var int trend = 1
+        vars: { LL: NaN, HH: NaN, trend: 1 },
+        lists: [], series: [],
+      };
+      s.series = [s.plot0, s.barColors];
+      return s;
     },
-    // barcolor(trend == 1 ? upTrendColor : downTrendColor)
-    barColors: bars.map((b, i) => ({ time: b.time as number, color: colorOf(i) })),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const { high, low } = b;
+      const atr = s.atr.step(high, low, b.close);
+      const smooth = s.ema.step((high + low) / 2);
+      const v = s.vars;
+      // LL := na(LL[1]) ? low : LL[1]; HH := na(HH[1]) ? high : HH[1]
+      if (isNaN(v.LL)) v.LL = low;
+      if (isNaN(v.HH)) v.HH = high;
+      const band = atr * cfg.atrMult;
+      if (v.trend > 0) {
+        if (ge(high, v.HH)) v.HH = high;
+        else if (gt(v.HH - band, low)) {
+          v.trend = -1;
+          v.LL = low;
+        }
+      } else if (ge(v.LL, low)) {
+        v.LL = low;
+      } else if (gt(high, v.LL + band)) {
+        v.trend = 1;
+        v.HH = high;
+      }
+      const c = v.trend === 1 ? cfg.upTrendColor : cfg.downTrendColor;
+      // plot(smoothLine, color = trend == 1 ? upTrendColor : downTrendColor, linewidth = 3, title = 'Trend Line')
+      s.plot0[i] = { time: b.time, value: smooth, color: c };
+      // barcolor(trend == 1 ? upTrendColor : downTrendColor)
+      s.barColors[i] = { time: b.time as number, color: c };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AtrBasedZigzagWEmaInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AtrBasedZigzagWEmaInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AtrBasedZigzagWEma = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

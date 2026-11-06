@@ -12,9 +12,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface WhaleActivityImpactOscillatorInputs {
   /** Volume Spike Multiplier (X) */
@@ -64,44 +66,73 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<WhaleActivityImpactOscillatorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface WhaleRun extends BarRunState<Record<string, never>> {
+  avgVolume: WindowSma;
+  avgPriceChange: WindowSma;
+  plot0: Point[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<WhaleActivityImpactOscillatorInputs>): BarStudy<WhaleRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const S = (x: number[]) => Series.fromArray(bars, x);
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const volume = bars.map((b) => b.volume ?? NaN);
-  // ta.change(close) / close[1] (a plain division)
-  const priceChange = bars.map((b, i) => (i > 0 ? (b.close - bars[i - 1].close) / bars[i - 1].close : NaN));
-  const avgVolume = A(ta.sma(S(volume), cfg.lookbackPeriod));
-  const avgPriceChange = A(ta.sma(S(priceChange), cfg.lookbackPeriod));
-
-  const buyFlags: boolean[] = [], sellFlags: boolean[] = [];
-  const plot0 = bars.map((b, i) => {
-    const volumeSpike = gt(volume[i], cfg.volumeSpikeMultiplier * avgVolume[i]);
-    const pc = priceChange[i];
-    const priceSpike = gt(Math.abs(pc), cfg.priceSpikeMultiplier * avgPriceChange[i]);
-    const buySignal = volumeSpike && gt(pc, 0) && priceSpike;
-    const sellSignal = volumeSpike && lt(pc, 0) && priceSpike;
-    buyFlags.push(buySignal);
-    sellFlags.push(sellSignal);
-    const value = buySignal ? Math.abs(pc) : sellSignal ? -Math.abs(pc) : 0;
-    const c = buySignal ? color.green : sellSignal ? color.red : null;
-    // plot(oscillatorValue, style = plot.style_columns, color = barColor, linewidth = 2); the later
-    // `if volume < minVolumeThreshold: oscillatorValue := 0` comes after the plot call
-    return c === null ? { time: b.time, value } : { time: b.time, value, color: c };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    hlines: [{ value: 0, options: { title: 'Center Line', color: color.gray, linewidth: 1, linestyle: 'solid' } }],
-    markers: [],
-    // alertcondition(buySignal, "Whale Buying Detected") / alertcondition(sellSignal, "Whale Selling Detected")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
+    init() {
+      const avgVolume = new WindowSma(cfg.lookbackPeriod);
+      const avgPriceChange = new WindowSma(cfg.lookbackPeriod);
+      const s: WhaleRun = {
+        avgVolume, avgPriceChange, plot0: [], flags: [[], []], times: [[], []],
+        steps: [avgVolume, avgPriceChange], vars: {}, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.plot0, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = b.volume ?? NaN;
+      // ta.change(close) / close[1] (a plain division)
+      const pc = i > 0 ? (b.close - bars[i - 1].close) / bars[i - 1].close : NaN;
+      const avgVolume = s.avgVolume.step(volume);
+      const avgPriceChange = s.avgPriceChange.step(pc);
+      const volumeSpike = gt(volume, cfg.volumeSpikeMultiplier * avgVolume);
+      const priceSpike = gt(Math.abs(pc), cfg.priceSpikeMultiplier * avgPriceChange);
+      const buySignal = volumeSpike && gt(pc, 0) && priceSpike;
+      const sellSignal = volumeSpike && lt(pc, 0) && priceSpike;
+      const value = buySignal ? Math.abs(pc) : sellSignal ? -Math.abs(pc) : 0;
+      const c = buySignal ? color.green : sellSignal ? color.red : null;
+      // plot(oscillatorValue, style = plot.style_columns, color = barColor, linewidth = 2); the later
+      // `if volume < minVolumeThreshold: oscillatorValue := 0` comes after the plot call
+      s.plot0[i] = c === null ? { time: b.time, value } : { time: b.time, value, color: c };
+      [buySignal, sellSignal].forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(b.time as number);
+      });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        hlines: [{ value: 0, options: { title: 'Center Line', color: color.gray, linewidth: 1, linestyle: 'solid' } }],
+        markers: [],
+        // alertcondition(buySignal, "Whale Buying Detected") / alertcondition(sellSignal, "Whale Selling Detected")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WhaleActivityImpactOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<WhaleActivityImpactOscillatorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -112,6 +143,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const WhaleActivityImpactOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

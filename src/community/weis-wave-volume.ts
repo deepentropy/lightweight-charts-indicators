@@ -11,7 +11,9 @@
  * Reference: "Weis Wave Volume" (community)
  */
 
-import { color, taCore, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** color=directionIsUp ? color.new(color.green, 75) : color.new(color.red, 75) */
 const UP = String(color.new(color.green, 75));
@@ -56,57 +58,82 @@ export const metadata = {
 
 const fin = (v: number | undefined | null): v is number => v !== undefined && v !== null && Number.isFinite(v);
 
-export function calculate(bars: Bar[], inputs: Partial<WeisWaveVolumeInputs> = {}): IndicatorResult {
-  const { methodType, methodValue, priceSource, useTrueRange, isOscillating, normalize } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const high = bars.map((b) => b.high), low = bars.map((b) => b.low), close = bars.map((b) => b.close);
+type Point = { time: number; value: number; color: string };
 
+interface WaveVars {
+  prevCurr: number;
+  prevDir: number;
+  prevVol: number;
+  prevCount: number;
+}
+
+interface WaveRun extends BarRunState<WaveVars> {
+  tr: ReturnType<typeof taStep.tr>;
+  atr: ReturnType<typeof taStep.atr> | null;
+  plot0: Point[];
+}
+
+function study(inputs: Partial<WeisWaveVolumeInputs>): BarStudy<WaveRun, IndicatorResult> {
+  const { methodType, methodValue, priceSource, useTrueRange, isOscillating, normalize } = { ...defaultInputs, ...inputs };
   const useClose = priceSource === 'Close';
   const useOpenClose = priceSource === 'Open / Close' || useClose;
-  const trArr = taCore.tr(false, high, low, close);
-  const atr = methodType === 'ATR' ? taCore.atr(Math.round(methodValue), high, low, close) : [];
-
-  const values: number[] = new Array(n);
-  const dirs: number[] = new Array(n);
-  let prevCurr = NaN, prevDir = NaN, prevVol = NaN, prevCount = NaN;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const volume = fin(b.volume) ? b.volume : NaN;
-    let vol = useTrueRange === 'Always' || (useTrueRange === 'Auto' && !fin(volume)) ? trArr[i] : volume;
-    const op = useClose ? b.close : b.open;
-    const hi = useOpenClose ? (b.close >= op ? b.close : op) : b.high;
-    const lo = useOpenClose ? (b.close <= op ? b.close : op) : b.low;
-    const box = methodType === 'ATR' ? atr[i] : methodType === 'Part of Price' ? b.close / methodValue : methodValue;
-
-    const prevclose = fin(prevCurr) ? prevCurr : 0;
-    const currclose = hi > prevclose + box ? hi : lo < prevclose - box ? lo : prevclose;
-    const direction = currclose > prevclose ? 1 : currclose < prevclose ? -1 : (fin(prevDir) ? prevDir : 0);
-    // ta.change(direction) != 0 (na on the first bar: false)
-    const changed = i > 0 && direction - prevDir !== 0;
-
-    let barcount = 1;
-    if (!changed && normalize) barcount = prevCount + barcount;
-    if (!changed) vol = prevVol + vol;
-    const res = barcount > 1 ? vol / barcount : vol;
-
-    values[i] = isOscillating && direction < 0 ? -res : res;
-    dirs[i] = direction;
-    prevCurr = currclose;
-    prevDir = direction;
-    prevVol = vol;
-    prevCount = barcount;
-  }
-
-  const plot0 = values.map((v, i) => ({
-    time: bars[i].time,
-    value: fin(v) ? v : NaN,
-    color: dirs[i] > 0 ? UP : DOWN,
-  }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    init() {
+      const tr = taStep.tr(false);
+      const atr = methodType === 'ATR' ? taStep.atr(Math.round(methodValue)) : null;
+      const s: WaveRun = {
+        tr, atr, plot0: [], steps: atr ? [tr, atr] : [tr],
+        vars: { prevCurr: NaN, prevDir: NaN, prevVol: NaN, prevCount: NaN }, lists: [], series: [],
+      };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const tr = s.tr.step(b.high, b.low, b.close);
+      const atr = s.atr ? s.atr.step(b.high, b.low, b.close) : NaN;
+      const volume = fin(b.volume) ? b.volume : NaN;
+      let vol = useTrueRange === 'Always' || (useTrueRange === 'Auto' && !fin(volume)) ? tr : volume;
+      const op = useClose ? b.close : b.open;
+      const hi = useOpenClose ? (b.close >= op ? b.close : op) : b.high;
+      const lo = useOpenClose ? (b.close <= op ? b.close : op) : b.low;
+      const box = methodType === 'ATR' ? atr : methodType === 'Part of Price' ? b.close / methodValue : methodValue;
+
+      const prevclose = fin(v.prevCurr) ? v.prevCurr : 0;
+      const currclose = hi > prevclose + box ? hi : lo < prevclose - box ? lo : prevclose;
+      const direction = currclose > prevclose ? 1 : currclose < prevclose ? -1 : (fin(v.prevDir) ? v.prevDir : 0);
+      // ta.change(direction) != 0 (na on the first bar: false)
+      const changed = i > 0 && direction - v.prevDir !== 0;
+
+      let barcount = 1;
+      if (!changed && normalize) barcount = v.prevCount + barcount;
+      if (!changed) vol = v.prevVol + vol;
+      const res = barcount > 1 ? vol / barcount : vol;
+
+      const value = isOscillating && direction < 0 ? -res : res;
+      s.plot0[i] = { time: b.time, value: fin(value) ? value : NaN, color: direction > 0 ? UP : DOWN };
+      v.prevCurr = currclose;
+      v.prevDir = direction;
+      v.prevVol = vol;
+      v.prevCount = barcount;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice() },
+      };
+    },
   };
 }
 
-export const WeisWaveVolume = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WeisWaveVolumeInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<WeisWaveVolumeInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const WeisWaveVolume = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

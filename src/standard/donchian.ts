@@ -6,7 +6,9 @@
  * over a specified period, with a midline (basis).
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /**
  * Donchian Channels indicator input parameters
@@ -52,6 +54,72 @@ export const metadata = {
   overlay: true,
 };
 
+type Point = { time: number; value: number };
+
+interface DonchianRun extends BarRunState<Record<string, never>> {
+  upper: WindowExtreme;
+  lower: WindowExtreme;
+  basisData: Point[];
+  upperData: Point[];
+  lowerData: Point[];
+}
+
+function study(inputs: Partial<DonchianInputs>): BarStudy<DonchianRun, IndicatorResult> {
+  const { length, offset } = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      // Calculate upper (highest high) and lower (lowest low)
+      const upper = new WindowExtreme(false, length);
+      const lower = new WindowExtreme(true, length);
+      const s: DonchianRun = { upper, lower, basisData: [], upperData: [], lowerData: [], steps: [upper, lower], vars: {}, lists: [], series: [] };
+      s.series = [s.basisData, s.upperData, s.lowerData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      const u = s.upper.step(bars[i].high);
+      const l = s.lower.step(bars[i].low);
+      // Calculate basis (midline)
+      const basis = (u + l) / 2;
+      // Build plot data with offset: na before bar 0 (a negative offset); the bars past the last one are set in result
+      const shown = i + offset >= 0;
+      s.basisData[i] = { time, value: shown ? (basis ?? NaN) : NaN };
+      s.upperData[i] = { time, value: shown ? (u ?? NaN) : NaN };
+      s.lowerData[i] = { time, value: shown ? (l ?? NaN) : NaN };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plot = (data: Point[]) => {
+        const out = data.slice();
+        // the target bar after the last bar (a positive offset): na
+        for (let j = n - 1; j >= 0 && !(j + offset < n); j--) out[j] = { time: bars[j].time, value: NaN };
+        return out;
+      };
+      const fills: FillData[] = [
+        { plot1: 'plot1', plot2: 'plot2', options: { color: '#2196F3', transp: 95, title: 'Background' } },
+      ];
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': plot(s.basisData),
+          'plot1': plot(s.upperData),
+          'plot2': plot(s.lowerData),
+        },
+        fills,
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DonchianInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
 /**
  * Calculate Donchian Channels indicator
  *
@@ -60,65 +128,7 @@ export const metadata = {
  * @returns Indicator result with plot data
  */
 export function calculate(bars: Bar[], inputs: Partial<DonchianInputs> = {}): IndicatorResult {
-  const { length, offset } = { ...defaultInputs, ...inputs };
-
-  const high = new Series(bars, (bar) => bar.high);
-  const low = new Series(bars, (bar) => bar.low);
-
-  // Calculate upper (highest high) and lower (lowest low)
-  const upper = ta.highest(high, length);
-  const lower = ta.lowest(low, length);
-
-  // Calculate basis (midline)
-  const basis = upper.add(lower).div(2);
-
-  // Convert to arrays
-  const basisArr = basis.toArray();
-  const upperArr = upper.toArray();
-  const lowerArr = lower.toArray();
-
-  // Build plot data with offset
-  const basisData = basisArr.map((value, i) => {
-    const targetIndex = i + offset;
-    return {
-      time: bars[i].time,
-      value: targetIndex >= 0 && targetIndex < bars.length ? (value ?? NaN) : NaN,
-    };
-  });
-
-  const upperData = upperArr.map((value, i) => {
-    const targetIndex = i + offset;
-    return {
-      time: bars[i].time,
-      value: targetIndex >= 0 && targetIndex < bars.length ? (value ?? NaN) : NaN,
-    };
-  });
-
-  const lowerData = lowerArr.map((value, i) => {
-    const targetIndex = i + offset;
-    return {
-      time: bars[i].time,
-      value: targetIndex >= 0 && targetIndex < bars.length ? (value ?? NaN) : NaN,
-    };
-  });
-
-  const fills: FillData[] = [
-    { plot1: 'plot1', plot2: 'plot2', options: { color: '#2196F3', transp: 95, title: 'Background' } },
-  ];
-
-  return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
-    },
-    plots: {
-      'plot0': basisData,
-      'plot1': upperData,
-      'plot2': lowerData,
-    },
-    fills,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /**
@@ -126,6 +136,7 @@ export function calculate(bars: Bar[], inputs: Partial<DonchianInputs> = {}): In
  */
 export const DonchianChannels = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

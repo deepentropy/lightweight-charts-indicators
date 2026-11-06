@@ -18,9 +18,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, timeframe, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, timeframe, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import { barInterval } from '../bar-time';
 import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import { executeScript, ta as scriptTa, hlc3 as scriptHlc3 } from 'oakscriptjs/script';
 
 export interface VwapDualMaRibbonTrackerProInputs {
@@ -90,58 +91,96 @@ function intradayVwap(bars: Bar[], chart: ChartContext): number[] {
   return vwap;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<VwapDualMaRibbonTrackerProInputs> = {}, chart?: ChartContext): IndicatorResult {
+/** The exchange time zone and session of the chart context, read by the intraday ta.vwap */
+const hasSessionContext = (chart?: ChartContext) => chart?.timezone !== undefined && chart.session !== undefined;
+
+type Ma = { step(v: number): number; commit(): void };
+
+interface VdmRun extends BarRunState<Record<string, never>> {
+  /** ta.vwap of the intraday bars (from the script API, on every bar: a full run) */
+  vwap: number[] | null;
+  ma1: Ma;
+  ma2: Ma;
+  efi: ReturnType<typeof taStep.ema>;
+  atr: ReturnType<typeof taStep.atr>;
+  plot0: { time: number; value: number; color: string }[];
+}
+
+function study(inputs: Partial<VwapDualMaRibbonTrackerProInputs>): BarStudy<VdmRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const interval = barInterval(bars);
-  const intraday = interval > 0 && interval < DAY_SECONDS;
-  if (intraday && (chart?.timezone === undefined || chart.session === undefined)) {
-    throw new Error(
-      'VWAP & Dual MA Ribbon Tracker Pro supports daily and higher timeframes only: on intraday bars ta.vwap resets '
-      + 'on each trading day, which needs the exchange time zone and session.',
-    );
-  }
-
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const vol = bars.map((b) => b.volume ?? NaN);
-
-  // ta.vwap (hlc3, anchor timeframe.change("1D")). Intraday bars: the sums restart on each trading day of the
-  // exchange. Daily or higher bars: a new anchor on every bar, so sum(hlc3 * volume) / sum(volume) over the bar
-  // alone (0 / 0 = na when the volume is 0, na when it is na)
-  const vwap = intraday && chart ? intradayVwap(bars, chart)
-    : bars.map((b, i) => (((b.high + b.low + b.close) / 3) * vol[i]) / vol[i]);
-  // get_ma(type, src, len) => type == 'EMA' ? ta.ema(src, len) : ta.sma(src, len)
-  const close = S(bars.map((b) => b.close));
-  const ma = (len: number) => A(cfg.maType === 'EMA' ? ta.ema(close, len) : ta.sma(close, len));
-  const ma1 = ma(cfg.ma1Length);
-  const ma2 = ma(cfg.ma2Length);
-
-  // smoothed_efi = ta.ema((close - close[1]) * volume, efi_length)
-  const rawEfi = bars.map((b, i) => (i > 0 ? (b.close - bars[i - 1].close) * vol[i] : NaN));
-  const efi = A(ta.ema(S(rawEfi), cfg.efiLength));
-  const atr = A(ta.atr(bars, cfg.atrLength));
-
-  const plot0 = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const efiLongValid = !cfg.useEfiFilter || gt(efi[i], 0);
-    const efiShortValid = !cfg.useEfiFilter || lt(efi[i], 0);
-    const cushion = cfg.useAtrFilter ? atr[i] * cfg.atrMultiplier : 0.0;
-    const isGreen = gt(ma1[i], vwap[i] + cushion) && gt(ma1[i], ma2[i] + cushion) && efiLongValid;
-    const isRed = lt(ma1[i], vwap[i] - cushion) && lt(ma1[i], ma2[i] - cushion) && efiShortValid;
-    const c = isGreen ? color.green : isRed ? color.red : color.blue;
-    plot0[i] = { time: bars[i].time, value: 1, color: c };
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
+  const isIntraday = (bars: Bar[]) => {
+    const interval = barInterval(bars);
+    return interval > 0 && interval < DAY_SECONDS;
   };
+  // get_ma(type, src, len) => type == 'EMA' ? ta.ema(src, len) : ta.sma(src, len)
+  const ma = (len: number): Ma => (cfg.maType === 'EMA' ? taStep.ema(len) : new WindowSma(len));
+  return {
+    // the chart timeframe from the bar gaps (intraday or not)
+    key: (bars) => String(isIntraday(bars)),
+    // the trading days of the intraday ta.vwap come from the exchange calendar of the whole bar set
+    fullRunReason: (chart) => (hasSessionContext(chart) ? 'exchange calendar trading days' : null),
+    init(bars, chart) {
+      const intraday = isIntraday(bars);
+      if (intraday && !hasSessionContext(chart)) {
+        throw new Error(
+          'VWAP & Dual MA Ribbon Tracker Pro supports daily and higher timeframes only: on intraday bars ta.vwap resets '
+          + 'on each trading day, which needs the exchange time zone and session.',
+        );
+      }
+      const ma1 = ma(cfg.ma1Length);
+      const ma2 = ma(cfg.ma2Length);
+      const efi = taStep.ema(cfg.efiLength);
+      const atr = taStep.atr(cfg.atrLength);
+      const s: VdmRun = {
+        vwap: intraday ? intradayVwap(bars, chart) : null,
+        ma1, ma2, efi, atr, plot0: [], steps: [ma1, ma2, efi, atr], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const vol = b.volume ?? NaN;
+      // ta.vwap (hlc3, anchor timeframe.change("1D")). Intraday bars: the sums restart on each trading day of the
+      // exchange. Daily or higher bars: a new anchor on every bar, so sum(hlc3 * volume) / sum(volume) over the bar
+      // alone (0 / 0 = na when the volume is 0, na when it is na)
+      const vwap = s.vwap ? s.vwap[i] : (((b.high + b.low + b.close) / 3) * vol) / vol;
+      const ma1 = s.ma1.step(b.close);
+      const ma2 = s.ma2.step(b.close);
+
+      // smoothed_efi = ta.ema((close - close[1]) * volume, efi_length)
+      const efi = s.efi.step(i > 0 ? (b.close - bars[i - 1].close) * vol : NaN);
+      const atr = s.atr.step(b.high, b.low, b.close);
+
+      const efiLongValid = !cfg.useEfiFilter || gt(efi, 0);
+      const efiShortValid = !cfg.useEfiFilter || lt(efi, 0);
+      const cushion = cfg.useAtrFilter ? atr * cfg.atrMultiplier : 0.0;
+      const isGreen = gt(ma1, vwap + cushion) && gt(ma1, ma2 + cushion) && efiLongValid;
+      const isRed = lt(ma1, vwap - cushion) && lt(ma1, ma2 - cushion) && efiShortValid;
+      const c = isGreen ? color.green : isRed ? color.red : color.blue;
+      s.plot0[i] = { time: b.time, value: 1, color: c };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VwapDualMaRibbonTrackerProInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VwapDualMaRibbonTrackerProInputs> = {}, chart?: ChartContext): IndicatorResult {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 export const VwapDualMaRibbonTrackerPro = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

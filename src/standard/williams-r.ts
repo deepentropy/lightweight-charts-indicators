@@ -6,7 +6,9 @@
  * Williams %R = -100 * (highest - close) / (highest - lowest)
  */
 
-import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface WilliamsRInputs {
   length: number;
@@ -43,59 +45,69 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<WilliamsRInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface WilliamsRRun extends BarRunState<Record<string, never>> {
+  highest: WindowExtreme;
+  lowest: WindowExtreme;
+  wrData: Point[];
+}
+
+function study(inputs: Partial<WilliamsRInputs>): BarStudy<WilliamsRRun, IndicatorResult> {
   const { length, src } = { ...defaultInputs, ...inputs };
-
-  const high = new Series(bars, b => b.high);
-  const low = new Series(bars, b => b.low);
-  const sourceArr = getSourceSeries(bars, src).toArray();
-
-  // Get highest high and lowest low over the period
-  const highestHigh = ta.highest(high, length);
-  const lowestLow = ta.lowest(low, length);
-
-  const highArr = highestHigh.toArray();
-  const lowArr = lowestLow.toArray();
-
-  // Williams %R = -100 * (highest - src) / (highest - lowest)
-  const wrValues: number[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const highest = highArr[i];
-    const lowest = lowArr[i];
-    const srcVal = sourceArr[i];
-
-    if (highest == null || lowest == null || srcVal == null) {
-      wrValues.push(NaN);
-      continue;
-    }
-
-    const range = highest - lowest;
-    if (range === 0) {
-      wrValues.push(-50); // Midpoint when no range
-    } else {
-      wrValues.push(-100 * (highest - srcVal) / range);
-    }
-  }
-
-  const wrData = wrValues.map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
+  const value = barSource(src);
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      // Get highest high and lowest low over the period
+      const highest = new WindowExtreme(false, length);
+      const lowest = new WindowExtreme(true, length);
+      const s: WilliamsRRun = { highest, lowest, wrData: [], steps: [highest, lowest], vars: {}, lists: [], series: [] };
+      s.series = [s.wrData];
+      return s;
     },
-    plots: {
-      'plot0': wrData,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const highest = s.highest.step(b.high);
+      const lowest = s.lowest.step(b.low);
+      const srcVal = value(b);
+      // Williams %R = -100 * (highest - src) / (highest - lowest)
+      let wr: number;
+      if (highest == null || lowest == null || srcVal == null) {
+        wr = NaN;
+      } else {
+        const range = highest - lowest;
+        wr = range === 0 ? -50 : -100 * (highest - srcVal) / range; // Midpoint when no range
+      }
+      s.wrData[i] = { time: b.time, value: wr ?? NaN };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.wrData.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WilliamsRInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<WilliamsRInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const WilliamsPercentRange = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -10,8 +10,10 @@
  * Original notice: © Botnet101
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RsiTrendBiasInputs {
   /** RSI length */
@@ -59,47 +61,73 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RsiTrendBiasInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+
+interface RsiTrendBiasRun extends BarRunState<{ trend: number }> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  up: ReturnType<typeof taStep.crossover>;
+  down: ReturnType<typeof taStep.crossunder>;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<RsiTrendBiasInputs>): BarStudy<RsiTrendBiasRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-
-  const rsiSeries = ta.rsi(close, cfg.rsiLength);
-  const rsi = A(rsiSeries);
-  // ta.crossover / ta.crossunder: exact comparisons with the last bar where both values were not na (oakscriptjs)
-  const up = ta.crossover(rsiSeries, cfg.upperThreshold).toArray();
-  const down = ta.crossunder(rsiSeries, cfg.lowerThreshold).toArray();
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const bgColors: BgColorData[] = [];
-  let trend = -1; // var trend = -1
-  for (let i = 0; i < n; i++) {
-    if (up[i]) trend = 1;
-    if (down[i]) trend = -1;
-    const col = trend === 1 ? cfg.bullishColor : cfg.bearishColor;
-    const t = bars[i].time as number;
-    plot0.push({ time: t, value: rsi[i], color: col });
-    // bgcolor(changeBackgroundColor ? color.new(col, 90) : na, force_overlay = true)
-    if (cfg.changeBackgroundColor) bgColors.push({ time: t, color: String(color.new(col, 90)), forceOverlay: true });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0,
-      plot1: bars.map((b) => ({ time: b.time, value: cfg.upperThreshold, color: cfg.threshholdColor })),
-      plot2: bars.map((b) => ({ time: b.time, value: cfg.lowerThreshold, color: cfg.threshholdColor })),
+    init() {
+      const rsi = taStep.rsi(cfg.rsiLength);
+      const up = taStep.crossover();
+      const down = taStep.crossunder();
+      const s: RsiTrendBiasRun = {
+        rsi, up, down, plot0: [], plot1: [], plot2: [], bgColors: [],
+        steps: [rsi, up, down], vars: { trend: -1 }, lists: [], series: [],
+      };
+      s.lists = [s.bgColors];
+      s.series = [s.plot0, s.plot1, s.plot2];
+      return s;
     },
-    bgColors,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const rsi = s.rsi.step(b.close) ?? NaN;
+      // ta.crossover / ta.crossunder: exact comparisons with the last bar where both values were not na (oakscriptjs)
+      const up = s.up.step(rsi, cfg.upperThreshold);
+      const down = s.down.step(rsi, cfg.lowerThreshold);
+      // var trend = -1
+      if (up) s.vars.trend = 1;
+      if (down) s.vars.trend = -1;
+      const col = s.vars.trend === 1 ? cfg.bullishColor : cfg.bearishColor;
+      const t = b.time as number;
+      s.plot0[i] = { time: t, value: rsi, color: col };
+      s.plot1[i] = { time: b.time, value: cfg.upperThreshold, color: cfg.threshholdColor };
+      s.plot2[i] = { time: b.time, value: cfg.lowerThreshold, color: cfg.threshholdColor };
+      // bgcolor(changeBackgroundColor ? color.new(col, 90) : na, force_overlay = true)
+      if (cfg.changeBackgroundColor) s.bgColors.push({ time: t, color: String(color.new(col, 90)), forceOverlay: true });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RsiTrendBiasInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RsiTrendBiasInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RsiTrendBias = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

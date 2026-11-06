@@ -16,7 +16,9 @@
  * Original notice: @author LazyBear. If you use this code, in its original or modified form, do drop me a note. Thx.
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface IndicatorHawkeyeVolumeIndicatorInputs {
   length: number;
@@ -55,43 +57,63 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<IndicatorHawkeyeVolumeIndicatorInputs> = {}): IndicatorResult {
+interface HawkeyeRun extends BarRunState<Record<string, never>> {
+  rangeSma: WindowSma;
+  volSma: WindowSma;
+  plot0: { time: number; value: number; color: string }[];
+}
+
+function study(inputs: Partial<IndicatorHawkeyeVolumeIndicatorInputs>): BarStudy<HawkeyeRun, IndicatorResult> {
   const { length, divisor } = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const vol = bars.map((b) => b.volume ?? NaN);
-  const range = bars.map((b) => b.high - b.low);
-  const rangeAvg = A(ta.sma(Series.fromArray(bars, range), length));
-  const volumeA = A(ta.sma(Series.fromArray(bars, vol), length));
-
-  const plot0 = bars.map((b, i) => {
-    const p = i > 0 ? bars[i - 1] : undefined;
-    const high1 = p ? p.high : NaN;
-    const low1 = p ? p.low : NaN;
-    const mid1 = p ? (p.high + p.low) / 2 : NaN;
-    const u1 = mid1 + (high1 - low1) / divisor;
-    const d1 = mid1 - (high1 - low1) / divisor;
-    const r = range[i];
-    const ra = rangeAvg[i];
-    const v = vol[i];
-    const va = volumeA[i];
-    const c = b.close;
-
-    const rEnabled = (gt(r, ra) && lt(c, d1) && gt(v, va)) || lt(c, mid1);
-    const gEnabled = gt(c, mid1)
-      || (gt(r, ra) && gt(c, u1) && gt(v, va))
-      || (gt(b.high, high1) && lt(r, ra / 1.5) && lt(v, va))
-      || (lt(b.low, low1) && lt(r, ra / 1.5) && gt(v, va));
-    const grEnabled = (gt(r, ra) && gt(c, d1) && lt(c, u1) && gt(v, va) && lt(v, va * 1.5) && gt(v, i > 0 ? vol[i - 1] : NaN))
-      || (lt(r, ra / 1.5) && lt(v, va / 1.5))
-      || (gt(c, d1) && lt(c, u1));
-    const vColor = grEnabled ? GRAY : gEnabled ? GREEN : rEnabled ? RED : BLUE;
-    return { time: b.time, value: v, color: vColor };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
+    init() {
+      const rangeSma = new WindowSma(length);
+      const volSma = new WindowSma(length);
+      const s: HawkeyeRun = { rangeSma, volSma, plot0: [], steps: [rangeSma, volSma], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const r = b.high - b.low;
+      const v = b.volume ?? NaN;
+      const ra = s.rangeSma.step(r);
+      const va = s.volSma.step(v);
+      const p = i > 0 ? bars[i - 1] : undefined;
+      const high1 = p ? p.high : NaN;
+      const low1 = p ? p.low : NaN;
+      const mid1 = p ? (p.high + p.low) / 2 : NaN;
+      const u1 = mid1 + (high1 - low1) / divisor;
+      const d1 = mid1 - (high1 - low1) / divisor;
+      const c = b.close;
+
+      const rEnabled = (gt(r, ra) && lt(c, d1) && gt(v, va)) || lt(c, mid1);
+      const gEnabled = gt(c, mid1)
+        || (gt(r, ra) && gt(c, u1) && gt(v, va))
+        || (gt(b.high, high1) && lt(r, ra / 1.5) && lt(v, va))
+        || (lt(b.low, low1) && lt(r, ra / 1.5) && gt(v, va));
+      const grEnabled = (gt(r, ra) && gt(c, d1) && lt(c, u1) && gt(v, va) && lt(v, va * 1.5) && gt(v, p ? p.volume ?? NaN : NaN))
+        || (lt(r, ra / 1.5) && lt(v, va / 1.5))
+        || (gt(c, d1) && lt(c, u1));
+      const vColor = grEnabled ? GRAY : gEnabled ? GREEN : rEnabled ? RED : BLUE;
+      s.plot0[i] = { time: b.time, value: v, color: vColor };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+      };
+    },
   };
 }
 
-export const IndicatorHawkeyeVolumeIndicator = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IndicatorHawkeyeVolumeIndicatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<IndicatorHawkeyeVolumeIndicatorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const IndicatorHawkeyeVolumeIndicator = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

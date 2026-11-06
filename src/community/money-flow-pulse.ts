@@ -10,7 +10,9 @@
  * Original notice: Open Source | Designed by Adrian Dyer for "The Leading Indicator", Engineered by PineForge Laboratory (2025)
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSum, type BarRunState, type Committable, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MoneyFlowPulseInputs {
   /** MFI length */
@@ -53,40 +55,109 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
 
-export function calculate(bars: Bar[], inputs: Partial<MoneyFlowPulseInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
+type Point = { time: number; value: number; color: string };
 
-  const src = getSourceSeries(bars, cfg.src);
-  const volume = new Series(bars, (b) => b.volume ?? NaN);
-  const mfi = ta.mfi(src, cfg.length, volume).toArray().map((v) => v ?? NaN);
+/** Pine `a <= b` / `a >= b` (1e-10; na compares false) */
+const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && a - b <= EPS;
+const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && b - a <= EPS;
+const zero = (x: number): number => (Math.abs(x) <= 1e-10 ? 0 : x);
 
-  const plot0 = [];
-  const plot1 = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const m = mfi[i];
-    // mfi_score: > 80 -> 2, > 60 -> 1, < 20 -> -2, < 40 -> -1, else 0
-    const score = gt(m, 80) ? 2 : gt(m, 60) ? 1 : lt(m, 20) ? -2 : lt(m, 40) ? -1 : 0;
-    const mfiColor = score === 2 || score === -2 ? ORCHID : score === 1 ? LIME : score === -1 ? PEACH : LEMON;
-    // mfi_roc = mfi_val - mfi_val[1]
-    const roc = i > 0 ? m - mfi[i - 1] : NaN;
-    const rocColor = gt(roc, 0) ? ROC_UP : lt(roc, 0) ? ROC_DOWN : ROC_FLAT;
-    plot0.push({ time: t, value: fin(roc), color: rocColor });
-    plot1.push({ time: t, value: fin(m), color: mfiColor });
+/**
+ * `ta.mfi(source, length)` with a constant length, one bar at a time: the operations of taStep.mfi with
+ * {@link WindowSum}s of the up and down money flows (the same doubles, faster)
+ */
+class MfiWindow implements Committable {
+  private readonly upper: WindowSum;
+  private readonly lower: WindowSum;
+  private prev = NaN;
+  private pending = NaN;
+  private stepped = false;
+
+  constructor(length: number) {
+    // the length check of ta.mfi (the same runtime error)
+    taStep.mfi(length);
+    this.upper = new WindowSum(length);
+    this.lower = new WindowSum(length);
   }
 
+  step(value: number, volume: number): number {
+    this.stepped = true;
+    this.pending = value;
+    const change = value - this.prev;
+    const flow = volume * value;
+    const u = zero(this.upper.step(le(change, 0) ? 0 : flow));
+    const l = zero(this.lower.step(ge(change, 0) ? 0 : flow));
+    if (Number.isNaN(u) || Number.isNaN(l)) return NaN;
+    if (l === 0) return 100;
+    const ratio = 1 + u / l;
+    return ratio === 0 ? NaN : 100 - 100 / ratio;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.prev = this.pending;
+    this.upper.commit();
+    this.lower.commit();
+  }
+}
+
+interface MfpRun extends BarRunState<Record<string, never>> {
+  mfi: MfiWindow;
+  mfiArr: number[];
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<MoneyFlowPulseInputs>): BarStudy<MfpRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const source = barSource(cfg.src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    hlines: [
-      { value: 0, options: { title: 'Zero Line', color: String(color.new(LEMON, 50)), linestyle: 'solid', linewidth: 1 } },
-    ],
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const mfi = new MfiWindow(cfg.length);
+      const s: MfpRun = { mfi, mfiArr: [], plot0: [], plot1: [], steps: [mfi], vars: {}, lists: [], series: [] };
+      s.series = [s.mfiArr, s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const m = s.mfi.step(source(b), b.volume ?? NaN);
+      s.mfiArr[i] = m;
+      // mfi_score: > 80 -> 2, > 60 -> 1, < 20 -> -2, < 40 -> -1, else 0
+      const score = gt(m, 80) ? 2 : gt(m, 60) ? 1 : lt(m, 20) ? -2 : lt(m, 40) ? -1 : 0;
+      const mfiColor = score === 2 || score === -2 ? ORCHID : score === 1 ? LIME : score === -1 ? PEACH : LEMON;
+      // mfi_roc = mfi_val - mfi_val[1]
+      const roc = i > 0 ? m - s.mfiArr[i - 1]! : NaN;
+      const rocColor = gt(roc, 0) ? ROC_UP : lt(roc, 0) ? ROC_DOWN : ROC_FLAT;
+      s.plot0[i] = { time: t, value: fin(roc), color: rocColor };
+      s.plot1[i] = { time: t, value: fin(m), color: mfiColor };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [
+          { value: 0, options: { title: 'Zero Line', color: String(color.new(LEMON, 50)), linestyle: 'solid', linewidth: 1 } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MoneyFlowPulseInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MoneyFlowPulseInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MoneyFlowPulse = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

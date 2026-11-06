@@ -13,9 +13,11 @@
  * Reference: "Twin Range Filter" by colinmck
  */
 
-import { taCore, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taCore, taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TwinRangeFilterInputs {
   src: SourceType;
@@ -68,59 +70,111 @@ export function rangeFilter(x: number[], r: number[]): number[] {
   return out;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<TwinRangeFilterInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] }
-  & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface TrfVars {
+  prevSource: number;
+  /** rngfilt of the bar before */
+  prevFilt: number;
+  upward: number;
+  downward: number;
+  condIni: number;
+}
+
+interface TrfRun extends BarRunState<TrfVars> {
+  ema1a: ReturnType<typeof taStep.ema>;
+  ema1b: ReturnType<typeof taStep.ema>;
+  ema2a: ReturnType<typeof taStep.ema>;
+  ema2b: ReturnType<typeof taStep.ema>;
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<TwinRangeFilterInputs>): BarStudy<TrfRun, Result> {
   const { fastPeriod, fastRange, slowPeriod, slowRange, src } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const source = getSourceSeries(bars, src).toArray().map((v) => v ?? NaN);
-  const smrng1 = smoothRange(source, fastPeriod, fastRange);
-  const smrng2 = smoothRange(source, slowPeriod, slowRange);
-  const smrng = smrng1.map((v, i) => (v + smrng2[i]) / 2);
-  const filt = rangeFilter(source, smrng);
-
-  // upward / downward: counts of rising / falling filter bars (na comparisons false)
-  const upward: number[] = new Array(n);
-  const downward: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const f = filt[i], f1 = i > 0 ? filt[i - 1] : NaN;
-    const up1 = i > 0 ? upward[i - 1] : 0, dn1 = i > 0 ? downward[i - 1] : 0;
-    upward[i] = f > f1 ? up1 + 1 : f < f1 ? 0 : up1;
-    downward[i] = f < f1 ? dn1 + 1 : f > f1 ? 0 : dn1;
-  }
-
-  // longCond := source > filt and source > source[1] and upward > 0 or source > filt and source < source[1] and
-  // upward > 0 (shortCond the mirror); CondIni := longCond ? 1 : shortCond ? -1 : CondIni[1] (na on the first bar);
-  // long = longCond and CondIni[1] == -1, short = shortCond and CondIni[1] == 1
-  const longFlags: boolean[] = [];
-  const shortFlags: boolean[] = [];
-  const markers: MarkerData[] = [];
-  let condIni = NaN;
-  for (let i = 0; i < n; i++) {
-    const s = source[i];
-    const s1 = i > 0 ? source[i - 1] : NaN;
-    const longCond = (s > filt[i] && s > s1 && upward[i] > 0) || (s > filt[i] && s < s1 && upward[i] > 0);
-    const shortCond = (s < filt[i] && s < s1 && downward[i] > 0) || (s < filt[i] && s > s1 && downward[i] > 0);
-    const long = longCond && condIni === -1;
-    const short = shortCond && condIni === 1;
-    longFlags.push(long);
-    shortFlags.push(short);
-    if (long) {
-      markers.push({ id: 'shape0', time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#00E676', text: 'Long', textColor: '#000000', size: 'tiny' });
-    }
-    if (short) {
-      markers.push({ id: 'shape1', time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF5252', text: 'Short', textColor: '#FFFFFF', size: 'tiny' });
-    }
-    condIni = longCond ? 1 : shortCond ? -1 : condIni;
-  }
-
+  const value = barSource(src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    // the original plots only the two labels
-    plots: {},
-    markers,
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags]),
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      // smoothrng(x, t, m) = ta.ema(ta.ema(math.abs(x - x[1]), t), t * 2 - 1) * m
+      const ema1a = taStep.ema(fastPeriod);
+      const ema1b = taStep.ema(fastPeriod * 2 - 1);
+      const ema2a = taStep.ema(slowPeriod);
+      const ema2b = taStep.ema(slowPeriod * 2 - 1);
+      const s: TrfRun = {
+        ema1a, ema1b, ema2a, ema2b, markers: [], flags: [[], []], times: [[], []],
+        steps: [ema1a, ema1b, ema2a, ema2b],
+        vars: { prevSource: NaN, prevFilt: NaN, upward: 0, downward: 0, condIni: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = s.flags;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const x = value(b);
+      const s1 = i > 0 ? v.prevSource : NaN;
+      const absChange = i > 0 ? Math.abs(x - s1) : NaN;
+      const smrng1 = s.ema1b.step(s.ema1a.step(absChange)) * fastRange;
+      const smrng2 = s.ema2b.step(s.ema2a.step(absChange)) * slowRange;
+      const r = (smrng1 + smrng2) / 2;
+      // rngfilt(x, r): nz() of the filter of the bar before
+      const p = Number.isFinite(v.prevFilt) ? v.prevFilt : 0;
+      const raw = x > p ? (x - r < p ? p : x - r) : (x + r > p ? p : x + r);
+      const filt = Number.isFinite(raw) ? raw : NaN;
+      const f1 = i > 0 ? v.prevFilt : NaN;
+
+      // upward / downward: counts of rising / falling filter bars (na comparisons false)
+      const up1 = v.upward, dn1 = v.downward;
+      const upward = filt > f1 ? up1 + 1 : filt < f1 ? 0 : up1;
+      const downward = filt < f1 ? dn1 + 1 : filt > f1 ? 0 : dn1;
+
+      // longCond := source > filt and source > source[1] and upward > 0 or source > filt and source < source[1] and
+      // upward > 0 (shortCond the mirror); CondIni := longCond ? 1 : shortCond ? -1 : CondIni[1] (na on the first bar);
+      // long = longCond and CondIni[1] == -1, short = shortCond and CondIni[1] == 1
+      const longCond = (x > filt && x > s1 && upward > 0) || (x > filt && x < s1 && upward > 0);
+      const shortCond = (x < filt && x < s1 && downward > 0) || (x < filt && x > s1 && downward > 0);
+      const long = longCond && v.condIni === -1;
+      const short = shortCond && v.condIni === 1;
+      if (long) {
+        s.markers.push({ id: 'shape0', time: b.time, position: 'belowBar', shape: 'labelUp', color: '#00E676', text: 'Long', textColor: '#000000', size: 'tiny' });
+      }
+      if (short) {
+        s.markers.push({ id: 'shape1', time: b.time, position: 'aboveBar', shape: 'labelDown', color: '#FF5252', text: 'Short', textColor: '#FFFFFF', size: 'tiny' });
+      }
+      v.condIni = longCond ? 1 : shortCond ? -1 : v.condIni;
+      v.prevSource = x;
+      v.prevFilt = filt;
+      v.upward = upward;
+      v.downward = downward;
+      [long, short].forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(b.time as number);
+      });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        // the original plots only the two labels
+        plots: {},
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TwinRangeFilterInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TwinRangeFilterInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -129,4 +183,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'Short', message: 'Short' },
 ];
 
-export const TwinRangeFilter = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const TwinRangeFilter = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

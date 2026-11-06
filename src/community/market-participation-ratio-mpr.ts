@@ -11,7 +11,9 @@
  * All rights reserved. Unauthorized copying or distribution is prohibited. © TechnoBlooms
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MarketParticipationRatioMprInputs {
   /** SMA length of the price and of the volume */
@@ -48,38 +50,64 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<MarketParticipationRatioMprInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface MprRun extends BarRunState<Record<string, never>> {
+  priceMA: WindowSma;
+  volumeMA: WindowSma;
+  smooth: ReturnType<typeof taStep.ema>;
+  plot0: Point[];
+}
+
+function study(inputs: Partial<MarketParticipationRatioMprInputs>): BarStudy<MprRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-  const volume = bars.map((b) => b.volume ?? NaN);
-
-  const priceMA = A(ta.sma(S(close), cfg.length));
-  const volumeMA = A(ta.sma(S(volume), cfg.length));
-  // Plain divisions: x / 0 is +-infinity (ta.ema skips it like na), 0 / 0 is na
-  const mpr = bars.map((_b, i) => (close[i] / priceMA[i]) * (volume[i] / volumeMA[i]) * 100);
-  const smoothMPR = A(ta.ema(S(mpr), cfg.smoothLength));
-
-  const plot0 = bars.map((b, i) => {
-    const v = smoothMPR[i];
-    const c = gt(v, 100) ? ABOVE : lt(v, 100) ? BELOW : color.gray;
-    return { time: b.time, value: Number.isFinite(v) ? v : NaN, color: c };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    hlines: [
-      { value: 0, options: { title: 'Zero Line', color: '#eceff5fb', linestyle: 'dashed', linewidth: 1 } },
-      { value: 100, options: { title: 'Level 100', color: String(color.rgb(12, 250, 159)), linestyle: 'dotted', linewidth: 2 } },
-      { value: 50, options: { title: 'Level 50', color: color.red, linestyle: 'dotted', linewidth: 1 } },
-    ],
+    init() {
+      const priceMA = new WindowSma(cfg.length);
+      const volumeMA = new WindowSma(cfg.length);
+      const smooth = taStep.ema(cfg.smoothLength);
+      const s: MprRun = { priceMA, volumeMA, smooth, plot0: [], steps: [priceMA, volumeMA, smooth], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = b.close;
+      const volume = b.volume ?? NaN;
+      const priceMA = s.priceMA.step(close);
+      const volumeMA = s.volumeMA.step(volume);
+      // Plain divisions: x / 0 is +-infinity (ta.ema skips it like na), 0 / 0 is na
+      const mpr = (close / priceMA) * (volume / volumeMA) * 100;
+      const v = s.smooth.step(mpr);
+      const c = gt(v, 100) ? ABOVE : lt(v, 100) ? BELOW : color.gray;
+      s.plot0[i] = { time: b.time, value: Number.isFinite(v) ? v : NaN, color: c };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        hlines: [
+          { value: 0, options: { title: 'Zero Line', color: '#eceff5fb', linestyle: 'dashed', linewidth: 1 } },
+          { value: 100, options: { title: 'Level 100', color: String(color.rgb(12, 250, 159)), linestyle: 'dotted', linewidth: 2 } },
+          { value: 50, options: { title: 'Level 50', color: color.red, linestyle: 'dotted', linewidth: 1 } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MarketParticipationRatioMprInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MarketParticipationRatioMprInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MarketParticipationRatioMpr = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

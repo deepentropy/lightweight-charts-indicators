@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeCandleColoringV5Inputs {
   /** Volume SMA length */
@@ -57,45 +59,70 @@ const EPS = 1e-10;
 const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+interface VccRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  plot0: { time: number; value: number }[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<VolumeCandleColoringV5Inputs>): BarStudy<VccRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const bullCols = [color.aqua, color.lime, color.green, String(color.new(color.green, 40)), String(color.new(color.green, 70))];
+  const bearCols = [color.fuchsia, color.orange, color.red, String(color.new(color.red, 40)), String(color.new(color.red, 70))];
+  return {
+    init() {
+      const sma = new WindowSma(cfg.volLength);
+      const s: VccRun = { sma, plot0: [], barColors: [], steps: [sma], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = b.volume ?? NaN;
+      const ma = s.sma.step(v);
+      const volLow = lt(v, ma * cfg.lowMult);
+      const volNormal = ge(v, ma * cfg.lowMult) && lt(v, ma * cfg.midMult);
+      const volHigh = ge(v, ma * cfg.midMult) && lt(v, ma * cfg.highMult);
+      const volExtreme = ge(v, ma * cfg.highMult) && lt(v, ma * cfg.ultraMult);
+      const volUltra = ge(v, ma * cfg.ultraMult);
+      const bull = ge(b.close, b.open);
+      const bear = lt(b.close, b.open);
+      // Levels in the Pine order: ultra, extreme, high, normal, low
+      const level = [volUltra, volExtreme, volHigh, volNormal, volLow].indexOf(true);
+      const c = level >= 0 && bull ? bullCols[level] : level >= 0 && bear ? bearCols[level] : color.gray;
+      s.barColors[i] = { time: b.time, color: c };
+      // plot(volume, display = display.none)
+      s.plot0[i] = { time: b.time, value: v };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plot0.slice(),
+        },
+        barColors: s.barColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeCandleColoringV5Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<VolumeCandleColoringV5Inputs> = {},
 ): IndicatorResult & { barColors: BarColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const volMA = ta.sma(Series.fromArray(bars, volume), cfg.volLength).toArray().map((v) => v ?? NaN);
-
-  const bullCols = [color.aqua, color.lime, color.green, String(color.new(color.green, 40)), String(color.new(color.green, 70))];
-  const bearCols = [color.fuchsia, color.orange, color.red, String(color.new(color.red, 40)), String(color.new(color.red, 70))];
-
-  const barColors: BarColorData[] = bars.map((b, i) => {
-    const v = volume[i];
-    const ma = volMA[i];
-    const volLow = lt(v, ma * cfg.lowMult);
-    const volNormal = ge(v, ma * cfg.lowMult) && lt(v, ma * cfg.midMult);
-    const volHigh = ge(v, ma * cfg.midMult) && lt(v, ma * cfg.highMult);
-    const volExtreme = ge(v, ma * cfg.highMult) && lt(v, ma * cfg.ultraMult);
-    const volUltra = ge(v, ma * cfg.ultraMult);
-    const bull = ge(b.close, b.open);
-    const bear = lt(b.close, b.open);
-    // Levels in the Pine order: ultra, extreme, high, normal, low
-    const level = [volUltra, volExtreme, volHigh, volNormal, volLow].indexOf(true);
-    const c = level >= 0 && bull ? bullCols[level] : level >= 0 && bear ? bearCols[level] : color.gray;
-    return { time: b.time, color: c };
-  });
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(volume, display = display.none)
-      plot0: bars.map((b, i) => ({ time: b.time, value: volume[i] })),
-    },
-    barColors,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const VolumeCandleColoringV5 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

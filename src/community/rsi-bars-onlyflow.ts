@@ -11,8 +11,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData, PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RsiBarsOnlyflowInputs {
   /** RSI source */
@@ -117,80 +119,109 @@ function palette3(t: number, cMin: string, cMed: string, cMax: string): string {
   return le(x, 1.0) ? lerpColor(cMin, cMed, x) : lerpColor(cMed, cMax, x - 1.0);
 }
 
+type Result = IndicatorResult & { plotCandles: Record<string, PlotCandleData[]>; barColors: BarColorData[] };
+
+interface RsiBarsRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  plot0: { time: number; value: number }[];
+  candles: PlotCandleData[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<RsiBarsOnlyflowInputs>): BarStudy<RsiBarsRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { ob, os } = cfg;
+  const value = barSource(cfg.src);
+  const gray70 = String(color.new(color.gray, 70));
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const rsi = taStep.rsi(cfg.len);
+      const s: RsiBarsRun = { rsi, plot0: [], candles: [], barColors: [], steps: [rsi], vars: {}, lists: [], series: [] };
+      s.lists = [s.candles, s.barColors];
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const r = s.rsi.step(value(b));
+      const obInt = ge(r, ob) ? (r - ob) / Math.max(0.0001, 100 - ob) : 0.0;
+      const osInt = le(r, os) ? (os - r) / Math.max(0.0001, os) : 0.0;
+      const isUp = ge(b.close, b.open);
+      const baseColor = cfg.colorByDir ? (isUp ? cfg.colNeutralUp : cfg.colNeutralDown) : gray70;
+
+      let finalColor = baseColor;
+      if (ge(r, ob)) {
+        if (cfg.useSmooth) {
+          finalColor = palette3(obInt, cfg.colSellMin, cfg.colSellMed, cfg.colSellMax);
+        } else {
+          // sellStep (na below ob: nz gives baseColor)
+          const step = ge(r, Math.min(100, ob + 20)) ? cfg.colSellMax
+            : ge(r, Math.min(100, ob + 10)) ? cfg.colSellMed
+              : ge(r, ob) ? cfg.colSellMin : null;
+          finalColor = step ?? baseColor;
+        }
+      } else if (le(r, os)) {
+        if (cfg.useSmooth) {
+          finalColor = palette3(osInt, cfg.colBuyMin, cfg.colBuyMed, cfg.colBuyMax);
+        } else {
+          const step = le(r, Math.max(0, os - 20)) ? cfg.colBuyMax
+            : le(r, Math.max(0, os - 10)) ? cfg.colBuyMed
+              : le(r, os) ? cfg.colBuyMin : null;
+          finalColor = step ?? baseColor;
+        }
+      }
+      // fullCol = color.new(finalColor, candleOpacityPct)
+      const fullCol = String(color.new(finalColor, cfg.candleOpacityPct));
+
+      // plotcandle(open, high, low, close, "RSI Colored Candles", fullCol, wickcolor = fullCol, bordercolor = fullCol,
+      //   display = useCustomCandles ? display.all : display.none)
+      if (cfg.useCustomCandles) {
+        s.candles.push({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: fullCol,
+          wickColor: fullCol, borderColor: fullCol });
+      } else {
+        // barcolor(useCustomCandles ? na : fullCol, title = "RSI Gradient Bars")
+        s.barColors.push({ time: b.time, color: fullCol });
+      }
+      // plot(showPane ? rsi : na, "RSI", display = display.pane)
+      s.plot0[i] = { time: b.time, value: cfg.showPane ? r : NaN };
+    },
+    result(s) {
+      // hline(..., color = showPane ? color.new(...) : na)
+      const lvl = (c: string, t: number) => (cfg.showPane ? String(color.new(c, t)) : 'transparent');
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plot0.slice(),
+        },
+        hlines: [
+          { value: ob, options: { title: 'OB', color: lvl(color.red, 70), linestyle: 'dashed' } },
+          { value: os, options: { title: 'OS', color: lvl(color.teal, 70), linestyle: 'dashed' } },
+          { value: 50, options: { title: 'Mid', color: lvl(color.gray, 80), linestyle: 'dashed' } },
+        ],
+        plotCandles: { rsiColoredCandles: s.candles.slice() },
+        barColors: s.barColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RsiBarsOnlyflowInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<RsiBarsOnlyflowInputs> = {},
 ): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]>; barColors: BarColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const { ob, os } = cfg;
-  const rsi = ta.rsi(getSourceSeries(bars, cfg.src), cfg.len).toArray().map((v) => v ?? NaN);
-
-  const candles: PlotCandleData[] = [];
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const b = bars[i];
-    const r = rsi[i];
-    const obInt = ge(r, ob) ? (r - ob) / Math.max(0.0001, 100 - ob) : 0.0;
-    const osInt = le(r, os) ? (os - r) / Math.max(0.0001, os) : 0.0;
-    const isUp = ge(b.close, b.open);
-    const baseColor = cfg.colorByDir ? (isUp ? cfg.colNeutralUp : cfg.colNeutralDown) : String(color.new(color.gray, 70));
-
-    let finalColor = baseColor;
-    if (ge(r, ob)) {
-      if (cfg.useSmooth) {
-        finalColor = palette3(obInt, cfg.colSellMin, cfg.colSellMed, cfg.colSellMax);
-      } else {
-        // sellStep (na below ob: nz gives baseColor)
-        const step = ge(r, Math.min(100, ob + 20)) ? cfg.colSellMax
-          : ge(r, Math.min(100, ob + 10)) ? cfg.colSellMed
-            : ge(r, ob) ? cfg.colSellMin : null;
-        finalColor = step ?? baseColor;
-      }
-    } else if (le(r, os)) {
-      if (cfg.useSmooth) {
-        finalColor = palette3(osInt, cfg.colBuyMin, cfg.colBuyMed, cfg.colBuyMax);
-      } else {
-        const step = le(r, Math.max(0, os - 20)) ? cfg.colBuyMax
-          : le(r, Math.max(0, os - 10)) ? cfg.colBuyMed
-            : le(r, os) ? cfg.colBuyMin : null;
-        finalColor = step ?? baseColor;
-      }
-    }
-    // fullCol = color.new(finalColor, candleOpacityPct)
-    const fullCol = String(color.new(finalColor, cfg.candleOpacityPct));
-
-    // plotcandle(open, high, low, close, "RSI Colored Candles", fullCol, wickcolor = fullCol, bordercolor = fullCol,
-    //   display = useCustomCandles ? display.all : display.none)
-    if (cfg.useCustomCandles) {
-      candles.push({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: fullCol,
-        wickColor: fullCol, borderColor: fullCol });
-    } else {
-      // barcolor(useCustomCandles ? na : fullCol, title = "RSI Gradient Bars")
-      barColors.push({ time: b.time, color: fullCol });
-    }
-  }
-
-  // hline(..., color = showPane ? color.new(...) : na)
-  const lvl = (c: string, t: number) => (cfg.showPane ? String(color.new(c, t)) : 'transparent');
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(showPane ? rsi : na, "RSI", display = display.pane)
-      plot0: bars.map((b, i) => ({ time: b.time, value: cfg.showPane ? rsi[i] : NaN })),
-    },
-    hlines: [
-      { value: ob, options: { title: 'OB', color: lvl(color.red, 70), linestyle: 'dashed' } },
-      { value: os, options: { title: 'OS', color: lvl(color.teal, 70), linestyle: 'dashed' } },
-      { value: 50, options: { title: 'Mid', color: lvl(color.gray, 80), linestyle: 'dashed' } },
-    ],
-    plotCandles: { rsiColoredCandles: candles },
-    barColors,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RsiBarsOnlyflow = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

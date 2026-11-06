@@ -13,11 +13,13 @@
  */
 
 import {
-  ta, Series,
+  taStep,
   type Bar, type IndicatorResult, type InputConfig, type PlotConfig, type ShapeConfig, type BarColorConfig,
 } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PullbackCandlesInputs {
   /** EMA Length */
@@ -67,43 +69,68 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<PullbackCandlesInputs> = {},
-): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; alerts: AlertConditionState[] } {
+type Result = IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; alerts: AlertConditionState[] };
+
+interface PullbackRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  lowest: WindowExtreme;
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[];
+  times: number[];
+}
+
+function study(inputs: Partial<PullbackCandlesInputs>): BarStudy<PullbackRun, Result> {
   const { emaLength, useEmaFilter } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const close = bars.map((b) => b.close);
-  const low = bars.map((b) => b.low);
-  const ema = ta.ema(new Series(bars, (b) => b.close), emaLength).toArray();
-  const lowest = ta.lowest(new Series(bars, (b) => b.low), 6).toArray();
-
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const flags: boolean[] = new Array(n).fill(false);
-  for (let i = 0; i < n; i++) {
-    const ll = lowest[i] ?? NaN;
-    const swingLow = eq(low[i], ll) || (i >= 1 && eq(low[i - 1], ll));
-    const emaFilterLong = !useEmaFilter || gt(close[i], ema[i] ?? NaN);
-    const pullBack = i >= 3 && lt(close[i - 2], close[i - 3]) && lt(close[i - 1], close[i - 2])
-      && gt(close[i], close[i - 1]) && emaFilterLong && swingLow;
-    flags[i] = pullBack;
-    if (pullBack) {
-      const time = bars[i].time as number;
-      markers.push({ id: 'shape0', time, position: 'belowBar', shape: 'xcross', color: GREEN, text: 'PB', textColor: TEXT, size: 'tiny' });
-      barColors.push({ id: 'barcolor0', time, color: GREEN });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    barColors,
-    alerts: alertStates(alertConditions, bars, [flags]),
+    init() {
+      const ema = taStep.ema(emaLength);
+      const lowest = new WindowExtreme(true, 6);
+      const s: PullbackRun = {
+        ema, lowest, markers: [], barColors: [], flags: [], times: [], steps: [ema, lowest], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.barColors, s.times];
+      s.series = [s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const e = s.ema.step(b.close);
+      const ll = s.lowest.step(b.low) ?? NaN;
+      const swingLow = eq(b.low, ll) || (i >= 1 && eq(bars[i - 1].low, ll));
+      const emaFilterLong = !useEmaFilter || gt(b.close, e ?? NaN);
+      const pullBack = i >= 3 && lt(bars[i - 2].close, bars[i - 3].close) && lt(bars[i - 1].close, bars[i - 2].close)
+        && gt(b.close, bars[i - 1].close) && emaFilterLong && swingLow;
+      s.flags[i] = pullBack;
+      if (pullBack) {
+        const time = b.time as number;
+        s.markers.push({ id: 'shape0', time, position: 'belowBar', shape: 'xcross', color: GREEN, text: 'PB', textColor: TEXT, size: 'tiny' });
+        s.barColors.push({ id: 'barcolor0', time, color: GREEN });
+        s.times.push(time);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, [s.times], [n > 0 && s.flags[n - 1]]),
+      };
+    },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PullbackCandlesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PullbackCandlesInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const PullbackCandlesGuaranteedWinners = {
-  calculate, metadata, defaultInputs, inputConfig, plotConfig, shapeConfig, barColorConfig, alertConditions,
+  calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, shapeConfig, barColorConfig, alertConditions,
 };

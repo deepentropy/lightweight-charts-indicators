@@ -10,8 +10,10 @@
  * Original notice: © Devjames
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface Rsi50StepLineInputs {
   rsiLength: number;
@@ -62,46 +64,81 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface Rsi50Vars {
+  /** var float level = na */
+  level: number;
+  /** rsiValue[1] */
+  prev: number;
+}
+
+interface Rsi50Run extends BarRunState<Rsi50Vars> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  plot0: { time: number; value: number; color: string }[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<Rsi50StepLineInputs>): BarStudy<Rsi50Run, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.rsiSource);
+  return {
+    fullRunReason: () => (isBarSource(cfg.rsiSource) ? null : 'source of another study'),
+    init() {
+      const rsi = taStep.rsi(cfg.rsiLength);
+      const s: Rsi50Run = { rsi, plot0: [], markers: [], steps: [rsi], vars: { level: NaN, prev: NaN }, lists: [], series: [] };
+      s.lists = [s.markers];
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const close = bars[i].close;
+      const r = s.rsi.step(value(bars[i])) ?? NaN;
+      // ta.cross(rsiValue, 50): (a[1] <= 50 and a > 50) or (a[1] >= 50 and a < 50), compared exactly (no 1e-10
+      // tolerance; na compares false)
+      const prev = i > 0 ? v.prev : NaN;
+      const crossed = (prev <= 50 && r > 50) || (prev >= 50 && r < 50);
+      if (crossed) v.level = close;
+      const level = v.level;
+      const above = gt(close, level);
+      const rising = gt(r, prev);
+      const stateColor = above && rising ? cfg.colorAboveRising
+        : above && !rising ? cfg.colorAboveFalling
+          : !above && !rising ? cfg.colorBelowFalling
+            : cfg.colorBelowRising;
+      s.plot0[i] = { time: bars[i].time, value: level, color: stateColor };
+      // plotshape(crossed ? close : na, style = shape.circle, location = location.absolute, size = size.tiny)
+      if (crossed) {
+        s.markers.push({ time: bars[i].time, position: 'atPriceMiddle', price: close, shape: 'circle', color: stateColor, size: 'tiny' });
+      }
+      v.prev = r;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<Rsi50StepLineInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<Rsi50StepLineInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const rsi = ta.rsi(getSourceSeries(bars, cfg.rsiSource), cfg.rsiLength).toArray().map((v) => v ?? NaN);
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const markers: MarkerData[] = [];
-  let level = NaN; // var float level = na
-  for (let i = 0; i < n; i++) {
-    const close = bars[i].close;
-    // ta.cross(rsiValue, 50): (a[1] <= 50 and a > 50) or (a[1] >= 50 and a < 50), compared exactly (no 1e-10
-    // tolerance; na compares false)
-    const prev = i > 0 ? rsi[i - 1] : NaN;
-    const crossed = (prev <= 50 && rsi[i] > 50) || (prev >= 50 && rsi[i] < 50);
-    if (crossed) level = close;
-    const above = gt(close, level);
-    const rising = gt(rsi[i], prev);
-    const stateColor = above && rising ? cfg.colorAboveRising
-      : above && !rising ? cfg.colorAboveFalling
-        : !above && !rising ? cfg.colorBelowFalling
-          : cfg.colorBelowRising;
-    plot0.push({ time: bars[i].time, value: level, color: stateColor });
-    // plotshape(crossed ? close : na, style = shape.circle, location = location.absolute, size = size.tiny)
-    if (crossed) {
-      markers.push({ time: bars[i].time, position: 'atPriceMiddle', price: close, shape: 'circle', color: stateColor, size: 'tiny' });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    markers,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const Rsi50StepLine = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

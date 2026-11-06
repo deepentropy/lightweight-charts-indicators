@@ -13,6 +13,8 @@
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CvdDivergenceBackgroundInputs {
   /** Bearish Div Background (Green Candle / Red CVD) */
@@ -53,37 +55,56 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CvdDivergenceBackgroundInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } {
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+
+interface CvdDivRun extends BarRunState<Record<string, never>> {
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<CvdDivergenceBackgroundInputs>): BarStudy<CvdDivRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const bgColors: BgColorData[] = [];
-
-  for (const b of bars) {
-    const volume = b.volume ?? NaN;
-    const rangeSize = b.high - b.low;
-    const rawBuyVol = eq(rangeSize, 0) ? 0 : ((b.close - b.low) / rangeSize) * volume;
-    const rawSellVol = eq(rangeSize, 0) ? 0 : ((b.high - b.close) / rangeSize) * volume;
-    const delta = rawBuyVol - rawSellVol;
-
-    const isGreenCandle = gt(b.close, b.open);
-    const isRedCandle = lt(b.close, b.open);
-    const isBearDiv = isGreenCandle && lt(delta, 0);
-    const isBullDiv = isRedCandle && gt(delta, 0);
-
-    // bgcolor(is_bear_div ? c_div_bear : na, "Bearish Divergence BG") then
-    // bgcolor(is_bull_div ? c_div_bull : na, "Bullish Divergence BG"): the second layer is drawn over the first
-    // (the two conditions never hold on the same bar: green and red candles exclude each other)
-    if (isBullDiv) bgColors.push({ time: b.time, color: cfg.bullColor });
-    else if (isBearDiv) bgColors.push({ time: b.time, color: cfg.bearColor });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    bgColors,
+    init() {
+      const s: CvdDivRun = { bgColors: [], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.bgColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = b.volume ?? NaN;
+      const rangeSize = b.high - b.low;
+      const rawBuyVol = eq(rangeSize, 0) ? 0 : ((b.close - b.low) / rangeSize) * volume;
+      const rawSellVol = eq(rangeSize, 0) ? 0 : ((b.high - b.close) / rangeSize) * volume;
+      const delta = rawBuyVol - rawSellVol;
+
+      const isGreenCandle = gt(b.close, b.open);
+      const isRedCandle = lt(b.close, b.open);
+      const isBearDiv = isGreenCandle && lt(delta, 0);
+      const isBullDiv = isRedCandle && gt(delta, 0);
+
+      // bgcolor(is_bear_div ? c_div_bear : na, "Bearish Divergence BG") then
+      // bgcolor(is_bull_div ? c_div_bull : na, "Bullish Divergence BG"): the second layer is drawn over the first
+      // (the two conditions never hold on the same bar: green and red candles exclude each other)
+      if (isBullDiv) s.bgColors.push({ time: b.time, color: cfg.bullColor });
+      else if (isBearDiv) s.bgColors.push({ time: b.time, color: cfg.bearColor });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
 }
 
-export const CvdDivergenceBackground = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CvdDivergenceBackgroundInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CvdDivergenceBackgroundInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const CvdDivergenceBackground = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

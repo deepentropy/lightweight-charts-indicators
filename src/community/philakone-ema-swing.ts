@@ -11,9 +11,11 @@
  * Reference: "Philakone 55 EMA Swing Trading" (community)
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PhilakoneEMASwingInputs {
   src: SourceType;
@@ -44,53 +46,85 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<PhilakoneEMASwingInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number };
+type Ma = { step(v: number): number; commit(): void };
+
+interface SwingRun extends BarRunState<{ pm21: number; pm55: number }> {
+  mas: Ma[];
+  lines: Point[][];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<PhilakoneEMASwingInputs>): BarStudy<SwingRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const src = getSourceSeries(bars, cfg.src);
-
+  const value = barSource(cfg.src);
   // maN = exponential ? ta.ema(src, N) : ta.sma(src, N)
-  const ma = (len: number) => (cfg.exponential ? ta.ema(src, len) : ta.sma(src, len)).toArray();
-  const ma8Arr = ma(8);
-  const ma13Arr = ma(13);
-  const ma21Arr = ma(21);
-  const ma55Arr = ma(55);
-
-  const line = (a: (number | null)[]) => a.map((v, i) => ({ time: bars[i].time, value: v ?? NaN }));
-  const plot0 = line(ma8Arr);
-  const plot1 = line(ma13Arr);
-  const plot2 = line(ma21Arr);
-  const plot3 = line(ma55Arr);
-
-  // buy_cond / sell_cond of the original on every bar (na compares false)
-  const v = (a: (number | null)[], i: number) => (i >= 0 ? a[i] ?? NaN : NaN);
-  const buyFlags: boolean[] = [], sellFlags: boolean[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const m8 = v(ma8Arr, i), m13 = v(ma13Arr, i), m21 = v(ma21Arr, i), m55 = v(ma55Arr, i);
-    const pm21 = v(ma21Arr, i - 1), pm55 = v(ma55Arr, i - 1);
-    const cross = (m21 > m55 && pm21 <= pm55) || (m21 < m55 && pm21 >= pm55);
-    buyFlags.push(cross && m8 > m13 && m21 > m55);
-    sellFlags.push(cross && m8 < m13 && m21 < m55);
-  }
-
-  // plotshape(buy_cond, 'buy', shape.triangleup, location.belowbar, color.new(color.lime, 35), text = 'Buy') and
-  // plotshape(sell_cond, 'sell', shape.triangledown, location.abovebar, color.new(color.red, 35), text = 'Sell')
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    if (buyFlags[i]) {
-      markers.push({ id: 'shape0', time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: 'rgba(0,230,118,0.65)', text: 'Buy', textColor: 'rgba(0,230,118,0.65)', size: 'normal' });
-    }
-    if (sellFlags[i]) {
-      markers.push({ id: 'shape1', time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: 'rgba(255,82,82,0.65)', text: 'Sell', textColor: 'rgba(255,82,82,0.65)', size: 'normal' });
-    }
-  }
-
+  const ma = (len: number): Ma => (cfg.exponential ? taStep.ema(len) : new WindowSma(len));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
-    markers,
-    // alertcondition(buy_cond, 'Buy Condition') / alertcondition(sell_cond, 'Sell Condition')
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const mas = [ma(8), ma(13), ma(21), ma(55)];
+      const s: SwingRun = {
+        mas, lines: [[], [], [], []], flags: [[], []], times: [[], []], markers: [],
+        steps: mas, vars: { pm21: NaN, pm55: NaN }, lists: [], series: [],
+      };
+      s.lists = [...s.times, s.markers];
+      s.series = [...s.lines, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const x = value(b);
+      const m8 = s.mas[0].step(x), m13 = s.mas[1].step(x), m21 = s.mas[2].step(x), m55 = s.mas[3].step(x);
+      s.lines[0][i] = { time: b.time, value: m8 };
+      s.lines[1][i] = { time: b.time, value: m13 };
+      s.lines[2][i] = { time: b.time, value: m21 };
+      s.lines[3][i] = { time: b.time, value: m55 };
+
+      // buy_cond / sell_cond of the original on every bar (na compares false)
+      const pm21 = s.vars.pm21, pm55 = s.vars.pm55;
+      s.vars.pm21 = m21;
+      s.vars.pm55 = m55;
+      const cross = (m21 > m55 && pm21 <= pm55) || (m21 < m55 && pm21 >= pm55);
+      const buy = cross && m8 > m13 && m21 > m55;
+      const sell = cross && m8 < m13 && m21 < m55;
+      s.flags[0][i] = buy;
+      s.flags[1][i] = sell;
+      if (buy) s.times[0].push(b.time as number);
+      if (sell) s.times[1].push(b.time as number);
+
+      // plotshape(buy_cond, 'buy', shape.triangleup, location.belowbar, color.new(color.lime, 35), text = 'Buy') and
+      // plotshape(sell_cond, 'sell', shape.triangledown, location.abovebar, color.new(color.red, 35), text = 'Sell')
+      if (buy) {
+        s.markers.push({ id: 'shape0', time: b.time, position: 'belowBar', shape: 'triangleUp', color: 'rgba(0,230,118,0.65)', text: 'Buy', textColor: 'rgba(0,230,118,0.65)', size: 'normal' });
+      }
+      if (sell) {
+        s.markers.push({ id: 'shape1', time: b.time, position: 'aboveBar', shape: 'triangleDown', color: 'rgba(255,82,82,0.65)', text: 'Sell', textColor: 'rgba(255,82,82,0.65)', size: 'normal' });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.lines[0].slice(), 'plot1': s.lines[1].slice(), 'plot2': s.lines[2].slice(), 'plot3': s.lines[3].slice() },
+        markers: s.markers.slice(),
+        // alertcondition(buy_cond, 'Buy Condition') / alertcondition(sell_cond, 'Sell Condition')
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PhilakoneEMASwingInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PhilakoneEMASwingInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -99,4 +133,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'Sell Condition', message: 'Sell Condition Alert' },
 ];
 
-export const PhilakoneEMASwing = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const PhilakoneEMASwing = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

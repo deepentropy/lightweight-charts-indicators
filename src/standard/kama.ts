@@ -11,7 +11,9 @@
  * "ta" library are ported in this file.
  */
 
-import { taCore, math, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface KaufmansAdaptiveMovingAverageInputs {
   /** Source: a price of the bar or the volume */
@@ -48,51 +50,67 @@ export const metadata = {
   overlay: true,
 };
 
-/**
- * ewma() of the "ta" library: result := alpha * source + (1 - alpha) * nz(result[1], source).
- * nz() treats +-infinity as na; an na alpha or source gives na on the bar.
- */
-function ewma(source: number[], alpha: number[]): number[] {
-  const out: number[] = new Array(source.length);
-  let prev = NaN;
-  for (let i = 0; i < source.length; i++) {
-    const a = alpha[i];
-    if (a < 0) throw new Error('Invalid smoothing factor. The value must not be negative.');
-    const s = source[i];
-    const r = a * s + (1.0 - a) * (Number.isFinite(prev) ? prev : s);
-    out[i] = r;
-    prev = r;
-  }
-  return out;
+type Point = { time: number; value: number };
+
+interface KamaRun extends BarRunState<{ prev: number }> {
+  change: ReturnType<typeof taStep.change>;
+  change1: ReturnType<typeof taStep.change>;
+  sum: WindowSum;
+  plot0: Point[];
 }
 
-/** er() of the "ta" library: Kaufman's Efficiency Ratio */
-function er(source: number[], length: number): number[] {
-  const absChange = taCore.change(source, length).map((v) => Math.abs(v));
-  const sumChanges = math.sum(taCore.change(source, 1).map((v) => Math.abs(v)), length) as number[];
-  // sumChanges == 0.0: Pine equality within 1e-10 (na compares false)
-  return absChange.map((v, i) => (Math.abs(sumChanges[i]) <= 1e-10 ? 0.0 : v / sumChanges[i]));
-}
-
-export function calculate(bars: Bar[], inputs: Partial<KaufmansAdaptiveMovingAverageInputs> = {}): IndicatorResult {
+function study(inputs: Partial<KaufmansAdaptiveMovingAverageInputs>): BarStudy<KamaRun, IndicatorResult> {
   const { src, erLength, fastLength, slowLength } = { ...defaultInputs, ...inputs };
-  // input.source also offers the volume, which getSourceSeries does not give
-  const source = src === 'volume'
-    ? bars.map((b) => b.volume ?? NaN)
-    : getSourceSeries(bars, src).toArray().map((v) => v ?? NaN);
-
+  // input.source also offers the volume
+  const value = barSource(src);
   // kama() of the "ta" library
   const alphaFast = 2.0 / (fastLength + 1.0);
   const alphaSlow = 2.0 / (slowLength + 1.0);
-  const alpha = er(source, erLength).map((e) => math.pow(e * (alphaFast - alphaSlow) + alphaSlow, 2) as number);
-  const kama = ewma(source, alpha);
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: kama.map((v, i) => ({ time: bars[i].time, value: Number.isFinite(v) ? v : NaN })),
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const change = taStep.change(erLength);
+      const change1 = taStep.change(1);
+      // the length check of math.sum (the same runtime error)
+      math.sum([], erLength);
+      const sum = new WindowSum(erLength);
+      const s: KamaRun = { change, change1, sum, plot0: [], steps: [change, change1, sum], vars: { prev: NaN }, lists: [], series: [] };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const x = value(b);
+      // er() of the "ta" library: Kaufman's Efficiency Ratio
+      const absChange = Math.abs(s.change.step(x));
+      const sumChanges = s.sum.step(Math.abs(s.change1.step(x)));
+      // sumChanges == 0.0: Pine equality within 1e-10 (na compares false)
+      const e = Math.abs(sumChanges) <= 1e-10 ? 0.0 : absChange / sumChanges;
+      const a = math.pow(e * (alphaFast - alphaSlow) + alphaSlow, 2) as number;
+      // ewma() of the "ta" library: result := alpha * source + (1 - alpha) * nz(result[1], source).
+      // nz() treats +-infinity as na; an na alpha or source gives na on the bar.
+      if (a < 0) throw new Error('Invalid smoothing factor. The value must not be negative.');
+      const prev = s.vars.prev;
+      const r = a * x + (1.0 - a) * (Number.isFinite(prev) ? prev : x);
+      s.vars.prev = r;
+      s.plot0[i] = { time: b.time, value: Number.isFinite(r) ? r : NaN };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+      };
     },
   };
 }
 
-export const KaufmansAdaptiveMovingAverage = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<KaufmansAdaptiveMovingAverageInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<KaufmansAdaptiveMovingAverageInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const KaufmansAdaptiveMovingAverage = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

@@ -6,8 +6,10 @@
  * Reference: "EMA & MA Crossover" (community)
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EMAMACrossInputs {
   emaLen: number;
@@ -38,43 +40,67 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<EMAMACrossInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
+
+interface EmaMaRun extends BarRunState<{ pos: number }> {
+  ema: ReturnType<typeof taStep.ema>;
+  sma: WindowSma;
+  plot0: { time: number; value: number }[];
+  plot1: { time: number; value: number }[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<EMAMACrossInputs>): BarStudy<EmaMaRun, Result> {
   const { emaLen, smaLen, src } = { ...defaultInputs, ...inputs };
-  const srcSeries = getSourceSeries(bars, src);
-
-  const emaArr = ta.ema(srcSeries, emaLen).toArray();
-  const smaArr = ta.sma(srcSeries, smaLen).toArray();
+  const value = barSource(src);
   const warmup = Math.max(emaLen, smaLen);
-
-  const plot0 = emaArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : (v ?? NaN),
-  }));
-
-  const plot1 = smaArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : (v ?? NaN),
-  }));
-
-  // barcolor: green when EMA < SMA (pos=1), red when EMA > SMA (pos=-1), blue otherwise
-  // Pine: pos = iff(xEMA < xMA, 1, iff(xEMA > xMA, -1, nz(pos[1], 0)))
-  const barColors: BarColorData[] = [];
-  let pos = 0;
-  for (let i = warmup; i < bars.length; i++) {
-    const e = emaArr[i] ?? 0;
-    const s = smaArr[i] ?? 0;
-    if (e < s) pos = 1;
-    else if (e > s) pos = -1;
-    if (pos === 1) barColors.push({ time: bars[i].time, color: '#26A69A' });
-    else if (pos === -1) barColors.push({ time: bars[i].time, color: '#EF5350' });
-    else barColors.push({ time: bars[i].time, color: '#2196F3' });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
-    barColors,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const ema = taStep.ema(emaLen);
+      const sma = new WindowSma(smaLen);
+      const s: EmaMaRun = { ema, sma, plot0: [], plot1: [], barColors: [], steps: [ema, sma], vars: { pos: 0 }, lists: [], series: [] };
+      s.lists = [s.barColors];
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = value(b);
+      const emaV = s.ema.step(v);
+      const smaV = s.sma.step(v);
+      s.plot0[i] = { time: b.time, value: i < warmup ? NaN : (emaV ?? NaN) };
+      s.plot1[i] = { time: b.time, value: i < warmup ? NaN : (smaV ?? NaN) };
+
+      // barcolor: green when EMA < SMA (pos=1), red when EMA > SMA (pos=-1), blue otherwise
+      // Pine: pos = iff(xEMA < xMA, 1, iff(xEMA > xMA, -1, nz(pos[1], 0)))
+      if (i < warmup) return;
+      const e = emaV ?? 0;
+      const sm = smaV ?? 0;
+      if (e < sm) s.vars.pos = 1;
+      else if (e > sm) s.vars.pos = -1;
+      const pos = s.vars.pos;
+      if (pos === 1) s.barColors.push({ time: b.time, color: '#26A69A' });
+      else if (pos === -1) s.barColors.push({ time: b.time, color: '#EF5350' });
+      else s.barColors.push({ time: b.time, color: '#2196F3' });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice() },
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const EMAMACross = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EMAMACrossInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EMAMACrossInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const EMAMACross = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

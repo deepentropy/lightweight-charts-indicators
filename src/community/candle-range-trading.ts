@@ -17,7 +17,9 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CandleRangeTradingInputs {
   /** Show the CRT High / CRT Low plots */
@@ -43,53 +45,75 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CandleRangeTradingInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface CrtRun extends BarRunState<Record<string, never>> {
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<CandleRangeTradingInputs>): BarStudy<CrtRun, Result> {
   const { showBox } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const markers: MarkerData[] = [];
-  const plot0: { time: number; value: number }[] = new Array(n);
-  const plot1: { time: number; value: number }[] = new Array(n);
-  const bullFlags: boolean[] = [], bearFlags: boolean[] = [];
-
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    // open[1], close[1], high[1], low[1] are na on the first bar: every comparison with them is false
-    const open1 = i > 0 ? bars[i - 1].open : NaN;
-    const close1 = i > 0 ? bars[i - 1].close : NaN;
-    const high1 = i > 0 ? bars[i - 1].high : NaN;
-    const low1 = i > 0 ? bars[i - 1].low : NaN;
-
-    const bearishCRT = close1 > open1 && b.close < b.open && b.high > high1 && b.close <= high1 && b.close >= low1;
-    const bullishCRT = close1 < open1 && b.close > b.open && b.low < low1 && b.close <= high1 && b.close >= low1;
-    bullFlags.push(bullishCRT);
-    bearFlags.push(bearishCRT);
-
-    // plotshape(bullishCRT, 'Bullish CRT', shape.triangleup, location.belowbar, color.green, size = size.small)
-    if (bullishCRT) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'small' });
-    }
-    // plotshape(bearishCRT, 'Bearish CRT', shape.triangledown, location.abovebar, color.red, size = size.small)
-    if (bearishCRT) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'small' });
-    }
-
-    // boxHigh = showBox and (bullishCRT or bearishCRT) ? math.max(high0, high1) : na (boxLow with math.min of the lows)
-    const on = showBox && (bullishCRT || bearishCRT);
-    plot0[i] = { time: b.time, value: on ? Math.max(b.high, high1) : NaN };
-    plot1[i] = { time: b.time, value: on ? Math.min(b.low, low1) : NaN };
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    markers,
-    // alertcondition(bullishCRT, 'Bullish CRT Alert') / alertcondition(bearishCRT, 'Bearish CRT Alert')
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags]),
+    init() {
+      const s: CrtRun = { plot0: [], plot1: [], markers: [], flags: [[], []], times: [[], []], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.plot0, s.plot1, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // open[1], close[1], high[1], low[1] are na on the first bar: every comparison with them is false
+      const open1 = i > 0 ? bars[i - 1].open : NaN;
+      const close1 = i > 0 ? bars[i - 1].close : NaN;
+      const high1 = i > 0 ? bars[i - 1].high : NaN;
+      const low1 = i > 0 ? bars[i - 1].low : NaN;
+
+      const bearishCRT = close1 > open1 && b.close < b.open && b.high > high1 && b.close <= high1 && b.close >= low1;
+      const bullishCRT = close1 < open1 && b.close > b.open && b.low < low1 && b.close <= high1 && b.close >= low1;
+
+      // plotshape(bullishCRT, 'Bullish CRT', shape.triangleup, location.belowbar, color.green, size = size.small)
+      if (bullishCRT) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'small' });
+      }
+      // plotshape(bearishCRT, 'Bearish CRT', shape.triangledown, location.abovebar, color.red, size = size.small)
+      if (bearishCRT) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'small' });
+      }
+
+      // boxHigh = showBox and (bullishCRT or bearishCRT) ? math.max(high0, high1) : na (boxLow with math.min of the lows)
+      const on = showBox && (bullishCRT || bearishCRT);
+      s.plot0[i] = { time: b.time, value: on ? Math.max(b.high, high1) : NaN };
+      s.plot1[i] = { time: b.time, value: on ? Math.min(b.low, low1) : NaN };
+      [bullishCRT, bearishCRT].forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(b.time as number);
+      });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        // alertcondition(bullishCRT, 'Bullish CRT Alert') / alertcondition(bearishCRT, 'Bearish CRT Alert')
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CandleRangeTradingInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CandleRangeTradingInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -100,6 +124,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const CandleRangeTrading = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -16,10 +16,12 @@
  */
 
 import {
-  ta, Series, color,
+  taCore, color,
   type BarColorConfig, type Bar, type IndicatorResult, type InputConfig, type PlotConfig,
 } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type Committable, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface FxSniperT3CciCopyStrategyInputs {
   /** CCI_Period */
@@ -72,12 +74,71 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !Number.isNaN(a) && !Number.isNaN(b) && !lt(a, b);
 const nz = (x: number) => (Number.isNaN(x) ? 0 : x);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<FxSniperT3CciCopyStrategyInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
+
+/**
+ * `ta.cci(source, length)` with a constant length, one bar at a time: (source - sma) / (0.015 * dev), a zero dev keeps
+ * the previous value (0 at the start); the sma of a {@link WindowSma} and the mean deviation of the last `length`
+ * values (the doubles of taStep.cci, faster)
+ */
+class CciFast implements Committable {
+  private readonly mean: WindowSma;
+  private readonly len: number;
+  private values: number[] = [];
+  private pending = NaN;
+  private stepped = false;
+  private last = 0;
+  private next = 0;
+
+  constructor(length: number) {
+    // the length check of ta.cci (the same runtime error)
+    taCore.cci([], length);
+    this.len = Math.floor(length);
+    this.mean = new WindowSma(length);
+  }
+
+  step(value: number): number {
+    this.stepped = true;
+    this.pending = value;
+    this.next = this.last;
+    const mean = this.mean.step(value);
+    const n = this.values.length;
+    const len = this.len;
+    if (Number.isNaN(mean) || n < len - 1) return NaN;
+    let sum = 0;
+    for (let k = 0; k < len; k++) sum += Math.abs((k === 0 ? value : this.values[n - k]!) - mean);
+    const d = sum / len;
+    if (Number.isNaN(d)) return NaN;
+    if (!(Math.abs(d - 0) <= 1e-10)) this.next = (value - mean) / (0.015 * d);
+    return this.next;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.last = this.next;
+    this.mean.commit();
+    this.values.push(this.pending);
+    if (this.values.length > this.len * 2 + 1024) this.values = this.values.slice(-this.len);
+  }
+}
+
+interface FxVars {
+  /** e1 .. e6 of the bar before (changed in place: copied by copyVars) */
+  e: number[];
+  /** pos of the bar before */
+  pos: number;
+}
+
+interface FxRun extends BarRunState<FxVars> {
+  cci: CciFast;
+  plot0: { time: number; value: number }[];
+  plot1: { time: number; value: number; color: string }[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<FxSniperT3CciCopyStrategyInputs>): BarStudy<FxRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const b = cfg.b;
   const b2 = b * b;
   const b3 = b2 * b;
@@ -90,45 +151,65 @@ export function calculate(
   const nr = 1 + 0.5 * (nn - 1);
   const w1 = 2 / (nr + 1);
   const w2 = 1 - w1;
-
-  // xcci = cci(xPrice, CCI_Period), xPrice = close
-  const xcci = ta.cci(new Series(bars, (bar) => bar.close), cfg.cciPeriod)
-    .toArray().map((v) => (v === null || v === undefined ? NaN : (v as number)));
-
-  const plot0: { time: number; value: number }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const barColors: BarColorData[] = [];
-  const e = [NaN, NaN, NaN, NaN, NaN, NaN];
-  let pos = 0;
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time as number;
-    // e1 = w1*xcci + w2*nz(e1[1]), e2 = w1*e1 + w2*nz(e2[1]), ...
-    let input = xcci[i];
-    for (let k = 0; k < 6; k++) {
-      e[k] = w1 * input + w2 * nz(e[k]);
-      input = e[k];
-    }
-    const x = c1 * e[5] + c2 * e[4] + c3 * e[3] + c4 * e[2];
-    // cciHcolor = iff(xccir >= 0, green, iff(xccir < 0, red, black))
-    const hColor = ge(x, 0) ? GREEN : lt(x, 0) ? RED : BLACK;
-    // pos = iff(xccir > 0, 1, iff(xccir < 0, -1, nz(pos[1], 0)))
-    pos = gt(x, 0) ? 1 : lt(x, 0) ? -1 : pos;
-    // barcolor(pos == -1 ? red : pos == 1 ? green : blue)
-    barColors.push({ id: 'barcolor0', time, color: pos === -1 ? RED : pos === 1 ? GREEN : BLUE });
-    const value = Number.isFinite(x) ? x : NaN;
-    plot0.push({ time, value });
-    plot1.push({ time, value, color: V1(hColor) });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    // hline(0, color=purple, linestyle=line)
-    hlines: [{ id: 'hline0', value: 0, options: { title: 'Level', color: PURPLE, linestyle: 'solid', linewidth: 1 } }],
-    barColors,
+    copyVars: (v) => ({ e: v.e.slice(), pos: v.pos }),
+    init() {
+      // xcci = cci(xPrice, CCI_Period), xPrice = close
+      const cci = new CciFast(cfg.cciPeriod);
+      const s: FxRun = {
+        cci, plot0: [], plot1: [], barColors: [],
+        steps: [cci], vars: { e: [NaN, NaN, NaN, NaN, NaN, NaN], pos: 0 }, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1, s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const bar = bars[i];
+      const time = bar.time as number;
+      const c = s.cci.step(bar.close);
+      const e = s.vars.e;
+      // e1 = w1*xcci + w2*nz(e1[1]), e2 = w1*e1 + w2*nz(e2[1]), ...
+      let input = c === null || c === undefined ? NaN : (c as number);
+      for (let k = 0; k < 6; k++) {
+        e[k] = w1 * input + w2 * nz(e[k]);
+        input = e[k];
+      }
+      const x = c1 * e[5] + c2 * e[4] + c3 * e[3] + c4 * e[2];
+      // cciHcolor = iff(xccir >= 0, green, iff(xccir < 0, red, black))
+      const hColor = ge(x, 0) ? GREEN : lt(x, 0) ? RED : BLACK;
+      // pos = iff(xccir > 0, 1, iff(xccir < 0, -1, nz(pos[1], 0)))
+      const pos = gt(x, 0) ? 1 : lt(x, 0) ? -1 : s.vars.pos;
+      s.vars.pos = pos;
+      // barcolor(pos == -1 ? red : pos == 1 ? green : blue)
+      s.barColors[i] = { id: 'barcolor0', time, color: pos === -1 ? RED : pos === 1 ? GREEN : BLUE };
+      const value = Number.isFinite(x) ? x : NaN;
+      s.plot0[i] = { time, value };
+      s.plot1[i] = { time, value, color: V1(hColor) };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        // hline(0, color=purple, linestyle=line)
+        hlines: [{ id: 'hline0', value: 0, options: { title: 'Level', color: PURPLE, linestyle: 'solid', linewidth: 1 } }],
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FxSniperT3CciCopyStrategyInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<FxSniperT3CciCopyStrategyInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const FxSniperT3CciCopyStrategy = {
-  calculate, metadata, defaultInputs, inputConfig, plotConfig, barColorConfig,
+  calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, barColorConfig,
 };

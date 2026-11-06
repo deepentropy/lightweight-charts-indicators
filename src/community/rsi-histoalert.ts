@@ -11,8 +11,10 @@
  * Original notice: Copyright by HPotter v1.0 07/08/2014
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RSIHistoAlertInputs {
   /** RSIPeriod */
@@ -70,49 +72,66 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RSIHistoAlertInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
+
+interface HistoRun extends BarRunState<{ pos: number }> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  plot0: { time: number; value: number }[];
+  plot1: { time: number; value: number; color: string }[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<RSIHistoAlertInputs>): BarStudy<HistoRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  // xPrice = close; RSIMain = (rsi(xPrice, RSIPeriod) - 50) * RSIHistoModify
-  const rsi = ta.rsi(new Series(bars, (b) => b.close), cfg.rsiLen).toArray();
-  const rsiMain = rsi.map((v) => (v == null || isNaN(v) ? NaN : (v - 50) * cfg.rsiHistoModify));
-
-  const plot0: { time: number; value: number }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const barColors: BarColorData[] = [];
-  let pos = 0;
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time as number;
-    const r = rsiMain[i];
-    // rsiHcolor = iff(RSIMain >= 0, green, iff(RSIMain < 0, red, black))
-    const hColor = ge(r, 0) ? GREEN : lt(r, 0) ? RED : BLACK;
-    // pos = iff(RSIMain > BuyAlertLevel, 1, iff(RSIMain < SellAlertLevel, -1, nz(pos[1], 0)))
-    pos = gt(r, cfg.buyAlertLevel) ? 1 : lt(r, cfg.sellAlertLevel) ? -1 : pos;
-    // barcolor(pos == -1 ? red : pos == 1 ? green : blue)
-    barColors.push({ id: 'barcolor0', time: t, color: pos === -1 ? RED : pos === 1 ? GREEN : BLUE });
-    // plot(RSIMain, color=blue, title="RSI HistoAlert")
-    plot0.push({ time: t, value: r });
-    // plot(RSIMain, color=rsiHcolor, title="Histogram", style=histogram, linewidth=1)
-    plot1.push({ time: t, value: r, color: hColor });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    hlines: [
-      // hline(0, color=purple, linestyle=line)
-      { id: 'hline0', value: 0, options: { title: 'Level', color: PURPLE, linestyle: 'solid' } },
-      // hline(BuyAlertLevel, color=green, linestyle=dashed)
-      { id: 'hline1', value: cfg.buyAlertLevel, options: { title: 'Level', color: GREEN, linestyle: 'dashed' } },
-      // hline(SellAlertLevel, color=red, linestyle=dashed)
-      { id: 'hline2', value: cfg.sellAlertLevel, options: { title: 'Level', color: RED, linestyle: 'dashed' } },
-    ],
-    barColors,
+    init() {
+      const rsi = taStep.rsi(cfg.rsiLen);
+      const s: HistoRun = { rsi, plot0: [], plot1: [], barColors: [], steps: [rsi], vars: { pos: 0 }, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1, s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time as number;
+      // xPrice = close; RSIMain = (rsi(xPrice, RSIPeriod) - 50) * RSIHistoModify
+      const v = s.rsi.step(bars[i].close);
+      const r = v == null || isNaN(v) ? NaN : (v - 50) * cfg.rsiHistoModify;
+      // rsiHcolor = iff(RSIMain >= 0, green, iff(RSIMain < 0, red, black))
+      const hColor = ge(r, 0) ? GREEN : lt(r, 0) ? RED : BLACK;
+      // pos = iff(RSIMain > BuyAlertLevel, 1, iff(RSIMain < SellAlertLevel, -1, nz(pos[1], 0)))
+      const pos = gt(r, cfg.buyAlertLevel) ? 1 : lt(r, cfg.sellAlertLevel) ? -1 : s.vars.pos;
+      s.vars.pos = pos;
+      // barcolor(pos == -1 ? red : pos == 1 ? green : blue)
+      s.barColors[i] = { id: 'barcolor0', time: t, color: pos === -1 ? RED : pos === 1 ? GREEN : BLUE };
+      // plot(RSIMain, color=blue, title="RSI HistoAlert")
+      s.plot0[i] = { time: t, value: r };
+      // plot(RSIMain, color=rsiHcolor, title="Histogram", style=histogram, linewidth=1)
+      s.plot1[i] = { time: t, value: r, color: hColor };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [
+          // hline(0, color=purple, linestyle=line)
+          { id: 'hline0', value: 0, options: { title: 'Level', color: PURPLE, linestyle: 'solid' } },
+          // hline(BuyAlertLevel, color=green, linestyle=dashed)
+          { id: 'hline1', value: cfg.buyAlertLevel, options: { title: 'Level', color: GREEN, linestyle: 'dashed' } },
+          // hline(SellAlertLevel, color=red, linestyle=dashed)
+          { id: 'hline2', value: cfg.sellAlertLevel, options: { title: 'Level', color: RED, linestyle: 'dashed' } },
+        ],
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const RSIHistoAlert = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RSIHistoAlertInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RSIHistoAlertInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const RSIHistoAlert = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig };

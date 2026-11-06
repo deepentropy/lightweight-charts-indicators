@@ -12,8 +12,10 @@
  * Original notice: © alexrainman
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeCandlesInputs {
   /** 'Percentile Ranking' or 'Volume Average' */
@@ -66,46 +68,67 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<VolumeCandlesInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
+
+interface VolumeCandlesRun extends BarRunState<Record<string, never>> {
+  avrg: WindowSma;
+  volume: number[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<VolumeCandlesInputs>): BarStudy<VolumeCandlesRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const volume = bars.map((b) => b.volume ?? NaN);
-  // avrg = ta.sma(volume, length): computed on every bar
-  const avrg = ta.sma(Series.fromArray(bars, volume), cfg.length).toArray().map((v) => v ?? NaN);
-
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    let bullColor: string;
-    let bearColor: string;
-    if (cfg.mode === 'Percentile Ranking') {
-      // for i = 0 to length - 1: rank += volume > volume[i] ? 1 : 0 (volume[i] before bar 0 is na: false)
-      let rank = 0;
-      for (let k = 0; k <= cfg.length - 1; k++) {
-        if (i - k >= 0 && gt(volume[i], volume[i - k])) rank += 1;
-      }
-      const volPercentile = (rank / cfg.length) * 100;
-      bullColor = lt(volPercentile, 50) ? cfg.bullishLow : lt(volPercentile, 80) ? cfg.bullishMedium : cfg.bullishHigh;
-      bearColor = lt(volPercentile, 50) ? cfg.bearishLow : lt(volPercentile, 80) ? cfg.bearishMedium : cfg.bearishHigh;
-    } else {
-      const v = volume[i];
-      const a = avrg[i];
-      const low = lt(v, a * 0.5);
-      const medium = ge(v, a * 0.5) && le(v, a * 1.5);
-      bullColor = low ? cfg.bullishLow : medium ? cfg.bullishMedium : cfg.bullishHigh;
-      bearColor = low ? cfg.bearishLow : medium ? cfg.bearishMedium : cfg.bearishHigh;
-    }
-    // barcolor(close >= open ? bullColor : bearColor, title = 'Volume Candles')
-    barColors.push({ time: bars[i].time, color: ge(bars[i].close, bars[i].open) ? bullColor : bearColor });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    barColors,
+    init() {
+      // avrg = ta.sma(volume, length): computed on every bar
+      const avrg = new WindowSma(cfg.length);
+      const s: VolumeCandlesRun = { avrg, volume: [], barColors: [], steps: [avrg], vars: {}, lists: [], series: [] };
+      s.series = [s.volume, s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = s.volume;
+      volume[i] = b.volume ?? NaN;
+      const a = s.avrg.step(volume[i]);
+      let bullColor: string;
+      let bearColor: string;
+      if (cfg.mode === 'Percentile Ranking') {
+        // for i = 0 to length - 1: rank += volume > volume[i] ? 1 : 0 (volume[i] before bar 0 is na: false)
+        let rank = 0;
+        for (let k = 0; k <= cfg.length - 1; k++) {
+          if (i - k >= 0 && gt(volume[i], volume[i - k])) rank += 1;
+        }
+        const volPercentile = (rank / cfg.length) * 100;
+        bullColor = lt(volPercentile, 50) ? cfg.bullishLow : lt(volPercentile, 80) ? cfg.bullishMedium : cfg.bullishHigh;
+        bearColor = lt(volPercentile, 50) ? cfg.bearishLow : lt(volPercentile, 80) ? cfg.bearishMedium : cfg.bearishHigh;
+      } else {
+        const v = volume[i];
+        const low = lt(v, a * 0.5);
+        const medium = ge(v, a * 0.5) && le(v, a * 1.5);
+        bullColor = low ? cfg.bullishLow : medium ? cfg.bullishMedium : cfg.bullishHigh;
+        bearColor = low ? cfg.bearishLow : medium ? cfg.bearishMedium : cfg.bearishHigh;
+      }
+      // barcolor(close >= open ? bullColor : bearColor, title = 'Volume Candles')
+      s.barColors[i] = { time: b.time, color: ge(b.close, b.open) ? bullColor : bearColor };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const VolumeCandles = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeCandlesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolumeCandlesInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const VolumeCandles = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

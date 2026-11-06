@@ -14,7 +14,9 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 // The Pine script has no inputs
 export interface FvgBreakoutBreakdownInputs {}
@@ -46,64 +48,98 @@ const PINE_BLUE = '#2962FF';
 const FRIDAY_CLOSE_TIME = Date.UTC(2024, 0, 1, 15, 59) / 1000;
 const MONDAY_OPEN_TIME = Date.UTC(2024, 0, 4, 0, 0) / 1000;
 
-export function calculate(
-  bars: Bar[],
-  _inputs: Partial<FvgBreakoutBreakdownInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const n = bars.length;
-  const nwogHigh: number[] = new Array(n);
-  const nwogLow: number[] = new Array(n);
-  const markers: MarkerData[] = [];
-  const buyFlags: boolean[] = [];
-  const sellFlags: boolean[] = [];
-  let fridayClose = NaN; // var float fridayClose = na
-  let mondayOpen = NaN; // var float mondayOpen = na
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    if (b.time === FRIDAY_CLOSE_TIME) fridayClose = b.close;
-    if (b.time === MONDAY_OPEN_TIME) mondayOpen = b.open;
-    const nwogGap = mondayOpen - fridayClose;
-    nwogHigh[i] = mondayOpen + nwogGap;
-    nwogLow[i] = mondayOpen - nwogGap;
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
 
-    // bullishFVG = low[1] > high[3]; bearishFVG = high[1] < low[3] (na before bar 3: false)
-    const bullishFVG = i >= 3 && gt(bars[i - 1].low, bars[i - 3].high);
-    const bearishFVG = i >= 3 && lt(bars[i - 1].high, bars[i - 3].low);
-    const freshBreakout = gt(b.close, nwogHigh[i]) && bullishFVG;
-    const freshBreakdown = lt(b.close, nwogLow[i]) && bearishFVG;
-    buyFlags.push(freshBreakout);
-    sellFlags.push(freshBreakdown);
+interface FvgVars {
+  /** var float fridayClose = na; var float mondayOpen = na */
+  fridayClose: number;
+  mondayOpen: number;
+}
 
-    // plotshape(bullishFVG, location.belowbar, color.purple, shape.labelup, text = "")
-    if (bullishFVG) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.purple, size: 'auto', id: 'shape0' });
-    }
-    if (bearishFVG) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, size: 'auto', id: 'shape1' });
-    }
-    // plotshape(freshBreakout, location.belowbar, color.purple, shape.labelup, text = "BUY"): default text colour
-    if (freshBreakout) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.purple, text: 'BUY',
-        textColor: PINE_BLUE, size: 'auto', id: 'shape2' });
-    }
-    if (freshBreakdown) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
-        textColor: PINE_BLUE, size: 'auto', id: 'shape3' });
-    }
-  }
+interface FvgRun extends BarRunState<FvgVars> {
+  highData: Point[];
+  lowData: Point[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
 
+function study(): BarStudy<FvgRun, Result> {
   const val = (v: number) => (Number.isFinite(v) ? v : NaN);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: val(nwogHigh[i]), color: color.green })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: val(nwogLow[i]), color: color.red })),
+    init() {
+      const s: FvgRun = {
+        highData: [], lowData: [], markers: [], flags: [[], []], times: [[], []], steps: [],
+        vars: { fridayClose: NaN, mondayOpen: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.highData, s.lowData, ...s.flags];
+      return s;
     },
-    markers,
-    // alertcondition(freshBreakout, "Fresh Buy Signal") / alertcondition(freshBreakdown, "Fresh Sell Signal")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      if (b.time === FRIDAY_CLOSE_TIME) v.fridayClose = b.close;
+      if (b.time === MONDAY_OPEN_TIME) v.mondayOpen = b.open;
+      const nwogGap = v.mondayOpen - v.fridayClose;
+      const nwogHigh = v.mondayOpen + nwogGap;
+      const nwogLow = v.mondayOpen - nwogGap;
+
+      // bullishFVG = low[1] > high[3]; bearishFVG = high[1] < low[3] (na before bar 3: false)
+      const bullishFVG = i >= 3 && gt(bars[i - 1].low, bars[i - 3].high);
+      const bearishFVG = i >= 3 && lt(bars[i - 1].high, bars[i - 3].low);
+      const freshBreakout = gt(b.close, nwogHigh) && bullishFVG;
+      const freshBreakdown = lt(b.close, nwogLow) && bearishFVG;
+
+      // plotshape(bullishFVG, location.belowbar, color.purple, shape.labelup, text = "")
+      if (bullishFVG) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.purple, size: 'auto', id: 'shape0' });
+      }
+      if (bearishFVG) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, size: 'auto', id: 'shape1' });
+      }
+      // plotshape(freshBreakout, location.belowbar, color.purple, shape.labelup, text = "BUY"): default text colour
+      if (freshBreakout) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.purple, text: 'BUY',
+          textColor: PINE_BLUE, size: 'auto', id: 'shape2' });
+      }
+      if (freshBreakdown) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
+          textColor: PINE_BLUE, size: 'auto', id: 'shape3' });
+      }
+      s.highData[i] = { time: b.time, value: val(nwogHigh), color: color.green };
+      s.lowData[i] = { time: b.time, value: val(nwogLow), color: color.red };
+      // alertcondition(freshBreakout, "Fresh Buy Signal") / alertcondition(freshBreakdown, "Fresh Sell Signal")
+      s.flags[0][i] = freshBreakout;
+      s.flags[1][i] = freshBreakdown;
+      if (freshBreakout) s.times[0].push(b.time as number);
+      if (freshBreakdown) s.times[1].push(b.time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.highData.slice(), plot1: s.lowData.slice() },
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
 }
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<FvgBreakoutBreakdownInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<FvgBreakoutBreakdownInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -113,6 +149,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const FvgBreakoutBreakdown = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

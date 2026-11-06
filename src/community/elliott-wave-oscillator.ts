@@ -8,7 +8,9 @@
  * Reference: "Elliot Wave Oscillator" by Koryu
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 // Pine comparison operators: equal within 1e-10; a comparison with na is false
 const EPS = 1e-10;
@@ -46,37 +48,55 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ElliottWaveOscInputs> = {}): IndicatorResult {
+type Point = { time: any; value: number; color: string };
+
+interface EwoRun extends BarRunState<Record<string, never>> {
+  sma1: WindowSma;
+  sma2: WindowSma;
+  ewoData: Point[];
+}
+
+function study(inputs: Partial<ElliottWaveOscInputs>): BarStudy<EwoRun, IndicatorResult> {
   const { src, sma1Length, sma2Length, usePercent } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
-
-  const sma1 = ta.sma(source, sma1Length);
-  const sma2 = ta.sma(source, sma2Length);
-  const sma1Arr = sma1.toArray();
-  const sma2Arr = sma2.toArray();
-  const srcArr = source.toArray();
-
-  const n = bars.length;
-  const ewoData: { time: any; value: number; color: string }[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    const s1 = sma1Arr[i];
-    const s2 = sma2Arr[i];
-    const sv = srcArr[i];
-    if (s1 == null || s2 == null || sv == null || (usePercent && sv === 0)) {
-      ewoData[i] = { time: bars[i].time, value: NaN, color: '#26A69A' };
-      continue;
-    }
-    const dif = s1 - s2;
-    const value = usePercent ? (dif / sv) * 100 : dif;
-    const color = le(value, 0) ? '#FF5252' : '#26A69A';
-    ewoData[i] = { time: bars[i].time, value, color };
-  }
-
+  const source = barSource(src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': ewoData },
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const sma1 = new WindowSma(sma1Length);
+      const sma2 = new WindowSma(sma2Length);
+      const s: EwoRun = { sma1, sma2, ewoData: [], steps: [sma1, sma2], vars: {}, lists: [], series: [] };
+      s.series = [s.ewoData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const sv = source(bars[i]);
+      const s1 = s.sma1.step(sv);
+      const s2 = s.sma2.step(sv);
+      if (s1 == null || s2 == null || sv == null || (usePercent && sv === 0)) {
+        s.ewoData[i] = { time: bars[i].time, value: NaN, color: '#26A69A' };
+        return;
+      }
+      const dif = s1 - s2;
+      const value = usePercent ? (dif / sv) * 100 : dif;
+      const color = le(value, 0) ? '#FF5252' : '#26A69A';
+      s.ewoData[i] = { time: bars[i].time, value, color };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.ewoData.slice() },
+      };
+    },
   };
 }
 
-export const ElliottWaveOscillator = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ElliottWaveOscInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ElliottWaveOscInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const ElliottWaveOscillator = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

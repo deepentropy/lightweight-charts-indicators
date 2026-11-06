@@ -17,6 +17,8 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type HeikinAshiReversalsWithRegionDotsInputs = Record<string, never>;
 
@@ -38,80 +40,115 @@ const EPS = 1e-10;
 const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] };
+
+interface HaVars {
+  /** haOpen[1] */
+  haOpenPrev: number;
+  /** haClose[1] */
+  haClosePrev: number;
+  /** largeBearishSetup[1] */
+  setupPrev: boolean;
+  /** var int regionStart = na */
+  regionStart: number;
+  /** var color regionColor = na */
+  regionColor: string | null;
+  /** greenCount[1] */
+  greenCountPrev: number;
+}
+
+interface HaRun extends BarRunState<HaVars> {
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+}
+
+function study(): BarStudy<HaRun, Result> {
+  return {
+    init() {
+      const s: HaRun = {
+        markers: [], bgColors: [], steps: [],
+        vars: { haOpenPrev: NaN, haClosePrev: NaN, setupPrev: false, regionStart: NaN, regionColor: null, greenCountPrev: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, s.bgColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const { haOpenPrev, haClosePrev, setupPrev } = v;
+      const markers = s.markers;
+      const b = bars[i];
+      const t = b.time;
+      const haClose = (b.open + b.high + b.low + b.close) / 4;
+      const haOpen = isNaN(haOpenPrev) ? (b.open + b.close) / 2 : (haOpenPrev + haClosePrev) / 2;
+      const haHigh = Math.max(b.high, Math.max(haOpen, haClose));
+      const haBody = Math.abs(haClose - haOpen);
+      const haUpperWick = haHigh - Math.max(haOpen, haClose);
+
+      const isRed = lt(haClose, haOpen);
+      const hasSmallUpperWick = lt(haUpperWick, haBody * 0.5);
+      const largeBearishSetup = isRed && hasSmallUpperWick;
+
+      const bullishReversal = setupPrev && ge(haClose, haClosePrev);
+      const bearishReversal = setupPrev && lt(haClose, haClosePrev);
+
+      // plotshape(largeBearishSetup, "Large Bearish Setup", location.belowbar, color.yellow, shape.circle, size.tiny)
+      if (largeBearishSetup) {
+        markers.push({ time: t, position: 'belowBar', shape: 'circle', color: color.yellow, size: 'tiny', id: 'shape0' });
+      }
+      // plotshape(bullishReversal, "Bullish Reversal", location.belowbar, color.green, shape.circle, size.small, offset = -1)
+      if (bullishReversal) {
+        markers.push({ time: bars[i - 1].time, position: 'belowBar', shape: 'circle', color: color.green, size: 'small', id: 'shape1' });
+      }
+      // plotshape(bearishReversal, "Bearish Reversal", location.belowbar, color.red, shape.circle, size.small, offset = -1)
+      if (bearishReversal) {
+        markers.push({ time: bars[i - 1].time, position: 'belowBar', shape: 'circle', color: color.red, size: 'small', id: 'shape2' });
+      }
+
+      if (largeBearishSetup) {
+        v.regionStart = i;
+        v.regionColor = null;
+      }
+      if (setupPrev) {
+        v.regionColor = ge(haClose, haClosePrev) ? color.green : color.red;
+      }
+      // greenCount := (haClose >= haOpen) ? nz(greenCount[1]) + 1 : 0
+      const greenCount = ge(haClose, haOpen) ? (isNaN(v.greenCountPrev) ? 0 : v.greenCountPrev) + 1 : 0;
+      if (greenCount >= 3) v.regionColor = color.green;
+
+      // bgcolor((not na(regionStart) and bar_index >= regionStart) ? color.new(regionColor, 85) : na)
+      // color.new(na, 85) is na in oakscriptjs (Pine: black with 85 % transparency, oakScriptJS #150)
+      if (!isNaN(v.regionStart) && i >= v.regionStart) {
+        const bg = color.new(v.regionColor, 85);
+        if (bg !== null) s.bgColors.push({ time: t, color: bg });
+      }
+
+      v.haOpenPrev = haOpen;
+      v.haClosePrev = haClose;
+      v.setupPrev = largeBearishSetup;
+      v.greenCountPrev = greenCount;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<HeikinAshiReversalsWithRegionDotsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
 export function calculate(
   bars: Bar[],
   _inputs: Partial<HeikinAshiReversalsWithRegionDotsInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
-  const n = bars.length;
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-
-  let haOpenPrev = NaN; // haOpen[1]
-  let haClosePrev = NaN; // haClose[1]
-  let setupPrev = false; // largeBearishSetup[1]
-  let regionStart = NaN; // var int regionStart = na
-  let regionColor: string | null = null; // var color regionColor = na
-  let greenCountPrev = NaN; // greenCount[1]
-
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time;
-    const haClose = (b.open + b.high + b.low + b.close) / 4;
-    const haOpen = isNaN(haOpenPrev) ? (b.open + b.close) / 2 : (haOpenPrev + haClosePrev) / 2;
-    const haHigh = Math.max(b.high, Math.max(haOpen, haClose));
-    const haBody = Math.abs(haClose - haOpen);
-    const haUpperWick = haHigh - Math.max(haOpen, haClose);
-
-    const isRed = lt(haClose, haOpen);
-    const hasSmallUpperWick = lt(haUpperWick, haBody * 0.5);
-    const largeBearishSetup = isRed && hasSmallUpperWick;
-
-    const bullishReversal = setupPrev && ge(haClose, haClosePrev);
-    const bearishReversal = setupPrev && lt(haClose, haClosePrev);
-
-    // plotshape(largeBearishSetup, "Large Bearish Setup", location.belowbar, color.yellow, shape.circle, size.tiny)
-    if (largeBearishSetup) {
-      markers.push({ time: t, position: 'belowBar', shape: 'circle', color: color.yellow, size: 'tiny', id: 'shape0' });
-    }
-    // plotshape(bullishReversal, "Bullish Reversal", location.belowbar, color.green, shape.circle, size.small, offset = -1)
-    if (bullishReversal) {
-      markers.push({ time: bars[i - 1].time, position: 'belowBar', shape: 'circle', color: color.green, size: 'small', id: 'shape1' });
-    }
-    // plotshape(bearishReversal, "Bearish Reversal", location.belowbar, color.red, shape.circle, size.small, offset = -1)
-    if (bearishReversal) {
-      markers.push({ time: bars[i - 1].time, position: 'belowBar', shape: 'circle', color: color.red, size: 'small', id: 'shape2' });
-    }
-
-    if (largeBearishSetup) {
-      regionStart = i;
-      regionColor = null;
-    }
-    if (setupPrev) {
-      regionColor = ge(haClose, haClosePrev) ? color.green : color.red;
-    }
-    // greenCount := (haClose >= haOpen) ? nz(greenCount[1]) + 1 : 0
-    const greenCount = ge(haClose, haOpen) ? (isNaN(greenCountPrev) ? 0 : greenCountPrev) + 1 : 0;
-    if (greenCount >= 3) regionColor = color.green;
-
-    // bgcolor((not na(regionStart) and bar_index >= regionStart) ? color.new(regionColor, 85) : na)
-    // color.new(na, 85) is na in oakscriptjs (Pine: black with 85 % transparency, oakScriptJS #150)
-    if (!isNaN(regionStart) && i >= regionStart) {
-      const bg = color.new(regionColor, 85);
-      if (bg !== null) bgColors.push({ time: t, color: bg });
-    }
-
-    haOpenPrev = haOpen;
-    haClosePrev = haClose;
-    setupPrev = largeBearishSetup;
-    greenCountPrev = greenCount;
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    bgColors,
-  };
+  return fullResult(createRun(_inputs).update(bars));
 }
 
-export const HeikinAshiReversalsWithRegionDots = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+export const HeikinAshiReversalsWithRegionDots = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

@@ -5,7 +5,9 @@
  * ADX of the Directional Movement Index (ta.dmi): RMA of |+DI - -DI| / (+DI + -DI) * 100.
  */
 
-import { ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ADXInputs {
   /** ADX smoothing period */
@@ -34,35 +36,56 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ADXInputs> = {}): IndicatorResult {
+interface AdxRun extends BarRunState<Record<string, never>> {
+  dmi: ReturnType<typeof taStep.dmi>;
+  adxData: { time: Bar['time']; value: number }[];
+}
+
+function study(inputs: Partial<ADXInputs>): BarStudy<AdxRun, IndicatorResult> {
   const { adxSmoothing, diLength } = { ...defaultInputs, ...inputs };
-
-  // dirmov(len): up = ta.change(high), down = -ta.change(low)
-  //   plusDM = na(up) ? na : (up > down and up > 0 ? up : 0), minusDM likewise
-  //   plus = fixnan(100 * ta.rma(plusDM, len) / ta.rma(ta.tr, len)), minus likewise
-  // adx = 100 * ta.rma(math.abs(plus - minus) / (sum == 0 ? 1 : sum), adxlen): the ADX of ta.dmi
-  const [, , adx] = ta.dmi(bars, diLength, adxSmoothing);
-  const adxArr = adx.toArray();
-
-  const adxData = bars.map((bar, i) => ({
-    time: bar.time,
-    value: adxArr[i] ?? NaN,
-  }));
-
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    init() {
+      // dirmov(len): up = ta.change(high), down = -ta.change(low)
+      //   plusDM = na(up) ? na : (up > down and up > 0 ? up : 0), minusDM likewise
+      //   plus = fixnan(100 * ta.rma(plusDM, len) / ta.rma(ta.tr, len)), minus likewise
+      // adx = 100 * ta.rma(math.abs(plus - minus) / (sum == 0 ? 1 : sum), adxlen): the ADX of ta.dmi
+      const dmi = taStep.dmi(diLength, adxSmoothing);
+      const s: AdxRun = { dmi, adxData: [], steps: [dmi], vars: {}, lists: [], series: [] };
+      s.series = [s.adxData];
+      return s;
     },
-    plots: {
-      'plot0': adxData,
+    bar(s, i, bars) {
+      const bar = bars[i];
+      const [, , adx] = s.dmi.step(bar.high, bar.low, bar.close);
+      s.adxData[i] = { time: bar.time, value: adx ?? NaN };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.adxData.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ADXInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ADXInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const ADX = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

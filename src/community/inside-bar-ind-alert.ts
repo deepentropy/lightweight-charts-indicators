@@ -16,7 +16,9 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type InsideBarIndAlertInputs = Record<string, never>;
 
@@ -39,62 +41,89 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  _inputs: Partial<InsideBarIndAlertInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
-  const n = bars.length;
-  // getBodyHighLow(open[k], close[k]): math.max / math.min (na before bar 0)
-  const bodyHigh = (i: number) => (i >= 0 ? Math.max(bars[i].open, bars[i].close) : NaN);
-  const bodyLow = (i: number) => (i >= 0 ? Math.min(bars[i].open, bars[i].close) : NaN);
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
 
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const insideFlags: boolean[] = new Array(n).fill(false);
-  const doubleFlags: boolean[] = new Array(n).fill(false);
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const curBodyHigh = bodyHigh(i);
-    const curBodyLow = bodyLow(i);
-    const prevBodyHigh = bodyHigh(i - 1);
-    const prevBodyLow = bodyLow(i - 1);
-    const isInsideBody = lt(curBodyHigh, prevBodyHigh) && gt(curBodyLow, prevBodyLow);
-    const bodyStatus = ge(bars[i].close, bars[i].open) ? 1 : -1;
-    const insideSignal = isInsideBody ? bodyStatus : 0;
+interface IbiaRun extends BarRunState<Record<string, never>> {
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
 
-    // barcolor(insideSignal == 1 ? color.green : na); barcolor(insideSignal == -1 ? color.red : na)
-    if (insideSignal === 1) barColors.push({ time: t, color: color.green });
-    if (insideSignal === -1) barColors.push({ time: t, color: color.red });
+// getBodyHighLow(open[k], close[k]): math.max / math.min (na before bar 0)
+const bodyHigh = (bars: Bar[], k: number) => (k >= 0 ? Math.max(bars[k].open, bars[k].close) : NaN);
+const bodyLow = (bars: Bar[], k: number) => (k >= 0 ? Math.min(bars[k].open, bars[k].close) : NaN);
 
-    // plotshape(insideSignal == 1, triangleup, abovebar, color.green)
-    if (insideSignal === 1) markers.push({ time: t, position: 'aboveBar', shape: 'triangleUp', color: color.green });
-    // plotshape(insideSignal == -1, triangledown, belowbar, color.red)
-    if (insideSignal === -1) markers.push({ time: t, position: 'belowBar', shape: 'triangleDown', color: color.red });
-
-    // Mother bar two bars back: current and previous body inside its body
-    const motherBodyHigh = bodyHigh(i - 2);
-    const motherBodyLow = bodyLow(i - 2);
-    const curInMother = lt(curBodyHigh, motherBodyHigh) && gt(curBodyLow, motherBodyLow);
-    const prevInMother = lt(prevBodyHigh, motherBodyHigh) && gt(prevBodyLow, motherBodyLow);
-    const doubleInside = curInMother && prevInMother;
-    // plotshape(doubleInside, circle, abovebar, color.orange, size.tiny, 'Two-in-a-row (body)')
-    if (doubleInside) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: color.orange, size: 'tiny' });
-    }
-    // isInsideBarMade = insideSignal != 0
-    insideFlags[i] = insideSignal !== 0;
-    doubleFlags[i] = doubleInside;
-  }
-
+function study(): BarStudy<IbiaRun, Result> {
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    barColors,
-    // alertcondition(isInsideBarMade) / alertcondition(doubleInside)
-    alerts: alertStates(alertConditions, bars, [insideFlags, doubleFlags]),
+    init() {
+      const s: IbiaRun = { markers: [], barColors: [], flags: [[], []], times: [[], []], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.markers, s.barColors, ...s.times];
+      s.series = s.flags;
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time;
+      const curBodyHigh = bodyHigh(bars, i);
+      const curBodyLow = bodyLow(bars, i);
+      const prevBodyHigh = bodyHigh(bars, i - 1);
+      const prevBodyLow = bodyLow(bars, i - 1);
+      const isInsideBody = lt(curBodyHigh, prevBodyHigh) && gt(curBodyLow, prevBodyLow);
+      const bodyStatus = ge(bars[i].close, bars[i].open) ? 1 : -1;
+      const insideSignal = isInsideBody ? bodyStatus : 0;
+
+      // barcolor(insideSignal == 1 ? color.green : na); barcolor(insideSignal == -1 ? color.red : na)
+      if (insideSignal === 1) s.barColors.push({ time: t, color: color.green });
+      if (insideSignal === -1) s.barColors.push({ time: t, color: color.red });
+
+      // plotshape(insideSignal == 1, triangleup, abovebar, color.green)
+      if (insideSignal === 1) s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleUp', color: color.green });
+      // plotshape(insideSignal == -1, triangledown, belowbar, color.red)
+      if (insideSignal === -1) s.markers.push({ time: t, position: 'belowBar', shape: 'triangleDown', color: color.red });
+
+      // Mother bar two bars back: current and previous body inside its body
+      const motherBodyHigh = bodyHigh(bars, i - 2);
+      const motherBodyLow = bodyLow(bars, i - 2);
+      const curInMother = lt(curBodyHigh, motherBodyHigh) && gt(curBodyLow, motherBodyLow);
+      const prevInMother = lt(prevBodyHigh, motherBodyHigh) && gt(prevBodyLow, motherBodyLow);
+      const doubleInside = curInMother && prevInMother;
+      // plotshape(doubleInside, circle, abovebar, color.orange, size.tiny, 'Two-in-a-row (body)')
+      if (doubleInside) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: color.orange, size: 'tiny' });
+      }
+      // isInsideBarMade = insideSignal != 0
+      const inside = insideSignal !== 0;
+      s.flags[0][i] = inside;
+      s.flags[1][i] = doubleInside;
+      if (inside) s.times[0].push(t as number);
+      if (doubleInside) s.times[1].push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        // alertcondition(isInsideBarMade) / alertcondition(doubleInside)
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
 }
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<InsideBarIndAlertInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<InsideBarIndAlertInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -102,4 +131,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'Next Candle Also Inside Bar (Body)', message: 'Two-in-a-row: current and previous bar inside mother body' },
 ];
 
-export const InsideBarIndAlert = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const InsideBarIndAlert = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

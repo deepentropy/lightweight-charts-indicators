@@ -11,6 +11,8 @@
  */
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface GannLevelInputs {}
 
@@ -42,23 +44,49 @@ const round = (x: number) => Math.round(x);
 /** roundIfBelow60(val) => val < 60 ? math.round(val * 10) / 10 : math.round(val) */
 const roundIfBelow60 = (val: number) => (60 - val > 1e-10 ? round(val * 10) / 10 : round(val));
 
-export function calculate(bars: Bar[], _inputs: Partial<GannLevelInputs> = {}): IndicatorResult {
-  const base = bars.map((b) => round(Math.sqrt(b.open)));
-  const plots: Record<string, { time: number; value: number; color: string }[]> = {};
-  STEPS.forEach((step, k) => {
-    plots[`plot${k}`] = bars.map((b, i) => {
-      const v = base[i] + step;
-      return { time: b.time, value: roundIfBelow60(v * v), color: COLORS[k] };
-    });
-  });
+type Point = { time: number; value: number; color: string };
+
+interface GannRun extends BarRunState<Record<string, never>> {
+  levels: Point[][];
+}
+
+function study(): BarStudy<GannRun, IndicatorResult> {
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    init() {
+      const levels = STEPS.map((): Point[] => []);
+      return { levels, steps: [], vars: {}, lists: [], series: levels };
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const base = round(Math.sqrt(b.open));
+      for (let k = 0; k < STEPS.length; k++) {
+        const v = base + STEPS[k];
+        s.levels[k][i] = { time: b.time, value: roundIfBelow60(v * v), color: COLORS[k] };
+      }
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      s.levels.forEach((level, k) => { plots[`plot${k}`] = level.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<GannLevelInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(bars: Bar[], _inputs: Partial<GannLevelInputs> = {}): IndicatorResult {
+  return fullResult(createRun(_inputs).update(bars));
 }
 
 export const GannLevel = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

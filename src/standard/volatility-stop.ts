@@ -13,7 +13,9 @@
  * Based on the standard "Volatility Stop" indicator.
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolatilityStopInputs {
   /** ATR length */
@@ -53,68 +55,99 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const pmax = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.max(a, b));
 const pmin = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.min(a, b));
 
-export function calculate(bars: Bar[], inputs: Partial<VolatilityStopInputs> = {}): IndicatorResult {
+interface VStopVars {
+  started: boolean;
+  max: number;
+  min: number;
+  uptrend: boolean;
+  stop: number;
+  /** barstate.isfirst */
+  first: boolean;
+}
+
+interface VStopRun extends BarRunState<VStopVars> {
+  tr: ReturnType<typeof taStep.tr>;
+  atr: ReturnType<typeof taStep.atr>;
+  data: { time: number; value: number; color: string }[];
+}
+
+function study(inputs: Partial<VolatilityStopInputs>): BarStudy<VStopRun, IndicatorResult> {
   const { length, src: srcInput, factor } = { ...defaultInputs, ...inputs };
-  const A = (s: { toArray(): (number | null)[] }) => s.toArray().map((v) => v ?? NaN);
-
-  const srcArr = A(getSourceSeries(bars, srcInput));
-  const trArr = A(ta.tr(bars, false)); // ta.tr: na on the first bar
-  const atrArr = A(ta.atr(bars, length));
-
-  const data: { time: number; value: number; color: string }[] = [];
-
-  // var max = src; var min = src; var uptrend = true; var float stop = na (inside `if not na(src)`)
-  let started = false;
-  let max = NaN;
-  let min = NaN;
-  let uptrend = true;
-  let stop = NaN;
-  let first = true; // barstate.isfirst
-
-  for (let i = 0; i < bars.length; i++) {
-    const src = srcArr[i];
-    let value = NaN;
-    if (!isNaN(src)) {
-      if (!started) {
-        max = src;
-        min = src;
-        started = true;
-      }
-      // atrM = nz(ta.atr(atrlen) * atrfactor, ta.tr)
-      const atrScaled = atrArr[i] * factor;
-      const atrM = isNaN(atrScaled) ? trArr[i] : atrScaled;
-      max = pmax(max, src);
-      min = pmin(min, src);
-      const next = uptrend ? pmax(stop, max - atrM) : pmin(stop, min + atrM);
-      stop = isNaN(next) ? src : next;
-      const prevUptrend: boolean = uptrend; // uptrend[1]
-      uptrend = ge(src - stop, 0);
-      if (uptrend !== prevUptrend && !first) {
-        max = src;
-        min = src;
-        stop = uptrend ? max - atrM : min + atrM;
-      }
-      value = stop;
-    }
-    first = false;
-    // plot(vStop, "Volatility Stop", style = plot.style_cross, color = uptrend ? #009688 : #F44336)
-    data.push({ time: bars[i].time, value, color: uptrend ? '#009688' : '#F44336' });
-  }
-
+  const source = barSource(srcInput);
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    fullRunReason: () => (isBarSource(srcInput) ? null : 'source of another study'),
+    init() {
+      const tr = taStep.tr(false); // ta.tr: na on the first bar
+      const atr = taStep.atr(length);
+      const s: VStopRun = {
+        tr, atr, data: [], steps: [tr, atr],
+        // var max = src; var min = src; var uptrend = true; var float stop = na (inside `if not na(src)`)
+        vars: { started: false, max: NaN, min: NaN, uptrend: true, stop: NaN, first: true },
+        lists: [], series: [],
+      };
+      s.series = [s.data];
+      return s;
     },
-    plots: {
-      'plot0': data,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const src = source(b);
+      const tr = s.tr.step(b.high, b.low, b.close);
+      const atr = s.atr.step(b.high, b.low, b.close);
+      let value = NaN;
+      if (!isNaN(src)) {
+        if (!v.started) {
+          v.max = src;
+          v.min = src;
+          v.started = true;
+        }
+        // atrM = nz(ta.atr(atrlen) * atrfactor, ta.tr)
+        const atrScaled = atr * factor;
+        const atrM = isNaN(atrScaled) ? tr : atrScaled;
+        v.max = pmax(v.max, src);
+        v.min = pmin(v.min, src);
+        const next = v.uptrend ? pmax(v.stop, v.max - atrM) : pmin(v.stop, v.min + atrM);
+        v.stop = isNaN(next) ? src : next;
+        const prevUptrend: boolean = v.uptrend; // uptrend[1]
+        v.uptrend = ge(src - v.stop, 0);
+        if (v.uptrend !== prevUptrend && !v.first) {
+          v.max = src;
+          v.min = src;
+          v.stop = v.uptrend ? v.max - atrM : v.min + atrM;
+        }
+        value = v.stop;
+      }
+      v.first = false;
+      // plot(vStop, "Volatility Stop", style = plot.style_cross, color = uptrend ? #009688 : #F44336)
+      s.data[i] = { time: b.time, value, color: v.uptrend ? '#009688' : '#F44336' };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.data.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolatilityStopInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolatilityStopInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const VolatilityStop = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -13,6 +13,8 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface CandleRangeTheoryByLucasInputs {}
@@ -44,58 +46,80 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface CrtRun extends BarRunState<Record<string, never>> {
+  plot0: { time: number; value: number; color: string }[];
+  plot1: { time: number; value: number; color: string }[];
+  markers: MarkerData[];
+}
+
+function study(_inputs: Partial<CandleRangeTheoryByLucasInputs>): BarStudy<CrtRun, Result> {
+  return {
+    init() {
+      const s: CrtRun = { plot0: [], plot1: [], markers: [], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.markers];
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const p = i > 0 ? bars[i - 1] : undefined;
+      // prevHigh = high[1], prevLow = low[1]
+      const pH = p ? p.high : NaN;
+      const pL = p ? p.low : NaN;
+      s.plot0[i] = { time: b.time, value: pH, color: PREV_HIGH_COL };
+      s.plot1[i] = { time: b.time, value: pL, color: PREV_LOW_COL };
+      // prevBody = math.abs(close[1] - open[1]), currBody = math.abs(close - open)
+      const prevBody = p ? Math.abs(p.close - p.open) : NaN;
+      const currBody = Math.abs(b.close - b.open);
+
+      // bullCRT = low < prevLow and open / close inside (prevLow, prevHigh) and prevBody > currBody
+      const bullBodyInside = gt(b.open, pL) && gt(b.close, pL) && lt(b.open, pH) && lt(b.close, pH);
+      const bullCRT = lt(b.low, pL) && bullBodyInside && gt(prevBody, currBody);
+      // bearCRT = high > prevHigh and open / close inside (prevLow, prevHigh) and prevBody > currBody
+      const bearBodyInside = lt(b.open, pH) && lt(b.close, pH) && gt(b.open, pL) && gt(b.close, pL);
+      const bearCRT = gt(b.high, pH) && bearBodyInside && gt(prevBody, currBody);
+
+      // plotshape(finalBullCRT, 'Bullish Manipulation (Buy)', shape.triangleup, location.belowbar, green, size.small, text = 'Buy')
+      if (bullCRT && !bearCRT) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: BUY_COL, text: 'Buy',
+          textColor: PINE_TEXT, size: 'small' });
+      }
+      // plotshape(finalBearCRT, 'Bearish Manipulation (Sell)', shape.triangledown, location.abovebar, red, size.small, text = 'Sell')
+      if (bearCRT && !bullCRT) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: SELL_COL, text: 'Sell',
+          textColor: PINE_TEXT, size: 'small' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plot0.slice(),
+          plot1: s.plot1.slice(),
+        },
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CandleRangeTheoryByLucasInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
-  _inputs: Partial<CandleRangeTheoryByLucasInputs> = {},
+  inputs: Partial<CandleRangeTheoryByLucasInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const n = bars.length;
-  const prevHigh: number[] = new Array(n);
-  const prevLow: number[] = new Array(n);
-  const markers: MarkerData[] = [];
-
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const p = i > 0 ? bars[i - 1] : undefined;
-    // prevHigh = high[1], prevLow = low[1]
-    const pH = p ? p.high : NaN;
-    const pL = p ? p.low : NaN;
-    prevHigh[i] = pH;
-    prevLow[i] = pL;
-    // prevBody = math.abs(close[1] - open[1]), currBody = math.abs(close - open)
-    const prevBody = p ? Math.abs(p.close - p.open) : NaN;
-    const currBody = Math.abs(b.close - b.open);
-
-    // bullCRT = low < prevLow and open / close inside (prevLow, prevHigh) and prevBody > currBody
-    const bullBodyInside = gt(b.open, pL) && gt(b.close, pL) && lt(b.open, pH) && lt(b.close, pH);
-    const bullCRT = lt(b.low, pL) && bullBodyInside && gt(prevBody, currBody);
-    // bearCRT = high > prevHigh and open / close inside (prevLow, prevHigh) and prevBody > currBody
-    const bearBodyInside = lt(b.open, pH) && lt(b.close, pH) && gt(b.open, pL) && gt(b.close, pL);
-    const bearCRT = gt(b.high, pH) && bearBodyInside && gt(prevBody, currBody);
-
-    // plotshape(finalBullCRT, 'Bullish Manipulation (Buy)', shape.triangleup, location.belowbar, green, size.small, text = 'Buy')
-    if (bullCRT && !bearCRT) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: BUY_COL, text: 'Buy',
-        textColor: PINE_TEXT, size: 'small' });
-    }
-    // plotshape(finalBearCRT, 'Bearish Manipulation (Sell)', shape.triangledown, location.abovebar, red, size.small, text = 'Sell')
-    if (bearCRT && !bullCRT) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: SELL_COL, text: 'Sell',
-        textColor: PINE_TEXT, size: 'small' });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: prevHigh[i], color: PREV_HIGH_COL })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: prevLow[i], color: PREV_LOW_COL })),
-    },
-    markers,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const CandleRangeTheoryByLucas = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

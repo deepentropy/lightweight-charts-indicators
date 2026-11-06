@@ -10,7 +10,9 @@
  * Reference: "A Useful MA Weighting Function For Controlling Lag & Smoothness"
  */
 
-import { ta, Series, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface WeightedMAFunctionInputs {
   source: SourceType;
@@ -72,10 +74,17 @@ function gradientColor(ratio: number): string {
   return '#' + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1).toUpperCase();
 }
 
-export function calculate(bars: Bar[], inputs: Partial<WeightedMAFunctionInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface BwmaRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  srcArr: number[];
+  plot0: Point[];
+}
+
+function study(inputs: Partial<WeightedMAFunctionInputs>): BarStudy<BwmaRun, IndicatorResult> {
   const { source, length, beta, alpha } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const srcArr = getSourceSeries(bars, source).toArray();
+  const value = barSource(source);
 
   // Precompute weights using Beta kernel: w(i) = x^(alpha-1) * (1-x)^(beta-1)
   const weights: number[] = new Array(length);
@@ -86,42 +95,58 @@ export function calculate(bars: Bar[], inputs: Partial<WeightedMAFunctionInputs>
     weights[i] = w;
     weightSum += w;
   }
-
-  // Compute the filtered MA
-  const filtArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    if (i < length - 1) {
-      filtArr[i] = NaN;
-      continue;
-    }
-    let sum = 0;
-    for (let j = 0; j < length; j++) {
-      const val = srcArr[i - j];
-      if (isNaN(val)) { sum = NaN; break; }
-      sum += val * weights[j];
-    }
-    filtArr[i] = isNaN(sum) ? NaN : sum / weightSum;
-  }
-
-  // Color based on RSI of the filtered values
-  // PineScript: os = rsi(filt, length) / 100
-  const filtSeries = Series.fromArray(bars, filtArr);
-  const rsiArr = ta.rsi(filtSeries, length).toArray();
-
   const warmup = length;
-
-  const plot0 = filtArr.map((v, i) => {
-    if (i < warmup || isNaN(v)) return { time: bars[i].time, value: NaN };
-    const rsiVal = rsiArr[i];
-    const ratio = !isNaN(rsiVal) ? rsiVal / 100 : 0.5;
-    const color = gradientColor(ratio);
-    return { time: bars[i].time, value: v, color };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    fullRunReason: () => (isBarSource(source) ? null : 'source of another study'),
+    init() {
+      // Color based on RSI of the filtered values
+      // PineScript: os = rsi(filt, length) / 100
+      const rsi = taStep.rsi(length);
+      const s: BwmaRun = { rsi, srcArr: [], plot0: [], steps: [rsi], vars: {}, lists: [], series: [] };
+      s.series = [s.srcArr, s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const srcArr = s.srcArr;
+      srcArr[i] = value(bars[i]);
+      // Compute the filtered MA
+      let filt: number;
+      if (i < length - 1) {
+        filt = NaN;
+      } else {
+        let sum = 0;
+        for (let j = 0; j < length; j++) {
+          const val = srcArr[i - j];
+          if (isNaN(val)) { sum = NaN; break; }
+          sum += val * weights[j];
+        }
+        filt = isNaN(sum) ? NaN : sum / weightSum;
+      }
+      const rsiVal = s.rsi.step(filt);
+      const t = bars[i].time;
+      if (i < warmup || isNaN(filt)) {
+        s.plot0[i] = { time: t, value: NaN };
+      } else {
+        const ratio = !isNaN(rsiVal) ? rsiVal / 100 : 0.5;
+        s.plot0[i] = { time: t, value: filt, color: gradientColor(ratio) };
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice() },
+      };
+    },
   };
 }
 
-export const WeightedMAFunction = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WeightedMAFunctionInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<WeightedMAFunctionInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const WeightedMAFunction = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

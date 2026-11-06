@@ -11,9 +11,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AiVolumeSignalsInputs {
   /** Volume EMA length */
@@ -51,46 +53,77 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface AiVolumeRun extends BarRunState<Record<string, never>> {
+  volEma: ReturnType<typeof taStep.ema>;
+  priceEma: ReturnType<typeof taStep.ema>;
+  plot0: { time: number; value: number }[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<AiVolumeSignalsInputs>): BarStudy<AiVolumeRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const volEma = taStep.ema(cfg.volumeEmaLength);
+      const priceEma = taStep.ema(50);
+      const s: AiVolumeRun = {
+        volEma, priceEma, plot0: [], markers: [], flags: [[], []], times: [[], []],
+        steps: [volEma, priceEma], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.plot0, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volumeEMA = s.volEma.step(b.volume ?? NaN);
+      const priceMA = s.priceEma.step(b.close);
+      const volumeSpike = gt(b.volume ?? NaN, volumeEMA * cfg.volumeMultiplier);
+      const trendUp = gt(b.close, priceMA);
+      const trendDown = lt(b.close, priceMA);
+      // plotshape(buySignal, "Buy Signal", location.belowbar, color.green, shape.labelup, text = "BUY")
+      const buySignal = volumeSpike && trendUp && gt(b.close, b.open);
+      const sellSignal = volumeSpike && trendDown && lt(b.close, b.open);
+      s.flags[0][i] = buySignal;
+      s.flags[1][i] = sellSignal;
+      if (buySignal) s.times[0].push(b.time as number);
+      if (sellSignal) s.times[1].push(b.time as number);
+      if (buySignal) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY', textColor: color.blue });
+      }
+      // plotshape(sellSignal, "Sell Signal", location.abovebar, color.red, shape.labeldown, text = "SELL")
+      if (sellSignal) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL', textColor: color.blue });
+      }
+      s.plot0[i] = { time: b.time, value: cfg.showVolumeEMA ? volumeEMA : NaN };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        markers: s.markers.slice(),
+        // alertcondition(buySignal, "Buy Alert") / alertcondition(sellSignal, "Sell Alert")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AiVolumeSignalsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<AiVolumeSignalsInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const volumeEMA = A(ta.ema(new Series(bars, (b) => b.volume ?? NaN), cfg.volumeEmaLength));
-  const priceMA = A(ta.ema(new Series(bars, (b) => b.close), 50));
-
-  const markers: MarkerData[] = [];
-  const buyFlags: boolean[] = [];
-  const sellFlags: boolean[] = [];
-  bars.forEach((b, i) => {
-    const volumeSpike = gt(b.volume ?? NaN, volumeEMA[i] * cfg.volumeMultiplier);
-    const trendUp = gt(b.close, priceMA[i]);
-    const trendDown = lt(b.close, priceMA[i]);
-    // plotshape(buySignal, "Buy Signal", location.belowbar, color.green, shape.labelup, text = "BUY")
-    const buySignal = volumeSpike && trendUp && gt(b.close, b.open);
-    const sellSignal = volumeSpike && trendDown && lt(b.close, b.open);
-    buyFlags.push(buySignal);
-    sellFlags.push(sellSignal);
-    if (buySignal) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY', textColor: color.blue });
-    }
-    // plotshape(sellSignal, "Sell Signal", location.abovebar, color.red, shape.labeldown, text = "SELL")
-    if (sellSignal) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL', textColor: color.blue });
-    }
-  });
-
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: cfg.showVolumeEMA ? volumeEMA[i] : NaN }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    markers,
-    // alertcondition(buySignal, "Buy Alert") / alertcondition(sellSignal, "Sell Alert")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -101,6 +134,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const AiVolumeSignals = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

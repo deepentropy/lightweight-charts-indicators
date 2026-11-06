@@ -11,8 +11,10 @@
  * Original notice: © Uptrick
  */
 
-import { ta, Series, color, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { AlmaStep, createBarRun, fullResult, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export const MA_TYPES = [
   'SMA', 'EMA', 'WMA', 'RMA', 'LWMA', 'SMMA', 'HMA', 'TMA', 'DEMA', 'TEMA', 'KAMA',
@@ -81,212 +83,325 @@ const ne = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) >
 /** Pine nz: na and +-infinity give the replacement */
 const nz = (v: number, r = 0) => (Number.isFinite(v) ? v : r);
 
-/** One smoothing step (f_getMA) on the values x (NaN = na) */
-function getMa(bars: Bar[], x: number[], vol: number[], length: number, type: string): number[] {
-  const n = x.length;
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  /** x[k] on bar i (na before the first bar) */
-  const at = (a: number[], i: number, k: number) => (i - k >= 0 ? a[i - k] : NaN);
+/** The values of one series by bar: the committed ones, then the one of the bar being calculated */
+class History implements Committable {
+  private vals: number[] = [];
+  /** Committed bars */
+  private count = 0;
+
+  set(v: number): void {
+    this.vals[this.count] = v;
+  }
+
+  /** x[k] on the bar being calculated (na before the first bar) */
+  at(k: number): number {
+    const j = this.count - k;
+    return j >= 0 ? this.vals[j]! : NaN;
+  }
+
+  commit(): void {
+    if (this.vals.length > this.count) this.count++;
+  }
+}
+
+/** One smoothing step stepped bar by bar */
+interface MaStep extends Committable {
+  step(x: number, vol: number): number;
+}
+
+/** A step from its function of the bar and the machines it commits */
+function machine(step: (x: number, vol: number) => number, parts: Committable[]): MaStep {
+  return { step, commit: () => { for (const p of parts) p.commit(); } };
+}
+
+/** One smoothing step (f_getMA) on the values x (NaN = na), one bar at a time */
+function getMa(length: number, type: string, n: number): MaStep {
   /** var float y := nz(y[1]) + alpha * (x - nz(y[1])) */
-  const recursive = (alpha: (i: number) => number) => {
-    const y: number[] = new Array(n);
-    for (let i = 0; i < n; i++) {
-      const p = nz(at(y, i, 1));
-      y[i] = p + alpha(i) * (x[i] - p);
-    }
-    return y;
+  const recursive = (alpha: (xh: History) => number): MaStep => {
+    const xh = new History();
+    const yh = new History();
+    return machine((x) => {
+      xh.set(x);
+      const p = nz(yh.at(1));
+      const y = p + alpha(xh) * (x - p);
+      yh.set(y);
+      return y;
+    }, [xh, yh]);
   };
   /** Efficiency ratio of KAMA / VIDYA */
-  const efficiency = (i: number) => {
+  const efficiency = (xh: History) => {
     let v = 0.0;
-    for (let k = 1; k <= length; k++) v += Math.abs(at(x, i, k) - at(x, i, k - 1));
-    const dir = Math.abs(x[i] - nz(at(x, i, length)));
+    for (let k = 1; k <= length; k++) v += Math.abs(xh.at(k) - xh.at(k - 1));
+    const dir = Math.abs(xh.at(0) - nz(xh.at(length)));
     return eq(v, 0) ? 1.0 : dir / v;
   };
-  /** 2-pole filter of BWMA / SSMA (bwPrev := nz(bwPrev[1], src)) */
-  const twoPole = () => {
-    const a = math.exp((-1.414 * 3.14159) / length);
-    const prev: number[] = new Array(n);
-    const y: number[] = new Array(n);
-    for (let i = 0; i < n; i++) {
-      prev[i] = nz(at(prev, i, 1), x[i]);
-      y[i] = (1 - a) * (1 - a) * x[i] + 2 * a * prev[i] - a * a * nz(at(prev, i, 1));
-    }
-    return y;
-  };
+  const ema = () => taStep.ema(length);
 
   switch (type) {
-    case 'SMA':
-      return A(ta.sma(S(x), length));
+    case 'SMA': {
+      const m = new WindowSma(length);
+      return machine((x) => m.step(x), [m]);
+    }
     case 'EMA':
-    case 'EWMA':
-      return A(ta.ema(S(x), length));
-    case 'WMA':
-      return A(ta.wma(S(x), length));
+    case 'EWMA': {
+      const m = ema();
+      return machine((x) => m.step(x), [m]);
+    }
+    case 'WMA': {
+      const m = taStep.wma();
+      return machine((x) => m.step(x, length), [m]);
+    }
     case 'RMA':
-    case 'SMMA':
-      return A(ta.rma(S(x), length));
-    case 'LWMA':
-      return x.map((v, i) => {
+    case 'SMMA': {
+      const m = taStep.rma(length);
+      return machine((x) => m.step(x), [m]);
+    }
+    case 'LWMA': {
+      const xh = new History();
+      return machine((x) => {
+        xh.set(x);
         let sum = 0.0;
         let sumWeight = 0.0;
         for (let k = 0; k <= length - 1; k++) {
           const w = k + 1;
-          sum += at(x, i, k) * w;
+          sum += xh.at(k) * w;
           sumWeight += w;
         }
-        return ne(sumWeight, 0) ? sum / sumWeight : v;
-      });
+        return ne(sumWeight, 0) ? sum / sumWeight : x;
+      }, [xh]);
+    }
     case 'HMA': {
       const halfLen = Math.floor(length / 2);
       const sqrtLen = Math.floor(Math.sqrt(length));
-      // Pine runtime error of ta.wma(_src, 0) (length 1)
-      if (n > 0 && halfLen <= 0) {
-        throw new Error(`Error on bar 0: Invalid value of the 'length' argument (${halfLen.toFixed(1)}) in the 'wma' function. It must be > 0.`);
-      }
-      const wma1 = A(ta.wma(S(x), halfLen));
-      const wma2 = A(ta.wma(S(x), length));
-      return A(ta.wma(S(wma1.map((w, i) => 2.0 * w - wma2[i])), sqrtLen));
+      const w1 = taStep.wma();
+      const w2 = taStep.wma();
+      const w3 = taStep.wma();
+      const lengthError = () => new Error(`Error on bar 0: Invalid value of the 'length' argument (${halfLen.toFixed(1)}) in the 'wma' function. It must be > 0.`);
+      // Pine runtime error of ta.wma(_src, 0) (length 1), before the next steps
+      if (n > 0 && halfLen <= 0) throw lengthError();
+      return machine((x) => {
+        if (halfLen <= 0) throw lengthError();
+        return w3.step(2.0 * w1.step(x, halfLen) - w2.step(x, length), sqrtLen);
+      }, [w1, w2, w3]);
     }
-    case 'TMA':
-      return A(ta.sma(ta.sma(S(x), length), length));
+    case 'TMA': {
+      const a = new WindowSma(length);
+      const b = new WindowSma(length);
+      return machine((x) => b.step(a.step(x)), [a, b]);
+    }
     case 'DEMA': {
-      const ema1 = A(ta.ema(S(x), length));
-      const ema2 = A(ta.ema(S(ema1), length));
-      return ema1.map((e, i) => 2.0 * e - ema2[i]);
+      const e1 = ema();
+      const e2 = ema();
+      return machine((x) => {
+        const ema1 = e1.step(x);
+        return 2.0 * ema1 - e2.step(ema1);
+      }, [e1, e2]);
     }
     case 'TEMA': {
-      const ema1 = A(ta.ema(S(x), length));
-      const ema2 = A(ta.ema(S(ema1), length));
-      const ema3 = A(ta.ema(S(ema2), length));
-      return ema1.map((e, i) => 3.0 * (e - ema2[i]) + ema3[i]);
+      const e1 = ema();
+      const e2 = ema();
+      const e3 = ema();
+      return machine((x) => {
+        const ema1 = e1.step(x);
+        const ema2 = e2.step(ema1);
+        return 3.0 * (ema1 - ema2) + e3.step(ema2);
+      }, [e1, e2, e3]);
     }
     case 'KAMA':
     case 'VIDYA': {
       const fastSC = 2.0 / (2 + 1);
       const slowSC = 2.0 / (30 + 1);
-      return recursive((i) => {
-        const base = efficiency(i) * (fastSC - slowSC) + slowSC;
+      return recursive((xh) => {
+        const base = efficiency(xh) * (fastSC - slowSC) + slowSC;
         return type === 'KAMA' ? math.pow(base, 2) : base;
       });
     }
     case 'LSMA':
-    case 'PRMA':
-      return A(ta.linreg(S(x), length, 0));
-    case 'GMA':
-      return x.map((_v, i) => {
+    case 'PRMA': {
+      const m = taStep.linreg(length, 0);
+      return machine((x) => m.step(x), [m]);
+    }
+    case 'GMA': {
+      const xh = new History();
+      return machine((x) => {
+        xh.set(x);
         let sumLog = 0.0;
-        for (let k = 0; k <= length - 1; k++) sumLog += math.log(nz(at(x, i, k)));
+        for (let k = 0; k <= length - 1; k++) sumLog += math.log(nz(xh.at(k)));
         return math.exp(sumLog / length);
-      });
-    case 'ALMA':
-      return A(ta.alma(S(x), length, 0.85, 6));
+      }, [xh]);
+    }
+    case 'ALMA': {
+      const m = new AlmaStep(length, 0.85, 6);
+      return machine((x) => m.step(x), [m]);
+    }
     case 'ZLEMA': {
       const lag = Math.floor((length - 1) * 0.5);
-      const src2 = x.map((v, i) => v + (v - nz(at(x, i, lag), v)));
-      return A(ta.ema(S(src2), length));
+      const xh = new History();
+      const m = ema();
+      return machine((x) => {
+        xh.set(x);
+        return m.step(x + (x - nz(xh.at(lag), x)));
+      }, [xh, m]);
     }
     case 'FRAMA': {
       const len = Math.max(length, 1);
-      const hh = A(ta.highest(S(x), len));
-      const ll = A(ta.lowest(S(x), len));
-      return recursive((i) => {
-        const range1 = hh[i] - ll[i];
+      const hh = new WindowExtreme(false, len);
+      const ll = new WindowExtreme(true, len);
+      const yh = new History();
+      return machine((x) => {
+        const range1 = hh.step(x) - ll.step(x);
         const dim = eq(range1, 0.0) ? 1.0 : math.log10(range1 / len) / math.log10(2);
-        return math.exp(-4.6 * (dim - 1));
-      });
+        const alpha = math.exp(-4.6 * (dim - 1));
+        const p = nz(yh.at(1));
+        const y = p + alpha * (x - p);
+        yh.set(y);
+        return y;
+      }, [hh, ll, yh]);
     }
-    case 'VWMA':
-      return x.map((v, i) => {
+    case 'VWMA': {
+      const xh = new History();
+      const vh = new History();
+      return machine((x, vol) => {
+        xh.set(x);
+        vh.set(vol);
         let sumPV = 0.0;
         let sumVol = 0.0;
         for (let k = 0; k <= length - 1; k++) {
-          sumPV += at(x, i, k) * at(vol, i, k);
-          sumVol += at(vol, i, k);
+          sumPV += xh.at(k) * vh.at(k);
+          sumVol += vh.at(k);
         }
-        return ne(sumVol, 0) ? sumPV / sumVol : v;
-      });
+        return ne(sumVol, 0) ? sumPV / sumVol : x;
+      }, [xh, vh]);
+    }
     case 'JMA': {
       const beta = (0.45 * (length - 1)) / (0.45 * (length - 1) + 2.0);
       return recursive(() => beta);
     }
     case 'CFMA': {
-      const lr = A(ta.linreg(S(x), length, 0));
-      return lr.map((l, i) => l + (x[i] - nz(at(x, i, 1))));
+      const m = taStep.linreg(length, 0);
+      const xh = new History();
+      return machine((x) => {
+        xh.set(x);
+        return m.step(x) + (x - nz(xh.at(1)));
+      }, [m, xh]);
     }
     case 'BWMA':
-    case 'SSMA':
-      return twoPole();
-    case 'FIRMA':
-      return x.map((_v, i) => {
-        let s = 0.0;
-        for (let k = 0; k <= length - 1; k++) s += at(x, i, k);
-        return s / length;
-      });
+    case 'SSMA': {
+      // 2-pole filter of BWMA / SSMA (bwPrev := nz(bwPrev[1], src))
+      const a = math.exp((-1.414 * 3.14159) / length);
+      const ph = new History();
+      return machine((x) => {
+        const p1 = ph.at(1);
+        const prev = nz(p1, x);
+        ph.set(prev);
+        return (1 - a) * (1 - a) * x + 2 * a * prev - a * a * nz(p1);
+      }, [ph]);
+    }
+    case 'FIRMA': {
+      const xh = new History();
+      return machine((x) => {
+        xh.set(x);
+        let sum = 0.0;
+        for (let k = 0; k <= length - 1; k++) sum += xh.at(k);
+        return sum / length;
+      }, [xh]);
+    }
     case 'ITL': {
-      const y: number[] = new Array(n);
-      for (let i = 0; i < n; i++) y[i] = 0.5 * ((x[i] + nz(at(x, i, 1))) / 2) + 0.5 * nz(at(y, i, 1));
-      return y;
+      const xh = new History();
+      const yh = new History();
+      return machine((x) => {
+        xh.set(x);
+        const y = 0.5 * ((x + nz(xh.at(1))) / 2) + 0.5 * nz(yh.at(1));
+        yh.set(y);
+        return y;
+      }, [xh, yh]);
     }
     case 'MGD': {
       const speed = 0.6;
-      const y: number[] = new Array(n);
-      for (let i = 0; i < n; i++) {
-        const p = nz(at(y, i, 1));
+      const yh = new History();
+      return machine((x) => {
+        const p = nz(yh.at(1));
         // src / 0 is +-infinity: the step is 0 (Pine float division)
-        y[i] = p + (x[i] - p) / (speed * math.pow(x[i] / p, 4));
-      }
-      return y;
+        const y = p + (x - p) / (speed * math.pow(x / p, 4));
+        yh.set(y);
+        return y;
+      }, [yh]);
     }
     case 'DMA': {
       const alpha = (2 * 3.14159) / length;
-      const hp: number[] = new Array(n);
-      for (let i = 0; i < n; i++) {
-        hp[i] = math.pow(1 - alpha / 2, 2) * (x[i] - 2 * nz(at(x, i, 1)) + nz(at(x, i, 2)))
-          + 2 * (1 - alpha) * nz(at(hp, i, 1)) - math.pow(1 - alpha, 2) * nz(at(hp, i, 2));
-      }
-      return x.map((v, i) => v - hp[i]);
+      const xh = new History();
+      const hh = new History();
+      return machine((x) => {
+        xh.set(x);
+        const hp = math.pow(1 - alpha / 2, 2) * (x - 2 * nz(xh.at(1)) + nz(xh.at(2)))
+          + 2 * (1 - alpha) * nz(hh.at(1)) - math.pow(1 - alpha, 2) * nz(hh.at(2));
+        hh.set(hp);
+        return x - hp;
+      }, [xh, hh]);
     }
     case 'EAMA':
       return recursive(() => 0.07);
     default:
-      return x.slice();
+      return machine((x) => x, []);
   }
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<UptrickMultiMaVolumeInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+interface UptrickRun extends BarRunState<{ prevFinal: number }> {
+  mas: MaStep[];
+  plot0: Point[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<UptrickMultiMaVolumeInputs>): BarStudy<UptrickRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const src = bars.map((b) => b.close);
-  const vol = bars.map((b) => b.volume ?? NaN);
-
-  const ma1 = cfg.useS1 ? getMa(bars, src, vol, cfg.len1, cfg.maType1) : src;
-  const ma2 = cfg.useS2 ? getMa(bars, ma1, vol, cfg.len2, cfg.maType2) : ma1;
-  const finalMa = cfg.useS3 ? getMa(bars, ma2, vol, cfg.len3, cfg.maType3) : ma2;
-
-  const plot0 = [];
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    // finalMA > finalMA[1] (an infinite value compares, na does not)
-    const slopeColor = i > 0 && gt(finalMa[i], finalMa[i - 1]) ? UP_COLOR : DOWN_COLOR;
-    const v = finalMa[i];
-    plot0.push({ time: bars[i].time, value: Number.isFinite(v) ? v : NaN, color: slopeColor });
-    barColors.push({ time: bars[i].time, color: slopeColor });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    barColors,
+    init(bars) {
+      const n = bars.length;
+      const mas: MaStep[] = [];
+      if (cfg.useS1) mas.push(getMa(cfg.len1, cfg.maType1, n));
+      if (cfg.useS2) mas.push(getMa(cfg.len2, cfg.maType2, n));
+      if (cfg.useS3) mas.push(getMa(cfg.len3, cfg.maType3, n));
+      const s: UptrickRun = { mas, plot0: [], barColors: [], steps: mas, vars: { prevFinal: NaN }, lists: [], series: [] };
+      s.series = [s.plot0, s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const vol = b.volume ?? NaN;
+      // ma1 = useS1 ? f_getMA(close) : close, ma2 = useS2 ? f_getMA(ma1) : ma1, finalMA = useS3 ? f_getMA(ma2) : ma2
+      let v = b.close;
+      for (const m of s.mas) v = m.step(v, vol);
+      // finalMA > finalMA[1] (an infinite value compares, na does not)
+      const slopeColor = i > 0 && gt(v, s.vars.prevFinal) ? UP_COLOR : DOWN_COLOR;
+      s.vars.prevFinal = v;
+      s.plot0[i] = { time: b.time, value: Number.isFinite(v) ? v : NaN, color: slopeColor };
+      s.barColors[i] = { time: b.time, color: slopeColor };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<UptrickMultiMaVolumeInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<UptrickMultiMaVolumeInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const UptrickMultiMaVolume = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

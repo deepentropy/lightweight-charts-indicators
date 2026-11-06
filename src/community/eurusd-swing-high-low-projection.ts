@@ -14,6 +14,8 @@
  */
 
 import { math, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EurusdSwingHighLowProjectionInputs {
   /** Minimum price (range start) */
@@ -91,7 +93,11 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<EurusdSwingHighLowProjectionInputs> = {}): IndicatorResult {
+interface EurusdRun extends BarRunState<Record<string, never>> {
+  points: { time: number; value: number; color: string }[][];
+}
+
+function study(inputs: Partial<EurusdSwingHighLowProjectionInputs>): BarStudy<EurusdRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const proj = cfg.projectionPrice;
   const maxP = cfg.maxPrice;
@@ -139,21 +145,43 @@ export function calculate(bars: Bar[], inputs: Partial<EurusdSwingHighLowProject
     [cfg.showQuadratic, quadUp], [cfg.showQuadratic, quadDown], [cfg.showQuadratic, quadMid],
     [cfg.showNaturalLog, natUp], [cfg.showNaturalLog, natDown], [cfg.showNaturalLog, natMid],
   ];
-
-  const plots: IndicatorResult['plots'] = {};
-  levels.forEach(([show, v], k) => {
-    const value = show && Number.isFinite(v) ? v : NaN;
-    plots[`plot${k}`] = bars.map((b) => ({ time: b.time, value, color: cfg.lineColor }));
-  });
+  const values = levels.map(([show, v]) => (show && Number.isFinite(v) ? v : NaN));
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    init() {
+      const s: EurusdRun = { points: values.map(() => []), steps: [], vars: {}, lists: [], series: [] };
+      s.series = s.points;
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      for (let k = 0; k < values.length; k++) s.points[k][i] = { time, value: values[k], color: cfg.lineColor };
+    },
+    result(s) {
+      const plots: IndicatorResult['plots'] = {};
+      s.points.forEach((p, k) => {
+        plots[`plot${k}`] = p.slice();
+      });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EurusdSwingHighLowProjectionInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EurusdSwingHighLowProjectionInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const EurusdSwingHighLowProjection = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

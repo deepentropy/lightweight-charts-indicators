@@ -10,6 +10,8 @@
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface InsideOutsideBarsInputs {
   ibOn: boolean;
@@ -47,30 +49,49 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<InsideOutsideBarsInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+interface BarsRun extends BarRunState<Record<string, never>> {
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<InsideOutsideBarsInputs>): BarStudy<BarsRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-
-  const barColors: BarColorData[] = [];
-  bars.forEach((b, i) => {
-    const high1 = i > 0 ? bars[i - 1].high : NaN;
-    const low1 = i > 0 ? bars[i - 1].low : NaN;
-    const isInside = lt(b.high, high1) && gt(b.low, low1);
-    const isOutside = gt(b.high, high1) && lt(b.low, low1);
-
-    // barcolor(ib_on and is_inside ? ib_color : na); barcolor(ob_on and is_outside ? ob_color : na)
-    // (the second call is drawn on top; both conditions cannot be true on the same bar)
-    if (cfg.ibOn && isInside) barColors.push({ time: b.time, color: cfg.ibColor });
-    if (cfg.obOn && isOutside) barColors.push({ time: b.time, color: cfg.obColor });
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    barColors,
+    init() {
+      const s: BarsRun = { barColors: [], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const high1 = i > 0 ? bars[i - 1].high : NaN;
+      const low1 = i > 0 ? bars[i - 1].low : NaN;
+      const isInside = lt(b.high, high1) && gt(b.low, low1);
+      const isOutside = gt(b.high, high1) && lt(b.low, low1);
+
+      // barcolor(ib_on and is_inside ? ib_color : na); barcolor(ob_on and is_outside ? ob_color : na)
+      // (the second call is drawn on top; both conditions cannot be true on the same bar)
+      if (cfg.ibOn && isInside) s.barColors.push({ time: b.time, color: cfg.ibColor });
+      if (cfg.obOn && isOutside) s.barColors.push({ time: b.time, color: cfg.obColor });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const InsideOutsideBars = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<InsideOutsideBarsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<InsideOutsideBarsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const InsideOutsideBars = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

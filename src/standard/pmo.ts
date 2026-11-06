@@ -14,7 +14,9 @@
  * library are ported in this file.
  */
 
-import { taCore, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PriceMomentumOscillatorInputs {
   /** Source: a price of the bar or the volume */
@@ -53,51 +55,86 @@ export const metadata = {
   overlay: false,
 };
 
+type Point = { time: number; value: number };
+
+interface PmoVars {
+  /** result[1] of the three ewma() calls (smooth 1, PMO, signal) */
+  e1: number;
+  e2: number;
+  e3: number;
+}
+
+interface PmoRun extends BarRunState<PmoVars> {
+  roc: ReturnType<typeof taStep.roc>;
+  pmoData: Point[];
+  signalData: Point[];
+}
+
 /**
- * ewma() of the "ta" library: result := alpha * source + (1 - alpha) * nz(result[1], source).
+ * One bar of ewma() of the "ta" library: result := alpha * source + (1 - alpha) * nz(result[1], source).
  * nz() treats +-infinity as na; an na alpha or source gives na on the bar.
  */
-function ewma(source: number[], alpha: number | number[]): number[] {
-  const out: number[] = new Array(source.length);
-  let prev = NaN;
-  for (let i = 0; i < source.length; i++) {
-    const a = typeof alpha === 'number' ? alpha : alpha[i];
-    if (a < 0) throw new Error('Invalid smoothing factor. The value must not be negative.');
-    const s = source[i];
-    const r = a * s + (1.0 - a) * (Number.isFinite(prev) ? prev : s);
-    out[i] = r;
-    prev = r;
-  }
-  return out;
+function ewma(s: number, a: number, prev: number): number {
+  if (a < 0) throw new Error('Invalid smoothing factor. The value must not be negative.');
+  return a * s + (1.0 - a) * (Number.isFinite(prev) ? prev : s);
 }
 
-/** ema2() of the "ta" library: EMA with a float length */
-function ema2(source: number[], length: number): number[] {
+/** The length check of ema2() of the "ta" library (EMA with a float length) */
+function checkEma2(length: number): void {
   if (length < 1) throw new Error(`Invalid length (${length}). The value must be greater than or equal to 1.`);
-  return ewma(source, 2.0 / (Math.max(1.0, length) + 1.0));
 }
 
-export function calculate(bars: Bar[], inputs: Partial<PriceMomentumOscillatorInputs> = {}): IndicatorResult {
+function study(inputs: Partial<PriceMomentumOscillatorInputs>): BarStudy<PmoRun, IndicatorResult> {
   const { src, length1, length2, signalLength } = { ...defaultInputs, ...inputs };
-  // input.source also offers the volume, which getSourceSeries does not give
-  const source = src === 'volume'
-    ? bars.map((b) => b.volume ?? NaN)
-    : getSourceSeries(bars, src).toArray().map((v) => v ?? NaN);
-
-  // pmo() of the "ta" library
-  const roc = taCore.roc(source, 1);
-  const smooth1 = ewma(roc, 2.0 / length1).map((v) => 10.0 * v);
-  const pmo = ewma(smooth1, 2.0 / length2);
-  const signal = ema2(pmo, signalLength);
-
-  const point = (v: number, i: number) => ({ time: bars[i].time, value: Number.isFinite(v) ? v : NaN });
+  // input.source also offers the volume
+  const value = barSource(src);
+  const alpha1 = 2.0 / length1;
+  const alpha2 = 2.0 / length2;
+  const alpha3 = 2.0 / (Math.max(1.0, signalLength) + 1.0);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: pmo.map(point),
-      plot1: signal.map(point),
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init(bars) {
+      // the old order of the checks: the two ewma() factors on the first bar, then the length of ema2()
+      if (bars.length === 0) checkEma2(signalLength);
+      const roc = taStep.roc(1);
+      const s: PmoRun = { roc, pmoData: [], signalData: [], steps: [roc], vars: { e1: NaN, e2: NaN, e3: NaN }, lists: [], series: [] };
+      s.series = [s.pmoData, s.signalData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const t = bars[i].time;
+      // pmo() of the "ta" library
+      const roc = s.roc.step(value(bars[i]));
+      v.e1 = ewma(roc, alpha1, v.e1);
+      const smooth1 = 10.0 * v.e1;
+      v.e2 = ewma(smooth1, alpha2, v.e2);
+      const pmo = v.e2;
+      checkEma2(signalLength);
+      v.e3 = ewma(pmo, alpha3, v.e3);
+      const signal = v.e3;
+      s.pmoData[i] = { time: t, value: Number.isFinite(pmo) ? pmo : NaN };
+      s.signalData[i] = { time: t, value: Number.isFinite(signal) ? signal : NaN };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.pmoData.slice(),
+          plot1: s.signalData.slice(),
+        },
+      };
     },
   };
 }
 
-export const PriceMomentumOscillatorStandard = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PriceMomentumOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PriceMomentumOscillatorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const PriceMomentumOscillatorStandard = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig };

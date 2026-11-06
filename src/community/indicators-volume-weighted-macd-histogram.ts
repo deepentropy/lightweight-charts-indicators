@@ -11,7 +11,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface IndicatorsVolumeWeightedMacdHistogramInputs {
   /** "Short period" */
@@ -55,40 +57,71 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
+interface VwMacdRun extends BarRunState<Record<string, never>> {
+  fastNum: ReturnType<typeof taStep.ema>;
+  fastDen: ReturnType<typeof taStep.ema>;
+  slowNum: ReturnType<typeof taStep.ema>;
+  slowDen: ReturnType<typeof taStep.ema>;
+  sig: ReturnType<typeof taStep.ema>;
+  dm: number[];
+  plot0: { time: number; value: number; color: string }[];
+}
+
+function study(inputs: Partial<IndicatorsVolumeWeightedMacdHistogramInputs>): BarStudy<VwMacdRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const fastNum = taStep.ema(cfg.fast);
+      const fastDen = taStep.ema(cfg.fast);
+      const slowNum = taStep.ema(cfg.slow);
+      const slowDen = taStep.ema(cfg.slow);
+      const sig = taStep.ema(cfg.signal);
+      const s: VwMacdRun = {
+        fastNum, fastDen, slowNum, slowDen, sig, dm: [], plot0: [],
+        steps: [fastNum, fastDen, slowNum, slowDen, sig], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.dm, s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = b.volume ?? NaN;
+      const volClose = (b.volume ?? NaN) * b.close;
+      // average(n) = ema(volume * close, n) / ema(volume, n)
+      const maFast = s.fastNum.step(volClose) / s.fastDen.step(volume);
+      const maSlow = s.slowNum.step(volClose) / s.slowDen.step(volume);
+      const d = maSlow - maFast;
+      const maSignal = s.sig.step(d);
+      const dm = d - maSignal;
+      s.dm[i] = dm;
+      const prev = i > 0 ? s.dm[i - 1] : NaN;
+      const c = ge(dm, 0) ? (gt(dm, prev) ? GREEN : ORANGE) : (lt(dm, prev) ? RED : ORANGE);
+      s.plot0[i] = { time: b.time, value: Number.isFinite(dm) ? dm : NaN, color: c };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IndicatorsVolumeWeightedMacdHistogramInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<IndicatorsVolumeWeightedMacdHistogramInputs> = {},
 ): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const volume = new Series(bars, (b) => b.volume ?? NaN);
-  const volClose = new Series(bars, (b) => (b.volume ?? NaN) * b.close);
-  const average = (length: number) => {
-    const num = A(ta.ema(volClose, length));
-    const den = A(ta.ema(volume, length));
-    return num.map((v, i) => v / den[i]);
-  };
-  const maFast = average(cfg.fast);
-  const maSlow = average(cfg.slow);
-  const d = maSlow.map((v, i) => v - maFast[i]);
-  const maSignal = A(ta.ema(Series.fromArray(bars, d), cfg.signal));
-  const dm = d.map((v, i) => v - maSignal[i]);
-
-  const plot0 = bars.map((b, i) => {
-    const prev = i > 0 ? dm[i - 1] : NaN;
-    const c = ge(dm[i], 0) ? (gt(dm[i], prev) ? GREEN : ORANGE) : (lt(dm[i], prev) ? RED : ORANGE);
-    return { time: b.time, value: Number.isFinite(dm[i]) ? dm[i] : NaN, color: c };
-  });
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const IndicatorsVolumeWeightedMacdHistogram = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

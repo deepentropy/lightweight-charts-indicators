@@ -8,6 +8,8 @@
  */
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AroonInputs {
   /** Period length */
@@ -33,64 +35,83 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<AroonInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface AroonRun extends BarRunState<Record<string, never>> {
+  upData: Point[];
+  downData: Point[];
+}
+
+function study(inputs: Partial<AroonInputs>): BarStudy<AroonRun, IndicatorResult> {
   const { length } = { ...defaultInputs, ...inputs };
-
-  const aroonUp: number[] = [];
-  const aroonDown: number[] = [];
-
-  for (let i = 0; i < bars.length; i++) {
-    if (i < length) {
-      aroonUp.push(NaN);
-      aroonDown.push(NaN);
-      continue;
-    }
-
-    // Find bars since highest high and lowest low in the lookback period
-    // ta.highestbars returns negative offset, so we add length to get bars since
-    let highestIdx = i;
-    let lowestIdx = i;
-    let highestVal = -Infinity;
-    let lowestVal = Infinity;
-
-    for (let j = i - length; j <= i; j++) {
-      if (bars[j].high > highestVal) {
-        highestVal = bars[j].high;
-        highestIdx = j;
-      }
-      if (bars[j].low < lowestVal) {
-        lowestVal = bars[j].low;
-        lowestIdx = j;
-      }
-    }
-
-    // Bars since highest/lowest (0 = current bar has highest/lowest)
-    const barsSinceHighest = i - highestIdx;
-    const barsSinceLowest = i - lowestIdx;
-
-    // Aroon formula: 100 * (length - bars_since) / length
-    aroonUp.push(100 * (length - barsSinceHighest) / length);
-    aroonDown.push(100 * (length - barsSinceLowest) / length);
-  }
-
-  const upData = aroonUp.map((value, i) => ({ time: bars[i].time, value }));
-  const downData = aroonDown.map((value, i) => ({ time: bars[i].time, value }));
-
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    init() {
+      const s: AroonRun = { upData: [], downData: [], steps: [], vars: {}, lists: [], series: [] };
+      s.series = [s.upData, s.downData];
+      return s;
     },
-    plots: {
-      'plot0': upData,
-      'plot1': downData,
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      if (i < length) {
+        s.upData[i] = { time, value: NaN };
+        s.downData[i] = { time, value: NaN };
+        return;
+      }
+
+      // Find bars since highest high and lowest low in the lookback period
+      // ta.highestbars returns negative offset, so we add length to get bars since
+      let highestIdx = i;
+      let lowestIdx = i;
+      let highestVal = -Infinity;
+      let lowestVal = Infinity;
+
+      for (let j = i - length; j <= i; j++) {
+        if (bars[j].high > highestVal) {
+          highestVal = bars[j].high;
+          highestIdx = j;
+        }
+        if (bars[j].low < lowestVal) {
+          lowestVal = bars[j].low;
+          lowestIdx = j;
+        }
+      }
+
+      // Bars since highest/lowest (0 = current bar has highest/lowest)
+      const barsSinceHighest = i - highestIdx;
+      const barsSinceLowest = i - lowestIdx;
+
+      // Aroon formula: 100 * (length - bars_since) / length
+      s.upData[i] = { time, value: 100 * (length - barsSinceHighest) / length };
+      s.downData[i] = { time, value: 100 * (length - barsSinceLowest) / length };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.upData.slice(),
+          'plot1': s.downData.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AroonInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AroonInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const Aroon = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

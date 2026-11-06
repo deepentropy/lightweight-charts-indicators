@@ -10,7 +10,9 @@
  * Original notice: © Th16rry
  */
 
-import { math, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { math, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VoldRatioHistogramInputs {
   /** Sum length */
@@ -44,31 +46,57 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(bars: Bar[], inputs: Partial<VoldRatioHistogramInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface VoldRun extends BarRunState<Record<string, never>> {
+  up: WindowSum;
+  down: WindowSum;
+  plot0: Point[];
+}
+
+function study(inputs: Partial<VoldRatioHistogramInputs>): BarStudy<VoldRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // upVolume = close > open ? volume : 0.0; downVolume = close < open ? volume : 0.0
-  const upVolume = bars.map((b) => (gt(b.close, b.open) ? (b.volume ?? NaN) : 0));
-  const downVolume = bars.map((b) => (gt(b.open, b.close) ? (b.volume ?? NaN) : 0));
-  const sumUp = A(math.sum(S(upVolume), cfg.length) as Series);
-  const sumDown = A(math.sum(S(downVolume), cfg.length) as Series);
-
-  const plot0 = bars.map((b, i) => {
-    const v = Math.log((sumUp[i] + cfg.epsilon) / (sumDown[i] + cfg.epsilon));
-    return { time: b.time, value: Number.isFinite(v) ? v : NaN, color: ge(v, 0) ? color.green : color.red };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    hlines: [{ value: 0, options: { title: 'Équilibre', color: color.gray, linestyle: 'dashed' } }],
+    init() {
+      // the length check of math.sum (the same runtime error)
+      math.sum([], cfg.length);
+      const up = new WindowSum(cfg.length);
+      const down = new WindowSum(cfg.length);
+      const s: VoldRun = { up, down, plot0: [], steps: [up, down], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // upVolume = close > open ? volume : 0.0; downVolume = close < open ? volume : 0.0
+      const sumUp = s.up.step(gt(b.close, b.open) ? (b.volume ?? NaN) : 0);
+      const sumDown = s.down.step(gt(b.open, b.close) ? (b.volume ?? NaN) : 0);
+      const v = Math.log((sumUp + cfg.epsilon) / (sumDown + cfg.epsilon));
+      s.plot0[i] = { time: b.time, value: Number.isFinite(v) ? v : NaN, color: ge(v, 0) ? color.green : color.red };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        hlines: [{ value: 0, options: { title: 'Équilibre', color: color.gray, linestyle: 'dashed' } }],
+      };
+    },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VoldRatioHistogramInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VoldRatioHistogramInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+
 export const VoldRatioHistogram = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

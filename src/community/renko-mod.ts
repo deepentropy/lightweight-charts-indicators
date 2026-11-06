@@ -13,6 +13,8 @@
  */
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RenkoModInputs {
   /** Brick size */
@@ -43,40 +45,74 @@ const gt = (a: number, b: number) => a - b > 1e-10;
 const lt = (a: number, b: number) => b - a > 1e-10;
 const nz = (x: number) => (isNaN(x) ? 0 : x);
 
-export function calculate(bars: Bar[], inputs: Partial<RenkoModInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface RenkoVars {
+  /** ropen, rclose and direction of the bar before (na on the first bar) */
+  ropen: number;
+  rclose: number;
+  direction: number;
+}
+
+interface RenkoRun extends BarRunState<RenkoVars> {
+  plot0: Point[];
+  plot1: Point[];
+}
+
+// rc = direction == 1 ? color.green : direction == -1 ? color.maroon : na
+const rc = (d: number) => (d === 1 ? color.green : d === -1 ? color.maroon : 'transparent');
+
+function study(inputs: Partial<RenkoModInputs>): BarStudy<RenkoRun, IndicatorResult> {
   const { bricksize } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const ropen: number[] = new Array(n);
-  const rclose: number[] = new Array(n);
-  const direction: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const { close, high, low } = bars[i];
-    const propen = nz(i > 0 ? ropen[i - 1] : NaN);
-    const up = propen + bricksize;
-    const down = propen - bricksize;
-    ropen[i] = gt(close, up) || gt(high, up) ? up : lt(close, down) || lt(low, down) ? down : propen;
-    const prevClose = nz(i > 0 ? rclose[i - 1] : NaN);
-    const prevDir = nz(i > 0 ? direction[i - 1] : NaN);
-    rclose[i] = gt(ropen[i], propen) ? ropen[i] - bricksize : lt(ropen[i], propen) ? ropen[i] + bricksize : prevClose;
-    direction[i] = gt(ropen[i], propen) ? 1 : lt(ropen[i], propen) ? -1 : prevDir;
-  }
-
-  // rc = direction == 1 ? color.green : direction == -1 ? color.maroon : na
-  const rc = (d: number) => (d === 1 ? color.green : d === -1 ? color.maroon : 'transparent');
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
+    init() {
+      const s: RenkoRun = {
+        plot0: [], plot1: [], steps: [], vars: { ropen: NaN, rclose: NaN, direction: NaN }, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const { close, high, low, time } = bars[i];
+      const v = s.vars;
+      const propen = nz(v.ropen);
+      const up = propen + bricksize;
+      const down = propen - bricksize;
+      const ropen = gt(close, up) || gt(high, up) ? up : lt(close, down) || lt(low, down) ? down : propen;
+      const prevClose = nz(v.rclose);
+      const prevDir = nz(v.direction);
+      const rclose = gt(ropen, propen) ? ropen - bricksize : lt(ropen, propen) ? ropen + bricksize : prevClose;
+      const direction = gt(ropen, propen) ? 1 : lt(ropen, propen) ? -1 : prevDir;
+      v.ropen = ropen;
+      v.rclose = rclose;
+      v.direction = direction;
       // plot(ropen, '', rc, 3, plot.style_cross)
-      plot0: bars.map((b, i) => ({ time: b.time, value: ropen[i], color: rc(direction[i]) })),
+      s.plot0[i] = { time, value: ropen, color: rc(direction) };
       // plot(rclose, '', color.gray, 2, plot.style_circles)
-      plot1: bars.map((b, i) => ({ time: b.time, value: rclose[i], color: color.gray })),
+      s.plot1[i] = { time, value: rclose, color: color.gray };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RenkoModInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RenkoModInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+
 export const RenkoMod = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

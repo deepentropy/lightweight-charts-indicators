@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData, MarkerData, PineSize, PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeCandleHighlighterInputs {
   /** Abnormal volume multiplier */
@@ -98,6 +100,77 @@ const SIZES: Record<VolumeCandleHighlighterInputs['markerSize'], PineSize> = {
   Large: 'large',
 };
 
+type Result = Omit<IndicatorResult, 'markers'> & {
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  plotCandles: Record<string, PlotCandleData[]>;
+};
+
+interface VchRun extends BarRunState<Record<string, never>> {
+  avg: WindowSma;
+  plot0: { time: Bar['time']; value: number }[];
+  candles: PlotCandleData[];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<VolumeCandleHighlighterInputs>): BarStudy<VchRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  // The script has one plotshape per size (a const size); only the one of the selected size can fire.
+  const size = SIZES[cfg.markerSize];
+  // Style ids: shape0 .. shape3 = the bull markers Tiny .. Large, shape4 .. shape7 = the bear markers
+  const sizeIndex = (['Tiny', 'Small', 'Normal', 'Large'] as const).indexOf(cfg.markerSize);
+  return {
+    init() {
+      // avg_vol = ta.sma(volume, vol_ma_len)
+      const avg = new WindowSma(cfg.volMaLen);
+      const s: VchRun = {
+        avg, plot0: [], candles: [], markers: [], bgColors: [],
+        steps: [avg], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.bgColors];
+      s.series = [s.plot0, s.candles];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = b.volume ?? NaN;
+      const avgVol = s.avg.step(volume) ?? NaN;
+      // abnormal = volume >= avg_vol * abnormal_mul; bull = close >= open
+      const abnormal = ge(volume, avgVol * cfg.abnormalMul);
+      const bull = ge(b.close, b.open);
+      s.candles[i] = {
+        time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
+        color: abnormal ? cfg.abnColor : bull ? cfg.bullColor : cfg.bearColor,
+        wickColor: abnormal ? cfg.abnWick : bull ? cfg.bullWick : cfg.bearWick,
+        borderColor: abnormal ? cfg.abnBorder : bull ? cfg.bullBorder : cfg.bearBorder,
+      };
+      if (cfg.showMarker && abnormal && size) {
+        s.markers.push(bull
+          ? { time: b.time, position: 'belowBar', shape: 'triangleUp', color: cfg.markerColor, size, id: `shape${sizeIndex}` }
+          : { time: b.time, position: 'aboveBar', shape: 'triangleDown', color: cfg.markerColor, size, id: `shape${4 + sizeIndex}` });
+      }
+      // bgcolor(show_bg and abnormal ? abn_bg : na)
+      if (cfg.showBg && abnormal) s.bgColors.push({ time: b.time, color: cfg.abnBg });
+      s.plot0[i] = { time: b.time, value: NaN };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        plotCandles: { candles: s.candles.slice() },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeCandleHighlighterInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<VolumeCandleHighlighterInputs> = {},
@@ -106,48 +179,12 @@ export function calculate(
   bgColors: BgColorData[];
   plotCandles: Record<string, PlotCandleData[]>;
 } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const avgVol = ta.sma(Series.fromArray(bars, volume), cfg.volMaLen).toArray().map((v) => v ?? NaN);
-
-  const candles: PlotCandleData[] = [];
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  // The script has one plotshape per size (a const size); only the one of the selected size can fire.
-  const size = SIZES[cfg.markerSize];
-  // Style ids: shape0 .. shape3 = the bull markers Tiny .. Large, shape4 .. shape7 = the bear markers
-  const sizeIndex = (['Tiny', 'Small', 'Normal', 'Large'] as const).indexOf(cfg.markerSize);
-  for (let i = 0; i < bars.length; i++) {
-    const b = bars[i];
-    // abnormal = volume >= avg_vol * abnormal_mul; bull = close >= open
-    const abnormal = ge(volume[i], avgVol[i] * cfg.abnormalMul);
-    const bull = ge(b.close, b.open);
-    candles.push({
-      time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
-      color: abnormal ? cfg.abnColor : bull ? cfg.bullColor : cfg.bearColor,
-      wickColor: abnormal ? cfg.abnWick : bull ? cfg.bullWick : cfg.bearWick,
-      borderColor: abnormal ? cfg.abnBorder : bull ? cfg.bullBorder : cfg.bearBorder,
-    });
-    if (cfg.showMarker && abnormal && size) {
-      markers.push(bull
-        ? { time: b.time, position: 'belowBar', shape: 'triangleUp', color: cfg.markerColor, size, id: `shape${sizeIndex}` }
-        : { time: b.time, position: 'aboveBar', shape: 'triangleDown', color: cfg.markerColor, size, id: `shape${4 + sizeIndex}` });
-    }
-    // bgcolor(show_bg and abnormal ? abn_bg : na)
-    if (cfg.showBg && abnormal) bgColors.push({ time: b.time, color: cfg.abnBg });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: bars.map((b) => ({ time: b.time, value: NaN })) },
-    markers,
-    bgColors,
-    plotCandles: { candles },
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const VolumeCandleHighlighter = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

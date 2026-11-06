@@ -24,11 +24,12 @@
  */
 
 import {
-  ta, math, str, color, Series, getSourceSeries, barInterval, barTime,
+  math, str, color, barInterval, barTime,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { BoxData } from '../types';
 import { foregroundColorOf, type ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeGapsImbalancesInputs {
   /** Number of bars of the profile */
@@ -147,12 +148,71 @@ interface Bx {
   textColor?: string;
 }
 
+type Result = IndicatorResult & { boxes: BoxData[] };
+
+interface VolumeGapsVars {
+  /** ta.highest(high, prd) / ta.lowest(low, prd) of the last bar */
+  hi: number;
+  lo: number;
+}
+
+interface VolumeGapsRun extends BarRunState<VolumeGapsVars> {
+  highest: WindowExtreme | null;
+  lowest: WindowExtreme | null;
+  /** The runtime error of ta.highest / ta.lowest for an invalid lookback (thrown on the first bar) */
+  error: unknown;
+}
+
+function study(inputs: Partial<VolumeGapsImbalancesInputs>): BarStudy<VolumeGapsRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      let highest: WindowExtreme | null = null;
+      let lowest: WindowExtreme | null = null;
+      let error: unknown = null;
+      try {
+        highest = new WindowExtreme(false, cfg.prd);
+        lowest = new WindowExtreme(true, cfg.prd);
+      } catch (e) {
+        error = e;
+      }
+      const steps = highest && lowest ? [highest, lowest] : [];
+      return { highest, lowest, error, steps, vars: { hi: NaN, lo: NaN }, lists: [], series: [] };
+    },
+    bar(s, i, bars) {
+      if (!s.highest || !s.lowest) throw s.error;
+      s.vars.hi = s.highest.step(bars[i].high);
+      s.vars.lo = s.lowest.step(bars[i].low);
+    },
+    // Everything is drawn on the last bar, from the lookback's bars
+    result(s, bars, chart) {
+      return drawProfile(bars, cfg, chart, s.vars.hi, s.vars.lo);
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeGapsImbalancesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<VolumeGapsImbalancesInputs> = {},
   chart?: ChartContext,
 ): IndicatorResult & { boxes: BoxData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+/** The boxes of the last bar; `hi` / `lo`: ta.highest(high, prd) / ta.lowest(low, prd) of that bar */
+function drawProfile(
+  bars: Bar[],
+  cfg: VolumeGapsImbalancesInputs,
+  chart: ChartContext | undefined,
+  hi: number,
+  lo: number,
+): Result {
   const { prd, rows, width } = cfg;
   const n = bars.length;
   const result = (boxes: BoxData[]) => ({
@@ -165,9 +225,7 @@ export function calculate(
   // chart.fg_color
   const fg = foregroundColorOf(chart);
   const b = n - 1;
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
-  const hi = ta.highest(new Series(bars, (x) => x.high), prd).toArray()[b] ?? NaN;
-  const lo = ta.lowest(new Series(bars, (x) => x.low), prd).toArray()[b] ?? NaN;
+  const source = barSource(cfg.src);
 
   // Everything is drawn on the last bar (barstate.islast)
   const boxes: Bx[] = [];
@@ -205,7 +263,7 @@ export function calculate(
   for (let i = prd; i >= 0; i--) {
     const k = b - i;
     if (k < 0) continue;
-    const price = src[k];
+    const price = source(bars[k]);
     const isBull = gt(bars[k].close, bars[k].open);
     const volume = bars[k].volume ?? NaN;
     for (let j = 0; j < rowsUsed; j++) {
@@ -354,4 +412,4 @@ export function calculate(
   })));
 }
 
-export const VolumeGapsImbalances = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+export const VolumeGapsImbalances = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

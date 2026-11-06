@@ -11,9 +11,10 @@
  * Original notice: © TheTrdFloor
  */
 
-import { ta, str, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, str, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { TableCellData, TableData, TablePosition } from '../types';
 import { mintickOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AtrBandsInputs {
   /** ATR period */
@@ -110,91 +111,128 @@ const POSITIONS: Record<string, TablePosition> = {
 /** Pine `!=` (1e-10) */
 const ne = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AtrBandsInputs> = {},
-  chart?: ChartContext,
-): IndicatorResult & { tables: TableData[] } {
+type Result = IndicatorResult & { tables: TableData[] };
+type Point = { time: number; value: number; color: string };
+
+interface AtrBandsRun extends BarRunState<Record<string, never>> {
+  atr: ReturnType<typeof taStep.atr>;
+  scaledATR: number[];
+  upper: number[];
+  lower: number[];
+  tpLong: number[];
+  tpShort: number[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<AtrBandsInputs>): BarStudy<AtrBandsRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const mintick = mintickOf(chart);
-
-  // atr = ta.atr(atrPeriod); the band offset source is always the close
-  const atr = ta.atr(bars, cfg.atrPeriod).toArray().map((v) => v ?? NaN);
-  const scaledATR = atr.map((v) => v * cfg.atrMultiplier);
-  const upper = bars.map((b, i) => b.close + scaledATR[i]);
-  const lower = bars.map((b, i) => b.close - scaledATR[i]);
-  const tpLong = bars.map((b, i) => b.close + (b.close - lower[i]) * cfg.tpScaleFactor);
-  const tpShort = bars.map((b, i) => b.close - (upper[i] - b.close) * cfg.tpScaleFactor);
-
-  const tables: TableData[] = [];
-  if (cfg.showTable && n > 0) {
-    // The table of the last bar: values of the last bar, or of the bar before (na on a single bar)
-    const k = cfg.allowTableRepainting ? n - 1 : n - 2;
-    const at = (values: number[]) => (k >= 0 ? values[k] : NaN);
-    const closeK = k >= 0 ? bars[k].close : NaN;
-    const price = (v: number) => str.tostring(v, 'mintick', mintick);
-    const rounded = (v: number) => str.tostring(math.round_to_mintick(v, mintick) as number);
-    const cells: TableCellData[] = [];
-    // (a, b): column a and row b of the vertical table; the horizontal table swaps them
-    const cell = (a: number, b: number, text: string, textColor: string, bgColor: string, tooltip?: string) => {
-      const [column, row] = cfg.alignTableVertically ? [a, b] : [b, a];
-      cells.push({ column, row, text, textColor, bgColor, ...(tooltip !== undefined ? { tooltip } : {}) });
-    };
-    const head = cfg.tableTextHeaderColor;
-    const txt = cfg.tableTextColor;
-    const longBg = cfg.tableLongBGColor;
-    const shortBg = cfg.tableShortBGColor;
-    const tpDist = ne(cfg.tpScaleFactor, 1);
-    // Header cells
-    cell(0, 0, 'Long ATR Stop', head, longBg, 'Test');
-    cell(0, 1, 'Long ATR Stop Dist', head, longBg);
-    if (cfg.showTPinTable) {
-      cell(0, 2, 'Long ATR TP', head, longBg);
-      if (tpDist) cell(0, 3, 'Long ATR TP Dist', head, longBg);
-    }
-    cell(0, 4, 'Short ATR Stop', head, shortBg);
-    cell(0, 5, 'Short ATR Stop Dist', head, shortBg);
-    if (cfg.showTPinTable) {
-      cell(0, 6, 'Short ATR TP', head, shortBg);
-      if (tpDist) cell(0, 7, 'Short ATR TP Dist', head, shortBg);
-    }
-    // Long position values
-    cell(1, 0, price(at(lower)), txt, longBg, 'Test');
-    cell(1, 1, rounded(closeK - at(lower)), txt, longBg);
-    if (cfg.showTPinTable) {
-      cell(1, 2, price(at(tpLong)), txt, longBg);
-      if (tpDist) cell(1, 3, rounded(at(scaledATR) * cfg.tpScaleFactor), txt, longBg);
-    }
-    // Short position values
-    cell(1, 4, price(at(upper)), txt, shortBg, 'Test 2');
-    cell(1, 5, rounded(at(upper) - closeK), txt, shortBg);
-    if (cfg.showTPinTable) {
-      cell(1, 6, price(at(tpShort)), txt, shortBg);
-      if (tpDist) cell(1, 7, rounded(at(scaledATR) * cfg.tpScaleFactor), txt, shortBg);
-    }
-    tables.push({
-      position: POSITIONS[cfg.tablePosition] ?? 'bottom_right',
-      columns: 8,
-      rows: 8,
-      cells,
-      borderWidth: 1,
-      frameWidth: 1,
-      borderColor: cfg.tableColor,
-      frameColor: cfg.tableColor,
-    });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: upper[i], color: 'rgba(0, 255, 0, 0.5)' })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: lower[i], color: 'rgba(255, 0, 0, 0.5)' })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: cfg.showTPBands ? tpLong[i] : NaN, color: 'rgba(255, 255, 255, 0.2)' })),
-      plot3: bars.map((b, i) => ({ time: b.time, value: cfg.showTPBands ? tpShort[i] : NaN, color: 'rgba(255, 255, 0, 0.2)' })),
+    init() {
+      // atr = ta.atr(atrPeriod); the band offset source is always the close
+      const atr = taStep.atr(cfg.atrPeriod);
+      const plots: Point[][] = [[], [], [], []];
+      const s: AtrBandsRun = {
+        atr, scaledATR: [], upper: [], lower: [], tpLong: [], tpShort: [], plots,
+        steps: [atr], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.scaledATR, s.upper, s.lower, s.tpLong, s.tpShort, ...plots];
+      return s;
     },
-    tables,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const scaledATR = s.atr.step(b.high, b.low, b.close) * cfg.atrMultiplier;
+      const upper = b.close + scaledATR;
+      const lower = b.close - scaledATR;
+      const tpLong = b.close + (b.close - lower) * cfg.tpScaleFactor;
+      const tpShort = b.close - (upper - b.close) * cfg.tpScaleFactor;
+      s.scaledATR[i] = scaledATR;
+      s.upper[i] = upper;
+      s.lower[i] = lower;
+      s.tpLong[i] = tpLong;
+      s.tpShort[i] = tpShort;
+      s.plots[0]![i] = { time: b.time, value: upper, color: 'rgba(0, 255, 0, 0.5)' };
+      s.plots[1]![i] = { time: b.time, value: lower, color: 'rgba(255, 0, 0, 0.5)' };
+      s.plots[2]![i] = { time: b.time, value: cfg.showTPBands ? tpLong : NaN, color: 'rgba(255, 255, 255, 0.2)' };
+      s.plots[3]![i] = { time: b.time, value: cfg.showTPBands ? tpShort : NaN, color: 'rgba(255, 255, 0, 0.2)' };
+    },
+    result(s, bars, chart) {
+      const n = bars.length;
+      const mintick = mintickOf(chart);
+      const { scaledATR, upper, lower, tpLong, tpShort } = s;
+      const tables: TableData[] = [];
+      if (cfg.showTable && n > 0) {
+        // The table of the last bar: values of the last bar, or of the bar before (na on a single bar)
+        const k = cfg.allowTableRepainting ? n - 1 : n - 2;
+        const at = (values: number[]) => (k >= 0 ? values[k] : NaN);
+        const closeK = k >= 0 ? bars[k].close : NaN;
+        const price = (v: number) => str.tostring(v, 'mintick', mintick);
+        const rounded = (v: number) => str.tostring(math.round_to_mintick(v, mintick) as number);
+        const cells: TableCellData[] = [];
+        // (a, b): column a and row b of the vertical table; the horizontal table swaps them
+        const cell = (a: number, b: number, text: string, textColor: string, bgColor: string, tooltip?: string) => {
+          const [column, row] = cfg.alignTableVertically ? [a, b] : [b, a];
+          cells.push({ column, row, text, textColor, bgColor, ...(tooltip !== undefined ? { tooltip } : {}) });
+        };
+        const head = cfg.tableTextHeaderColor;
+        const txt = cfg.tableTextColor;
+        const longBg = cfg.tableLongBGColor;
+        const shortBg = cfg.tableShortBGColor;
+        const tpDist = ne(cfg.tpScaleFactor, 1);
+        // Header cells
+        cell(0, 0, 'Long ATR Stop', head, longBg, 'Test');
+        cell(0, 1, 'Long ATR Stop Dist', head, longBg);
+        if (cfg.showTPinTable) {
+          cell(0, 2, 'Long ATR TP', head, longBg);
+          if (tpDist) cell(0, 3, 'Long ATR TP Dist', head, longBg);
+        }
+        cell(0, 4, 'Short ATR Stop', head, shortBg);
+        cell(0, 5, 'Short ATR Stop Dist', head, shortBg);
+        if (cfg.showTPinTable) {
+          cell(0, 6, 'Short ATR TP', head, shortBg);
+          if (tpDist) cell(0, 7, 'Short ATR TP Dist', head, shortBg);
+        }
+        // Long position values
+        cell(1, 0, price(at(lower)), txt, longBg, 'Test');
+        cell(1, 1, rounded(closeK - at(lower)), txt, longBg);
+        if (cfg.showTPinTable) {
+          cell(1, 2, price(at(tpLong)), txt, longBg);
+          if (tpDist) cell(1, 3, rounded(at(scaledATR) * cfg.tpScaleFactor), txt, longBg);
+        }
+        // Short position values
+        cell(1, 4, price(at(upper)), txt, shortBg, 'Test 2');
+        cell(1, 5, rounded(at(upper) - closeK), txt, shortBg);
+        if (cfg.showTPinTable) {
+          cell(1, 6, price(at(tpShort)), txt, shortBg);
+          if (tpDist) cell(1, 7, rounded(at(scaledATR) * cfg.tpScaleFactor), txt, shortBg);
+        }
+        tables.push({
+          position: POSITIONS[cfg.tablePosition] ?? 'bottom_right',
+          columns: 8,
+          rows: 8,
+          cells,
+          borderWidth: 1,
+          frameWidth: 1,
+          borderColor: cfg.tableColor,
+          frameColor: cfg.tableColor,
+        });
+      }
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0]!.slice(), plot1: s.plots[1]!.slice(), plot2: s.plots[2]!.slice(), plot3: s.plots[3]!.slice() },
+        tables,
+      };
+    },
   };
 }
 
-export const AtrBands = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AtrBandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AtrBandsInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const AtrBands = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

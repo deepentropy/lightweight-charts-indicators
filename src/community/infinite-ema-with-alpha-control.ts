@@ -16,8 +16,9 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData, MarkerData, PineSize } from '../types';
-import { barInterval, barTime } from '../bar-time';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface InfiniteEmaWithAlphaControlInputs {
   /** Slow EMA length (N) */
@@ -120,13 +121,21 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<InfiniteEmaWithAlphaControlInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface InfEmaRun extends BarRunState<{ slow: number; fast: number }> {
+  plot0: Point[];
+  plot1: Point[];
+  fillColors: string[];
+  bgColors: BgColorData[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<InfiniteEmaWithAlphaControlInputs>): BarStudy<InfEmaRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const interval = barInterval(bars);
   const source = (b: Bar) => {
     switch (cfg.sourceType) {
       case 'close': return b.close;
@@ -138,90 +147,106 @@ export function calculate(
       default: return (b.open + b.high + b.low + b.close) / 4;
     }
   };
-
   const slowAlpha = 2.0 / (cfg.emaLength + 1.0);
   const fastAlpha = 2.0 / (cfg.fastEMALength + 1.0);
-  const slow: number[] = new Array(n);
-  const fast: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const x = source(bars[i]);
-    if (i === 0) {
-      slow[i] = x;
-      fast[i] = x;
-    } else if (i % cfg.updateInterval === 0) {
-      // nz(slowEMA[1], inData)
-      const ps = isNaN(slow[i - 1]) ? x : slow[i - 1];
-      const pf = isNaN(fast[i - 1]) ? x : fast[i - 1];
-      slow[i] = slowAlpha * x + (1 - slowAlpha) * ps;
-      fast[i] = fastAlpha * x + (1 - fastAlpha) * pf;
-    } else {
-      slow[i] = slow[i - 1];
-      fast[i] = fast[i - 1];
-    }
-  }
-
   const trendColor = (c: number, ema: number, bull: string, bear: string, neutral: string) =>
     (gt(c, ema) ? bull : lt(c, ema) ? bear : neutral);
   const fillBull = String(color.new(cfg.slowBullColor, cfg.fillAlpha));
   const fillBear = String(color.new(cfg.slowBearColor, cfg.fillAlpha));
-
-  const plot0 = bars.map((b, i) => ({
-    time: b.time, value: slow[i],
-    color: trendColor(b.close, slow[i], cfg.slowBullColor, cfg.slowBearColor, cfg.slowNeutralColor),
-  }));
-  const plot1 = bars.map((b, i) => ({
-    time: b.time, value: cfg.enableFastEMA ? fast[i] : NaN,
-    color: trendColor(b.close, fast[i], cfg.fastBullColor, cfg.fastBearColor, cfg.fastNeutralColor),
-  }));
-  // fill(plotSlowEMA, plotFastEMA, enableFastEMA ? (fastEMA > slowEMA ? bull : bear) : na)
-  const fills = [{
-    plot1: 'plot0', plot2: 'plot1',
-    colors: bars.map((_b, i) => (cfg.enableFastEMA ? (gt(fast[i], slow[i]) ? fillBull : fillBear) : 'transparent')),
-  }];
-
-  const bgColors: BgColorData[] = [];
-  if (cfg.enableBgColor) {
-    for (let i = 0; i < n; i++) {
-      const c = bars[i].close;
-      const col = cfg.enableFastEMA
-        ? (gt(fast[i], slow[i]) ? cfg.bgBullColor : cfg.bgBearColor)
-        : trendColor(c, slow[i], cfg.bgBullColor, cfg.bgBearColor, cfg.bgNeutralColor);
-      bgColors.push({ time: bars[i].time, color: col });
-    }
-  }
-
-  // ta.crossover / ta.crossunder(fastEMA, slowEMA) compare exactly; plotshape(..., offset = -1): drawn one bar back
-  // bullish_cross = enableFastEMA and ta.crossover(fastEMA, slowEMA); bearish_cross: ta.crossunder
-  const bullishCross: boolean[] = [];
-  const bearishCross: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    bullishCross.push(cfg.enableFastEMA && i > 0 && fast[i] > slow[i] && fast[i - 1] <= slow[i - 1]);
-    bearishCross.push(cfg.enableFastEMA && i > 0 && fast[i] < slow[i] && fast[i - 1] >= slow[i - 1]);
-  }
-  const markers: MarkerData[] = [];
-  if (cfg.enableFastEMA && cfg.showCrossoverSignals) {
-    const size = cfg.signalSize as PineSize;
-    // One plotshape per size: "Bullish Cross Tiny" ... "Large" (shape0-3), "Bearish Cross Tiny" ... (shape4-7)
-    const sizeIndex = Math.max(0, (['tiny', 'small', 'normal', 'large'] as const).indexOf(cfg.signalSize));
-    for (let i = 1; i < n; i++) {
-      const time = barTime(bars, i - 1, interval);
-      if (bullishCross[i]) {
-        markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: cfg.bullishSignalColor, size, id: `shape${sizeIndex}` });
-      }
-      if (bearishCross[i]) {
-        markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: cfg.bearishSignalColor, size, id: `shape${4 + sizeIndex}` });
-      }
-    }
-  }
-
+  const size = cfg.signalSize as PineSize;
+  // One plotshape per size: "Bullish Cross Tiny" ... "Large" (shape0-3), "Bearish Cross Tiny" ... (shape4-7)
+  const sizeIndex = Math.max(0, (['tiny', 'small', 'normal', 'large'] as const).indexOf(cfg.signalSize));
+  const showSignals = cfg.enableFastEMA && cfg.showCrossoverSignals;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    fills,
-    bgColors,
-    markers,
-    alerts: alertStates(alertConditions, bars, [bullishCross, bearishCross]),
+    init() {
+      const s: InfEmaRun = {
+        plot0: [], plot1: [], fillColors: [], bgColors: [], markers: [], flags: [[], []], times: [[], []],
+        steps: [], vars: { slow: NaN, fast: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.bgColors, s.markers, ...s.times];
+      s.series = [s.plot0, s.plot1, s.fillColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const x = source(b);
+      const ps0 = v.slow;
+      const pf0 = v.fast;
+      let slow: number;
+      let fast: number;
+      if (i === 0) {
+        slow = x;
+        fast = x;
+      } else if (i % cfg.updateInterval === 0) {
+        // nz(slowEMA[1], inData)
+        const ps = isNaN(ps0) ? x : ps0;
+        const pf = isNaN(pf0) ? x : pf0;
+        slow = slowAlpha * x + (1 - slowAlpha) * ps;
+        fast = fastAlpha * x + (1 - fastAlpha) * pf;
+      } else {
+        slow = ps0;
+        fast = pf0;
+      }
+      v.slow = slow;
+      v.fast = fast;
+      const c = b.close;
+      s.plot0[i] = {
+        time: b.time, value: slow,
+        color: trendColor(c, slow, cfg.slowBullColor, cfg.slowBearColor, cfg.slowNeutralColor),
+      };
+      s.plot1[i] = {
+        time: b.time, value: cfg.enableFastEMA ? fast : NaN,
+        color: trendColor(c, fast, cfg.fastBullColor, cfg.fastBearColor, cfg.fastNeutralColor),
+      };
+      // fill(plotSlowEMA, plotFastEMA, enableFastEMA ? (fastEMA > slowEMA ? bull : bear) : na)
+      s.fillColors[i] = cfg.enableFastEMA ? (gt(fast, slow) ? fillBull : fillBear) : 'transparent';
+      if (cfg.enableBgColor) {
+        const col = cfg.enableFastEMA
+          ? (gt(fast, slow) ? cfg.bgBullColor : cfg.bgBearColor)
+          : trendColor(c, slow, cfg.bgBullColor, cfg.bgBearColor, cfg.bgNeutralColor);
+        s.bgColors.push({ time: b.time, color: col });
+      }
+      // ta.crossover / ta.crossunder(fastEMA, slowEMA) compare exactly; plotshape(..., offset = -1): drawn one bar back
+      // bullish_cross = enableFastEMA and ta.crossover(fastEMA, slowEMA); bearish_cross: ta.crossunder
+      const bull = cfg.enableFastEMA && i > 0 && fast > slow && pf0 <= ps0;
+      const bear = cfg.enableFastEMA && i > 0 && fast < slow && pf0 >= ps0;
+      if (showSignals && i >= 1) {
+        const time = bars[i - 1].time;
+        if (bull) {
+          s.markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: cfg.bullishSignalColor, size, id: `shape${sizeIndex}` });
+        }
+        if (bear) {
+          s.markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: cfg.bearishSignalColor, size, id: `shape${4 + sizeIndex}` });
+        }
+      }
+      [bull, bear].forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(b.time as number);
+      });
+    },
+    copyVars: (v) => ({ ...v }),
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', colors: s.fillColors.slice() }],
+        bgColors: s.bgColors.slice(),
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<InfiniteEmaWithAlphaControlInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<InfiniteEmaWithAlphaControlInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -232,6 +257,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const InfiniteEmaWithAlphaControl = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

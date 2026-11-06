@@ -10,6 +10,8 @@
  */
 
 import { color, time, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VarisZonesInputs {
   showVWAP: boolean;
@@ -112,58 +114,82 @@ const ne = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) >
 
 const TZ = 'America/New_York';
 
-export function calculate(bars: Bar[], inputs: Partial<VarisZonesInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface VarisRun extends BarRunState<{ cumTPV: number; cumVol: number }> {
+  plots: Point[][];
+}
+
+function study(inputs: Partial<VarisZonesInputs>): BarStudy<VarisRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  // var float cumTPV / cumVol; reset on the bar that opens at 18:00 New York time
-  const vwap: number[] = new Array(n);
-  let cumTPV = 0;
-  let cumVol = 0;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const ms = b.time * 1000;
-    const isNewSession = time.hour(ms, TZ) === 18 && time.minute(ms, TZ) === 0;
-    const tp = (b.high + b.low + b.close) / 3;
-    const volume = b.volume ?? NaN;
-    if (isNewSession) {
-      cumTPV = tp * volume;
-      cumVol = volume;
-    } else {
-      cumTPV += tp * volume;
-      cumVol += volume;
-    }
-    // vwapValue = cumVol != 0 ? cumTPV / cumVol : na
-    vwap[i] = ne(cumVol, 0) ? cumTPV / cumVol : NaN;
-  }
-
-  const line = (show: boolean, d: number, c: string) =>
-    bars.map((b, i) => ({ time: b.time, value: show ? vwap[i] + d : NaN, color: c }));
-  const plot0 = line(cfg.showVWAP, 0, cfg.vwapColor);
-  const plot1 = line(cfg.showUpper1, cfg.band1Points, cfg.upper1Color);
-  const plot2 = line(cfg.showLower1, -cfg.band1Points, cfg.lower1Color);
-  const plot3 = line(cfg.showUpper2, cfg.band2Points, cfg.upper2Color);
-  const plot4 = line(cfg.showLower2, -cfg.band2Points, cfg.lower2Color);
-
-  // fill(vwapPlot, upper1Plot, color = showFill1 and showUpper1 ? color.new(fill1Color, fill1Trans) : na, ...)
-  const fill1 = String(color.new(cfg.fill1Color, cfg.fill1Trans));
-  const fill2 = String(color.new(cfg.fill2Color, cfg.fill2Trans));
-  const fillColors = (on: boolean, c: string) => new Array<string>(n).fill(on ? c : 'transparent');
-
+  const lines: [boolean, number, string][] = [
+    [cfg.showVWAP, 0, cfg.vwapColor],
+    [cfg.showUpper1, cfg.band1Points, cfg.upper1Color],
+    [cfg.showLower1, -cfg.band1Points, cfg.lower1Color],
+    [cfg.showUpper2, cfg.band2Points, cfg.upper2Color],
+    [cfg.showLower2, -cfg.band2Points, cfg.lower2Color],
+  ];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3, plot4 },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Upper Fill 1' }, colors: fillColors(cfg.showFill1 && cfg.showUpper1, fill1) },
-      { plot1: 'plot0', plot2: 'plot2', options: { title: 'Lower Fill 1' }, colors: fillColors(cfg.showFill1 && cfg.showLower1, fill1) },
-      { plot1: 'plot0', plot2: 'plot3', options: { title: 'Upper Fill 2' }, colors: fillColors(cfg.showFill2 && cfg.showUpper2, fill2) },
-      { plot1: 'plot0', plot2: 'plot4', options: { title: 'Lower Fill 2' }, colors: fillColors(cfg.showFill2 && cfg.showLower2, fill2) },
-    ],
+    init() {
+      const plots: Point[][] = [[], [], [], [], []];
+      // var float cumTPV / cumVol
+      return { plots, steps: [], vars: { cumTPV: 0, cumVol: 0 }, lists: [], series: plots };
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      // reset on the bar that opens at 18:00 New York time
+      const ms = b.time * 1000;
+      const isNewSession = time.hour(ms, TZ) === 18 && time.minute(ms, TZ) === 0;
+      const tp = (b.high + b.low + b.close) / 3;
+      const volume = b.volume ?? NaN;
+      if (isNewSession) {
+        v.cumTPV = tp * volume;
+        v.cumVol = volume;
+      } else {
+        v.cumTPV += tp * volume;
+        v.cumVol += volume;
+      }
+      // vwapValue = cumVol != 0 ? cumTPV / cumVol : na
+      const vwap = ne(v.cumVol, 0) ? v.cumTPV / v.cumVol : NaN;
+      for (let k = 0; k < 5; k++) {
+        const [show, d, c] = lines[k]!;
+        s.plots[k]![i] = { time: b.time, value: show ? vwap + d : NaN, color: c };
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // fill(vwapPlot, upper1Plot, color = showFill1 and showUpper1 ? color.new(fill1Color, fill1Trans) : na, ...)
+      const fill1 = String(color.new(cfg.fill1Color, cfg.fill1Trans));
+      const fill2 = String(color.new(cfg.fill2Color, cfg.fill2Trans));
+      const fillColors = (on: boolean, c: string) => new Array<string>(n).fill(on ? c : 'transparent');
+      const [plot0, plot1, plot2, plot3, plot4] = s.plots.map((p) => p.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0, plot1, plot2, plot3, plot4 },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Upper Fill 1' }, colors: fillColors(cfg.showFill1 && cfg.showUpper1, fill1) },
+          { plot1: 'plot0', plot2: 'plot2', options: { title: 'Lower Fill 1' }, colors: fillColors(cfg.showFill1 && cfg.showLower1, fill1) },
+          { plot1: 'plot0', plot2: 'plot3', options: { title: 'Upper Fill 2' }, colors: fillColors(cfg.showFill2 && cfg.showUpper2, fill2) },
+          { plot1: 'plot0', plot2: 'plot4', options: { title: 'Lower Fill 2' }, colors: fillColors(cfg.showFill2 && cfg.showLower2, fill2) },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VarisZonesInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VarisZonesInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const VarisZones = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

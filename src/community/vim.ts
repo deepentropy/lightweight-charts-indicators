@@ -9,7 +9,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type VimColorMode = 'Prev Close' | 'Candle Direction';
 
@@ -49,32 +51,55 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<VimInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface VimRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<VimInputs>): BarStudy<VimRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  // moneyVol = volume * close
-  const moneyVol = bars.map((b) => (b.volume ?? NaN) * b.close);
-  const moneyVolMA = A(ta.sma(Series.fromArray(bars, moneyVol), cfg.maLength));
-
-  // f_getBarColor(mode): green / red / gray by close against close[1] (Prev Close) or against open
-  const barColor = (i: number): string => {
-    const b = bars[i];
-    const ref = cfg.colorMode === 'Prev Close' ? (i > 0 ? bars[i - 1].close : NaN) : b.open;
-    return gt(b.close, ref) ? color.green : lt(b.close, ref) ? color.red : color.gray;
-  };
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, format: metadata.format },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: moneyVol[i], color: barColor(i) })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: moneyVolMA[i], color: color.blue })),
+    init() {
+      const sma = new WindowSma(cfg.maLength);
+      const s: VimRun = { sma, plot0: [], plot1: [], steps: [sma], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // moneyVol = volume * close
+      const moneyVol = (b.volume ?? NaN) * b.close;
+      const moneyVolMA = s.sma.step(moneyVol) ?? NaN;
+      // f_getBarColor(mode): green / red / gray by close against close[1] (Prev Close) or against open
+      const ref = cfg.colorMode === 'Prev Close' ? (i > 0 ? bars[i - 1].close : NaN) : b.open;
+      const barColor = gt(b.close, ref) ? color.green : lt(b.close, ref) ? color.red : color.gray;
+      s.plot0[i] = { time: b.time, value: moneyVol, color: barColor };
+      s.plot1[i] = { time: b.time, value: moneyVolMA, color: color.blue };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, format: metadata.format },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VimInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VimInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const Vim = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

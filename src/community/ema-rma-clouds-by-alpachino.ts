@@ -11,7 +11,9 @@
  * Original notice: © Alpachino97
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EmaRmaCloudsInputs {
   /** Length of the EMAs and RMAs */
@@ -56,18 +58,19 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<EmaRmaCloudsInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface CloudsRun extends BarRunState<{ prevHigh: number; prevLow: number }> {
+  emaHigh: ReturnType<typeof taStep.ema>;
+  emaLow: ReturnType<typeof taStep.ema>;
+  rmaHigh: ReturnType<typeof taStep.rma>;
+  rmaLow: ReturnType<typeof taStep.rma>;
+  lines: Point[][];
+  fills: string[][];
+}
+
+function study(inputs: Partial<EmaRmaCloudsInputs>): BarStudy<CloudsRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const high = Series.fromArray(bars, bars.map((b) => b.high));
-  const low = Series.fromArray(bars, bars.map((b) => b.low));
-
-  const emaHigh = A(ta.ema(high, cfg.period));
-  const emaLow = A(ta.ema(low, cfg.period));
-  const rmaHigh = A(ta.rma(high, cfg.period));
-  const rmaLow = A(ta.rma(low, cfg.period));
-
   const activeDouble = cfg.doubleCloud;
   const activeSingle = cfg.singleCloud && !cfg.doubleCloud;
 
@@ -75,46 +78,84 @@ export function calculate(bars: Bar[], inputs: Partial<EmaRmaCloudsInputs> = {})
   const bullishLow = String(color.new(color.green, 70));
   const bearishHigh = String(color.new(color.red, 70));
   const bearishLow = String(color.new(color.maroon, 70));
-
-  const single: string[] = new Array(n);
-  const doubleHigh: string[] = new Array(n);
-  const doubleLow: string[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const prevHigh = i > 0 ? emaHigh[i - 1] : NaN;
-    const prevLow = i > 0 ? emaLow[i - 1] : NaN;
-    const bullishSingle = gt(emaHigh[i], prevHigh) && gt(emaLow[i], prevLow);
-    const bearishSingle = lt(emaHigh[i], prevHigh) && lt(emaLow[i], prevLow);
-    single[i] = bullishSingle ? bullishHigh : bearishSingle ? bearishHigh : NEUTRAL;
-    const bullishDouble = gt(emaHigh[i], rmaHigh[i]) && gt(emaLow[i], rmaLow[i]);
-    const bearishDouble = lt(emaHigh[i], rmaHigh[i]) && lt(emaLow[i], rmaLow[i]);
-    doubleHigh[i] = bullishDouble ? bullishHigh : bearishDouble ? bearishHigh : NEUTRAL;
-    doubleLow[i] = bullishDouble ? bullishLow : bearishDouble ? bearishLow : NEUTRAL;
-  }
-
-  const line = (on: boolean, values: number[], colors: string[]) =>
-    bars.map((b, i) => ({ time: b.time, value: on ? values[i] : NaN, color: colors[i] }));
-  const fillColors = (on: boolean, colors: string[]) => colors.map((c) => (on ? c : 'transparent'));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(activeSingle, emaHigh, single),
-      plot1: line(activeSingle, emaLow, single),
-      plot2: line(activeDouble, emaHigh, doubleHigh),
-      plot3: line(activeDouble, rmaHigh, doubleHigh),
-      plot4: line(activeDouble, emaLow, doubleLow),
-      plot5: line(activeDouble, rmaLow, doubleLow),
+    init() {
+      const emaHigh = taStep.ema(cfg.period);
+      const emaLow = taStep.ema(cfg.period);
+      const rmaHigh = taStep.rma(cfg.period);
+      const rmaLow = taStep.rma(cfg.period);
+      const s: CloudsRun = {
+        emaHigh, emaLow, rmaHigh, rmaLow, lines: [[], [], [], [], [], []], fills: [[], [], []],
+        steps: [emaHigh, emaLow, rmaHigh, rmaLow], vars: { prevHigh: NaN, prevLow: NaN }, lists: [], series: [],
+      };
+      s.series = [...s.lines, ...s.fills];
+      return s;
     },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Single Cloud' }, colors: fillColors(activeSingle, single) },
-      { plot1: 'plot2', plot2: 'plot3', options: { title: 'Double Cloud High' }, colors: fillColors(activeDouble, doubleHigh) },
-      { plot1: 'plot4', plot2: 'plot5', options: { title: 'Double Cloud Low' }, colors: fillColors(activeDouble, doubleLow) },
-    ],
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const emaHigh = s.emaHigh.step(b.high);
+      const emaLow = s.emaLow.step(b.low);
+      const rmaHigh = s.rmaHigh.step(b.high);
+      const rmaLow = s.rmaLow.step(b.low);
+      const prevHigh = i > 0 ? v.prevHigh : NaN;
+      const prevLow = i > 0 ? v.prevLow : NaN;
+      v.prevHigh = emaHigh;
+      v.prevLow = emaLow;
+      const bullishSingle = gt(emaHigh, prevHigh) && gt(emaLow, prevLow);
+      const bearishSingle = lt(emaHigh, prevHigh) && lt(emaLow, prevLow);
+      const single = bullishSingle ? bullishHigh : bearishSingle ? bearishHigh : NEUTRAL;
+      const bullishDouble = gt(emaHigh, rmaHigh) && gt(emaLow, rmaLow);
+      const bearishDouble = lt(emaHigh, rmaHigh) && lt(emaLow, rmaLow);
+      const doubleHigh = bullishDouble ? bullishHigh : bearishDouble ? bearishHigh : NEUTRAL;
+      const doubleLow = bullishDouble ? bullishLow : bearishDouble ? bearishLow : NEUTRAL;
+
+      const t = b.time;
+      const L = s.lines;
+      L[0][i] = { time: t, value: activeSingle ? emaHigh : NaN, color: single };
+      L[1][i] = { time: t, value: activeSingle ? emaLow : NaN, color: single };
+      L[2][i] = { time: t, value: activeDouble ? emaHigh : NaN, color: doubleHigh };
+      L[3][i] = { time: t, value: activeDouble ? rmaHigh : NaN, color: doubleHigh };
+      L[4][i] = { time: t, value: activeDouble ? emaLow : NaN, color: doubleLow };
+      L[5][i] = { time: t, value: activeDouble ? rmaLow : NaN, color: doubleLow };
+      s.fills[0][i] = activeSingle ? single : 'transparent';
+      s.fills[1][i] = activeDouble ? doubleHigh : 'transparent';
+      s.fills[2][i] = activeDouble ? doubleLow : 'transparent';
+    },
+    result(s) {
+      const L = s.lines;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: L[0].slice(),
+          plot1: L[1].slice(),
+          plot2: L[2].slice(),
+          plot3: L[3].slice(),
+          plot4: L[4].slice(),
+          plot5: L[5].slice(),
+        },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Single Cloud' }, colors: s.fills[0].slice() },
+          { plot1: 'plot2', plot2: 'plot3', options: { title: 'Double Cloud High' }, colors: s.fills[1].slice() },
+          { plot1: 'plot4', plot2: 'plot5', options: { title: 'Double Cloud Low' }, colors: s.fills[2].slice() },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EmaRmaCloudsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EmaRmaCloudsInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const EmaRmaClouds = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

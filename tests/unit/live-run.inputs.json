@@ -15085,6 +15085,1141 @@
         "halfStyle": "Dashed",
         "bosStyle": "Dotted"
       }
+    ],
+    "infinite-ema-with-alpha-control": [
+      {
+        "emaLength": 20,
+        "fastEMALength": 5,
+        "updateInterval": 3,
+        "sourceType": "hl2",
+        "enableBgColor": true,
+        "signalSize": "large"
+      },
+      {
+        "enableFastEMA": false,
+        "enableBgColor": true,
+        "sourceType": "ohlc4"
+      },
+      {
+        "showCrossoverSignals": false,
+        "emaLength": 10,
+        "fastEMALength": 3,
+        "sourceType": "open",
+        "fillAlpha": 200
+      }
+    ],
+    "bb-fibonacci-ratios": [
+      {
+        "length": 5,
+        "fibRatio1": 0.5
+      }
+    ],
+    "twin-range-filter": [
+      {
+        "src": "hl2",
+        "fastPeriod": 5,
+        "slowPeriod": 9,
+        "fastRange": 0.5,
+        "slowRange": 0.7
+      }
+    ],
+    "macd-xd": [
+      {
+        "smaSource": "SMA",
+        "smaSignal": "SMA",
+        "src": "open"
+      },
+      {
+        "smaSource": "EMA",
+        "smaSignal": "SMA",
+        "fastLength": 3
+      }
+    ],
+    "predictive-channels": [
+      {
+        "factor": 1,
+        "slope": 5
+      },
+      {
+        "factor": 0,
+        "slope": 0
+      }
+    ],
+    "ma-ribbon": [
+      {
+        "ma1Type": "EMA",
+        "ma2Type": "SMMA (RMA)",
+        "ma3Type": "WMA",
+        "ma4Type": "VWMA",
+        "ma1Source": "hl2"
+      },
+      {
+        "showMa1": false,
+        "showMa2": false,
+        "showMa3": false,
+        "showMa4": false
+      },
+      {
+        "ma1Length": 3,
+        "ma4Type": "EMA",
+        "ma2Type": "VWMA",
+        "ma3Source": "volume"
+      }
+    ],
+    "5-minute-buy-sell-signal": [
+      {
+        "rsiOversold": 50,
+        "rsiOverbought": 50,
+        "emaLength": 5,
+        "volumeLength": 3,
+        "rsiLength": 3
+      }
+    ],
+    "uptrick-multima-volume": [
+      {
+        "maType1": "SMA",
+        "len1": 5,
+        "useS2": true,
+        "maType2": "TMA",
+        "len2": 3,
+        "useS3": true,
+        "maType3": "GMA",
+        "len3": 4
+      },
+      {
+        "maType1": "EMA",
+        "len1": 6,
+        "useS2": true,
+        "maType2": "DEMA",
+        "len2": 4,
+        "useS3": true,
+        "maType3": "ALMA",
+        "len3": 4
+      },
+      {
+        "maType1": "WMA",
+        "len1": 7,
+        "useS2": true,
+        "maType2": "TEMA",
+        "len2": 5,
+        "useS3": true,
+        "maType3": "ZLEMA",
+        "len3": 4
+      }
+    ],
+    "awesome-oscillator": [],
+    "whale-activity-impact-oscillator": [
+      {
+        "volumeSpikeMultiplier": 1,
+        "priceSpikeMultiplier": 0.5,
+        "lookbackPeriod": 5
+      }
+    ],
+    "tasc-2026-01-the-reversion-index": [
+      {
+        "length": 3
+      }
+    ],
+    "ma-cross-with-displacement": [
+      {
+        "threshold": 0.1,
+        "maPeriod1": 2,
+        "bullishColor": "#123456"
+      }
+    ],
+    "kama": [
+      {
+        "src": "volume",
+        "erLength": 3,
+        "fastLength": 5,
+        "slowLength": 8
+      },
+      {
+        "src": "hlc3",
+        "erLength": 1
+      }
+    ],
+    "candle-range-trading": [
+      {
+        "showBox": false
+      }
+    ],
+    "zlsma": [
+      {
+        "offset": 3,
+        "src": "hl2",
+        "length": 5
+      },
+      {
+        "length": 1
+      },
+      {
+        "offset": -2
+      }
+    ],
+    "pmo": [
+      {
+        "src": "volume",
+        "length1": 3,
+        "length2": 2,
+        "signalLength": 1
+      }
+    ],
+    "ema-rma-clouds-by-alpachino": [
+      {
+        "doubleCloud": true
+      },
+      {
+        "singleCloud": false
+      },
+      {
+        "singleCloud": false,
+        "doubleCloud": true,
+        "period": 3
+      }
+    ],
+    "rsi-histoalert": [
+      {
+        "rsiLen": 3,
+        "buyAlertLevel": 5,
+        "sellAlertLevel": -5,
+        "rsiHistoModify": 2
+      }
+    ],
+    "philakone-ema-swing": [
+      {
+        "exponential": false
+      },
+      {
+        "src": "hl2",
+        "exponential": false
+      },
+      {
+        "src": "open"
+      }
+    ],
+    "nvi": [
+      {
+        "signalLength": 3
+      }
+    ],
+    "heikin-ashi-doji-with-high-volume": [
+      {
+        "bodyThresholdPct": 40,
+        "volLength": 3,
+        "volMultiplier": 0.8
+      },
+      {
+        "volLength": 1
+      }
+    ],
+    "weis-wave-volume": [
+      {
+        "methodType": "Traditional",
+        "methodValue": 2,
+        "priceSource": "Open / Close",
+        "useTrueRange": "Always",
+        "isOscillating": true,
+        "normalize": true
+      },
+      {
+        "methodType": "Part of Price",
+        "methodValue": 50,
+        "priceSource": "High / Low",
+        "useTrueRange": "Never"
+      },
+      {
+        "methodValue": 3.6,
+        "normalize": true,
+        "isOscillating": true
+      }
+    ],
+    "rsi-swing-indicator-v2": [
+      {
+        "rsiSource": "hl2",
+        "rsiLength": 3,
+        "rsiOverbought": 60,
+        "rsiOversold": 40
+      },
+      {
+        "rsiLength": 2,
+        "rsiOverbought": 55,
+        "rsiOversold": 45
+      }
+    ],
+    "inside-outside-bars": [
+      {
+        "ibOn": false,
+        "ibColor": "#123456"
+      },
+      {
+        "obOn": false,
+        "obColor": "#654321"
+      }
+    ],
+    "weighted-ma-function": [
+      {
+        "source": "hlc3",
+        "length": 5,
+        "beta": 1,
+        "alpha": 2.5
+      },
+      {
+        "length": 2,
+        "alpha": 1
+      }
+    ],
+    "tonyux-ema-scalper": [
+      {
+        "emaLength": 3,
+        "channelLength": 12
+      },
+      {
+        "emaLength": 1,
+        "channelLength": 1
+      }
+    ],
+    "ma-adx": [
+      {
+        "maLength": 5,
+        "adxLength": 3,
+        "adxThreshold": 30,
+        "src": "ohlc4"
+      },
+      {
+        "adxLength": 1,
+        "maLength": 1,
+        "adxThreshold": 0
+      }
+    ],
+    "cbc-flip-with-volume": [
+      {
+        "volLen": 3
+      },
+      {
+        "volLen": 1
+      }
+    ],
+    "eurusd-swing-high-low-projection": [
+      {
+        "showRegular": false,
+        "showLog": false,
+        "showLinear": false,
+        "showQuadratic": false,
+        "showNaturalLog": false
+      },
+      {
+        "minPrice": 0,
+        "maxPrice": -5,
+        "projectionPrice": 1.1,
+        "lineColor": "#ff0000"
+      }
+    ],
+    "aroon": [
+      {
+        "length": 1
+      },
+      {
+        "length": 50
+      }
+    ],
+    "ai-volume-signals": [
+      {
+        "showVolumeEMA": true,
+        "volumeMultiplier": 1.1,
+        "volumeEmaLength": 5
+      }
+    ],
+    "volume-candle-coloring-v5": [
+      {
+        "volLength": 3
+      }
+    ],
+    "delta-volume-rsi": [
+      {
+        "period": 3
+      }
+    ],
+    "cci-obv": [
+      {
+        "cciLength": 3,
+        "threshold": 50,
+        "emaLength": 2
+      },
+      {
+        "cciLength": 1
+      },
+      {
+        "cciLength": 200,
+        "threshold": -100
+      }
+    ],
+    "adaptive-heikin-ashi": [
+      {
+        "showBorders": false,
+        "showWicks": false,
+        "showWeight": true,
+        "atrLength": 3,
+        "adaptSensitivity": -2,
+        "transpBody": 50
+      }
+    ],
+    "rsi-bars-onlyflow": [
+      {
+        "useSmooth": false,
+        "colorByDir": false,
+        "useCustomCandles": false,
+        "showPane": true,
+        "src": "hl2",
+        "len": 5,
+        "candleOpacityPct": 40
+      },
+      {
+        "useSmooth": false,
+        "ob": 60,
+        "os": 40
+      }
+    ],
+    "indicators-volume-weighted-macd-histogram": [
+      {
+        "slow": 3,
+        "fast": 7,
+        "signal": 2
+      }
+    ],
+    "ema-ma-crossover": [
+      {
+        "emaLen": 3,
+        "smaLen": 20,
+        "src": "hlc3"
+      },
+      {
+        "emaLen": 30,
+        "smaLen": 2
+      }
+    ],
+    "vwap-dual-ma-ribbon-tracker-pro": [
+      {
+        "maType": "SMA",
+        "useEfiFilter": false,
+        "useAtrFilter": false
+      },
+      {
+        "ma1Length": 2,
+        "ma2Length": 30,
+        "efiLength": 5,
+        "atrLength": 3,
+        "atrMultiplier": 1.5
+      }
+    ],
+    "indicator-hawkeye-volume-indicator": [
+      {
+        "length": 5,
+        "divisor": 1.2
+      }
+    ],
+    "ema-enveloper": [
+      {
+        "length": 5,
+        "src": "hl2"
+      },
+      {
+        "length": 1
+      }
+    ],
+    "obv-custom-ma-strategy": [
+      {
+        "maType": "SMA"
+      },
+      {
+        "maType": "WMA",
+        "maLength1": 3,
+        "maLength2": 7
+      },
+      {
+        "maType": "SMA",
+        "maLength1": 1,
+        "maLength2": 2
+      }
+    ],
+    "fx-sniper-t3-cci-copy-strategy": [
+      {
+        "cciPeriod": 3,
+        "t3Period": 1,
+        "b": 0.3
+      },
+      {
+        "cciPeriod": 1,
+        "t3Period": 0
+      },
+      {
+        "cciPeriod": 2.5
+      }
+    ],
+    "volume-candle-highlighter": [
+      {
+        "showMarker": false,
+        "showBg": true,
+        "markerSize": "Tiny",
+        "abnormalMul": 1.1,
+        "volMaLen": 5
+      },
+      {
+        "markerSize": "Small",
+        "abnormalMul": 1.1
+      },
+      {
+        "markerSize": "Large",
+        "showBg": true,
+        "abnormalMul": 1.2
+      }
+    ],
+    "john-wick-doji-indicator": [
+      {
+        "showJWic": false,
+        "showReverseJWic": true,
+        "maxWick": 20
+      },
+      {
+        "showReverseJWic": true
+      },
+      {
+        "showJWic": false
+      }
+    ],
+    "heikin-ashi-reversals-with-region-dots": [],
+    "crt-indicator": [
+      {
+        "showBox": false
+      }
+    ],
+    "gann-level": [],
+    "acceleration-bands-htf": [
+      {
+        "p": 2
+      },
+      {
+        "p": 20
+      }
+    ],
+    "rsi-50-step-line": [
+      {
+        "rsiLength": 2,
+        "rsiSource": "hlc3"
+      },
+      {
+        "rsiLength": 30
+      }
+    ],
+    "gaussian-ribbon": [
+      {
+        "lag": 0,
+        "windowsize": 5,
+        "offset": 0.9,
+        "sigma": 3,
+        "source": "ohlc4"
+      },
+      {
+        "lag": -3
+      },
+      {
+        "lag": -10,
+        "windowsize": 1
+      }
+    ],
+    "adx": [
+      {
+        "adxSmoothing": 3,
+        "diLength": 7
+      },
+      {
+        "adxSmoothing": 1,
+        "diLength": 1
+      }
+    ],
+    "trendshift-detector": [
+      {
+        "enableTimeFilter": false,
+        "minSequence": 2,
+        "maxLookback": 2
+      },
+      {
+        "utcOffset": -5,
+        "startHour": 20,
+        "endHour": 3,
+        "minBodyPercent": 0.01,
+        "wickTolerancePercent": 0.5
+      },
+      {
+        "minSequence": 0,
+        "wickTolerancePercent": 1
+      }
+    ],
+    "kinetic-slippage-index": [
+      {
+        "volEmaLength": 2,
+        "sigLength": 3,
+        "sigSpike": 5
+      },
+      {
+        "volEmaLength": 1,
+        "sigLength": 1,
+        "sigSpike": -1
+      }
+    ],
+    "atr-bands": [
+      {
+        "showTPBands": true,
+        "showTable": true
+      },
+      {
+        "showTable": true,
+        "allowTableRepainting": true,
+        "showTPinTable": true,
+        "alignTableVertically": false,
+        "tablePosition": "Top Left"
+      },
+      {
+        "showTable": true,
+        "showTPinTable": true,
+        "tpScaleFactor": 1,
+        "atrPeriod": 1,
+        "atrMultiplier": 0.5
+      }
+    ],
+    "williams-r": [
+      {
+        "length": 5,
+        "src": "hl2"
+      },
+      {
+        "length": 1,
+        "src": "open"
+      }
+    ],
+    "price-oscillator": [
+      {
+        "oscMaType": "SMA",
+        "signalMaType": "SMA",
+        "src": "hlc3"
+      },
+      {
+        "oscMaType": "SMA",
+        "signalMaType": "EMA",
+        "shortLength": 3,
+        "longLength": 5,
+        "signalLength": 2
+      },
+      {
+        "oscMaType": "EMA",
+        "signalMaType": "SMA",
+        "src": "volume"
+      }
+    ],
+    "market-participation-ratio-mpr": [
+      {
+        "length": 1,
+        "smoothLength": 1
+      },
+      {
+        "length": 30,
+        "smoothLength": 3
+      }
+    ],
+    "awesome-oscillator-v2": [
+      {
+        "fastPeriod": 1,
+        "slowPeriod": 2,
+        "signalPeriod": 1
+      },
+      {
+        "fastPeriod": 10,
+        "slowPeriod": 5,
+        "signalPeriod": 3
+      }
+    ],
+    "atr-based-zigzag-w-ema": [
+      {
+        "atrLength": 3,
+        "atrMult": 1,
+        "lineSmoothLength": 5
+      },
+      {
+        "atrLength": 1,
+        "atrMult": 0.5,
+        "lineSmoothLength": 1
+      }
+    ],
+    "varis-zones": [
+      {
+        "showVWAP": false,
+        "showUpper1": false,
+        "showFill2": false
+      },
+      {
+        "showLower1": false,
+        "showUpper2": false,
+        "showLower2": false,
+        "showFill1": false,
+        "band1Points": 2.5
+      }
+    ],
+    "volatility-stop": [
+      {
+        "length": 2,
+        "factor": 0.5,
+        "src": "hl2"
+      },
+      {
+        "length": 5,
+        "factor": 3,
+        "src": "high"
+      }
+    ],
+    "climax-volume-reversal-radar": [
+      {
+        "showMA": false,
+        "lengthMA": 3,
+        "takingClose": 1,
+        "riskFactor": 0.5
+      },
+      {
+        "lengthMA": 1,
+        "takingClose": 10,
+        "riskFactor": 1.1
+      }
+    ],
+    "volume-candles": [
+      {
+        "mode": "Volume Average"
+      },
+      {
+        "mode": "Volume Average",
+        "length": 3
+      },
+      {
+        "length": 1
+      }
+    ],
+    "money-flow-pulse": [
+      {
+        "length": 1,
+        "src": "close"
+      },
+      {
+        "length": 5,
+        "src": "ohlc4"
+      },
+      {
+        "length": 2,
+        "src": "open"
+      }
+    ],
+    "donchian-custom": [
+      {
+        "upperLen": 1,
+        "lowerLen": 1
+      },
+      {
+        "upperLen": 30,
+        "lowerLen": 2
+      }
+    ],
+    "donchian": [
+      {
+        "length": 5,
+        "offset": 3
+      },
+      {
+        "length": 1,
+        "offset": -4
+      },
+      {
+        "length": 10,
+        "offset": 10
+      }
+    ],
+    "wyckoff-effort-vs-result": [
+      {
+        "avgVolumeLength": 3,
+        "volumeMultiplier": 0.5
+      },
+      {
+        "avgVolumeLength": 1,
+        "volumeMultiplier": 1
+      }
+    ],
+    "trama": [
+      {
+        "length": 2,
+        "src": "hl2"
+      },
+      {
+        "length": 30,
+        "src": "volume"
+      }
+    ],
+    "range-filter-dw": [
+      {
+        "period": 3,
+        "mult": 0.5,
+        "src": "hl2"
+      },
+      {
+        "period": 1,
+        "src": "open"
+      }
+    ],
+    "pullback-candles-guaranteed-winners": [
+      {
+        "useEmaFilter": true
+      },
+      {
+        "useEmaFilter": true,
+        "emaLength": 5
+      }
+    ],
+    "dual-ema-trend-ribbon": [
+      {
+        "fastLength1": 3,
+        "slowLength1": 2,
+        "fastLength2": 1,
+        "slowLength2": 60
+      }
+    ],
+    "cvd-divergence-background-by-hk": [
+      {
+        "bearColor": "#112233",
+        "bullColor": "#445566"
+      }
+    ],
+    "rsi-trend-bias": [
+      {
+        "changeBackgroundColor": true,
+        "rsiLength": 3,
+        "upperThreshold": 55,
+        "lowerThreshold": 45
+      },
+      {
+        "changeBackgroundColor": true,
+        "bullishColor": "#112233"
+      }
+    ],
+    "obv-macd": [
+      {
+        "showSignal": false
+      },
+      {
+        "fastLength": 2,
+        "slowLength": 3,
+        "signalLength": 1
+      }
+    ],
+    "beep-boop": [
+      {
+        "smaSource": true
+      },
+      {
+        "smaSignal": true,
+        "src": "hl2"
+      },
+      {
+        "smaSource": true,
+        "smaSignal": true,
+        "fastLength": 3,
+        "slowLength": 5,
+        "signalLength": 2,
+        "emaTrend": 4
+      }
+    ],
+    "atr20-sma-x3-5-trailing-line": [
+      {
+        "atrLen": 1,
+        "atrMult": 0.7,
+        "lookbackHighLen": 1
+      },
+      {
+        "atrLen": 5,
+        "lookbackHighLen": 40
+      }
+    ],
+    "vim": [
+      {
+        "colorMode": "Candle Direction",
+        "maLength": 1
+      }
+    ],
+    "mass-index": [
+      {
+        "length": 1
+      },
+      {
+        "length": 40
+      }
+    ],
+    "spx500-quick-drop-rise-alerts": [
+      {
+        "dropThreshold": 2,
+        "lookbackBars": 5
+      },
+      {
+        "dropThreshold": 0.5,
+        "lookbackBars": 3
+      }
+    ],
+    "fibonacci-zone": [
+      {
+        "length": 1
+      },
+      {
+        "length": 60
+      }
+    ],
+    "ema-9-26-cross": [],
+    "pvi": [
+      {
+        "signalLength": 20
+      }
+    ],
+    "atr-stop-loss-finder": [
+      {
+        "smoothing": "SMA"
+      },
+      {
+        "smoothing": "EMA"
+      },
+      {
+        "smoothing": "WMA",
+        "src1": "close",
+        "src2": "hl2"
+      }
+    ],
+    "fvg-breakout-breakdown": [],
+    "cm-heikin-ashi": [],
+    "volume-gaps-imbalances": [
+      {
+        "src": "close",
+        "rows": 20,
+        "sumShowLabel": false
+      },
+      {
+        "prd": 60,
+        "sumSections": 7,
+        "width": 30
+      },
+      {
+        "prd": 250
+      }
+    ],
+    "vold-ratio-histogram": [
+      {
+        "length": 5,
+        "epsilon": 0.001
+      }
+    ],
+    "pay-attention-candle": [
+      {
+        "atrLength": 3,
+        "atrMult": 0.5
+      }
+    ],
+    "volatility-big-market-moves": [
+      {
+        "minMove": 1
+      }
+    ],
+    "three-moving-averages": [
+      {
+        "maType": "sma"
+      },
+      {
+        "maType": "wma",
+        "src": "hl2",
+        "len1": 1,
+        "len2": 3
+      }
+    ],
+    "darvas-box": [
+      {
+        "boxLength": 2
+      },
+      {
+        "boxLength": 20
+      }
+    ],
+    "ai-engulfing": [
+      {
+        "trendLen": 1
+      },
+      {
+        "trendLen": 50
+      }
+    ],
+    "renko-mod": [
+      {
+        "bricksize": 0.5
+      },
+      {
+        "bricksize": 3
+      }
+    ],
+    "inside-bar-ind-alert": [],
+    "engulfing-sweeps-milana-trades": [
+      {
+        "displayStyle": "Arrow"
+      },
+      {
+        "useVolumeFilter": true,
+        "volumeMult": 1,
+        "volumePeriod": 5
+      },
+      {
+        "useVolumeFilter": true,
+        "displayStyle": "Arrow",
+        "candleOpacity": 0
+      }
+    ],
+    "elliott-wave-oscillator": [
+      {
+        "usePercent": false
+      },
+      {
+        "src": "hl2",
+        "sma1Length": 3,
+        "sma2Length": 10
+      }
+    ],
+    "ask-weighted-averages": [
+      {
+        "lengthConditional": 5,
+        "lengthContinuous": 50,
+        "dollarVolumeThreshold": 100
+      },
+      {
+        "lengthConditional": -3,
+        "lengthContinuous": 0
+      }
+    ],
+    "polyfilter": [
+      {
+        "filterType": "Fractional MA",
+        "col1or2": false,
+        "bgCol": true
+      },
+      {
+        "filterType": "Multi-Kernel",
+        "showLine": false,
+        "paintCandles": false,
+        "filterLength": 20
+      },
+      {
+        "src": "close",
+        "filterLength": 5
+      }
+    ],
+    "keltner": [
+      {
+        "useEMA": false,
+        "bandsStyle": "True Range"
+      },
+      {
+        "bandsStyle": "Range",
+        "length": 7,
+        "src": "hlc3",
+        "mult": 1.5
+      },
+      {
+        "atrLength": 3
+      }
+    ],
+    "parabolic-rsi": [
+      {
+        "rsiLen": 5,
+        "sarStart": 0.05,
+        "sarInc": 0.05,
+        "sarMax": 0.4,
+        "upperThreshold": 60,
+        "lowerThreshold": 40
+      },
+      {
+        "rsiLen": 30,
+        "upperThreshold": 80,
+        "lowerThreshold": 20
+      }
+    ],
+    "delta-manipulation-footprint": [
+      {
+        "length": 5,
+        "thresholdMultiplier": 1
+      }
+    ],
+    "cdc-action-zone": [
+      {
+        "source": "close",
+        "shortPeriod": 5,
+        "longPeriod": 50
+      }
+    ],
+    "effective-fvg-indicator-imran": [],
+    "wicked-fractals": [
+      {
+        "fractalBars": "5"
+      },
+      {
+        "n": 4,
+        "fractalBars": "5"
+      },
+      {
+        "n": 3
+      }
+    ],
+    "n-order-ema": [
+      {
+        "emaStyle": "dema",
+        "order": 3,
+        "iirStyle": "All Pole"
+      },
+      {
+        "emaStyle": "tema",
+        "order": 2,
+        "iirStyle": "Matched Z-Transform",
+        "period": 20
+      },
+      {
+        "emaStyle": "hema",
+        "order": 4,
+        "iirStyle": "Bilinear Transform",
+        "source": "hl2"
+      }
+    ],
+    "parabolic-sar": [
+      {
+        "start": 0.01,
+        "increment": 0.03,
+        "maximum": 0.5
+      }
+    ],
+    "chandelier": [
+      {
+        "length": 5,
+        "atrLength": 50,
+        "atrMult": 1.5
+      }
+    ],
+    "volume-colored-bars": [
+      {
+        "length": 3
+      }
+    ],
+    "evwma-envelope": [
+      {
+        "useCV": true,
+        "renderBands": true
+      },
+      {
+        "renderBands": true,
+        "length": 5
+      }
     ]
   },
   "intraday": [
@@ -15132,6 +16267,9 @@
     "pivot-point-hpotter",
     "vwap-mtf",
     "cm-time-lines",
-    "cd-average-daily-range-zones-highs-and-lows"
+    "cd-average-daily-range-zones-highs-and-lows",
+    "trendshift-detector",
+    "varis-zones",
+    "fvg-breakout-breakdown"
   ]
 }

@@ -9,7 +9,9 @@
  * Original notice: © hibinomasakazu1991
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface Atr20SmaX35TrailingLineInputs {
   /** SMA length of the true range */
@@ -42,32 +44,55 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<Atr20SmaX35TrailingLineInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface TrailingLineRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  hh: WindowExtreme;
+  plot0: Point[];
+}
+
+function study(inputs: Partial<Atr20SmaX35TrailingLineInputs>): BarStudy<TrailingLineRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // tr = math.max(high - low, math.max(math.abs(high - close[1]), math.abs(low - close[1]))): na on bar 0
-  const tr = bars.map((b, i) => {
-    const prevClose = i > 0 ? bars[i - 1].close : NaN;
-    return Math.max(b.high - b.low, Math.max(Math.abs(b.high - prevClose), Math.abs(b.low - prevClose)));
-  });
-  const atrSma = A(ta.sma(S(tr), cfg.atrLen));
-  const hh = A(ta.highest(S(bars.map((b) => b.high)), cfg.lookbackHighLen));
-
-  const plot0 = bars.map((b, i) => {
-    const v = hh[i] - cfg.atrMult * atrSma[i];
-    return { time: b.time, value: Number.isFinite(v) ? v : NaN };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
+    init() {
+      const sma = new WindowSma(cfg.atrLen);
+      const hh = new WindowExtreme(false, cfg.lookbackHighLen);
+      const s: TrailingLineRun = { sma, hh, plot0: [], steps: [sma, hh], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // tr = math.max(high - low, math.max(math.abs(high - close[1]), math.abs(low - close[1]))): na on bar 0
+      const prevClose = i > 0 ? bars[i - 1].close : NaN;
+      const tr = Math.max(b.high - b.low, Math.max(Math.abs(b.high - prevClose), Math.abs(b.low - prevClose)));
+      const atrSma = s.sma.step(tr) ?? NaN;
+      const hh = s.hh.step(b.high) ?? NaN;
+      const v = hh - cfg.atrMult * atrSma;
+      s.plot0[i] = { time: b.time, value: Number.isFinite(v) ? v : NaN };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<Atr20SmaX35TrailingLineInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<Atr20SmaX35TrailingLineInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const Atr20SmaX35TrailingLine = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -6,8 +6,9 @@
  * Reference: "Three Moving Averages" (community)
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
-import type { Series } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ThreeMovingAveragesInputs {
   len1: number;
@@ -45,34 +46,58 @@ export const metadata = {
   overlay: true,
 };
 
-function applyMA(src: Series, length: number, maType: string): number[] {
+type Point = { time: number; value: number };
+type Ma = { step(v: number): number; commit(): void };
+
+/** One moving average stepped bar by bar (EMA, SMA or WMA) */
+function maStep(length: number, maType: string): Ma {
   switch (maType) {
-    case 'sma': return ta.sma(src, length).toArray();
-    case 'wma': return ta.wma(src, length).toArray();
-    default: return ta.ema(src, length).toArray();
+    case 'sma': return new WindowSma(length);
+    case 'wma': { const m = taStep.wma(); return { step: (v) => m.step(v, length), commit: () => m.commit() }; }
+    default: return taStep.ema(length);
   }
 }
 
-export function calculate(bars: Bar[], inputs: Partial<ThreeMovingAveragesInputs> = {}): IndicatorResult {
+interface TmaRun extends BarRunState<Record<string, never>> {
+  mas: Ma[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<ThreeMovingAveragesInputs>): BarStudy<TmaRun, IndicatorResult> {
   const { len1, len2, len3, maType, src } = { ...defaultInputs, ...inputs };
-  const srcSeries = getSourceSeries(bars, src);
-
+  const value = barSource(src);
   const lengths = [len1, len2, len3];
-  const maArrays = lengths.map((len) => applyMA(srcSeries, len, maType));
-
-  const plots: Record<string, Array<{ time: number; value: number }>> = {};
-  for (let idx = 0; idx < lengths.length; idx++) {
-    const arr = maArrays[idx];
-    plots[`plot${idx}`] = arr.map((v, i) => ({
-      time: bars[i].time,
-      value: i < lengths[idx] ? NaN : (v ?? NaN),
-    }));
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const mas = lengths.map((len) => maStep(len, maType));
+      const plots: Point[][] = [[], [], []];
+      return { mas, plots, steps: mas, vars: {}, lists: [], series: plots };
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = value(b);
+      for (let idx = 0; idx < 3; idx++) {
+        const ma = s.mas[idx].step(v);
+        s.plots[idx][i] = { time: b.time, value: i < lengths[idx] ? NaN : (ma ?? NaN) };
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+      };
+    },
   };
 }
 
-export const ThreeMovingAverages = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ThreeMovingAveragesInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ThreeMovingAveragesInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const ThreeMovingAverages = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

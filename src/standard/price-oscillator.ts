@@ -9,7 +9,9 @@
  * Based on the standard "Percentage Price Oscillator" indicator.
  */
 
-import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type PriceOscillatorMaType = 'EMA' | 'SMA';
 
@@ -67,43 +69,86 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(bars: Bar[], inputs: Partial<PriceOscillatorInputs> = {}): IndicatorResult {
+type Ma = { step(v: number): number; commit(): void };
+
+/** One moving average (SMA or EMA) stepped bar by bar */
+const maStep = (length: number, maType: PriceOscillatorMaType): Ma =>
+  maType === 'SMA' ? new WindowSma(length) : taStep.ema(length);
+
+type Point = { time: number; value: number; color?: string };
+
+interface PpoRun extends BarRunState<Record<string, never>> {
+  fast: Ma;
+  slow: Ma;
+  sig: Ma;
+  hist: number[];
+  histData: Point[];
+  ppoData: Point[];
+  signalData: Point[];
+}
+
+function study(inputs: Partial<PriceOscillatorInputs>): BarStudy<PpoRun, IndicatorResult> {
   const { src, shortLength, longLength, signalLength, oscMaType, signalMaType } = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const ma = (source: Series, length: number, maType: PriceOscillatorMaType) =>
-    maType === 'SMA' ? ta.sma(source, length) : ta.ema(source, length);
-
-  const source = getSourceSeries(bars, src);
-  const maFast = A(ma(source, shortLength, oscMaType));
-  const maSlow = A(ma(source, longLength, oscMaType));
-  // A plain division: x / 0 is +-infinity (0 / 0 NaN); the plots show na for infinity
-  const ppo = maFast.map((f, i) => (100.0 * (f - maSlow[i])) / maSlow[i]);
-  const signal = A(ma(Series.fromArray(bars, ppo), signalLength, signalMaType));
-  const hist = ppo.map((p, i) => p - signal[i]);
-
+  const value = barSource(src);
   const val = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const histData = hist.map((h, i) => {
-    const prev = i > 0 ? hist[i - 1] : NaN;
-    const color = ge(h, 0) ? (gt(h, prev) ? '#26A69A' : '#B2DFDB') : gt(h, prev) ? '#FFCDD2' : '#FF5252';
-    return { time: bars[i].time, value: val(h), color };
-  });
-
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const fast = maStep(shortLength, oscMaType);
+      const slow = maStep(longLength, oscMaType);
+      const sig = maStep(signalLength, signalMaType);
+      const s: PpoRun = {
+        fast, slow, sig, hist: [], histData: [], ppoData: [], signalData: [],
+        steps: [fast, slow, sig], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.hist, s.histData, s.ppoData, s.signalData];
+      return s;
     },
-    plots: {
-      'plot0': histData,
-      'plot1': ppo.map((v, i) => ({ time: bars[i].time, value: val(v) })),
-      'plot2': signal.map((v, i) => ({ time: bars[i].time, value: val(v) })),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = value(b);
+      const f = s.fast.step(v);
+      const sl = s.slow.step(v);
+      // A plain division: x / 0 is +-infinity (0 / 0 NaN); the plots show na for infinity
+      const ppo = (100.0 * (f - sl)) / sl;
+      const signal = s.sig.step(ppo);
+      const h = ppo - signal;
+      s.hist[i] = h;
+      const prev = i > 0 ? s.hist[i - 1] : NaN;
+      const color = ge(h, 0) ? (gt(h, prev) ? '#26A69A' : '#B2DFDB') : gt(h, prev) ? '#FFCDD2' : '#FF5252';
+      s.histData[i] = { time: b.time, value: val(h), color };
+      s.ppoData[i] = { time: b.time, value: val(ppo) };
+      s.signalData[i] = { time: b.time, value: val(signal) };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.histData.slice(),
+          'plot1': s.ppoData.slice(),
+          'plot2': s.signalData.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PriceOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PriceOscillatorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const PriceOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

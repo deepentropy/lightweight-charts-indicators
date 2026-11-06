@@ -6,7 +6,9 @@
  * Uses ATR (Average True Range) to set channel distance.
  */
 
-import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /**
  * Keltner Channels indicator input parameters
@@ -76,68 +78,91 @@ export const metadata = {
  * @returns Indicator result with plot data
  */
 export function calculate(bars: Bar[], inputs: Partial<KeltnerInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+type Point = { time: any; value: number };
+type Avg = { step(v: number): number; commit(): void };
+type Range = { step(b: Bar): number; commit(): void };
+
+interface KeltnerRun extends BarRunState<Record<string, never>> {
+  basis: Avg;
+  range: Range;
+  upperData: Point[];
+  basisData: Point[];
+  lowerData: Point[];
+}
+
+function study(inputs: Partial<KeltnerInputs>): BarStudy<KeltnerRun, IndicatorResult> {
   const { length, mult, src, useEMA, bandsStyle, atrLength } = { ...defaultInputs, ...inputs };
-
-  // Get source series
-  const source = getSourceSeries(bars, src);
-  const high = new Series(bars, (bar) => bar.high);
-  const low = new Series(bars, (bar) => bar.low);
-
-  // Calculate basis (moving average)
-  const basis = useEMA ? ta.ema(source, length) : ta.sma(source, length);
-
-  // Calculate range based on bands style
-  let rangema: Series;
-  switch (bandsStyle) {
-    case 'True Range':
-      rangema = ta.tr(bars, true); // True Range without averaging
-      break;
-    case 'Range':
-      rangema = ta.rma(high.sub(low), length); // RMA of high-low range
-      break;
-    case 'Average True Range':
-    default:
-      rangema = ta.atr(bars, atrLength);
-      break;
-  }
-
-  // Calculate upper and lower bands
-  const upper = basis.add(rangema.mul(mult));
-  const lower = basis.sub(rangema.mul(mult));
-
-  // Convert to plot format - order: Upper, Basis, Lower (matching CSV)
-  const upperData = upper.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const basisData = basis.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const lowerData = lower.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const fills: FillData[] = [
-    { plot1: 'plot0', plot2: 'plot2', options: { color: '#2196F3', transp: 95, title: 'Background' } },
-  ];
-
+  const value = barSource(src);
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      // Calculate basis (moving average)
+      const basis: Avg = useEMA ? taStep.ema(length) : new WindowSma(length);
+      // Calculate range based on bands style
+      let range: Range;
+      switch (bandsStyle) {
+        case 'True Range': {
+          const m = taStep.tr(true); // True Range without averaging
+          range = { step: (b) => m.step(b.high, b.low, b.close), commit: () => m.commit() };
+          break;
+        }
+        case 'Range': {
+          const m = taStep.rma(length); // RMA of high-low range
+          range = { step: (b) => m.step(b.high - b.low), commit: () => m.commit() };
+          break;
+        }
+        case 'Average True Range':
+        default: {
+          const m = taStep.atr(atrLength);
+          range = { step: (b) => m.step(b.high, b.low, b.close), commit: () => m.commit() };
+          break;
+        }
+      }
+      const s: KeltnerRun = {
+        basis, range, upperData: [], basisData: [], lowerData: [], steps: [basis, range], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.upperData, s.basisData, s.lowerData];
+      return s;
     },
-    plots: {
-      'plot0': upperData,
-      'plot1': basisData,
-      'plot2': lowerData,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const basis = s.basis.step(value(b));
+      const rangema = s.range.step(b);
+      // Calculate upper and lower bands
+      const upper = basis + rangema * mult;
+      const lower = basis - rangema * mult;
+      // Plot format - order: Upper, Basis, Lower (matching CSV)
+      s.upperData[i] = { time: b.time, value: upper ?? NaN };
+      s.basisData[i] = { time: b.time, value: basis ?? NaN };
+      s.lowerData[i] = { time: b.time, value: lower ?? NaN };
     },
-    fills,
+    result(s) {
+      const fills: FillData[] = [
+        { plot1: 'plot0', plot2: 'plot2', options: { color: '#2196F3', transp: 95, title: 'Background' } },
+      ];
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.upperData.slice(),
+          'plot1': s.basisData.slice(),
+          'plot2': s.lowerData.slice(),
+        },
+        fills,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<KeltnerInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
 }
 
 /**
@@ -145,6 +170,7 @@ export function calculate(bars: Bar[], inputs: Partial<KeltnerInputs> = {}): Ind
  */
 export const KeltnerChannels = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

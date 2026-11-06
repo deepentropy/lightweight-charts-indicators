@@ -8,7 +8,9 @@
  * Reference: "Awesome Oscillator V2" (community)
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AwesomeOscillatorV2Inputs {
   fastPeriod: number;
@@ -43,34 +45,53 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<AwesomeOscillatorV2Inputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface AoRun extends BarRunState<Record<string, never>> {
+  fast: WindowSma;
+  slow: WindowSma;
+  sig: WindowSma;
+  aoPlot: Point[];
+  signalPlot: Point[];
+}
+
+function study(inputs: Partial<AwesomeOscillatorV2Inputs>): BarStudy<AoRun, IndicatorResult> {
   const { fastPeriod, slowPeriod, signalPeriod } = { ...defaultInputs, ...inputs };
-
-  const hl2 = getSourceSeries(bars, 'hl2');
-  const fastSMA = ta.sma(hl2, fastPeriod);
-  const slowSMA = ta.sma(hl2, slowPeriod);
-  const ao = fastSMA.sub(slowSMA);
-  const signal = ta.sma(ao, signalPeriod);
-
-  const aoArr = ao.toArray();
-  const signalArr = signal.toArray();
   const warmup = slowPeriod;
-
-  const aoPlot = aoArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || v == null) ? NaN : v,
-  }));
-
-  const signalPlot = signalArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup + signalPeriod - 1 || v == null) ? NaN : v,
-  }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': aoPlot, 'plot1': signalPlot },
-    hlines: hlineConfig.map(h => ({ value: h.value, options: h.options })),
+    init() {
+      const fast = new WindowSma(fastPeriod);
+      const slow = new WindowSma(slowPeriod);
+      const sig = new WindowSma(signalPeriod);
+      const s: AoRun = { fast, slow, sig, aoPlot: [], signalPlot: [], steps: [fast, slow, sig], vars: {}, lists: [], series: [] };
+      s.series = [s.aoPlot, s.signalPlot];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const hl2 = (b.high + b.low) / 2;
+      const ao = s.fast.step(hl2) - s.slow.step(hl2);
+      const signal = s.sig.step(ao);
+      s.aoPlot[i] = { time: b.time, value: (i < warmup || ao == null) ? NaN : ao };
+      s.signalPlot[i] = { time: b.time, value: (i < warmup + signalPeriod - 1 || signal == null) ? NaN : signal };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.aoPlot.slice(), 'plot1': s.signalPlot.slice() },
+        hlines: hlineConfig.map(h => ({ value: h.value, options: h.options })),
+      };
+    },
   };
 }
 
-export const AwesomeOscillatorV2 = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AwesomeOscillatorV2Inputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AwesomeOscillatorV2Inputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const AwesomeOscillatorV2 = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

@@ -11,9 +11,11 @@
  */
 
 import {
-  ta, Series, color, getSourceSeries,
+  taStep, color,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BeepBoopInputs {
   /** Fast MA length */
@@ -68,45 +70,74 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<BeepBoopInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+type Ma = { step(v: number): number; commit(): void };
+
+interface BeepBoopRun extends BarRunState<Record<string, never>> {
+  fast: Ma;
+  slow: Ma;
+  sig: Ma;
+  trend: Ma;
+  plot0: Point[];
+}
+
+function study(inputs: Partial<BeepBoopInputs>): BarStudy<BeepBoopRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const src = getSourceSeries(bars, cfg.src);
-  // The ternaries select a constant input: only the selected MA runs, on every bar
-  const fastMa = A(cfg.smaSource ? ta.sma(src, cfg.fastLength) : ta.ema(src, cfg.fastLength));
-  const slowMa = A(cfg.smaSource ? ta.sma(src, cfg.slowLength) : ta.ema(src, cfg.slowLength));
-  const macd = fastMa.map((f, i) => f - slowMa[i]);
-  const signal = A(cfg.smaSignal ? ta.sma(S(macd), cfg.signalLength) : ta.ema(S(macd), cfg.signalLength));
-  const trend = A(ta.ema(S(bars.map((b) => b.close)), cfg.emaTrend));
-
+  const value = barSource(cfg.src);
   const colGrowAbove = String(color.new('#26A69A', 0));
   const colGrowBelow = String(color.new('#FF0000', 0));
   const colFallAbove = String(color.new('#FFFFFF', 0));
   const colFallBelow = String(color.new('#FFFFFF', 0));
-
-  const plot0 = bars.map((b, i) => {
-    const raw = macd[i] - signal[i];
-    // hist := hist > 0 ? 0.1 : hist < 0 ? 0.09 : 0 (na gives 0)
-    const hist = gt(raw, 0) ? 0.1 : lt(raw, 0) ? 0.09 : 0;
-    const t = trend[i];
-    const c = eq(hist, 0.1)
-      ? (gt(b.close, t) && gt(b.open, t) && gt(b.low, t) ? colGrowAbove : colFallAbove)
-      : eq(hist, 0.09)
-        ? (lt(b.close, t) && lt(b.open, t) && lt(b.high, t) ? colGrowBelow : colFallBelow)
-        : undefined;
-    return { time: b.time, value: hist, ...(c !== undefined ? { color: c } : {}) };
-  });
-
+  const ma = (sma: boolean, length: number): Ma => (sma ? new WindowSma(length) : taStep.ema(length));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      // The ternaries select a constant input: only the selected MA runs, on every bar
+      const fast = ma(cfg.smaSource, cfg.fastLength);
+      const slow = ma(cfg.smaSource, cfg.slowLength);
+      const sig = ma(cfg.smaSignal, cfg.signalLength);
+      const trend = taStep.ema(cfg.emaTrend);
+      const s: BeepBoopRun = { fast, slow, sig, trend, plot0: [], steps: [fast, slow, sig, trend], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = value(b);
+      const macd = (s.fast.step(v) ?? NaN) - (s.slow.step(v) ?? NaN);
+      const signal = s.sig.step(macd) ?? NaN;
+      const t = s.trend.step(b.close) ?? NaN;
+      const raw = macd - signal;
+      // hist := hist > 0 ? 0.1 : hist < 0 ? 0.09 : 0 (na gives 0)
+      const hist = gt(raw, 0) ? 0.1 : lt(raw, 0) ? 0.09 : 0;
+      const c = eq(hist, 0.1)
+        ? (gt(b.close, t) && gt(b.open, t) && gt(b.low, t) ? colGrowAbove : colFallAbove)
+        : eq(hist, 0.09)
+          ? (lt(b.close, t) && lt(b.open, t) && lt(b.high, t) ? colGrowBelow : colFallBelow)
+          : undefined;
+      s.plot0[i] = c !== undefined ? { time: b.time, value: hist, color: c } : { time: b.time, value: hist };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BeepBoopInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BeepBoopInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const BeepBoop = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

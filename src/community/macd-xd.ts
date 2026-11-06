@@ -11,8 +11,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MacdXdInputs {
   fastLength: number;
@@ -63,44 +65,86 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const gt = (a: number, b: number) => a - b > EPS;
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MacdXdInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+type Ma = { step(v: number): number; commit(): void };
+
+/** One moving average (SMA or EMA) stepped bar by bar */
+function maStep(len: number, type: 'SMA' | 'EMA'): Ma {
+  return type === 'SMA' ? new WindowSma(len) : taStep.ema(len);
+}
+
+interface MacdXdRun extends BarRunState<Record<string, never>> {
+  fast: Ma;
+  slow: Ma;
+  sig: Ma;
+  hist: number[];
+  histData: Point[];
+  macdData: Point[];
+  signalData: Point[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<MacdXdInputs>): BarStudy<MacdXdRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = getSourceSeries(bars, cfg.src);
-
-  const ma = (s: Series, len: number, type: 'SMA' | 'EMA') => A(type === 'SMA' ? ta.sma(s, len) : ta.ema(s, len));
-  const fastMa = ma(src, cfg.fastLength, cfg.smaSource);
-  const slowMa = ma(src, cfg.slowLength, cfg.smaSource);
-  const macd = fastMa.map((f, i) => f - slowMa[i]);
-  const signal = ma(Series.fromArray(bars, macd), cfg.signalLength, cfg.smaSignal);
-  const hist = macd.map((m, i) => m - signal[i]);
-
-  const histColor = (i: number) => {
-    const prev = i > 0 ? hist[i - 1] : NaN;
-    // hist >= 0 ? (hist[1] < hist ? #26A69A : #B2DFDB) : (hist[1] < hist ? #FFCDD2 : #FF5252)
-    if (ge(hist[i], 0)) return lt(prev, hist[i]) ? '#26A69A' : '#B2DFDB';
-    return lt(prev, hist[i]) ? '#FFCDD2' : '#FF5252';
-  };
-
-  // alertcondition(hist[1] >= 0 and hist < 0) / alertcondition(hist[1] <= 0 and hist > 0)
-  const toFalling = hist.map((h, i) => i > 0 && ge(hist[i - 1], 0) && lt(h, 0));
-  const toRising = hist.map((h, i) => i > 0 && le(hist[i - 1], 0) && gt(h, 0));
-
+  const value = barSource(cfg.src);
+  const zeroColor = String(color.new('#787B86', 50));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: hist[i], color: histColor(i) })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: macd[i], color: '#2962FF' })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: signal[i], color: '#FF6D00' })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const fast = maStep(cfg.fastLength, cfg.smaSource);
+      const slow = maStep(cfg.slowLength, cfg.smaSource);
+      const sig = maStep(cfg.signalLength, cfg.smaSignal);
+      const s: MacdXdRun = {
+        fast, slow, sig, hist: [], histData: [], macdData: [], signalData: [], flags: [[], []], times: [[], []],
+        steps: [fast, slow, sig], vars: {}, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.hist, s.histData, s.macdData, s.signalData, ...s.flags];
+      return s;
     },
-    hlines: [
-      { value: 0, options: { title: 'Zero Line', color: String(color.new('#787B86', 50)), linestyle: 'dashed' } },
-    ],
-    alerts: alertStates(alertConditions, bars, [toFalling, toRising]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = value(b);
+      const macd = s.fast.step(v) - s.slow.step(v);
+      const signal = s.sig.step(macd);
+      const h = macd - signal;
+      s.hist[i] = h;
+      const prev = i > 0 ? s.hist[i - 1] : NaN;
+      // hist >= 0 ? (hist[1] < hist ? #26A69A : #B2DFDB) : (hist[1] < hist ? #FFCDD2 : #FF5252)
+      const c = ge(h, 0) ? (lt(prev, h) ? '#26A69A' : '#B2DFDB') : lt(prev, h) ? '#FFCDD2' : '#FF5252';
+      s.histData[i] = { time: b.time, value: h, color: c };
+      s.macdData[i] = { time: b.time, value: macd, color: '#2962FF' };
+      s.signalData[i] = { time: b.time, value: signal, color: '#FF6D00' };
+      // alertcondition(hist[1] >= 0 and hist < 0) / alertcondition(hist[1] <= 0 and hist > 0)
+      const flags = [i > 0 && ge(prev, 0) && lt(h, 0), i > 0 && le(prev, 0) && gt(h, 0)];
+      flags.forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(b.time as number);
+      });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.histData.slice(), plot1: s.macdData.slice(), plot2: s.signalData.slice() },
+        hlines: [
+          { value: 0, options: { title: 'Zero Line', color: zeroColor, linestyle: 'dashed' } },
+        ],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MacdXdInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MacdXdInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -111,6 +155,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const MacdXd = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

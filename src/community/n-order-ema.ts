@@ -15,7 +15,9 @@
  * Original notice: © The_Peaceful_Lizard
  */
 
-import { getSourceSeries, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type NOrderEmaStyle = 'ema' | 'dema' | 'hema' | 'tema';
 export type NOrderIirStyle = 'All Pole' | 'Impulse Matched' | 'Matched Z-Transform' | 'Bilinear Transform';
@@ -123,12 +125,30 @@ class IirSite {
   private a: number[] = [];
   private b: number[] = [];
   private filter = NaN;
+  /** The last source values (the newest last; `histCount` values seen in all) */
   private hist: number[] = [];
+  private histCount = 0;
   private prevSize = NaN;
   private prevPeriod = NaN;
   private prevOrder = NaN;
 
-  constructor(private readonly style: NOrderIirStyle) {}
+  /** `keep`: source values kept, at least the longest coefficient list */
+  constructor(private readonly style: NOrderIirStyle, private readonly keep: number) {}
+
+  /** A copy with its own arrays (the coefficient arrays are replaced, never changed: shared) */
+  clone(): IirSite {
+    const c = new IirSite(this.style, this.keep);
+    c.y = this.y.slice();
+    c.a = this.a;
+    c.b = this.b;
+    c.filter = this.filter;
+    c.hist = this.hist.slice();
+    c.histCount = this.histCount;
+    c.prevSize = this.prevSize;
+    c.prevPeriod = this.prevPeriod;
+    c.prevOrder = this.prevOrder;
+    return c;
+  }
 
   step(bar: number, source: number, period: number, order: number): number {
     // update_coeffs_*: barstate.isfirst or period != period[1] or order != order[1]
@@ -138,7 +158,11 @@ class IirSite {
     this.prevPeriod = period;
     this.prevOrder = order;
     this.hist.push(source);
-    const x = (n: number) => (n < this.hist.length ? this.hist[this.hist.length - 1 - n] : NaN);
+    this.histCount++;
+    if (this.hist.length > this.keep * 2 + 1024) this.hist = this.hist.slice(-this.keep);
+    const hist = this.hist;
+    const count0 = this.histCount;
+    const x = (n: number) => (n < count0 ? hist[hist.length - 1 - n] : NaN);
 
     const size = this.a.length;
     // size != size[1] (na on the first bar compares false)
@@ -170,54 +194,86 @@ class IirSite {
   }
 }
 
-export function calculate(bars: Bar[], inputs: Partial<NOrderEmaInputs> = {}): IndicatorResult {
+interface NOrderVars {
+  s1: IirSite;
+  s2: IirSite;
+  s3: IirSite;
+  /** fixnan(nz(source)) */
+  lastSource: number;
+}
+
+interface NOrderRun extends BarRunState<NOrderVars> {
+  plot0: { time: any; value: number }[];
+}
+
+function study(inputs: Partial<NOrderEmaInputs>): BarStudy<NOrderRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.source).toArray().map((v) => v ?? NaN);
+  const value = barSource(cfg.source);
   const order = Math.trunc(cfg.order);
   // safe_period = fixnan(clamp(nz(period), 1)): max(min(period, max float), 1)
   const period = Math.max(Math.min(nz(cfg.period), 1.7976931348623158e308), 1);
   const style = cfg.iirStyle;
-  const s1 = new IirSite(style);
-  const s2 = new IirSite(style);
-  const s3 = new IirSite(style);
-
-  const out: number[] = new Array(n).fill(NaN);
-  let lastSource = NaN;
-  for (let i = 0; i < n; i++) {
-    // safe_source = fixnan(nz(source))
-    const v = nz(src[i]);
-    lastSource = isNaN(v) ? lastSource : v;
-    const x = lastSource;
-    if (cfg.emaStyle === 'dema') {
-      const e1 = s1.step(i, x, period, order);
-      const e2 = s2.step(i, e1, period, order);
-      out[i] = 2 * e1 - e2;
-    } else if (cfg.emaStyle === 'tema') {
-      const e1 = s1.step(i, x, period, order);
-      const e2 = s2.step(i, e1, period, order);
-      const e3 = s3.step(i, e2, period, order);
-      out[i] = 3 * (e1 - e2) + e3;
-    } else if (cfg.emaStyle === 'hema') {
-      const e1 = s1.step(i, x, period / 2, order);
-      const e2 = s2.step(i, x, period, order);
-      const delta = 2 * e1 - e2;
-      out[i] = s3.step(i, delta, Math.max(1, Math.sqrt(period)), order);
-    } else {
-      out[i] = s1.step(i, x, period, order);
-    }
-  }
-
+  // the coefficient lists have at most max(order, 0) + 1 values (constant period and order)
+  const keep = Math.max(order, 0) + 2;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: Number.isFinite(out[i]) ? out[i] : NaN })),
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const s: NOrderRun = {
+        plot0: [], steps: [], lists: [], series: [],
+        vars: { s1: new IirSite(style, keep), s2: new IirSite(style, keep), s3: new IirSite(style, keep), lastSource: NaN },
+      };
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const vs = s.vars;
+      const { s1, s2, s3 } = vs;
+      // safe_source = fixnan(nz(source))
+      const v = nz(value(bars[i]));
+      vs.lastSource = isNaN(v) ? vs.lastSource : v;
+      const x = vs.lastSource;
+      let out: number;
+      if (cfg.emaStyle === 'dema') {
+        const e1 = s1.step(i, x, period, order);
+        const e2 = s2.step(i, e1, period, order);
+        out = 2 * e1 - e2;
+      } else if (cfg.emaStyle === 'tema') {
+        const e1 = s1.step(i, x, period, order);
+        const e2 = s2.step(i, e1, period, order);
+        const e3 = s3.step(i, e2, period, order);
+        out = 3 * (e1 - e2) + e3;
+      } else if (cfg.emaStyle === 'hema') {
+        const e1 = s1.step(i, x, period / 2, order);
+        const e2 = s2.step(i, x, period, order);
+        const delta = 2 * e1 - e2;
+        out = s3.step(i, delta, Math.max(1, Math.sqrt(period)), order);
+      } else {
+        out = s1.step(i, x, period, order);
+      }
+      s.plot0[i] = { time: bars[i].time, value: Number.isFinite(out) ? out : NaN };
+    },
+    copyVars: (v) => ({ s1: v.s1.clone(), s2: v.s2.clone(), s3: v.s3.clone(), lastSource: v.lastSource }),
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<NOrderEmaInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<NOrderEmaInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const NOrderEma = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

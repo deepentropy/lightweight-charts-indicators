@@ -7,8 +7,10 @@
  * Reference: "AI-EngulfingCandle" (community)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AIEngulfingInputs {
   trendLen: number;
@@ -32,46 +34,69 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<AIEngulfingInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface AieRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  plot0: Point[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<AIEngulfingInputs>): BarStudy<AieRun, Result> {
   const { trendLen } = { ...defaultInputs, ...inputs };
-  const closeSeries = new Series(bars, (b) => b.close);
-  const smaArr = ta.sma(closeSeries, trendLen).toArray();
-
   const warmup = trendLen;
-  const markers: MarkerData[] = [];
-
-  const plot0 = smaArr.map((v, i) => {
-    if (i < warmup || v == null || isNaN(v)) return { time: bars[i].time, value: NaN };
-    return { time: bars[i].time, value: v };
-  });
-
-  for (let i = warmup; i < bars.length; i++) {
-    const prev = bars[i - 1];
-    const curr = bars[i];
-    const sma = smaArr[i];
-    if (sma == null || isNaN(sma)) continue;
-
-    const prevBearish = prev.close < prev.open;
-    const currBullish = curr.close > curr.open;
-    const bullishEngulfing = prevBearish && currBullish && curr.open <= prev.close && curr.close >= prev.open;
-
-    const prevBullish = prev.close > prev.open;
-    const currBearish = curr.close < curr.open;
-    const bearishEngulfing = prevBullish && currBearish && curr.open >= prev.close && curr.close <= prev.open;
-
-    if (bullishEngulfing && curr.close < sma) {
-      markers.push({ time: curr.time, position: 'belowBar', shape: 'arrowUp', color: '#26A69A', text: 'Bull' });
-    }
-    if (bearishEngulfing && curr.close > sma) {
-      markers.push({ time: curr.time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: 'Bear' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
-    markers,
+    init() {
+      const sma = new WindowSma(trendLen);
+      const s: AieRun = { sma, plot0: [], markers: [], steps: [sma], vars: {}, lists: [], series: [] };
+      s.lists = [s.markers];
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const curr = bars[i];
+      const sma = s.sma.step(curr.close);
+      if (i < warmup || isNaN(sma)) {
+        s.plot0[i] = { time: curr.time, value: NaN };
+        return;
+      }
+      s.plot0[i] = { time: curr.time, value: sma };
+      const prev = bars[i - 1];
+
+      const prevBearish = prev.close < prev.open;
+      const currBullish = curr.close > curr.open;
+      const bullishEngulfing = prevBearish && currBullish && curr.open <= prev.close && curr.close >= prev.open;
+
+      const prevBullish = prev.close > prev.open;
+      const currBearish = curr.close < curr.open;
+      const bearishEngulfing = prevBullish && currBearish && curr.open >= prev.close && curr.close <= prev.open;
+
+      if (bullishEngulfing && curr.close < sma) {
+        s.markers.push({ time: curr.time, position: 'belowBar', shape: 'arrowUp', color: '#26A69A', text: 'Bull' });
+      }
+      if (bearishEngulfing && curr.close > sma) {
+        s.markers.push({ time: curr.time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: 'Bear' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice() },
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const AIEngulfing = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AIEngulfingInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AIEngulfingInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+
+export const AIEngulfing = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

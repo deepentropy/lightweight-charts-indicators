@@ -11,8 +11,10 @@
  * Reference: "Tony's EMA Scalper - Buy / Sell" (community)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TonyUXScalperInputs {
   emaLength: number;
@@ -41,64 +43,84 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TonyUXScalperInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+type Point = { time: number; value: number };
+
+interface ScalperRun extends BarRunState<{ prevEma: number }> {
+  ema: ReturnType<typeof taStep.ema>;
+  high: WindowExtreme;
+  low: WindowExtreme;
+  emaPlot: Point[];
+  highPlot: Point[];
+  lowPlot: Point[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<TonyUXScalperInputs>): BarStudy<ScalperRun, Result> {
   const { emaLength, channelLength } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const closeSeries = new Series(bars, (b) => b.close);
-  const emaArr = ta.ema(closeSeries, emaLength).toArray();
-  const highArr = ta.highest(closeSeries, channelLength).toArray();
-  const lowArr = ta.lowest(closeSeries, channelLength).toArray();
-
   const warmup = Math.max(emaLength, channelLength);
-
-  const emaPlot = emaArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < emaLength ? NaN : (v ?? NaN),
-  }));
-
-  const highPlot = highArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < channelLength ? NaN : (v ?? NaN),
-  }));
-
-  const lowPlot = lowArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < channelLength ? NaN : (v ?? NaN),
-  }));
-
-  // Buy/Sell markers: cross(close, EMA) means close crosses EMA in either direction
-  // bearish = cross(close, out) == 1 and close[1] > close  (price fell through EMA)
-  // bullish = cross(close, out) == 1 and close[1] < close  (price rose through EMA)
-  const markers: MarkerData[] = [];
-  for (let i = warmup + 1; i < n; i++) {
-    const emaVal = emaArr[i];
-    const prevEma = emaArr[i - 1];
-    if (emaVal == null || prevEma == null) continue;
-
-    const c = bars[i].close;
-    const pc = bars[i - 1].close;
-
-    // cross(): true when the two series cross (either direction)
-    const crossed = (pc <= prevEma && c > emaVal) || (pc >= prevEma && c < emaVal) ||
-                    (pc < prevEma && c >= emaVal) || (pc > prevEma && c <= emaVal);
-
-    if (crossed) {
-      if (pc > c) {
-        // bearish: close[1] > close
-        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: 'Sell' });
-      } else if (pc < c) {
-        // bullish: close[1] < close
-        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#26A69A', text: 'Buy' });
-      }
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { ema: emaPlot, highChannel: highPlot, lowChannel: lowPlot },
-    markers,
+    init() {
+      const ema = taStep.ema(emaLength);
+      const high = new WindowExtreme(false, channelLength);
+      const low = new WindowExtreme(true, channelLength);
+      const s: ScalperRun = {
+        ema, high, low, emaPlot: [], highPlot: [], lowPlot: [], markers: [], steps: [ema, high, low],
+        vars: { prevEma: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.emaPlot, s.highPlot, s.lowPlot];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const c = b.close;
+      const emaVal = s.ema.step(c);
+      const hi = s.high.step(c);
+      const lo = s.low.step(c);
+      s.emaPlot[i] = { time: b.time, value: i < emaLength ? NaN : emaVal };
+      s.highPlot[i] = { time: b.time, value: i < channelLength ? NaN : hi };
+      s.lowPlot[i] = { time: b.time, value: i < channelLength ? NaN : lo };
+      const prevEma = s.vars.prevEma;
+      s.vars.prevEma = emaVal;
+
+      // Buy/Sell markers: cross(close, EMA) means close crosses EMA in either direction
+      // bearish = cross(close, out) == 1 and close[1] > close  (price fell through EMA)
+      // bullish = cross(close, out) == 1 and close[1] < close  (price rose through EMA)
+      if (i < warmup + 1) return;
+      const pc = bars[i - 1].close;
+
+      // cross(): true when the two series cross (either direction)
+      const crossed = (pc <= prevEma && c > emaVal) || (pc >= prevEma && c < emaVal) ||
+                      (pc < prevEma && c >= emaVal) || (pc > prevEma && c <= emaVal);
+
+      if (crossed) {
+        if (pc > c) {
+          // bearish: close[1] > close
+          s.markers.push({ time: b.time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: 'Sell' });
+        } else if (pc < c) {
+          // bullish: close[1] < close
+          s.markers.push({ time: b.time, position: 'belowBar', shape: 'arrowUp', color: '#26A69A', text: 'Buy' });
+        }
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { ema: s.emaPlot.slice(), highChannel: s.highPlot.slice(), lowChannel: s.lowPlot.slice() },
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const TonyUXScalper = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TonyUXScalperInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TonyUXScalperInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const TonyUXScalper = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

@@ -9,8 +9,10 @@
  * Reference: "CDC Action Zone V.2"
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CDCActionZoneInputs {
   source: SourceType;
@@ -41,44 +43,77 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<CDCActionZoneInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
+type Point = { time: any; value: number };
+type Ema = ReturnType<typeof taStep.ema>;
+
+interface CdcRun extends BarRunState<Record<string, never>> {
+  ap: Ema;
+  fast: Ema;
+  slow: Ema;
+  fastData: Point[];
+  slowData: Point[];
+  fillColors: string[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<CDCActionZoneInputs>): BarStudy<CdcRun, Result> {
   const { source, shortPeriod, longPeriod } = { ...defaultInputs, ...inputs };
-
-  const src = getSourceSeries(bars, source);
-  const ap = ta.ema(src, 2);
-  const fast = ta.ema(ap, shortPeriod);
-  const slow = ta.ema(ap, longPeriod);
-  const fastArr = fast.toArray();
-  const slowArr = slow.toArray();
-  const apArr = ap.toArray();
-
-  const toPlot = (arr: (number | null)[]) =>
-    arr.map((v, i) => ({ time: bars[i].time, value: i < longPeriod ? NaN : (v ?? NaN) }));
-
-  // Zone coloring: Green (bull + AP>Fast), Yellow (bull + AP<Fast), Red (bear + AP<Fast), Blue (bear + AP>Fast)
-  const barColors: BarColorData[] = [];
-  const fillColors: string[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    if (i < longPeriod) { fillColors.push('transparent'); continue; }
-    const f = fastArr[i] ?? 0;
-    const s2 = slowArr[i] ?? 0;
-    const a = apArr[i] ?? 0;
-    const bullish = f > s2;
-    let color: string;
-    if (bullish && a > f) color = '#00FF00';       // Green zone
-    else if (bullish && a <= f) color = '#FFFF00';  // Yellow zone
-    else if (!bullish && a < f) color = '#FF0000';  // Red zone
-    else color = '#0000FF';                          // Blue zone
-    barColors.push({ time: bars[i].time as number, color });
-    fillColors.push(color + '40'); // 25% alpha
-  }
-
+  const value = barSource(source);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(fastArr), 'plot1': toPlot(slowArr) },
-    fills: [{ plot1: 'plot0', plot2: 'plot1', colors: fillColors }],
-    barColors,
+    fullRunReason: () => (isBarSource(source) ? null : 'source of another study'),
+    init() {
+      const ap = taStep.ema(2);
+      const fast = taStep.ema(shortPeriod);
+      const slow = taStep.ema(longPeriod);
+      const s: CdcRun = {
+        ap, fast, slow, fastData: [], slowData: [], fillColors: [], barColors: [], steps: [ap, fast, slow], vars: {},
+        lists: [], series: [],
+      };
+      s.lists = [s.barColors];
+      s.series = [s.fastData, s.slowData, s.fillColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      const apv = s.ap.step(value(bars[i]));
+      const fv = s.fast.step(apv);
+      const sv = s.slow.step(apv);
+      s.fastData[i] = { time, value: i < longPeriod ? NaN : (fv ?? NaN) };
+      s.slowData[i] = { time, value: i < longPeriod ? NaN : (sv ?? NaN) };
+
+      // Zone coloring: Green (bull + AP>Fast), Yellow (bull + AP<Fast), Red (bear + AP<Fast), Blue (bear + AP>Fast)
+      if (i < longPeriod) { s.fillColors[i] = 'transparent'; return; }
+      const f = fv ?? 0;
+      const s2 = sv ?? 0;
+      const a = apv ?? 0;
+      const bullish = f > s2;
+      let color: string;
+      if (bullish && a > f) color = '#00FF00';       // Green zone
+      else if (bullish && a <= f) color = '#FFFF00';  // Yellow zone
+      else if (!bullish && a < f) color = '#FF0000';  // Red zone
+      else color = '#0000FF';                          // Blue zone
+      s.barColors.push({ time: time as number, color });
+      s.fillColors[i] = color + '40'; // 25% alpha
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.fastData.slice(), 'plot1': s.slowData.slice() },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', colors: s.fillColors.slice() }],
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const CDCActionZone = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CDCActionZoneInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CDCActionZoneInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const CDCActionZone = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

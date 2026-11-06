@@ -9,8 +9,10 @@
  * Reference: "Range Filter [DW]"
  */
 
-import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RangeFilterDWInputs {
   period: number;
@@ -42,106 +44,120 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RangeFilterDWInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
+
+interface RangeFilterRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  srcArr: number[];
+  filter: number[];
+  fdir: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<RangeFilterDWInputs>): BarStudy<RangeFilterRun, Result> {
   const { period, mult, src } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const srcSeries = getSourceSeries(bars, src);
-  const srcArr = srcSeries.toArray();
-
-  // Calculate bar-to-bar absolute range
-  const absRange: number[] = new Array(n);
-  absRange[0] = 0;
-  for (let i = 1; i < n; i++) {
-    absRange[i] = Math.abs((srcArr[i] ?? 0) - (srcArr[i - 1] ?? 0));
-  }
-
-  // Smooth range using EMA
-  const rangeSeries = Series.fromArray(bars, absRange);
-  const smoothRangeArr = ta.ema(rangeSeries, period).toArray();
-
-  // Apply multiplier (default to 0 during EMA warmup to avoid NaN propagation)
-  const smrng: number[] = smoothRangeArr.map((v) => (v != null && !isNaN(v) ? v : 0) * mult);
-
-  // Range filter calculation
-  const filter: number[] = new Array(n);
-  const fdir: number[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    const s = srcArr[i] ?? 0;
-    const sr = smrng[i];
-
-    if (i === 0) {
-      filter[i] = s;
-      fdir[i] = 0;
-      continue;
-    }
-
-    const prevFilter = filter[i - 1];
-
-    if (s > prevFilter) {
-      // Price above filter: filter moves up, ratchets
-      filter[i] = Math.max(prevFilter, s - sr);
-    } else if (s < prevFilter) {
-      // Price below filter: filter moves down, ratchets
-      filter[i] = Math.min(prevFilter, s + sr);
-    } else {
-      filter[i] = prevFilter;
-    }
-
-    fdir[i] = filter[i] > filter[i - 1] ? 1 : filter[i] < filter[i - 1] ? -1 : fdir[i - 1];
-  }
-
+  const value = barSource(src);
   const warmup = period;
-
-  // Bar colors based on trend direction and close vs filter
-  // Pine: upward and close>filt ? (close>close[1] ? #05ff9b : #00b36b) : downward and close<filt ? (close<close[1] ? #ff0583 : #b8005d) : #cccccc
-  const barColors: BarColorData[] = [];
-  for (let i = warmup; i < n; i++) {
-    const close = bars[i].close;
-    const prevClose = i > 0 ? bars[i - 1].close : close;
-    let color: string;
-    if (fdir[i] === 1 && close > filter[i]) {
-      color = close > prevClose ? '#05ff9b' : '#00b36b';
-    } else if (fdir[i] === -1 && close < filter[i]) {
-      color = close < prevClose ? '#ff0583' : '#b8005d';
-    } else {
-      color = '#cccccc';
-    }
-    barColors.push({ time: bars[i].time, color });
-  }
-
-  const plot0 = filter.map((v, i) => {
-    if (i < warmup) return { time: bars[i].time, value: NaN };
-    const upward = fdir[i] === 1;
-    const downward = fdir[i] === -1;
-    const color = upward ? '#26A69A' : downward ? '#EF5350' : '#787B86';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  const plot1 = filter.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : v + smrng[i],
-  }));
-
-  const plot2 = filter.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : v - smrng[i],
-  }));
-
-  // Fills: high band to filter (green), low band to filter (red)
-  // Pine: fill(h_band_plot, filt_plot, color=#00b36b, transp=85)
-  // Pine: fill(l_band_plot, filt_plot, color=#b8005d, transp=85)
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
-    fills: [
-      { plot1: 'plot1', plot2: 'plot0', options: { color: 'rgba(0,179,107,0.15)' } },
-      { plot1: 'plot2', plot2: 'plot0', options: { color: 'rgba(184,0,93,0.15)' } },
-    ],
-    barColors,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const ema = taStep.ema(period);
+      const s: RangeFilterRun = {
+        ema, srcArr: [], filter: [], fdir: [], plot0: [], plot1: [], plot2: [], barColors: [],
+        steps: [ema], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.barColors];
+      s.series = [s.srcArr, s.filter, s.fdir, s.plot0, s.plot1, s.plot2];
+      return s;
+    },
+    bar(st, i, bars) {
+      const { srcArr, filter, fdir } = st;
+      srcArr[i] = value(bars[i]);
+      // Calculate bar-to-bar absolute range
+      const absRange = i === 0 ? 0 : Math.abs((srcArr[i] ?? 0) - (srcArr[i - 1] ?? 0));
+      // Smooth range using EMA
+      const v = st.ema.step(absRange);
+      // Apply multiplier (default to 0 during EMA warmup to avoid NaN propagation)
+      const sr = (v != null && !isNaN(v) ? v : 0) * mult;
+
+      // Range filter calculation
+      const s = srcArr[i] ?? 0;
+      if (i === 0) {
+        filter[i] = s;
+        fdir[i] = 0;
+      } else {
+        const prevFilter = filter[i - 1];
+
+        if (s > prevFilter) {
+          // Price above filter: filter moves up, ratchets
+          filter[i] = Math.max(prevFilter, s - sr);
+        } else if (s < prevFilter) {
+          // Price below filter: filter moves down, ratchets
+          filter[i] = Math.min(prevFilter, s + sr);
+        } else {
+          filter[i] = prevFilter;
+        }
+
+        fdir[i] = filter[i] > filter[i - 1] ? 1 : filter[i] < filter[i - 1] ? -1 : fdir[i - 1];
+      }
+
+      const time = bars[i].time;
+      // Bar colors based on trend direction and close vs filter
+      // Pine: upward and close>filt ? (close>close[1] ? #05ff9b : #00b36b) : downward and close<filt ? (close<close[1] ? #ff0583 : #b8005d) : #cccccc
+      if (i >= warmup) {
+        const close = bars[i].close;
+        const prevClose = i > 0 ? bars[i - 1].close : close;
+        let color: string;
+        if (fdir[i] === 1 && close > filter[i]) {
+          color = close > prevClose ? '#05ff9b' : '#00b36b';
+        } else if (fdir[i] === -1 && close < filter[i]) {
+          color = close < prevClose ? '#ff0583' : '#b8005d';
+        } else {
+          color = '#cccccc';
+        }
+        st.barColors.push({ time, color });
+      }
+
+      const f = filter[i];
+      if (i < warmup) {
+        st.plot0[i] = { time, value: NaN };
+      } else {
+        const upward = fdir[i] === 1;
+        const downward = fdir[i] === -1;
+        const color = upward ? '#26A69A' : downward ? '#EF5350' : '#787B86';
+        st.plot0[i] = { time, value: f, color };
+      }
+      st.plot1[i] = { time, value: i < warmup ? NaN : f + sr };
+      st.plot2[i] = { time, value: i < warmup ? NaN : f - sr };
+    },
+    result(s) {
+      // Fills: high band to filter (green), low band to filter (red)
+      // Pine: fill(h_band_plot, filt_plot, color=#00b36b, transp=85)
+      // Pine: fill(l_band_plot, filt_plot, color=#b8005d, transp=85)
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice(), 'plot2': s.plot2.slice() },
+        fills: [
+          { plot1: 'plot1', plot2: 'plot0', options: { color: 'rgba(0,179,107,0.15)' } },
+          { plot1: 'plot2', plot2: 'plot0', options: { color: 'rgba(184,0,93,0.15)' } },
+        ],
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const RangeFilterDW = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RangeFilterDWInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RangeFilterDWInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const RangeFilterDW = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

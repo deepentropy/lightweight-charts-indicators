@@ -12,8 +12,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ClimaxVolumeReversalRadarInputs {
   /** Show the volume MA */
@@ -56,36 +58,68 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ClimaxVolumeReversalRadarInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+
+interface ClimaxRun extends BarRunState<Record<string, never>> {
+  avgVolume: WindowSma;
+  volumeMa: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<ClimaxVolumeReversalRadarInputs>): BarStudy<ClimaxRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const volume = Series.fromArray(bars, bars.map((b) => b.volume ?? NaN));
-  const vol = A(volume);
-  const avgVolume = A(ta.sma(volume, 10));
-  const volumeMa = A(ta.sma(volume, cfg.lengthMA));
-
-  const bullFlags: boolean[] = [], bearFlags: boolean[] = [];
-  const plot0 = bars.map((b, i) => {
-    const ref = i >= cfg.takingClose ? bars[i - cfg.takingClose].close : NaN;
-    const highVolume = gt(vol[i], avgVolume[i] * cfg.riskFactor);
-    const bullishClimax = lt(b.close, ref) && lt(b.close, b.open) && highVolume;
-    const bearishClimax = gt(b.close, ref) && gt(b.close, b.open) && highVolume;
-    bullFlags.push(bullishClimax);
-    bearFlags.push(bearishClimax);
-    const c = bullishClimax ? color.green : bearishClimax ? color.red : color.gray;
-    return { time: b.time, value: vol[i], color: c };
-  });
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: cfg.showMA ? volumeMa[i] : NaN, color: color.black }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    // alertcondition(bullishClimax, "Bullish Climax Watch") / alertcondition(bearishClimax, "Bearish Climax Watch")
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags]),
+    init() {
+      const avgVolume = new WindowSma(10);
+      const volumeMa = new WindowSma(cfg.lengthMA);
+      const s: ClimaxRun = {
+        avgVolume, volumeMa, plot0: [], plot1: [], flags: [[], []], times: [[], []],
+        steps: [avgVolume, volumeMa], vars: {}, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.plot0, s.plot1, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const vol = b.volume ?? NaN;
+      const avgVolume = s.avgVolume.step(vol);
+      const volumeMa = s.volumeMa.step(vol);
+      const ref = i >= cfg.takingClose ? bars[i - cfg.takingClose].close : NaN;
+      const highVolume = gt(vol, avgVolume * cfg.riskFactor);
+      const bullishClimax = lt(b.close, ref) && lt(b.close, b.open) && highVolume;
+      const bearishClimax = gt(b.close, ref) && gt(b.close, b.open) && highVolume;
+      const c = bullishClimax ? color.green : bearishClimax ? color.red : color.gray;
+      s.plot0[i] = { time: b.time, value: vol, color: c };
+      s.plot1[i] = { time: b.time, value: cfg.showMA ? volumeMa : NaN, color: color.black };
+      s.flags[0]![i] = bullishClimax;
+      s.flags[1]![i] = bearishClimax;
+      if (bullishClimax) s.times[0]!.push(b.time as number);
+      if (bearishClimax) s.times[1]!.push(b.time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        // alertcondition(bullishClimax, "Bullish Climax Watch") / alertcondition(bearishClimax, "Bearish Climax Watch")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ClimaxVolumeReversalRadarInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ClimaxVolumeReversalRadarInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -96,6 +130,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const ClimaxVolumeReversalRadar = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

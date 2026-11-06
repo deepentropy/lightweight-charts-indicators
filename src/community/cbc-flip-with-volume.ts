@@ -13,9 +13,11 @@
  * Original notice: © PtGambler
  */
 
-import { taCore, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CbcFlipWithVolumeInputs {
   /** Volume SMA lookback */
@@ -46,15 +48,21 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CbcFlipWithVolumeInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const avgVol = taCore.sma(volume, cfg.volLen);
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number };
 
+interface CbcRun extends BarRunState<{ cbc: boolean; cbcOpen: number }> {
+  avgVol: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<CbcFlipWithVolumeInputs>): BarStudy<CbcRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const bullNormal = String(color.rgb(120, 206, 176));
   const bearNormal = String(color.rgb(228, 102, 102));
   const bullStrong = String(color.rgb(0, 200, 100));
@@ -63,69 +71,91 @@ export function calculate(
   const bgBullNormal = String(color.new(color.green, 80));
   const bgBearStrong = String(color.new(color.red, 40));
   const bgBearNormal = String(color.new(color.red, 80));
-
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  const plot0 = [];
-  const plot1 = [];
-  const bullFlags: boolean[] = [], bearFlags: boolean[] = [];
-  let cbc = false; // var bool cbc = false
-  let cbcOpen = 0.0; // var float cbc_open = 0.
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time;
-    // volHigh = volume > ta.sma(volume, volLen)
-    const volHigh = gt(volume[i], avgVol[i] ?? NaN);
-    // prevCbc = cbc[1] (false on the first bar: a bool is never na)
-    const prevCbc = cbc;
-    const prevLow = i > 0 ? bars[i - 1].low : NaN;
-    const prevHigh = i > 0 ? bars[i - 1].high : NaN;
-    const prevVol = i > 0 ? volume[i - 1] : NaN;
-    if (cbc && lt(b.close, prevLow) && lt(b.close, b.open) && gt(volume[i], prevVol)) {
-      cbc = false;
-      cbcOpen = b.open;
-    }
-    if (!cbc && gt(b.close, prevHigh) && gt(b.close, b.open) && gt(volume[i], prevVol)) {
-      cbc = true;
-      cbcOpen = b.open;
-    }
-    const bullFlip = cbc && !prevCbc;
-    const bearFlip = !cbc && prevCbc;
-    bullFlags.push(bullFlip);
-    bearFlags.push(bearFlip);
-
-    // The four plotshape calls: Bull / Bear Flip (Normal), then Bull / Bear Flip (Strong), ids shape0 .. shape3
-    if (bullFlip && !volHigh) {
-      markers.push({ id: 'shape0', time: t, position: 'belowBar', shape: 'triangleUp', color: bullNormal, size: 'tiny' });
-    }
-    if (bearFlip && !volHigh) {
-      markers.push({ id: 'shape1', time: t, position: 'aboveBar', shape: 'triangleDown', color: bearNormal, size: 'tiny' });
-    }
-    if (bullFlip && volHigh) {
-      markers.push({ id: 'shape2', time: t, position: 'belowBar', shape: 'triangleUp', color: bullStrong, size: 'small' });
-    }
-    if (bearFlip && volHigh) {
-      markers.push({ id: 'shape3', time: t, position: 'aboveBar', shape: 'triangleDown', color: bearStrong, size: 'small' });
-    }
-
-    if (bullFlip) bgColors.push({ time: t, color: volHigh ? bgBullStrong : bgBullNormal });
-    else if (bearFlip) bgColors.push({ time: t, color: volHigh ? bgBearStrong : bgBearNormal });
-
-    // A plain division: cbc_open = 0 gives +-infinity (na in the plot)
-    const bull = cbc && gt(b.close, cbcOpen) ? ((b.close - cbcOpen) / cbcOpen) * 100 : 0;
-    const bear = !cbc && lt(b.close, cbcOpen) ? ((b.close - cbcOpen) / cbcOpen) * -100 : 0;
-    plot0.push({ time: t, value: Number.isFinite(bull) ? bull : NaN });
-    plot1.push({ time: t, value: Number.isFinite(bear) ? bear : NaN });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    markers,
-    bgColors,
-    // alertcondition(cbc and not prevCbc, 'Bull Flip') / alertcondition(not cbc and prevCbc, 'Bear Flip')
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags]),
+    init() {
+      const avgVol = new WindowSma(cfg.volLen);
+      // var bool cbc = false; var float cbc_open = 0.
+      const s: CbcRun = {
+        avgVol, plot0: [], plot1: [], flags: [[], []], times: [[], []], markers: [], bgColors: [], steps: [avgVol],
+        vars: { cbc: false, cbcOpen: 0.0 }, lists: [], series: [],
+      };
+      s.lists = [...s.times, s.markers, s.bgColors];
+      s.series = [s.plot0, s.plot1, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      const volume = b.volume ?? NaN;
+      // volHigh = volume > ta.sma(volume, volLen)
+      const volHigh = gt(volume, s.avgVol.step(volume));
+      // prevCbc = cbc[1] (false on the first bar: a bool is never na)
+      const prevCbc = v.cbc;
+      const prevLow = i > 0 ? bars[i - 1].low : NaN;
+      const prevHigh = i > 0 ? bars[i - 1].high : NaN;
+      const prevVol = i > 0 ? bars[i - 1].volume ?? NaN : NaN;
+      if (v.cbc && lt(b.close, prevLow) && lt(b.close, b.open) && gt(volume, prevVol)) {
+        v.cbc = false;
+        v.cbcOpen = b.open;
+      }
+      if (!v.cbc && gt(b.close, prevHigh) && gt(b.close, b.open) && gt(volume, prevVol)) {
+        v.cbc = true;
+        v.cbcOpen = b.open;
+      }
+      const cbc = v.cbc;
+      const cbcOpen = v.cbcOpen;
+      const bullFlip = cbc && !prevCbc;
+      const bearFlip = !cbc && prevCbc;
+      s.flags[0][i] = bullFlip;
+      s.flags[1][i] = bearFlip;
+      if (bullFlip) s.times[0].push(t as number);
+      if (bearFlip) s.times[1].push(t as number);
+
+      // The four plotshape calls: Bull / Bear Flip (Normal), then Bull / Bear Flip (Strong), ids shape0 .. shape3
+      if (bullFlip && !volHigh) {
+        s.markers.push({ id: 'shape0', time: t, position: 'belowBar', shape: 'triangleUp', color: bullNormal, size: 'tiny' });
+      }
+      if (bearFlip && !volHigh) {
+        s.markers.push({ id: 'shape1', time: t, position: 'aboveBar', shape: 'triangleDown', color: bearNormal, size: 'tiny' });
+      }
+      if (bullFlip && volHigh) {
+        s.markers.push({ id: 'shape2', time: t, position: 'belowBar', shape: 'triangleUp', color: bullStrong, size: 'small' });
+      }
+      if (bearFlip && volHigh) {
+        s.markers.push({ id: 'shape3', time: t, position: 'aboveBar', shape: 'triangleDown', color: bearStrong, size: 'small' });
+      }
+
+      if (bullFlip) s.bgColors.push({ time: t, color: volHigh ? bgBullStrong : bgBullNormal });
+      else if (bearFlip) s.bgColors.push({ time: t, color: volHigh ? bgBearStrong : bgBearNormal });
+
+      // A plain division: cbc_open = 0 gives +-infinity (na in the plot)
+      const bull = cbc && gt(b.close, cbcOpen) ? ((b.close - cbcOpen) / cbcOpen) * 100 : 0;
+      const bear = !cbc && lt(b.close, cbcOpen) ? ((b.close - cbcOpen) / cbcOpen) * -100 : 0;
+      s.plot0[i] = { time: t, value: Number.isFinite(bull) ? bull : NaN };
+      s.plot1[i] = { time: t, value: Number.isFinite(bear) ? bear : NaN };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        // alertcondition(cbc and not prevCbc, 'Bull Flip') / alertcondition(not cbc and prevCbc, 'Bear Flip')
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CbcFlipWithVolumeInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CbcFlipWithVolumeInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -136,6 +166,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const CbcFlipWithVolume = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

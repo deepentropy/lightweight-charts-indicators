@@ -7,7 +7,9 @@
  * Reference: "Bollinger Bands Fibonacci Ratios" (community)
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BBFibonacciRatiosInputs {
   length: number;
@@ -47,37 +49,66 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<BBFibonacciRatiosInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface BbFibRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  atr: ReturnType<typeof taStep.atr>;
+  out: Point[][];
+}
+
+function study(inputs: Partial<BBFibonacciRatiosInputs>): BarStudy<BbFibRun, IndicatorResult> {
   const { length, fibRatio1, fibRatio2, fibRatio3 } = { ...defaultInputs, ...inputs };
-
-  const source = getSourceSeries(bars, 'close');
-  const sma = ta.sma(source, length);
-  const atr = ta.atr(bars, length);
-  const smaArr = sma.toArray();
-  const atrArr = atr.toArray();
-
   const warmup = length;
-  const makePlot = (fn: (s: number, a: number) => number) =>
-    bars.map((b, i) => {
-      if (i < warmup || smaArr[i] == null || atrArr[i] == null) return { time: b.time, value: NaN };
-      return { time: b.time, value: fn(smaArr[i]!, atrArr[i]!) };
-    });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      'plot0': makePlot((s) => s),
-      'plot1': makePlot((s, a) => s + a * fibRatio1),
-      'plot2': makePlot((s, a) => s - a * fibRatio1),
-      'plot3': makePlot((s, a) => s + a * fibRatio2),
-      'plot4': makePlot((s, a) => s - a * fibRatio2),
-      'plot5': makePlot((s, a) => s + a * fibRatio3),
-      'plot6': makePlot((s, a) => s - a * fibRatio3),
+    init() {
+      const sma = new WindowSma(length);
+      const atr = taStep.atr(length);
+      const out: Point[][] = [[], [], [], [], [], [], []];
+      return { sma, atr, out, steps: [sma, atr], vars: {}, lists: [], series: out };
     },
-    fills: [
-      { plot1: 'plot5', plot2: 'plot6', options: { color: 'rgba(41,98,255,0.05)' } },
-    ],
+    bar(s, i, bars) {
+      const b = bars[i];
+      const sm = s.sma.step(b.close);
+      const a = s.atr.step(b.high, b.low, b.close);
+      const na = i < warmup || sm == null || a == null;
+      const o = s.out;
+      o[0][i] = { time: b.time, value: na ? NaN : sm };
+      o[1][i] = { time: b.time, value: na ? NaN : sm + a * fibRatio1 };
+      o[2][i] = { time: b.time, value: na ? NaN : sm - a * fibRatio1 };
+      o[3][i] = { time: b.time, value: na ? NaN : sm + a * fibRatio2 };
+      o[4][i] = { time: b.time, value: na ? NaN : sm - a * fibRatio2 };
+      o[5][i] = { time: b.time, value: na ? NaN : sm + a * fibRatio3 };
+      o[6][i] = { time: b.time, value: na ? NaN : sm - a * fibRatio3 };
+    },
+    result(s) {
+      const o = s.out;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          'plot0': o[0].slice(),
+          'plot1': o[1].slice(),
+          'plot2': o[2].slice(),
+          'plot3': o[3].slice(),
+          'plot4': o[4].slice(),
+          'plot5': o[5].slice(),
+          'plot6': o[6].slice(),
+        },
+        fills: [
+          { plot1: 'plot5', plot2: 'plot6', options: { color: 'rgba(41,98,255,0.05)' } },
+        ],
+      };
+    },
   };
 }
 
-export const BBFibonacciRatios = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BBFibonacciRatiosInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BBFibonacciRatiosInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const BBFibonacciRatios = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

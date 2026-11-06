@@ -15,6 +15,8 @@
 
 import { time, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrendShiftDetectorInputs {
   /** Minimum sequence of candles of the other colour before the change */
@@ -89,91 +91,118 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TrendShiftDetectorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface TsdVars {
+  bullCount: number;
+  bearCount: number;
+  barsAfterChange: number;
+  lookingForShort: boolean;
+  lookingForLong: boolean;
+}
+
+interface TsdRun extends BarRunState<TsdVars> {
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<TrendShiftDetectorInputs>): BarStudy<TsdRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
 
   // timezoneString = utcOffset >= 0 ? "UTC+" + str.tostring(utcOffset) : "UTC" + str.tostring(utcOffset)
   const tz = cfg.utcOffset >= 0 ? `UTC+${cfg.utcOffset}` : `UTC${cfg.utcOffset}`;
   const startTime = cfg.startHour * 60 + cfg.startMinute;
   const endTime = cfg.endHour * 60 + cfg.endMinute;
-
-  let bullCount = 0;
-  let bearCount = 0;
-  let barsAfterChange = 0;
-  let lookingForShort = false;
-  let lookingForLong = false;
-
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const ms = (b.time as number) * 1000;
-    const cur = time.hour(ms, tz) * 60 + time.minute(ms, tz);
-    let isInTimeRange = true;
-    if (cfg.enableTimeFilter) {
-      isInTimeRange = startTime <= endTime
-        ? cur >= startTime && cur <= endTime
-        : cur >= startTime || cur <= endTime;
-    }
-
-    const bullNow = gt(b.close, b.open);
-    const bearNow = lt(b.close, b.open);
-    const bull1 = i > 0 && gt(bars[i - 1].close, bars[i - 1].open);
-    const bear1 = i > 0 && lt(bars[i - 1].close, bars[i - 1].open);
-
-    // bullCount[1] / bearCount[1]: the counts at the end of the previous bar (na on the first bar)
-    const bullCountPrev = i > 0 ? bullCount : NaN;
-    const bearCountPrev = i > 0 ? bearCount : NaN;
-    if (bullNow) {
-      bullCount += 1;
-      bearCount = 0;
-    } else if (bearNow) {
-      bearCount += 1;
-      bullCount = 0;
-    }
-
-    const colorChangeNow = (bullNow && bear1) || (bearNow && bull1);
-    if (colorChangeNow) {
-      barsAfterChange = 0;
-      if (bearNow && bullCountPrev >= cfg.minSequence) {
-        lookingForShort = true;
-        lookingForLong = false;
-      } else if (bullNow && bearCountPrev >= cfg.minSequence) {
-        lookingForLong = true;
-        lookingForShort = false;
-      }
-    } else {
-      barsAfterChange += 1;
-    }
-
-    const wickTol = (b.open * cfg.wickTolerancePercent) / 100;
-    const bodyPercent = (Math.abs(b.close - b.open) / b.open) * 100;
-    const bearishNoUpperWick = bearNow && le(b.high - Math.max(b.open, b.close), wickTol);
-    const bullishNoLowerWick = bullNow && le(Math.min(b.open, b.close) - b.low, wickTol);
-    const bodyOk = ge(bodyPercent, cfg.minBodyPercent);
-    const isShortSetup = isInTimeRange && lookingForShort && bearishNoUpperWick && bodyOk && barsAfterChange <= cfg.maxLookback;
-    const isLongSetup = isInTimeRange && lookingForLong && bullishNoLowerWick && bodyOk && barsAfterChange <= cfg.maxLookback;
-
-    if (isShortSetup) lookingForShort = false;
-    if (isLongSetup) lookingForLong = false;
-    if (barsAfterChange > cfg.maxLookback) {
-      lookingForShort = false;
-      lookingForLong = false;
-    }
-
-    const t = b.time as number;
-    if (isShortSetup) markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: cfg.colorShort, size: 'small' });
-    if (isLongSetup) markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: cfg.colorLong, size: 'small' });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
+    init() {
+      const s: TsdRun = {
+        markers: [], steps: [],
+        vars: { bullCount: 0, bearCount: 0, barsAfterChange: 0, lookingForShort: false, lookingForLong: false },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const ms = (b.time as number) * 1000;
+      const cur = time.hour(ms, tz) * 60 + time.minute(ms, tz);
+      let isInTimeRange = true;
+      if (cfg.enableTimeFilter) {
+        isInTimeRange = startTime <= endTime
+          ? cur >= startTime && cur <= endTime
+          : cur >= startTime || cur <= endTime;
+      }
+
+      const bullNow = gt(b.close, b.open);
+      const bearNow = lt(b.close, b.open);
+      const bull1 = i > 0 && gt(bars[i - 1].close, bars[i - 1].open);
+      const bear1 = i > 0 && lt(bars[i - 1].close, bars[i - 1].open);
+
+      // bullCount[1] / bearCount[1]: the counts at the end of the previous bar (na on the first bar)
+      const bullCountPrev = i > 0 ? v.bullCount : NaN;
+      const bearCountPrev = i > 0 ? v.bearCount : NaN;
+      if (bullNow) {
+        v.bullCount += 1;
+        v.bearCount = 0;
+      } else if (bearNow) {
+        v.bearCount += 1;
+        v.bullCount = 0;
+      }
+
+      const colorChangeNow = (bullNow && bear1) || (bearNow && bull1);
+      if (colorChangeNow) {
+        v.barsAfterChange = 0;
+        if (bearNow && bullCountPrev >= cfg.minSequence) {
+          v.lookingForShort = true;
+          v.lookingForLong = false;
+        } else if (bullNow && bearCountPrev >= cfg.minSequence) {
+          v.lookingForLong = true;
+          v.lookingForShort = false;
+        }
+      } else {
+        v.barsAfterChange += 1;
+      }
+
+      const wickTol = (b.open * cfg.wickTolerancePercent) / 100;
+      const bodyPercent = (Math.abs(b.close - b.open) / b.open) * 100;
+      const bearishNoUpperWick = bearNow && le(b.high - Math.max(b.open, b.close), wickTol);
+      const bullishNoLowerWick = bullNow && le(Math.min(b.open, b.close) - b.low, wickTol);
+      const bodyOk = ge(bodyPercent, cfg.minBodyPercent);
+      const isShortSetup = isInTimeRange && v.lookingForShort && bearishNoUpperWick && bodyOk && v.barsAfterChange <= cfg.maxLookback;
+      const isLongSetup = isInTimeRange && v.lookingForLong && bullishNoLowerWick && bodyOk && v.barsAfterChange <= cfg.maxLookback;
+
+      if (isShortSetup) v.lookingForShort = false;
+      if (isLongSetup) v.lookingForLong = false;
+      if (v.barsAfterChange > cfg.maxLookback) {
+        v.lookingForShort = false;
+        v.lookingForLong = false;
+      }
+
+      const t = b.time as number;
+      if (isShortSetup) s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: cfg.colorShort, size: 'small' });
+      if (isLongSetup) s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: cfg.colorLong, size: 'small' });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const TrendShiftDetector = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrendShiftDetectorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<TrendShiftDetectorInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const TrendShiftDetector = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

@@ -9,8 +9,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DualEMATrendRibbonInputs {
   /** Fast EMA of ribbon 1 */
@@ -59,48 +61,78 @@ export const metadata = {
 /** Pine a > b: a - b > 1e-10 (false with na) */
 const gt = (a: number, b: number) => a - b > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DualEMATrendRibbonInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface RibbonRun extends BarRunState<Record<string, never>> {
+  emas: ReturnType<typeof taStep.ema>[];
+  lines: Point[][];
+  colors1: string[];
+  colors2: string[];
+}
+
+function study(inputs: Partial<DualEMATrendRibbonInputs>): BarStudy<RibbonRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-  const ema = (len: number) => ta.ema(close, len).toArray().map((v) => v ?? NaN);
-
-  const fast1 = ema(cfg.fastLength1);
-  const slow1 = ema(cfg.slowLength1);
-  const fast2 = ema(cfg.fastLength2);
-  const slow2 = ema(cfg.slowLength2);
-
   // ribbon_color_1 = fast_ema_1 > slow_ema_1 ? color.new(#4bd64f, 40) : color.new(#f31f1f, 40)
   const bull1 = String(color.new('#4bd64f', 40));
   const bear1 = String(color.new('#f31f1f', 40));
   // ribbon_color_2 = fast_ema_2 > slow_ema_2 ? color.new(#032404, 30) : color.new(#3d0202, 30)
   const bull2 = String(color.new('#032404', 30));
   const bear2 = String(color.new('#3d0202', 30));
-
-  const line = (vals: number[], col: string) => bars.map((b, i) => ({ time: b.time, value: vals[i], color: col }));
-
+  const cols = [FAST1_COL, SLOW1_COL, FAST2_COL, SLOW2_COL];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(fast1, FAST1_COL),
-      plot1: line(slow1, SLOW1_COL),
-      plot2: line(fast2, FAST2_COL),
-      plot3: line(slow2, SLOW2_COL),
+    init() {
+      const emas = [cfg.fastLength1, cfg.slowLength1, cfg.fastLength2, cfg.slowLength2].map((len) => taStep.ema(len));
+      const s: RibbonRun = { emas, lines: [[], [], [], []], colors1: [], colors2: [], steps: emas, vars: {}, lists: [], series: [] };
+      s.series = [...s.lines, s.colors1, s.colors2];
+      return s;
     },
-    fills: [
-      // fill(p_fast_1, p_slow_1, color = ribbon_color_1, title = "Trend Ribbon 1 Fill")
-      { plot1: 'plot0', plot2: 'plot1', colors: bars.map((_, i) => (gt(fast1[i], slow1[i]) ? bull1 : bear1)) },
-      // fill(p_fast_2, p_slow_2, color = ribbon_color_2, title = "Trend Ribbon 2 Fill")
-      { plot1: 'plot2', plot2: 'plot3', colors: bars.map((_, i) => (gt(fast2[i], slow2[i]) ? bull2 : bear2)) },
-    ],
-    markers: [],
+    bar(s, i, bars) {
+      const b = bars[i];
+      const fast1 = s.emas[0].step(b.close) ?? NaN;
+      const slow1 = s.emas[1].step(b.close) ?? NaN;
+      const fast2 = s.emas[2].step(b.close) ?? NaN;
+      const slow2 = s.emas[3].step(b.close) ?? NaN;
+      s.lines[0][i] = { time: b.time, value: fast1, color: cols[0] };
+      s.lines[1][i] = { time: b.time, value: slow1, color: cols[1] };
+      s.lines[2][i] = { time: b.time, value: fast2, color: cols[2] };
+      s.lines[3][i] = { time: b.time, value: slow2, color: cols[3] };
+      s.colors1[i] = gt(fast1, slow1) ? bull1 : bear1;
+      s.colors2[i] = gt(fast2, slow2) ? bull2 : bear2;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.lines[0].slice(),
+          plot1: s.lines[1].slice(),
+          plot2: s.lines[2].slice(),
+          plot3: s.lines[3].slice(),
+        },
+        fills: [
+          // fill(p_fast_1, p_slow_1, color = ribbon_color_1, title = "Trend Ribbon 1 Fill")
+          { plot1: 'plot0', plot2: 'plot1', colors: s.colors1.slice() },
+          // fill(p_fast_2, p_slow_2, color = ribbon_color_2, title = "Trend Ribbon 2 Fill")
+          { plot1: 'plot2', plot2: 'plot3', colors: s.colors2.slice() },
+        ],
+        markers: [],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DualEMATrendRibbonInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DualEMATrendRibbonInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const DualEMATrendRibbon = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

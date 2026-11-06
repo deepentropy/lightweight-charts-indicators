@@ -13,9 +13,11 @@
  */
 
 import {
-  ta, str, color, Series, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
+  taStep, str, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { TableData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AtrStopLossFinderInputs {
   /** Length */
@@ -86,62 +88,103 @@ export const metadata = {
   overlay: true,
 };
 
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { tables: TableData[] };
+
+interface AtrRun extends BarRunState<Record<string, never>> {
+  tr: ReturnType<typeof taStep.tr>;
+  ma: { step(v: number): number; commit(): void };
+  a: number[];
+  x: number[];
+  x2: number[];
+  shortData: Point[];
+  longData: Point[];
+}
+
+function study(inputs: Partial<AtrStopLossFinderInputs>): BarStudy<AtrRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value1 = barSource(cfg.src1);
+  const value2 = barSource(cfg.src2);
+  // plot(..., color = colshort / collong, transp = 20)
+  const shortColor = String(color.new(cfg.colshort, 20));
+  const longColor = String(color.new(cfg.collong, 20));
+  const maStep = (): AtrRun['ma'] => {
+    switch (cfg.smoothing) {
+      case 'RMA': return taStep.rma(cfg.length);
+      case 'SMA': return new WindowSma(cfg.length);
+      case 'EMA': return taStep.ema(cfg.length);
+      default: { const m = taStep.wma(); return { step: (v) => m.step(v, cfg.length), commit: () => m.commit() }; }
+    }
+  };
+  return {
+    fullRunReason: () => (isBarSource(cfg.src1) && isBarSource(cfg.src2) ? null : 'source of another study'),
+    init() {
+      const tr = taStep.tr(true);
+      const ma = maStep();
+      const s: AtrRun = {
+        tr, ma, a: [], x: [], x2: [], shortData: [], longData: [], steps: [tr, ma], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.a, s.x, s.x2, s.shortData, s.longData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // ma_function(tr(true), length)
+      const ma = s.ma.step(s.tr.step(b.high, b.low, b.close));
+      const a = ma * cfg.m;
+      const x = a + value1(b);
+      const x2 = value2(b) - a;
+      s.a[i] = a;
+      s.x[i] = x;
+      s.x2[i] = x2;
+      s.shortData[i] = { time: b.time, value: x, color: shortColor };
+      s.longData[i] = { time: b.time, value: x2, color: longColor };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // Table of the last bar (barstate.islast): 'ATR: ', 'H: ' and 'L: ' with the value formatted with "#.#"
+      const tables: TableData[] = [];
+      if (n > 0) {
+        const cell = (column: number, value: number, label: string, textColor: string) => (
+          { column, row: 0, text: label + str.tostring(value, '#.#'), textColor }
+        );
+        tables.push({
+          position: 'bottom_center',
+          columns: 3,
+          rows: 1,
+          borderWidth: 3,
+          cells: [
+            cell(0, s.a[n - 1], 'ATR: ', cfg.col1),
+            // table.cell_set_text_color(Table, 1, 0, color.new(col3, 0)) and (Table, 2, 0, color.new(col2, 0))
+            cell(1, s.x[n - 1], 'H: ', String(color.new(cfg.col3, 0))),
+            cell(2, s.x2[n - 1], 'L: ', String(color.new(cfg.col2, 0))),
+          ],
+        });
+      }
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.shortData.slice(), plot1: s.longData.slice() },
+        tables,
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AtrStopLossFinderInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<AtrStopLossFinderInputs> = {},
 ): IndicatorResult & { tables: TableData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  // ma_function(tr(true), length)
-  const tr = ta.tr(bars, true);
-  const ma = A(cfg.smoothing === 'RMA' ? ta.rma(tr, cfg.length)
-    : cfg.smoothing === 'SMA' ? ta.sma(tr, cfg.length)
-      : cfg.smoothing === 'EMA' ? ta.ema(tr, cfg.length)
-        : ta.wma(tr, cfg.length));
-  const src1 = A(getSourceSeries(bars, cfg.src1));
-  const src2 = A(getSourceSeries(bars, cfg.src2));
-  const a = ma.map((v) => v * cfg.m);
-  const x = a.map((v, i) => v + src1[i]);
-  const x2 = a.map((v, i) => src2[i] - v);
-
-  // plot(..., color = colshort / collong, transp = 20)
-  const shortColor = String(color.new(cfg.colshort, 20));
-  const longColor = String(color.new(cfg.collong, 20));
-
-  // Table of the last bar (barstate.islast): 'ATR: ', 'H: ' and 'L: ' with the value formatted with "#.#"
-  const tables: TableData[] = [];
-  if (n > 0) {
-    const cell = (column: number, value: number, label: string, textColor: string) => (
-      { column, row: 0, text: label + str.tostring(value, '#.#'), textColor }
-    );
-    tables.push({
-      position: 'bottom_center',
-      columns: 3,
-      rows: 1,
-      borderWidth: 3,
-      cells: [
-        cell(0, a[n - 1], 'ATR: ', cfg.col1),
-        // table.cell_set_text_color(Table, 1, 0, color.new(col3, 0)) and (Table, 2, 0, color.new(col2, 0))
-        cell(1, x[n - 1], 'H: ', String(color.new(cfg.col3, 0))),
-        cell(2, x2[n - 1], 'L: ', String(color.new(cfg.col2, 0))),
-      ],
-    });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: x[i], color: shortColor })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: x2[i], color: longColor })),
-    },
-    tables,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AtrStopLossFinder = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

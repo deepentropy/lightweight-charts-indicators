@@ -11,7 +11,9 @@
  * this file.
  */
 
-import { taCore, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ChandelierExitStandardInputs {
   /** Bars of the highest high and lowest low */
@@ -45,25 +47,55 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ChandelierExitStandardInputs> = {}): IndicatorResult {
+type Point = { time: any; value: number };
+
+interface ChandelierRun extends BarRunState<Record<string, never>> {
+  atr: ReturnType<typeof taStep.atr>;
+  highest: WindowExtreme;
+  lowest: WindowExtreme;
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<ChandelierExitStandardInputs>): BarStudy<ChandelierRun, IndicatorResult> {
   const { length, atrLength, atrMult } = { ...defaultInputs, ...inputs };
-  const high = bars.map((b) => b.high);
-  const low = bars.map((b) => b.low);
-  const close = bars.map((b) => b.close);
-
-  // chandelier() of the "ta" library
-  const atr = taCore.atr(atrLength, high, low, close).map((v) => v * atrMult);
-  const highest = taCore.highest(high, length);
-  const lowest = taCore.lowest(low, length);
-
-  const point = (v: number, i: number) => ({ time: bars[i].time, value: Number.isFinite(v) ? v : NaN });
+  const point = (v: number, time: any): Point => ({ time, value: Number.isFinite(v) ? v : NaN });
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: highest.map((h, i) => point(h - atr[i], i)),
-      plot1: lowest.map((l, i) => point(l + atr[i], i)),
+    init() {
+      // chandelier() of the "ta" library
+      const atr = taStep.atr(atrLength);
+      const highest = new WindowExtreme(false, length);
+      const lowest = new WindowExtreme(true, length);
+      const s: ChandelierRun = {
+        atr, highest, lowest, plot0: [], plot1: [], steps: [atr, highest, lowest], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const atr = s.atr.step(b.high, b.low, b.close) * atrMult;
+      const h = s.highest.step(b.high);
+      const l = s.lowest.step(b.low);
+      s.plot0[i] = point(h - atr, b.time);
+      s.plot1[i] = point(l + atr, b.time);
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+      };
     },
   };
 }
 
-export const ChandelierExitStandard = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ChandelierExitStandardInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ChandelierExitStandardInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const ChandelierExitStandard = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

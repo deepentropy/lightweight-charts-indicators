@@ -10,8 +10,10 @@
  * Original notice: ©NantzOS
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { AlmaStep, barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface GaussianRibbonInputs {
   /** Source */
@@ -59,37 +61,72 @@ export const metadata = {
 /** Pine float comparison: a > b only when a - b > 1e-10 (na compares false) */
 const gt = (a: number, b: number) => a - b > 1e-10;
 
-export function calculate(bars: Bar[], inputs: Partial<GaussianRibbonInputs> = {}): IndicatorResult {
+interface GaussRun extends BarRunState<Record<string, never>> {
+  alma1: AlmaStep;
+  alma2: AlmaStep;
+  almaValue: number[];
+  almaValue2: number[];
+  col: string[];
+}
+
+function study(inputs: Partial<GaussianRibbonInputs>): BarStudy<GaussRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const src = getSourceSeries(bars, cfg.source);
-  const almaValue = ta.alma(src, cfg.windowsize, 0.85, 6).toArray().map((v) => v ?? NaN);
-  const almaValue2 = ta.alma(src, cfg.windowsize, cfg.offset, cfg.sigma).toArray().map((v) => v ?? NaN);
-
-  // color_smoothalma = alma_value > alma_value2 ? #1cbe21 : #e02020
-  const col = almaValue.map((a, i) => (gt(a, almaValue2[i]) ? UP : DOWN));
-  // plot(..., offset = lag): the value of bar i is drawn on bar i + lag (future bars with barTime; a negative lag
-  // drops the first bars, which have no bar to be drawn on)
-  const interval = barInterval(bars);
-  const idx = bars.map((_b, i) => i).filter((i) => i + cfg.lag >= 0);
-  const shifted = (vals: number[]) => idx.map((i) => ({
-    time: barTime(bars, i + cfg.lag, interval), value: vals[i], color: col[i],
-  }));
-
-  // fill(aPlot, oPlot, color.new(color_smoothalma, 80)): fill colour of bar i goes with the plot points of bar i
-  const fillColors = idx.map((i) => String(color.new(col[i], 80)));
-
+  const value = barSource(cfg.source);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: shifted(almaValue),
-      plot1: shifted(almaValue2),
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const alma1 = new AlmaStep(cfg.windowsize, 0.85, 6);
+      const alma2 = new AlmaStep(cfg.windowsize, cfg.offset, cfg.sigma);
+      const s: GaussRun = { alma1, alma2, almaValue: [], almaValue2: [], col: [], steps: [alma1, alma2], vars: {}, lists: [], series: [] };
+      s.series = [s.almaValue, s.almaValue2, s.col];
+      return s;
     },
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Fill' }, colors: fillColors }],
+    bar(s, i, bars) {
+      const v = value(bars[i]);
+      const a = s.alma1.step(v) ?? NaN;
+      const a2 = s.alma2.step(v) ?? NaN;
+      s.almaValue[i] = a;
+      s.almaValue2[i] = a2;
+      // color_smoothalma = alma_value > alma_value2 ? #1cbe21 : #e02020
+      s.col[i] = gt(a, a2) ? UP : DOWN;
+    },
+    result(s, bars) {
+      const { almaValue, almaValue2, col } = s;
+      // plot(..., offset = lag): the value of bar i is drawn on bar i + lag (future bars with barTime; a negative lag
+      // drops the first bars, which have no bar to be drawn on): the times follow the bar count, built here
+      const interval = barInterval(bars);
+      const idx = bars.map((_b, i) => i).filter((i) => i + cfg.lag >= 0);
+      const shifted = (vals: number[]) => idx.map((i) => ({
+        time: barTime(bars, i + cfg.lag, interval), value: vals[i], color: col[i],
+      }));
+
+      // fill(aPlot, oPlot, color.new(color_smoothalma, 80)): fill colour of bar i goes with the plot points of bar i
+      const fillColors = idx.map((i) => String(color.new(col[i], 80)));
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: shifted(almaValue),
+          plot1: shifted(almaValue2),
+        },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Fill' }, colors: fillColors }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GaussianRibbonInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<GaussianRibbonInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const GaussianRibbon = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

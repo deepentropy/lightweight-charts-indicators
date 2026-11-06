@@ -9,8 +9,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, color, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MaCrossWithDisplacementInputs {
   /** Length of the first SMA */
@@ -55,40 +57,64 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MaCrossWithDisplacementInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+interface MaCrossRun extends BarRunState<Record<string, never>> {
+  ma1: WindowSma;
+  ma2: WindowSma;
+  ma1Data: Point[];
+  ma2Data: Point[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<MaCrossWithDisplacementInputs>): BarStudy<MaCrossRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const close = getSourceSeries(bars, 'close');
-  const ma1 = ta.sma(close, cfg.maPeriod1).toArray().map((v) => v ?? NaN);
-  const ma2 = ta.sma(close, cfg.maPeriod2).toArray().map((v) => v ?? NaN);
-
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const c = bars[i].close;
-    const c1 = i > 0 ? bars[i - 1].close : NaN;
-    // isDisplacement(close, threshold): math.abs(series - series[1]) / series[1] * 100 > threshold
-    const disp = gt((Math.abs(c - c1) / c1) * 100, cfg.threshold);
-    const bullish = disp && gt(c, c1);
-    const bearish = disp && gt(c1, c);
-    // barcolor(bullish ? bullish_color : bearish ? bearish_color : na)
-    if (bullish) barColors.push({ time: bars[i].time, color: cfg.bullishColor });
-    else if (bearish) barColors.push({ time: bars[i].time, color: cfg.bearishColor });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: ma1[i], color: color.blue })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: ma2[i], color: color.red })),
+    init() {
+      const ma1 = new WindowSma(cfg.maPeriod1);
+      const ma2 = new WindowSma(cfg.maPeriod2);
+      const s: MaCrossRun = { ma1, ma2, ma1Data: [], ma2Data: [], barColors: [], steps: [ma1, ma2], vars: {}, lists: [], series: [] };
+      s.lists = [s.barColors];
+      s.series = [s.ma1Data, s.ma2Data];
+      return s;
     },
-    barColors,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const c = b.close;
+      const c1 = i > 0 ? bars[i - 1].close : NaN;
+      s.ma1Data[i] = { time: b.time, value: s.ma1.step(c), color: color.blue };
+      s.ma2Data[i] = { time: b.time, value: s.ma2.step(c), color: color.red };
+      // isDisplacement(close, threshold): math.abs(series - series[1]) / series[1] * 100 > threshold
+      const disp = gt((Math.abs(c - c1) / c1) * 100, cfg.threshold);
+      const bullish = disp && gt(c, c1);
+      const bearish = disp && gt(c1, c);
+      // barcolor(bullish ? bullish_color : bearish ? bearish_color : na)
+      if (bullish) s.barColors.push({ time: b.time, color: cfg.bullishColor });
+      else if (bearish) s.barColors.push({ time: b.time, color: cfg.bearishColor });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.ma1Data.slice(), plot1: s.ma2Data.slice() },
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MaCrossWithDisplacementInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MaCrossWithDisplacementInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MaCrossWithDisplacement = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -6,7 +6,9 @@
  * Based on the standard MA Ribbon indicator.
  */
 
-import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MARibbonInputs {
   /** Show MA 1 */
@@ -110,81 +112,85 @@ export const metadata = {
   overlay: true,
 };
 
-/**
- * Calculate a moving average based on type
- */
-function calculateMA(
-  bars: Bar[],
-  source: SourceType,
-  maType: string,
-  length: number
-): Series {
-  const sourceSeries = getSourceSeries(bars, source);
-  const volume = new Series(bars, (bar) => bar.volume ?? 0);
+type Point = { time: number; value: number; color?: string };
+type Ma = { step(v: number, volume: number): number; commit(): void };
 
+/**
+ * A moving average based on type, stepped bar by bar
+ */
+function maStep(maType: string, length: number): Ma {
   switch (maType) {
-    case 'EMA':
-      return ta.ema(sourceSeries, length);
-    case 'SMMA (RMA)':
-      return ta.rma(sourceSeries, length);
-    case 'WMA':
-      return ta.wma(sourceSeries, length);
-    case 'VWMA':
-      return ta.vwma(sourceSeries, length, volume);
+    case 'EMA': { const m = taStep.ema(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'SMMA (RMA)': { const m = taStep.rma(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, length), commit: () => m.commit() }; }
+    case 'VWMA': return new WindowVwma(length);
     case 'SMA':
-    default:
-      return ta.sma(sourceSeries, length);
+    default: { const m = new WindowSma(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
   }
 }
 
-export function calculate(bars: Bar[], inputs: Partial<MARibbonInputs> = {}): IndicatorResult {
+interface MaRibbonRun extends BarRunState<Record<string, never>> {
+  mas: (Ma | null)[];
+  out: Point[][];
+}
+
+function study(inputs: Partial<MARibbonInputs>): BarStudy<MaRibbonRun, IndicatorResult> {
   const {
     showMa1, ma1Type, ma1Source, ma1Length, ma1Color,
     showMa2, ma2Type, ma2Source, ma2Length, ma2Color,
     showMa3, ma3Type, ma3Source, ma3Length, ma3Color,
     showMa4, ma4Type, ma4Source, ma4Length, ma4Color,
   } = { ...defaultInputs, ...inputs };
-
-  const plots: Record<string, { time: number; value: number; color?: string }[]> = {};
-
-  // Calculate and add each MA if enabled
   const maConfigs = [
     { show: showMa1, type: ma1Type, source: ma1Source, length: ma1Length, color: ma1Color, plotId: 'plot0' },
     { show: showMa2, type: ma2Type, source: ma2Source, length: ma2Length, color: ma2Color, plotId: 'plot1' },
     { show: showMa3, type: ma3Type, source: ma3Source, length: ma3Length, color: ma3Color, plotId: 'plot2' },
     { show: showMa4, type: ma4Type, source: ma4Source, length: ma4Length, color: ma4Color, plotId: 'plot3' },
   ];
-
-  for (const config of maConfigs) {
-    if (config.show) {
-      const ma = calculateMA(bars, config.source, config.type, config.length);
-      plots[config.plotId] = ma.toArray().map((value, i) => ({
-        time: bars[i].time,
-        value: value ?? NaN,
-        color: config.color,
-      }));
-    } else {
-      // Hidden MA: na values (the plot keeps its colour)
-      plots[config.plotId] = bars.map((bar) => ({
-        time: bar.time,
-        value: NaN,
-        color: config.color,
-      }));
-    }
-  }
-
+  const values = maConfigs.map((c) => barSource(c.source));
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    fullRunReason: () => (maConfigs.every((c) => !c.show || isBarSource(c.source)) ? null : 'source of another study'),
+    init() {
+      const mas = maConfigs.map((c) => (c.show ? maStep(c.type, c.length) : null));
+      const out: Point[][] = maConfigs.map(() => []);
+      return { mas, out, steps: mas.filter((m): m is Ma => m !== null), vars: {}, lists: [], series: out };
     },
-    plots,
+    bar(s, i, bars) {
+      const b = bars[i];
+      for (let k = 0; k < 4; k++) {
+        const m = s.mas[k];
+        // Hidden MA: na values (the plot keeps its colour)
+        const value = m ? m.step(values[k](b), b.volume ?? 0) : NaN;
+        s.out[k][i] = { time: b.time, value: value ?? NaN, color: maConfigs[k].color };
+      }
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      maConfigs.forEach((c, k) => { plots[c.plotId] = s.out[k].slice(); });
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MARibbonInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MARibbonInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MARibbon = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

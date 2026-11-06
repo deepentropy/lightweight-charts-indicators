@@ -8,7 +8,9 @@
  * Reference: "CM_Donchian Channels Modified" by ChrisMoody
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DonchianCustomInputs {
   /** Upper Channel */
@@ -47,21 +49,50 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<DonchianCustomInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface DonchianCustomRun extends BarRunState<Record<string, never>> {
+  upper: WindowExtreme;
+  lower: WindowExtreme;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<DonchianCustomInputs>): BarStudy<DonchianCustomRun, IndicatorResult> {
   const { upperLen, lowerLen } = { ...defaultInputs, ...inputs };
-
-  const upper = ta.highest(new Series(bars, (b) => b.high), upperLen).toArray().map((v) => v ?? NaN);
-  const lower = ta.lowest(new Series(bars, (b) => b.low), lowerLen).toArray().map((v) => v ?? NaN);
-  // avg(upper, lower): na when one of them is na
-  const basis = upper.map((u, i) => (u + lower[i]) / 2);
-
-  const line = (v: number[]) => bars.map((b, i) => ({ time: b.time, value: v[i] }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: line(lower), plot1: line(upper), plot2: line(basis) },
-    fills: [{ plot1: 'plot1', plot2: 'plot0', options: { title: 'Fill', color: FILL } }],
+    init() {
+      const upper = new WindowExtreme(false, upperLen);
+      const lower = new WindowExtreme(true, lowerLen);
+      const plots: Point[][] = [[], [], []];
+      return { upper, lower, plots, steps: [upper, lower], vars: {}, lists: [], series: plots };
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const u = s.upper.step(b.high);
+      const l = s.lower.step(b.low);
+      // avg(upper, lower): na when one of them is na
+      const basis = (u + l) / 2;
+      s.plots[0]![i] = { time: b.time, value: l };
+      s.plots[1]![i] = { time: b.time, value: u };
+      s.plots[2]![i] = { time: b.time, value: basis };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0]!.slice(), plot1: s.plots[1]!.slice(), plot2: s.plots[2]!.slice() },
+        fills: [{ plot1: 'plot1', plot2: 'plot0', options: { title: 'Fill', color: FILL } }],
+      };
+    },
   };
 }
 
-export const DonchianCustom = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DonchianCustomInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DonchianCustomInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const DonchianCustom = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

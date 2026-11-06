@@ -12,8 +12,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertcondition() calls, in declaration order */
 export const alertConditions: AlertConditionDecl[] = [
@@ -63,55 +65,94 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+type Ma = { step(v: number): number; commit(): void };
+
+interface ObvVars {
+  /** var float obv */
+  obv: number;
+}
+
+interface ObvRun extends BarRunState<ObvVars> {
+  maShort: Ma;
+  maLong: Ma;
+  obvArr: number[];
+  shortArr: number[];
+  longArr: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+}
+
+function study(inputs: Partial<ObvCustomMaStrategyInputs>): BarStudy<ObvRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  // f_ma(src, length, ma_type): ma_type is an input, so the same branch runs on every bar
+  const ma = (len: number): Ma => {
+    switch (cfg.maType) {
+      case 'SMA': return new WindowSma(len);
+      case 'EMA': return taStep.ema(len);
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+      default: return { step: () => NaN, commit: () => {} };
+    }
+  };
+  return {
+    init() {
+      const maShort = ma(cfg.maLength1);
+      const maLong = ma(cfg.maLength2);
+      const s: ObvRun = {
+        maShort, maLong, obvArr: [], shortArr: [], longArr: [], plot0: [], plot1: [], plot2: [],
+        steps: [maShort, maLong], vars: { obv: NaN }, lists: [], series: [],
+      };
+      s.series = [s.obvArr, s.shortArr, s.longArr, s.plot0, s.plot1, s.plot2];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // var float obv = na; if na(obv): obv := 0, else +volume / -volume / unchanged
+      let v = s.vars.obv;
+      if (isNaN(v)) v = 0;
+      else if (i > 0 && gt(b.close, bars[i - 1].close)) v = v + (b.volume ?? NaN);
+      else if (i > 0 && lt(b.close, bars[i - 1].close)) v = v - (b.volume ?? NaN);
+      s.vars.obv = v;
+      s.obvArr[i] = v;
+      const short = s.maShort.step(v) ?? NaN;
+      const long = s.maLong.step(v) ?? NaN;
+      s.shortArr[i] = short;
+      s.longArr[i] = long;
+      const time = b.time;
+      s.plot0[i] = { time, value: v, color: color.blue };
+      s.plot1[i] = { time, value: short, color: color.red };
+      s.plot2[i] = { time, value: long, color: color.green };
+    },
+    result(s, bars) {
+      const { obvArr: obv, shortArr: maShort, longArr: maLong } = s;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        alerts: alertStates(alertConditions, bars, [
+          crossedOver(maShort, maLong), crossedUnder(maShort, maLong), crossedOver(obv, maShort), crossedUnder(obv, maShort),
+        ]),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ObvCustomMaStrategyInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<ObvCustomMaStrategyInputs> = {},
 ): IndicatorResult & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // var float obv = na; if na(obv): obv := 0, else +volume / -volume / unchanged
-  const obv: number[] = new Array(n);
-  let prev = NaN;
-  for (let i = 0; i < n; i++) {
-    let v = prev;
-    if (isNaN(v)) v = 0;
-    else if (i > 0 && gt(bars[i].close, bars[i - 1].close)) v = v + (bars[i].volume ?? NaN);
-    else if (i > 0 && lt(bars[i].close, bars[i - 1].close)) v = v - (bars[i].volume ?? NaN);
-    obv[i] = v;
-    prev = v;
-  }
-
-  // f_ma(src, length, ma_type): ma_type is an input, so the same branch runs on every bar
-  const ma = (len: number): number[] => {
-    switch (cfg.maType) {
-      case 'SMA': return A(ta.sma(S(obv), len));
-      case 'EMA': return A(ta.ema(S(obv), len));
-      case 'WMA': return A(ta.wma(S(obv), len));
-      default: return new Array(n).fill(NaN);
-    }
-  };
-  const maShort = ma(cfg.maLength1);
-  const maLong = ma(cfg.maLength2);
-
-  const t = (i: number) => bars[i].time;
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: obv.map((v, i) => ({ time: t(i), value: v, color: color.blue })),
-      plot1: maShort.map((v, i) => ({ time: t(i), value: v, color: color.red })),
-      plot2: maLong.map((v, i) => ({ time: t(i), value: v, color: color.green })),
-    },
-    alerts: alertStates(alertConditions, bars, [
-      crossedOver(maShort, maLong), crossedUnder(maShort, maLong), crossedOver(obv, maShort), crossedUnder(obv, maShort),
-    ]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const ObvCustomMaStrategy = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -5,7 +5,9 @@
  * Identifies trend reversals by examining range between high and low.
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MassIndexInputs {
   length: number;
@@ -29,48 +31,67 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MassIndexInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface MassIndexRun extends BarRunState<Record<string, never>> {
+  ema1: ReturnType<typeof taStep.ema>;
+  ema2: ReturnType<typeof taStep.ema>;
+  ratioArr: number[];
+  plotData: Point[];
+}
+
+function study(inputs: Partial<MassIndexInputs>): BarStudy<MassIndexRun, IndicatorResult> {
   const { length } = { ...defaultInputs, ...inputs };
-
-  const high = new Series(bars, (bar) => bar.high);
-  const low = new Series(bars, (bar) => bar.low);
-
-  // Mass Index = Sum(EMA(high-low, 9) / EMA(EMA(high-low, 9), 9), length)
-  const range = high.sub(low);
-  const ema1 = ta.ema(range, 9);
-  const ema2 = ta.ema(ema1, 9);
-  const ratio = ema1.div(ema2);
-
-  // Calculate rolling sum of ratio over 'length' periods
-  const ratioArr = ratio.toArray();
-  const massIndexArr: (number | undefined)[] = [];
-
-  for (let i = 0; i < bars.length; i++) {
-    if (i < length - 1) {
-      massIndexArr.push(undefined);
-    } else {
-      let sum = 0;
-      let validCount = 0;
-      for (let j = 0; j < length; j++) {
-        const val = ratioArr[i - j];
-        if (val !== undefined && !isNaN(val)) {
-          sum += val;
-          validCount++;
-        }
-      }
-      massIndexArr.push(validCount === length ? sum : undefined);
-    }
-  }
-
-  const plotData = massIndexArr.map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plotData },
+    init() {
+      const ema1 = taStep.ema(9);
+      const ema2 = taStep.ema(9);
+      const s: MassIndexRun = { ema1, ema2, ratioArr: [], plotData: [], steps: [ema1, ema2], vars: {}, lists: [], series: [] };
+      s.series = [s.ratioArr, s.plotData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // Mass Index = Sum(EMA(high-low, 9) / EMA(EMA(high-low, 9), 9), length)
+      const e1 = s.ema1.step(b.high - b.low);
+      const e2 = s.ema2.step(e1);
+      const ratioArr = s.ratioArr;
+      ratioArr[i] = e1 / e2;
+
+      // Calculate rolling sum of ratio over 'length' periods
+      let value: number | undefined;
+      if (i < length - 1) {
+        value = undefined;
+      } else {
+        let sum = 0;
+        let validCount = 0;
+        for (let j = 0; j < length; j++) {
+          const val = ratioArr[i - j];
+          if (val !== undefined && !isNaN(val)) {
+            sum += val;
+            validCount++;
+          }
+        }
+        value = validCount === length ? sum : undefined;
+      }
+      s.plotData[i] = { time: b.time, value: value ?? NaN };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plotData.slice() },
+      };
+    },
   };
 }
 
-export const MassIndex = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MassIndexInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MassIndexInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MassIndex = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DeltaManipulationFootprintInputs {
   /** SMA length of the absolute delta change */
@@ -46,42 +48,63 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > 1e-10);
 /** Pine a < b */
 const lt = (a: number, b: number) => b - a > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DeltaManipulationFootprintInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+interface DeltaRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  aggDelta: number[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<DeltaManipulationFootprintInputs>): BarStudy<DeltaRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const vol = (b: Bar) => b.volume ?? NaN;
-
-  // aggDelta = buyVol - sellVol, buyVol = volume * (close >= open ? 1 : 0), sellVol = volume * (close < open ? 1 : 0)
-  const aggDelta = bars.map((b) => vol(b) * (ge(b.close, b.open) ? 1 : 0) - vol(b) * (lt(b.close, b.open) ? 1 : 0));
-  // deltaDiff = aggDelta - nz(aggDelta[1], 0)
-  const deltaDiff = aggDelta.map((d, i) => {
-    const prev = i > 0 ? aggDelta[i - 1] : NaN;
-    return d - (Number.isFinite(prev) ? prev : 0);
-  });
-  const absDeltaDiff = deltaDiff.map((d) => Math.abs(d));
-  const avgAbs = ta.sma(Series.fromArray(bars, absDeltaDiff), cfg.length).toArray().map((v) => v ?? NaN);
-
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const threshold = avgAbs[i] * cfg.thresholdMultiplier;
-    if (!gt(absDeltaDiff[i], threshold)) continue; // isSignificantDelta
-    const candleIsPositive = ge(bars[i].close, bars[i].open);
-    const deltaIsPositive = gt(deltaDiff[i], 0);
-    let c: string;
-    if (candleIsPositive && deltaIsPositive) c = color.green; // candle up and delta rising
-    else if (!candleIsPositive && !deltaIsPositive) c = color.red; // candle down and delta falling
-    else c = color.yellow; // candle and delta in opposite directions (divergence)
-    barColors.push({ time: bars[i].time, color: c });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    barColors,
+    init() {
+      const sma = new WindowSma(cfg.length);
+      const s: DeltaRun = { sma, aggDelta: [], barColors: [], steps: [sma], vars: {}, lists: [], series: [] };
+      s.lists = [s.barColors];
+      s.series = [s.aggDelta];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // aggDelta = buyVol - sellVol, buyVol = volume * (close >= open ? 1 : 0), sellVol = volume * (close < open ? 1 : 0)
+      const d = vol(b) * (ge(b.close, b.open) ? 1 : 0) - vol(b) * (lt(b.close, b.open) ? 1 : 0);
+      s.aggDelta[i] = d;
+      // deltaDiff = aggDelta - nz(aggDelta[1], 0)
+      const prev = i > 0 ? s.aggDelta[i - 1] : NaN;
+      const deltaDiff = d - (Number.isFinite(prev) ? prev : 0);
+      const absDeltaDiff = Math.abs(deltaDiff);
+      const avgAbs = s.sma.step(absDeltaDiff);
+
+      const threshold = avgAbs * cfg.thresholdMultiplier;
+      if (!gt(absDeltaDiff, threshold)) return; // isSignificantDelta
+      const candleIsPositive = ge(b.close, b.open);
+      const deltaIsPositive = gt(deltaDiff, 0);
+      let c: string;
+      if (candleIsPositive && deltaIsPositive) c = color.green; // candle up and delta rising
+      else if (!candleIsPositive && !deltaIsPositive) c = color.red; // candle down and delta falling
+      else c = color.yellow; // candle and delta in opposite directions (divergence)
+      s.barColors.push({ time: b.time, color: c });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const DeltaManipulationFootprint = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DeltaManipulationFootprintInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DeltaManipulationFootprintInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const DeltaManipulationFootprint = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };
