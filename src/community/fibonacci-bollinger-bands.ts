@@ -7,7 +7,9 @@
  * Reference: "Fibonacci Bollinger Bands" by Rashad
  */
 
-import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface FibonacciBollingerBandsInputs {
   length: number;
@@ -46,42 +48,65 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<FibonacciBollingerBandsInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface FbbRun extends BarRunState<Record<string, never>> {
+  smaVol: WindowSma;
+  smaSrcVol: WindowSma;
+  dev: WindowStdev;
+  plots: Point[][];
+}
+
+const fibs = [0.236, 0.382, 0.5, 0.618, 0.764, 1.0];
+
+function study(inputs: Partial<FibonacciBollingerBandsInputs>): BarStudy<FbbRun, IndicatorResult> {
   const { length, mult } = { ...defaultInputs, ...inputs };
-
-  const src = getSourceSeries(bars, 'hlc3');
-  const vol = new Series(bars, (b) => b.volume ?? 1);
-
-  // VWMA = SMA(src * volume, length) / SMA(volume, length)
-  const srcVol = src.mul(vol);
-  const smaVol = ta.sma(vol, length);
-  const smaSrcVol = ta.sma(srcVol, length);
-  const basisArr = smaSrcVol.div(smaVol).toArray();
-
-  const dev = ta.stdev(src, length).toArray();
-
-  const fibs = [0.236, 0.382, 0.5, 0.618, 0.764, 1.0];
+  const src = barSource('hlc3');
   const warmup = length;
-
-  const makePlot = (fn: (b: number, d: number) => number) =>
-    bars.map((bar, i) => {
-      if (i < warmup || basisArr[i] == null || dev[i] == null) return { time: bar.time, value: NaN };
-      return { time: bar.time, value: fn(basisArr[i]!, dev[i]!) };
-    });
-
-  const plots: Record<string, Array<{ time: number | string; value: number }>> = {
-    'plot0': makePlot((b) => b),
-  };
-
-  fibs.forEach((f, idx) => {
-    plots[`plot${1 + idx * 2}`] = makePlot((b, d) => b + f * mult * d);
-    plots[`plot${2 + idx * 2}`] = makePlot((b, d) => b - f * mult * d);
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    init() {
+      const s: FbbRun = {
+        smaVol: new WindowSma(length), smaSrcVol: new WindowSma(length), dev: new WindowStdev(length),
+        plots: Array.from({ length: 13 }, () => []), steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.smaVol, s.smaSrcVol, s.dev];
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const bar = bars[i]!;
+      const time = bar.time as number;
+      const v = src(bar);
+      const vol = bar.volume ?? 1;
+      // VWMA = SMA(src * volume, length) / SMA(volume, length)
+      const smaVol = s.smaVol.step(vol);
+      const basis = s.smaSrcVol.step(v * vol) / smaVol;
+      const d = s.dev.step(v);
+      const na = i < warmup;
+      s.plots[0]![i] = { time, value: na ? NaN : basis };
+      fibs.forEach((f, idx) => {
+        s.plots[1 + idx * 2]![i] = { time, value: na ? NaN : basis + f * mult * d };
+        s.plots[2 + idx * 2]![i] = { time, value: na ? NaN : basis - f * mult * d };
+      });
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
 }
 
-export const FibonacciBollingerBands = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FibonacciBollingerBandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<FibonacciBollingerBandsInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const FibonacciBollingerBands = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

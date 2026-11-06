@@ -9,8 +9,10 @@
  * Reference: "MavilimW" by KivancOzbilgic
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -45,10 +47,21 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MavilimWInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+type Wma = ReturnType<typeof taStep.wma>;
+
+interface MavilimWRun extends BarRunState<Record<string, never>> {
+  chain: Wma[];
+  chainOld: Wma[];
+  mavw: number[];
+  plot0: Point[];
+  plot1: Point[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<MavilimWInputs>): BarStudy<MavilimWRun, Result> {
   const { firstMALength, secondMALength } = { ...defaultInputs, ...inputs };
 
   const fmal = firstMALength;
@@ -57,50 +70,75 @@ export function calculate(
   const Fmal = smal + tmal;
   const Ftmal = tmal + Fmal;
   const Smal = Fmal + Ftmal;
-
-  const close = getSourceSeries(bars, 'close');
-  const m1 = ta.wma(close, fmal);
-  const m2 = ta.wma(m1, smal);
-  const m3 = ta.wma(m2, tmal);
-  const m4 = ta.wma(m3, Fmal);
-  const m5 = ta.wma(m4, Ftmal);
-  const mavw = ta.wma(m5, Smal);
-
-  const mavwArr = mavw.toArray();
-  const warmup = Smal;
-  const plot0 = mavwArr.map((v, i) => {
-    const val = i < warmup ? NaN : (v ?? NaN);
-    if (isNaN(val)) return { time: bars[i].time, value: NaN };
-    const prev = i > 0 ? (mavwArr[i - 1] ?? NaN) : NaN;
-    const color = val > prev ? '#2962FF' : val < prev ? '#EF5350' : '#FFEB3B';
-    return { time: bars[i].time, value: val, color };
-  });
-
+  // M1(fmal) -> M2(smal) -> M3(tmal) -> M4(Fmal) -> M5(Ftmal) -> MAVW(Smal)
+  const chainLengths = [fmal, smal, tmal, Fmal, Ftmal, Smal];
   // MavWOld: fixed Fibonacci periods 3/5/8/13/21/34
-  const m1Old = ta.wma(close, 3);
-  const m2Old = ta.wma(m1Old, 5);
-  const m3Old = ta.wma(m2Old, 8);
-  const m4Old = ta.wma(m3Old, 13);
-  const m5Old = ta.wma(m4Old, 21);
-  const mavwOld = ta.wma(m5Old, 34);
-  const mavwOldArr = mavwOld.toArray();
+  const oldLengths = [3, 5, 8, 13, 21, 34];
+  const warmup = Smal;
   const warmupOld = 34;
-  const plot1 = mavwOldArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmupOld || v == null || isNaN(v) ? NaN : v,
-  }));
-
-  // crossover(MAVW, MAVW[1]) / crossunder(MAVW, MAVW[1]) / cross(MAVW, MAVW[1])
-  const mavwV = mavwArr.map((v) => v ?? NaN);
-  const mavwPrev = mavwV.map((_v, i) => (i > 0 ? mavwV[i - 1] : NaN));
-  const buy = crossedOver(mavwV, mavwPrev);
-  const sell = crossedUnder(mavwV, mavwPrev);
-
+  const cascade = (steps: Wma[], lens: number[], x: number) => {
+    let v = x;
+    for (let k = 0; k < steps.length; k++) v = steps[k].step(v, lens[k]);
+    return v;
+  };
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
-    alerts: alertStates(alertConditions, bars, [buy, sell, buy.map((v, i) => v || sell[i])]),
+    init() {
+      const chain = chainLengths.map(() => taStep.wma());
+      const chainOld = oldLengths.map(() => taStep.wma());
+      const s: MavilimWRun = {
+        chain, chainOld, mavw: [], plot0: [], plot1: [], flags: [[], [], []], times: [[], [], []],
+        steps: [...chain, ...chainOld], vars: {}, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.mavw, s.plot0, s.plot1, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const close = b.close;
+      const mv = cascade(s.chain, chainLengths, close);
+      const mavwV = mv ?? NaN;
+      s.mavw[i] = mavwV;
+      const val = i < warmup ? NaN : mavwV;
+      if (isNaN(val)) s.plot0[i] = { time, value: NaN };
+      else {
+        const prev = i > 0 ? s.mavw[i - 1] : NaN;
+        const color = val > prev ? '#2962FF' : val < prev ? '#EF5350' : '#FFEB3B';
+        s.plot0[i] = { time, value: val, color };
+      }
+      const vo = cascade(s.chainOld, oldLengths, close);
+      s.plot1[i] = { time, value: i < warmupOld || vo == null || isNaN(vo) ? NaN : vo };
+
+      // crossover(MAVW, MAVW[1]) / crossunder(MAVW, MAVW[1]) / cross(MAVW, MAVW[1])
+      const w = i > 0 ? s.mavw[i - 1] : NaN;
+      const pv = i > 0 ? s.mavw[i - 1] : NaN;
+      const pw = i > 1 ? s.mavw[i - 2] : NaN;
+      const buy = mavwV > w && pv <= pw;
+      const sell = mavwV < w && pv >= pw;
+      [buy, sell, buy || sell].forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(time as number);
+      });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
 }
 
-export const MavilimW = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MavilimWInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MavilimWInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MavilimW = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

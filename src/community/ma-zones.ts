@@ -9,7 +9,9 @@
  * Original notice: © ZenAndTheArtOfTrading | PineScriptMastery
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MAZonesInputs {
   showZone1: boolean;
@@ -60,42 +62,74 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MAZonesInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface MaZonesRun extends BarRunState<Record<string, never>> {
+  emas: ReturnType<typeof taStep.ema>[];
+  smas: WindowSma[];
+  lines: Point[][];
+}
+
+function study(inputs: Partial<MAZonesInputs>): BarStudy<MaZonesRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-
-  const ema1 = A(ta.ema(close, cfg.zone1));
-  const ema2 = A(ta.ema(close, cfg.zone2));
-  const ema3 = A(ta.ema(close, cfg.zone3));
-  const ma1 = A(ta.sma(close, cfg.zone1));
-  const ma2 = A(ta.sma(close, cfg.zone2));
-  const ma3 = A(ta.sma(close, cfg.zone3));
-
-  // plot(showZoneN ? x : na, ...)
-  const line = (show: boolean, v: number[], c: string) =>
-    bars.map((b, i) => ({ time: b.time, value: show ? v[i] : NaN, color: c }));
-
+  const periods = [cfg.zone1, cfg.zone2, cfg.zone3];
+  const shows = [cfg.showZone1, cfg.showZone2, cfg.showZone3];
+  const colors = [lime, orange, red];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(cfg.showZone1, ema1, lime),
-      plot1: line(cfg.showZone1, ma1, lime),
-      plot2: line(cfg.showZone2, ema2, orange),
-      plot3: line(cfg.showZone2, ma2, orange),
-      plot4: line(cfg.showZone3, ema3, red),
-      plot5: line(cfg.showZone3, ma3, red),
+    init() {
+      const s: MaZonesRun = {
+        emas: periods.map((p) => taStep.ema(p)),
+        smas: periods.map((p) => new WindowSma(p)),
+        lines: [[], [], [], [], [], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [...s.emas, ...s.smas];
+      s.series = s.lines;
+      return s;
     },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Zone of Value 1', color: String(color.new(color.lime, 75)) } },
-      { plot1: 'plot2', plot2: 'plot3', options: { title: 'Zone of Value 2', color: String(color.new(color.orange, 75)) } },
-      { plot1: 'plot4', plot2: 'plot5', options: { title: 'Zone of Value 3', color: String(color.new(color.red, 75)) } },
-    ],
+    bar(s, i, bars) {
+      const { time, close } = bars[i];
+      for (let z = 0; z < 3; z++) {
+        const ema = s.emas[z].step(close);
+        const ma = s.smas[z].step(close);
+        // plot(showZoneN ? x : na, ...)
+        s.lines[z * 2][i] = { time, value: shows[z] ? ema : NaN, color: colors[z] };
+        s.lines[z * 2 + 1][i] = { time, value: shows[z] ? ma : NaN, color: colors[z] };
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.lines[0].slice(),
+          plot1: s.lines[1].slice(),
+          plot2: s.lines[2].slice(),
+          plot3: s.lines[3].slice(),
+          plot4: s.lines[4].slice(),
+          plot5: s.lines[5].slice(),
+        },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Zone of Value 1', color: String(color.new(color.lime, 75)) } },
+          { plot1: 'plot2', plot2: 'plot3', options: { title: 'Zone of Value 2', color: String(color.new(color.orange, 75)) } },
+          { plot1: 'plot4', plot2: 'plot5', options: { title: 'Zone of Value 3', color: String(color.new(color.red, 75)) } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MAZonesInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MAZonesInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MAZones = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

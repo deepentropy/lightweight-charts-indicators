@@ -11,7 +11,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AdvancedLinesPaskalInputs {
   /** Bands period (highest high / lowest low window) */
@@ -168,60 +170,88 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<AdvancedLinesPaskalInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface PaskalRun extends BarRunState<Record<string, never>> {
+  hh: WindowExtreme;
+  ll: WindowExtreme;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<AdvancedLinesPaskalInputs>): BarStudy<PaskalRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  // bandHigh = ta.highest(high, bandLength); bandLow = ta.lowest(low, bandLength)
-  const bandHigh = A(ta.highest(new Series(bars, (b) => b.high), cfg.bandLength));
-  const bandLow = A(ta.lowest(new Series(bars, (b) => b.low), cfg.bandLength));
-
-  const t = (i: number) => bars[i].time;
-  const line = (f: (i: number) => number, c: string) => {
-    const out: { time: number; value: number; color: string }[] = new Array(n);
-    for (let i = 0; i < n; i++) {
-      const v = f(i);
-      out[i] = { time: t(i), value: Number.isFinite(v) ? v : NaN, color: c };
-    }
-    return out;
-  };
   // fibo = bandLow + bandRange * ratio, shown when its switch and showBands are on
-  const level = (ratio: number, show: boolean, c: string) =>
-    line((i) => (show && cfg.showBands ? bandLow[i] + (bandHigh[i] - bandLow[i]) * ratio : NaN), c);
-
-  const plots = {
-    plot0: line((i) => (cfg.showBands ? bandHigh[i] : NaN), color.green),
-    plot1: line((i) => (cfg.showBands ? bandLow[i] : NaN), color.red),
-    // bandMid = math.avg(bandHigh, bandLow), shown when showMidline is on
-    plot2: line((i) => (cfg.showMidline ? (bandHigh[i] + bandLow[i]) / 2 : NaN), color.gray),
-    plot3: level(cfg.fiboRatio0764, cfg.showFibo0764, cfg.color0764),
-    plot4: level(cfg.fiboRatio0618, cfg.showFibo0618, cfg.color0618),
-    plot5: level(cfg.fiboRatio0500, cfg.showFibo0500, cfg.color0500),
-    plot6: level(cfg.fiboRatio0382, cfg.showFibo0382, cfg.color0382),
-    plot7: level(cfg.fiboRatio0236, cfg.showFibo0236, cfg.color0236),
-    plot8: level(cfg.fiboRatio1236, cfg.showFibo1236, cfg.color1236),
-    plot9: level(cfg.fiboRatio1382, cfg.showFibo1382, cfg.color1382),
-    plot10: level(cfg.fiboRatio1618, cfg.showFibo1618, cfg.color1618),
-    plot11: level(cfg.fiboRatioM0236, cfg.showFiboM0236, cfg.colorM0236),
-    plot12: level(cfg.fiboRatioM0382, cfg.showFiboM0382, cfg.colorM0382),
-    plot13: level(cfg.fiboRatioM0618, cfg.showFiboM0618, cfg.colorM0618),
-  };
-
+  const levels: Array<[number, boolean, string]> = [
+    [cfg.fiboRatio0764, cfg.showFibo0764, cfg.color0764],
+    [cfg.fiboRatio0618, cfg.showFibo0618, cfg.color0618],
+    [cfg.fiboRatio0500, cfg.showFibo0500, cfg.color0500],
+    [cfg.fiboRatio0382, cfg.showFibo0382, cfg.color0382],
+    [cfg.fiboRatio0236, cfg.showFibo0236, cfg.color0236],
+    [cfg.fiboRatio1236, cfg.showFibo1236, cfg.color1236],
+    [cfg.fiboRatio1382, cfg.showFibo1382, cfg.color1382],
+    [cfg.fiboRatio1618, cfg.showFibo1618, cfg.color1618],
+    [cfg.fiboRatioM0236, cfg.showFiboM0236, cfg.colorM0236],
+    [cfg.fiboRatioM0382, cfg.showFiboM0382, cfg.colorM0382],
+    [cfg.fiboRatioM0618, cfg.showFiboM0618, cfg.colorM0618],
+  ];
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills: [
-      // fill(plotUpperBand, plotFibo_0764, color = fillUpperColor)
-      { plot1: 'plot0', plot2: 'plot3', options: { title: 'Plots Background' }, colors: new Array(n).fill(cfg.fillUpperColor) },
-      // fill(plotLowerBand, plotFibo_0236, color = fillLowerColor)
-      { plot1: 'plot1', plot2: 'plot7', options: { title: 'Plots Background' }, colors: new Array(n).fill(cfg.fillLowerColor) },
-    ],
+    init() {
+      const s: PaskalRun = {
+        // bandHigh = ta.highest(high, bandLength); bandLow = ta.lowest(low, bandLength)
+        hh: new WindowExtreme(false, cfg.bandLength),
+        ll: new WindowExtreme(true, cfg.bandLength),
+        plots: Array.from({ length: 14 }, () => []),
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.hh, s.ll];
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      const bandHigh = s.hh.step(bars[i].high);
+      const bandLow = s.ll.step(bars[i].low);
+      const p = s.plots;
+      p[0]![i] = { time, value: fin(cfg.showBands ? bandHigh : NaN), color: color.green };
+      p[1]![i] = { time, value: fin(cfg.showBands ? bandLow : NaN), color: color.red };
+      // bandMid = math.avg(bandHigh, bandLow), shown when showMidline is on
+      p[2]![i] = { time, value: fin(cfg.showMidline ? (bandHigh + bandLow) / 2 : NaN), color: color.gray };
+      for (let k = 0; k < levels.length; k++) {
+        const [ratio, show, c] = levels[k]!;
+        p[k + 3]![i] = { time, value: fin(show && cfg.showBands ? bandLow + (bandHigh - bandLow) * ratio : NaN), color: c };
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((pl, k) => { plots[`plot${k}`] = pl.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: [
+          // fill(plotUpperBand, plotFibo_0764, color = fillUpperColor)
+          { plot1: 'plot0', plot2: 'plot3', options: { title: 'Plots Background' }, colors: new Array(n).fill(cfg.fillUpperColor) },
+          // fill(plotLowerBand, plotFibo_0236, color = fillLowerColor)
+          { plot1: 'plot1', plot2: 'plot7', options: { title: 'Plots Background' }, colors: new Array(n).fill(cfg.fillLowerColor) },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdvancedLinesPaskalInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AdvancedLinesPaskalInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AdvancedLinesPaskal = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -15,8 +15,10 @@
  * Original notice: © Zeiierman
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrendCylinderInputs {
   /** Volatility period (standard deviation length) */
@@ -72,95 +74,141 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TrendCylinderInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface TrendVars {
+  /** var float currentTrend = 0.0 */
+  currentTrend: number;
+  /** determineTrendDirection(direction): direction[1] is the argument of the previous call */
+  prevArg: number;
+  colorForPlot: string;
+  prevBullish: boolean;
+  prevBearish: boolean;
+}
+
+interface TrendRun extends BarRunState<TrendVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  atrRma: ReturnType<typeof taStep.rma>;
+  stdev: WindowStdev;
+  stdevEma: ReturnType<typeof taStep.ema>;
+  trend: number[];
+  direction: number[];
+  upperBand: number[];
+  lowerBand: number[];
+  plots: Point[][];
+  topColor: Array<string | null>;
+  bottomColor: Array<string | null>;
+  lowerBottomColor: Array<string | null>;
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<TrendCylinderInputs>): BarStudy<TrendRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-
-  const averageTrueRange = A(ta.rma(ta.atr(bars, 200), 10));
-  const stdevEma = A(ta.ema(ta.stdev(S(close), cfg.volatilityPeriod), 200));
-
-  const trend: number[] = new Array(n);
-  const direction: number[] = new Array(n);
-  const upperBand: number[] = new Array(n);
-  const lowerBand: number[] = new Array(n);
-  let currentTrend = 0.0; // var float currentTrend = 0.0
-  let prevArg = NaN; // determineTrendDirection(direction): direction[1] is the argument of the previous call
-  for (let i = 0; i < n; i++) {
-    const scaledStandardDev = (isNaN(averageTrueRange[i]) ? 0 : averageTrueRange[i]) * cfg.trendFactor;
-    // trendDirection := determineTrendDirection(currentTrend), with currentTrend of the previous bar
-    const d = currentTrend - prevArg;
-    direction[i] = gt(d, 0) ? 1 : lt(d, 0) ? -1 : 0;
-    prevArg = currentTrend;
-    const priceTrendDiff = Math.abs(close[i] - currentTrend);
-    const reciprocalFactor = (scaledStandardDev * (1 / cfg.trendFactor) * 1) / Math.pow(2, 100);
-    currentTrend = gt(priceTrendDiff, scaledStandardDev * cfg.trendStep)
-      ? (close[i] + currentTrend) / 2
-      : direction[i] * reciprocalFactor + currentTrend;
-    trend[i] = currentTrend;
-    upperBand[i] = currentTrend + scaledStandardDev - averageTrueRange[i] - stdevEma[i];
-    lowerBand[i] = currentTrend - scaledStandardDev + averageTrueRange[i] + stdevEma[i];
-  }
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const plot2: { time: number; value: number; color: string }[] = [];
-  const topColor: Array<string | null> = [];
-  const bottomColor: Array<string | null> = [];
   const noColor = String(color.new(color.black, 100)); // color.new(na, 100)
-  // var color colorForPlot = bullishTrendColor, then colorForPlot := ... : colorForPlot[1] on every bar: on the first
-  // bar colorForPlot[1] is na, so the colour stays na until the first rise or fall of the trend line
-  let colorForPlot = 'transparent';
-  const bullShift: boolean[] = [], bearShift: boolean[] = [];
-  let prevBullish = false, prevBearish = false;
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // isTrendConsistent = trendDirection == trendDirection[1] (false on the first bar)
-    const consistent = i > 0 && direction[i] === direction[i - 1];
-    const isBullishTrend = i > 0 && gt(trend[i], trend[i - 1]);
-    const isBearishTrend = i > 0 && lt(trend[i], trend[i - 1]);
-    // bullishShift = isBullishTrend and isBearishTrend[1] / bearishShift = isBearishTrend and isBullishTrend[1]
-    bullShift.push(isBullishTrend && prevBearish);
-    bearShift.push(isBearishTrend && prevBullish);
-    prevBullish = isBullishTrend;
-    prevBearish = isBearishTrend;
-    colorForPlot = isBullishTrend ? cfg.bullishTrendColor : isBearishTrend ? cfg.bearishTrendColor : colorForPlot;
-    plot0.push({ time: t, value: consistent ? trend[i] : NaN, color: colorForPlot });
-    plot1.push({ time: t, value: consistent ? upperBand[i] : NaN, color: BAND_COL });
-    plot2.push({ time: t, value: consistent ? lowerBand[i] : NaN, color: BAND_COL });
-    topColor.push(cfg.colorForLowerBand);
-    bottomColor.push(noColor);
-  }
-
-  // fill(plotUpper, plotTrend, top_value = upperBand, bottom_value = currentTrend, top_color = colorForLowerBand,
-  //      bottom_color = color.new(na, 100))
-  // fill(plotTrend, plotLower, top_value = currentTrend, bottom_value = lowerBand, top_color = color.new(na, 100),
-  //      bottom_color = colorForUpperBand)
-  const fills = [
-    {
-      plot1: 'plot1', plot2: 'plot0', options: { title: 'Background Upper' },
-      gradient: { topValue: upperBand.slice(), bottomValue: trend.slice(), topColor, bottomColor },
-    },
-    {
-      plot1: 'plot0', plot2: 'plot2', options: { title: 'Background Lower' },
-      gradient: {
-        topValue: trend.slice(), bottomValue: lowerBand.slice(),
-        topColor: bottomColor.slice(), bottomColor: topColor.map(() => cfg.colorForUpperBand),
-      },
-    },
-  ];
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    fills,
-    alerts: alertStates(alertConditions, bars, [bullShift, bearShift]),
+    init() {
+      const s: TrendRun = {
+        atr: taStep.atr(200), atrRma: taStep.rma(10), stdev: new WindowStdev(cfg.volatilityPeriod), stdevEma: taStep.ema(200),
+        trend: [], direction: [], upperBand: [], lowerBand: [], plots: [[], [], []],
+        topColor: [], bottomColor: [], lowerBottomColor: [], flags: [[], []], times: [[], []], steps: [],
+        // var color colorForPlot = bullishTrendColor, then colorForPlot := ... : colorForPlot[1] on every bar: on the
+        // first bar colorForPlot[1] is na, so the colour stays na until the first rise or fall of the trend line
+        vars: { currentTrend: 0.0, prevArg: NaN, colorForPlot: 'transparent', prevBullish: false, prevBearish: false },
+        lists: [], series: [],
+      };
+      s.steps = [s.atr, s.atrRma, s.stdev, s.stdevEma];
+      s.lists = s.times;
+      s.series = [
+        s.trend, s.direction, s.upperBand, s.lowerBand, ...s.plots, s.topColor, s.bottomColor, s.lowerBottomColor,
+        ...s.flags,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      const close = b.close;
+      const averageTrueRange = s.atrRma.step(s.atr.step(b.high, b.low, b.close));
+      const stdevEma = s.stdevEma.step(s.stdev.step(close));
+
+      const scaledStandardDev = (isNaN(averageTrueRange) ? 0 : averageTrueRange) * cfg.trendFactor;
+      // trendDirection := determineTrendDirection(currentTrend), with currentTrend of the previous bar
+      const d = v.currentTrend - v.prevArg;
+      const direction = gt(d, 0) ? 1 : lt(d, 0) ? -1 : 0;
+      s.direction[i] = direction;
+      v.prevArg = v.currentTrend;
+      const priceTrendDiff = Math.abs(close - v.currentTrend);
+      const reciprocalFactor = (scaledStandardDev * (1 / cfg.trendFactor) * 1) / Math.pow(2, 100);
+      v.currentTrend = gt(priceTrendDiff, scaledStandardDev * cfg.trendStep)
+        ? (close + v.currentTrend) / 2
+        : direction * reciprocalFactor + v.currentTrend;
+      const trend = v.currentTrend;
+      s.trend[i] = trend;
+      const upperBand = trend + scaledStandardDev - averageTrueRange - stdevEma;
+      const lowerBand = trend - scaledStandardDev + averageTrueRange + stdevEma;
+      s.upperBand[i] = upperBand;
+      s.lowerBand[i] = lowerBand;
+
+      // isTrendConsistent = trendDirection == trendDirection[1] (false on the first bar)
+      const consistent = i > 0 && direction === s.direction[i - 1];
+      const isBullishTrend = i > 0 && gt(trend, s.trend[i - 1]);
+      const isBearishTrend = i > 0 && lt(trend, s.trend[i - 1]);
+      // bullishShift = isBullishTrend and isBearishTrend[1] / bearishShift = isBearishTrend and isBullishTrend[1]
+      const bull = isBullishTrend && v.prevBearish;
+      const bear = isBearishTrend && v.prevBullish;
+      v.prevBullish = isBullishTrend;
+      v.prevBearish = isBearishTrend;
+      v.colorForPlot = isBullishTrend ? cfg.bullishTrendColor : isBearishTrend ? cfg.bearishTrendColor : v.colorForPlot;
+      s.plots[0][i] = { time: t, value: consistent ? trend : NaN, color: v.colorForPlot };
+      s.plots[1][i] = { time: t, value: consistent ? upperBand : NaN, color: BAND_COL };
+      s.plots[2][i] = { time: t, value: consistent ? lowerBand : NaN, color: BAND_COL };
+      s.topColor[i] = cfg.colorForLowerBand;
+      s.bottomColor[i] = noColor;
+      s.lowerBottomColor[i] = cfg.colorForUpperBand;
+      s.flags[0][i] = bull;
+      s.flags[1][i] = bear;
+      if (bull) s.times[0].push(t as number);
+      if (bear) s.times[1].push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // fill(plotUpper, plotTrend, top_value = upperBand, bottom_value = currentTrend, top_color = colorForLowerBand,
+      //      bottom_color = color.new(na, 100))
+      // fill(plotTrend, plotLower, top_value = currentTrend, bottom_value = lowerBand, top_color = color.new(na, 100),
+      //      bottom_color = colorForUpperBand)
+      const fills = [
+        {
+          plot1: 'plot1', plot2: 'plot0', options: { title: 'Background Upper' },
+          gradient: { topValue: s.upperBand.slice(), bottomValue: s.trend.slice(), topColor: s.topColor.slice(), bottomColor: s.bottomColor.slice() },
+        },
+        {
+          plot1: 'plot0', plot2: 'plot2', options: { title: 'Background Lower' },
+          gradient: {
+            topValue: s.trend.slice(), bottomValue: s.lowerBand.slice(),
+            topColor: s.bottomColor.slice(), bottomColor: s.lowerBottomColor.slice(),
+          },
+        },
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+        fills,
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrendCylinderInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TrendCylinderInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -171,6 +219,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const TrendCylinder = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -8,7 +8,9 @@
  * Reference: "CM_Williams_Vix_Fix" by ChrisMoody
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface WilliamsVixFixInputs {
   pd: number;
@@ -56,66 +58,94 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<WilliamsVixFixInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface WvfRun extends BarRunState<Record<string, never>> {
+  highestClose: WindowExtreme;
+  mid: WindowSma;
+  dev: WindowStdev;
+  wvfHigh: WindowExtreme;
+  wvfLow: WindowExtreme;
+  wvfPlot: Point[];
+  upperPlot: Point[];
+  rangeHighPlot: Point[];
+  rangeLowPlot: Point[];
+}
+
+function study(inputs: Partial<WilliamsVixFixInputs>): BarStudy<WvfRun, IndicatorResult> {
   const { pd, bbl, mult, lb, ph, pl, hp, sd } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const closeSeries = new Series(bars, (b) => b.close);
-  const highestClose = ta.highest(closeSeries, pd).toArray();
-
-  // WVF
-  const wvfArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const hc = highestClose[i];
-    if (hc == null || hc === 0 || isNaN(hc)) {
-      wvfArr[i] = 0;
-    } else {
-      wvfArr[i] = ((hc - bars[i].low) / hc) * 100;
-    }
-  }
-
-  // BB on WVF
-  const wvfSeries = new Series(bars, (_b, i) => wvfArr[i]);
-  const midLine = ta.sma(wvfSeries, bbl).toArray();
-  const sDev = ta.stdev(wvfSeries, bbl).toArray();
-
-  // Percentile range
-  const wvfHighest = ta.highest(wvfSeries, lb).toArray();
-  const wvfLowest = ta.lowest(wvfSeries, lb).toArray();
-
   const warmup = Math.max(pd, bbl);
-  const wvfPlot = wvfArr.map((v, i) => {
-    if (i < warmup) return { time: bars[i].time, value: NaN };
-    const upperBand = (midLine[i] ?? 0) + mult * (sDev[i] ?? 0);
-    const rangeHigh = (wvfHighest[i] ?? 0) * ph;
-    const alert = v >= upperBand || v >= rangeHigh;
-    const color = alert ? '#00E676' : '#787B86';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  // Pine: plot(sd and upperBand ? upperBand : na) - conditional on sd input
-  const upperPlot = bars.map((b, i) => {
-    if (!sd || i < warmup || midLine[i] == null || sDev[i] == null) return { time: b.time, value: NaN };
-    return { time: b.time, value: (midLine[i]!) + mult * (sDev[i]!) };
-  });
-
-  // Pine: plot(hp and rangeHigh ? rangeHigh : na) - conditional on hp input
-  const rangeHighPlot = wvfHighest.map((v, i) => {
-    if (!hp || i < Math.max(warmup, lb) || v == null || isNaN(v)) return { time: bars[i].time, value: NaN };
-    return { time: bars[i].time, value: v * ph };
-  });
-
-  // Pine: rangeLow = lowest(wvf, lb) * pl
-  // Pine: plot(hp and rangeLow ? rangeLow : na, title="Range Low Percentile", style=line, linewidth=4, color=orange)
-  const rangeLowPlot = wvfLowest.map((v, i) => {
-    if (!hp || i < Math.max(warmup, lb) || v == null || isNaN(v)) return { time: bars[i].time, value: NaN };
-    return { time: bars[i].time, value: v * pl };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': wvfPlot, 'plot1': upperPlot, 'plot2': rangeHighPlot, 'plot3': rangeLowPlot },
+    init() {
+      const highestClose = new WindowExtreme(false, pd);
+      const mid = new WindowSma(bbl);
+      const dev = new WindowStdev(bbl);
+      const wvfHigh = new WindowExtreme(false, lb);
+      const wvfLow = new WindowExtreme(true, lb);
+      const s: WvfRun = {
+        highestClose, mid, dev, wvfHigh, wvfLow, wvfPlot: [], upperPlot: [], rangeHighPlot: [], rangeLowPlot: [],
+        steps: [highestClose, mid, dev, wvfHigh, wvfLow], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.wvfPlot, s.upperPlot, s.rangeHighPlot, s.rangeLowPlot];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // WVF
+      const hc = s.highestClose.step(b.close);
+      const v = hc == null || hc === 0 || isNaN(hc) ? 0 : ((hc - b.low) / hc) * 100;
+
+      // BB on WVF
+      const midLine = s.mid.step(v);
+      const sDev = s.dev.step(v);
+
+      // Percentile range
+      const wvfHighest = s.wvfHigh.step(v);
+      const wvfLowest = s.wvfLow.step(v);
+
+      if (i < warmup) {
+        s.wvfPlot[i] = { time, value: NaN };
+      } else {
+        const upperBand = (midLine ?? 0) + mult * (sDev ?? 0);
+        const rangeHigh = (wvfHighest ?? 0) * ph;
+        const alert = v >= upperBand || v >= rangeHigh;
+        const color = alert ? '#00E676' : '#787B86';
+        s.wvfPlot[i] = { time, value: v, color };
+      }
+
+      // Pine: plot(sd and upperBand ? upperBand : na) - conditional on sd input
+      s.upperPlot[i] = !sd || i < warmup || midLine == null || sDev == null
+        ? { time, value: NaN }
+        : { time, value: midLine + mult * sDev };
+
+      // Pine: plot(hp and rangeHigh ? rangeHigh : na) - conditional on hp input
+      s.rangeHighPlot[i] = !hp || i < Math.max(warmup, lb) || wvfHighest == null || isNaN(wvfHighest)
+        ? { time, value: NaN }
+        : { time, value: wvfHighest * ph };
+
+      // Pine: rangeLow = lowest(wvf, lb) * pl
+      // Pine: plot(hp and rangeLow ? rangeLow : na, title="Range Low Percentile", style=line, linewidth=4, color=orange)
+      s.rangeLowPlot[i] = !hp || i < Math.max(warmup, lb) || wvfLowest == null || isNaN(wvfLowest)
+        ? { time, value: NaN }
+        : { time, value: wvfLowest * pl };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.wvfPlot.slice(), 'plot1': s.upperPlot.slice(), 'plot2': s.rangeHighPlot.slice(), 'plot3': s.rangeLowPlot.slice() },
+      };
+    },
   };
 }
 
-export const WilliamsVixFix = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WilliamsVixFixInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<WilliamsVixFixInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const WilliamsVixFix = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

@@ -11,8 +11,10 @@
  * Original notice: © TechnoBlooms
  */
 
-import { taCore, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type EntropyBandsMAType = 'SMA' | 'EMA' | 'WMA';
 
@@ -80,65 +82,98 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<EntropyBandsInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+interface EbRun extends BarRunState<Record<string, never>> {
+  basis: { step(v: number): number; commit(): void };
+  entropy: WindowSma;
+  atr: ReturnType<typeof taStep.atr>;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  plot4: Point[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<EntropyBandsInputs>): BarStudy<EbRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const high = bars.map((b) => b.high);
-  const low = bars.map((b) => b.low);
-  const close = bars.map((b) => b.close);
-
+  const len = cfg.entropyLength;
   // basis = ma(close, entropy_length): the switch runs only the branch of the (constant) type
-  const basis = cfg.maType === 'EMA' ? taCore.ema(close, cfg.entropyLength)
-    : cfg.maType === 'WMA' ? taCore.wma(close, cfg.entropyLength)
-      : taCore.sma(close, cfg.entropyLength);
-  // entropy = ta.sma((high - low) / close, entropy_length)
-  const entropy = taCore.sma(bars.map((b) => (b.high - b.low) / b.close), cfg.entropyLength);
-  const atr = taCore.atr(cfg.atrLength, high, low, close);
-
-  const upper: number[] = new Array(n);
-  const lower: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const width = cfg.bandMultiplier * (entropy[i] + atr[i]);
-    upper[i] = basis[i] + width;
-    lower[i] = basis[i] - width;
-  }
-
-  const t = (i: number) => bars[i].time;
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const plots = {
-    plot0: bars.map((_b, i) => ({ time: t(i), value: cfg.showBands ? fin(basis[i]) : NaN, color: color.blue })),
-    plot1: bars.map((_b, i) => ({ time: t(i), value: cfg.showBands ? fin(upper[i]) : NaN, color: BAND_COLOR })),
-    plot2: bars.map((_b, i) => ({ time: t(i), value: cfg.showBands ? fin(lower[i]) : NaN, color: BAND_COLOR })),
-    // fill(plot(upper_band, color = na), plot(lower_band, color = na), color.rgb(146, 146, 148, 94))
-    plot3: bars.map((_b, i) => ({ time: t(i), value: fin(upper[i]) })),
-    plot4: bars.map((_b, i) => ({ time: t(i), value: fin(lower[i]) })),
-  };
-
-  // barcolor(show_candle_coloring and body_percent > min_body_percent ? (close > upper_band ? #06f093 :
-  //   close < lower_band ? #ff03ea : #6e6b6f) : na)
-  const barColors: BarColorData[] = [];
-  if (cfg.showCandleColoring) {
-    for (let i = 0; i < n; i++) {
-      const bodyPercent = (Math.abs(close[i] - bars[i].open) / close[i]) * 100;
-      if (!gt(bodyPercent, cfg.minBodyPercent)) continue;
-      const c = gt(close[i], upper[i]) ? '#06f093' : lt(close[i], lower[i]) ? '#ff03ea' : '#6e6b6f';
-      barColors.push({ time: t(i), color: c });
+  const basisStep = (): EbRun['basis'] => {
+    if (cfg.maType === 'EMA') return taStep.ema(len);
+    if (cfg.maType === 'WMA') {
+      const m = taStep.wma();
+      return { step: (v) => m.step(v, len), commit: () => m.commit() };
     }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills: [{ plot1: 'plot3', plot2: 'plot4', options: { color: FILL_COLOR }, colors: new Array<string>(n).fill(FILL_COLOR) }],
-    barColors,
+    return new WindowSma(len);
   };
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+  return {
+    init() {
+      const s: EbRun = {
+        basis: basisStep(), entropy: new WindowSma(len), atr: taStep.atr(cfg.atrLength),
+        plot0: [], plot1: [], plot2: [], plot3: [], plot4: [], barColors: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.basis, s.entropy, s.atr];
+      s.lists = [s.barColors];
+      s.series = [s.plot0, s.plot1, s.plot2, s.plot3, s.plot4];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = b.close;
+      const basis = s.basis.step(close);
+      // entropy = ta.sma((high - low) / close, entropy_length)
+      const entropy = s.entropy.step((b.high - b.low) / close);
+      const atr = s.atr.step(b.high, b.low, close);
+      const width = cfg.bandMultiplier * (entropy + atr);
+      const upper = basis + width;
+      const lower = basis - width;
+
+      const time = b.time as number;
+      s.plot0[i] = { time, value: cfg.showBands ? fin(basis) : NaN, color: color.blue };
+      s.plot1[i] = { time, value: cfg.showBands ? fin(upper) : NaN, color: BAND_COLOR };
+      s.plot2[i] = { time, value: cfg.showBands ? fin(lower) : NaN, color: BAND_COLOR };
+      // fill(plot(upper_band, color = na), plot(lower_band, color = na), color.rgb(146, 146, 148, 94))
+      s.plot3[i] = { time, value: fin(upper) };
+      s.plot4[i] = { time, value: fin(lower) };
+
+      // barcolor(show_candle_coloring and body_percent > min_body_percent ? (close > upper_band ? #06f093 :
+      //   close < lower_band ? #ff03ea : #6e6b6f) : na)
+      if (cfg.showCandleColoring) {
+        const bodyPercent = (Math.abs(close - b.open) / close) * 100;
+        if (!gt(bodyPercent, cfg.minBodyPercent)) return;
+        const c = gt(close, upper) ? '#06f093' : lt(close, lower) ? '#ff03ea' : '#6e6b6f';
+        s.barColors.push({ time: b.time, color: c });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice(), plot4: s.plot4.slice() },
+        fills: [{ plot1: 'plot3', plot2: 'plot4', options: { color: FILL_COLOR }, colors: new Array<string>(n).fill(FILL_COLOR) }],
+        barColors: s.barColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EntropyBandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EntropyBandsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const EntropyBands = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

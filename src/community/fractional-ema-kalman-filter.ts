@@ -14,7 +14,9 @@
  * Original notice: © et20tradeview
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface FractionalEmaKalmanFilterInputs {
   /** Show the EMA and its one-bar-left copy */
@@ -88,118 +90,174 @@ const nz = (x: number, y = 0) => (isNaN(x) ? y : x);
 const max = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.max(a, b));
 const min = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.min(a, b));
 
-/** pine_ema(src, length): sum := alpha * src + (1 - alpha) * nz(sum[1]), alpha = 2 / (length + 1) */
-function pineEma(src: number[], length: number): number[] {
-  const alpha = 2 / (length + 1);
-  const out: number[] = new Array(src.length);
-  for (let i = 0; i < src.length; i++) {
-    out[i] = alpha * src[i] + (1 - alpha) * nz(i > 0 ? out[i - 1] : NaN);
-  }
-  return out;
+/** One adaptive Kalman filter (`var float kf_state = na`, `var float p_cov = 1.0`) with its two RMAs */
+interface KalmanFilter {
+  pState: number;
+  pCov: number;
+  rmaR: RmaStepper;
+  rmaQ: RmaStepper;
+}
+
+interface KalmanVars {
+  base: KalmanFilter;
+  fast: KalmanFilter;
+}
+
+type Point = { time: number; value: number; color: string };
+
+interface KalmanRun extends BarRunState<KalmanVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  ema1: number[];
+  ema2: number[];
+  stateB: number[];
+  stateS: number[];
+  smoothb: number[];
+  smooths: number[];
+  plots: Point[][];
+  fillColors: string[];
+}
+
+const copyFilter = (f: KalmanFilter): KalmanFilter => ({ ...f, rmaR: f.rmaR.clone(), rmaQ: f.rmaQ.clone() });
+
+function study(inputs: Partial<FractionalEmaKalmanFilterInputs>): BarStudy<KalmanRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const qlen = 5;
+  const value = barSource(cfg.source);
+  const up = String(color.new(color.aqua, 80));
+  const down = String(color.new(color.red, 80));
+  const filter = (rRatio: number): KalmanFilter => ({ pState: NaN, pCov: 1.0, rmaR: new RmaStepper(rRatio), rmaQ: new RmaStepper(qlen) });
+  /** pine_ema(src, length) on bar i: sum := alpha * src + (1 - alpha) * nz(sum[1]), alpha = 2 / (length + 1) */
+  const pineEma = (out: number[], i: number, x: number, length: number) => {
+    const alpha = 2 / (length + 1);
+    out[i] = alpha * x + (1 - alpha) * nz(i > 0 ? out[i - 1] : NaN);
+    return out[i];
+  };
+  /** One adaptive Kalman filter: the state on bar i */
+  const kalman = (f: KalmanFilter, state: number[], i: number, ema2: number, atr: number, qRatio: number, gateMult: number) => {
+    // The residual depends on the previous state, so the RMAs of the residual variance are computed bar by bar (same
+    // recursion as ta.rma: SMA seed on the first `length` values, then alpha = 1 / length).
+    // residual = ema2 - nz(kf_state[1], ema2)
+    const residual = ema2 - nz(i > 0 ? state[i - 1] : NaN, ema2);
+    const volBase = max(atr, 1e-6);
+    const resVar = Math.pow(residual, 2) / Math.pow(volBase, 2);
+    const rRaw = nz(f.rmaR.step(resVar), 1.0);
+    const qRaw = nz(f.rmaQ.step(resVar), 0.1);
+    // calc_kalman
+    const qProcess = min(max(nz(qRaw, 0.1), 0.001), 10.0) * qRatio;
+    const rDynamicFloor = resVar * gateMult;
+    const rAdaptive = max(nz(rRaw, 1.0), rDynamicFloor);
+    const currentPCov = f.pCov + qProcess;
+    const kGain = currentPCov / (currentPCov + rAdaptive + 1e-10);
+    let nextState = nz(f.pState, ema2);
+    let nextCov = currentPCov;
+    if (!isNaN(kGain)) {
+      nextState = nextState + kGain * (ema2 - nextState);
+      nextCov = (1 - kGain) * currentPCov;
+    }
+    f.pState = nextState;
+    f.pCov = nextCov;
+    state[i] = nextState;
+    return nextState;
+  };
+  return {
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const s: KalmanRun = {
+        atr: taStep.atr(14), ema1: [], ema2: [], stateB: [], stateS: [], smoothb: [], smooths: [],
+        plots: [[], [], [], []], fillColors: [], steps: [],
+        vars: { base: filter(cfg.rRatioB), fast: filter(cfg.rRatioS) }, lists: [], series: [],
+      };
+      s.steps = [s.atr];
+      s.series = [s.ema1, s.ema2, s.stateB, s.stateS, s.smoothb, s.smooths, ...s.plots, s.fillColors];
+      return s;
+    },
+    copyVars: (v) => ({ base: copyFilter(v.base), fast: copyFilter(v.fast) }),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const ema1 = pineEma(s.ema1, i, value(b), cfg.factor);
+      const ema2 = pineEma(s.ema2, i, ema1, cfg.factor2);
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const stateB = kalman(s.vars.base, s.stateB, i, ema2, atr, cfg.qRatioB, cfg.rGateMultB);
+      const stateS = kalman(s.vars.fast, s.stateS, i, ema2, atr, cfg.qRatioS, cfg.rGateMultS);
+      const smoothb = pineEma(s.smoothb, i, stateB, 3);
+      const smooths = pineEma(s.smooths, i, stateS, 5);
+
+      const emaPlot = cfg.showPul ? ema2 : NaN;
+      s.plots[0][i] = { time: t, value: emaPlot, color: EMA_COL };
+      // plot(..., offset = -1): the value of bar i is drawn on bar i - 1 (bar i is the only writer of that slot)
+      if (i > 0) s.plots[1][i - 1] = { time: bars[i - 1].time, value: emaPlot, color: EMA_COL };
+      s.plots[2][i] = { time: t, value: smoothb, color: BASE_COL };
+      s.plots[3][i] = { time: t, value: smooths, color: FAST_COL };
+      s.fillColors[i] = gt(smooths, smoothb) ? up : down;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      const fills = [
+        { plot1: 'plot0', plot2: 'plot1', options: { title: 'Lag Shading', color: String(color.new('#69359C', 70)) } },
+        { plot1: 'plot2', plot2: 'plot3', options: { title: 'Kalman fill' }, colors: s.fillColors.slice() },
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(0, Math.max(0, n - 1)), plot2: p[2].slice(), plot3: p[3].slice() },
+        fills,
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FractionalEmaKalmanFilterInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(bars: Bar[], inputs: Partial<FractionalEmaKalmanFilterInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const qlen = 5;
-
-  const src = A(getSourceSeries(bars, cfg.source));
-  const ema1 = pineEma(src, cfg.factor);
-  const ema2 = pineEma(ema1, cfg.factor2);
-  const atr = A(ta.atr(bars, 14));
-
-  /** One adaptive Kalman filter: the state on every bar */
-  const kalman = (rRatio: number, qRatio: number, gateMult: number): number[] => {
-    // The residual depends on the previous state: first the residual variance needs the states, so the RMAs of
-    // the residual variance are computed bar by bar (same recursion as ta.rma: SMA seed on the first `length`
-    // values, then alpha = 1 / length).
-    const state: number[] = new Array(n);
-    const resVar: number[] = new Array(n);
-    let pState = NaN; // var float kf_state = na
-    let pCov = 1.0; // var float p_cov = 1.0
-    const rmaR = rmaStepper(rRatio);
-    const rmaQ = rmaStepper(qlen);
-    for (let i = 0; i < n; i++) {
-      // residual = ema2 - nz(kf_state[1], ema2)
-      const residual = ema2[i] - nz(i > 0 ? state[i - 1] : NaN, ema2[i]);
-      const volBase = max(atr[i], 1e-6);
-      resVar[i] = Math.pow(residual, 2) / Math.pow(volBase, 2);
-      const rRaw = nz(rmaR(resVar[i]), 1.0);
-      const qRaw = nz(rmaQ(resVar[i]), 0.1);
-      // calc_kalman
-      const qProcess = min(max(nz(qRaw, 0.1), 0.001), 10.0) * qRatio;
-      const rDynamicFloor = resVar[i] * gateMult;
-      const rAdaptive = max(nz(rRaw, 1.0), rDynamicFloor);
-      const currentPCov = pCov + qProcess;
-      const kGain = currentPCov / (currentPCov + rAdaptive + 1e-10);
-      let nextState = nz(pState, ema2[i]);
-      let nextCov = currentPCov;
-      if (!isNaN(kGain)) {
-        nextState = nextState + kGain * (ema2[i] - nextState);
-        nextCov = (1 - kGain) * currentPCov;
-      }
-      pState = nextState;
-      pCov = nextCov;
-      state[i] = nextState;
-    }
-    return state;
-  };
-  const smoothb = pineEma(kalman(cfg.rRatioB, cfg.qRatioB, cfg.rGateMultB), 3);
-  const smooths = pineEma(kalman(cfg.rRatioS, cfg.qRatioS, cfg.rGateMultS), 5);
-
-  const t = (i: number) => bars[i].time;
-  const emaPlot = (i: number) => (cfg.showPul ? ema2[i] : NaN);
-  const plot0 = bars.map((_b, i) => ({ time: t(i), value: emaPlot(i), color: EMA_COL }));
-  // plot(..., offset = -1): the value of bar i is drawn on bar i - 1
-  const plot1 = bars.slice(1).map((_b, j) => ({ time: t(j), value: emaPlot(j + 1), color: EMA_COL }));
-  const plot2 = bars.map((_b, i) => ({ time: t(i), value: smoothb[i], color: BASE_COL }));
-  const plot3 = bars.map((_b, i) => ({ time: t(i), value: smooths[i], color: FAST_COL }));
-
-  const up = String(color.new(color.aqua, 80));
-  const down = String(color.new(color.red, 80));
-  const fills = [
-    { plot1: 'plot0', plot2: 'plot1', options: { title: 'Lag Shading', color: String(color.new('#69359C', 70)) } },
-    {
-      plot1: 'plot2', plot2: 'plot3', options: { title: 'Kalman fill' },
-      colors: bars.map((_b, i) => (gt(smooths[i], smoothb[i]) ? up : down)),
-    },
-  ];
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
-    fills,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /**
  * Bar-by-bar ta.rma(src, length): na until `length` non-na values, seeded by their mean (the SMA of the first full
- * window), then rma = alpha * src + (1 - alpha) * rma[1] (na on a bar with an na source).
+ * window), then rma = alpha * src + (1 - alpha) * rma[1] (na on a bar with an na source). A class (state changed in
+ * place, copied with clone()) so that a live run can keep it at the end of the last confirmed bar.
  */
-function rmaStepper(length: number): (x: number) => number {
-  const alpha = 1 / length;
-  const seed: number[] = [];
-  let value = NaN;
-  let started = false;
-  return (x: number) => {
-    if (!started) {
-      if (!isNaN(x)) seed.push(x);
-      if (seed.length === length) {
-        started = true;
-        value = seed.reduce((a, b) => a + b, 0) / length;
-        return value;
+class RmaStepper {
+  private readonly alpha: number;
+  private seed: number[] = [];
+  private value = NaN;
+  private started = false;
+
+  constructor(private readonly length: number) {
+    this.alpha = 1 / length;
+  }
+
+  step(x: number): number {
+    if (!this.started) {
+      if (!isNaN(x)) this.seed.push(x);
+      if (this.seed.length === this.length) {
+        this.started = true;
+        this.value = this.seed.reduce((a, b) => a + b, 0) / this.length;
+        return this.value;
       }
       return NaN;
     }
     if (isNaN(x)) return NaN;
-    value = alpha * x + (1 - alpha) * value;
-    return value;
-  };
+    this.value = this.alpha * x + (1 - this.alpha) * this.value;
+    return this.value;
+  }
+
+  clone(): RmaStepper {
+    const c = new RmaStepper(this.length);
+    c.seed = this.started ? this.seed : this.seed.slice();
+    c.value = this.value;
+    c.started = this.started;
+    return c;
+  }
 }
 
 export const FractionalEmaKalmanFilter = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -16,8 +16,10 @@
  * Original notice: © DotGain
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, WindowStdev, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type DipDevMaType = 'ema' | 'sma' | 'rma' | 'vwma' | 'wma' | 'tema';
 export type DipTrmadMaType = 'SMA' | 'EMA' | 'SMMA (RMA)' | 'WMA' | 'VWMA';
@@ -97,104 +99,147 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
+type Ma = { step(v: number, volume: number): number; commit(): void };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+/** One moving average stepped bar by bar */
+function maStep(kind: 'ema' | 'rma' | 'vwma' | 'wma' | 'sma', p: number): Ma {
+  switch (kind) {
+    case 'ema': { const m = taStep.ema(p); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'rma': { const m = taStep.rma(p); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'vwma': return new WindowVwma(p);
+    case 'wma': { const m = taStep.wma(); return { step: (v) => m.step(v, p), commit: () => m.commit() }; }
+    default: { const m = new WindowSma(p); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+  }
+}
+
+// f_ma_dev(t, s, p)
+function maDev(t: string, p: number): Ma {
+  if (t === 'tema') {
+    // f_tema_dev(s, p): 3 * ema1 - 3 * ema2 + ema3
+    const e1 = taStep.ema(p);
+    const e2 = taStep.ema(p);
+    const e3 = taStep.ema(p);
+    return {
+      step: (v) => {
+        const a = e1.step(v) ?? NaN;
+        const b = e2.step(a) ?? NaN;
+        const c = e3.step(b) ?? NaN;
+        return 3 * a - 3 * b + c;
+      },
+      commit: () => { e1.commit(); e2.commit(); e3.commit(); },
+    };
+  }
+  return maStep(t === 'ema' || t === 'rma' || t === 'vwma' || t === 'wma' ? t : 'sma', p);
+}
+
+// f_ma_trmad(source, length, type)
+function maTrmad(length: number, type: string): Ma {
+  switch (type) {
+    case 'EMA': return maStep('ema', length);
+    case 'SMMA (RMA)': return maStep('rma', length);
+    case 'WMA': return maStep('wma', length);
+    case 'VWMA': return maStep('vwma', length);
+    default: return maStep('sma', length);
+  }
+}
+
+interface DipRun extends BarRunState<Record<string, never>> {
+  hiClose: WindowExtreme;
+  sd: WindowStdev;
+  mid: WindowSma;
+  hiWvf: WindowExtreme;
+  ma1Dev: Ma;
+  tr: ReturnType<typeof taStep.tr>;
+  atrTrmad: Ma;
+  maClose: Ma;
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<DipBuySellSignalsInputs>): BarStudy<DipRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const buyColor = String(color.new(color.green, 60));
+  return {
+    init() {
+      // 1. CM Williams Vix Fix
+      const hiClose = new WindowExtreme(false, cfg.pd);
+      const sd = new WindowStdev(cfg.bbl);
+      const mid = new WindowSma(cfg.bbl);
+      const hiWvf = new WindowExtreme(false, cfg.lb);
+      // 2. Deviation from MA
+      const ma1Dev = maDev(cfg.matDev, cfg.lenDev);
+      // 3. TRMAD
+      const tr = taStep.tr(true);
+      const atrTrmad = maTrmad(cfg.trLengthInputTrmad, cfg.trTypeInputTrmad);
+      const maClose = maTrmad(cfg.maLengthInputTrmad, cfg.maTypeInputTrmad);
+      const s: DipRun = {
+        hiClose, sd, mid, hiWvf, ma1Dev, tr, atrTrmad, maClose, markers: [],
+        steps: [hiClose, sd, mid, hiWvf, ma1Dev, tr, atrTrmad, maClose], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = b.close;
+      const vol = b.volume ?? NaN;
+      const hiClose = s.hiClose.step(close);
+      const wvf = (hiClose - b.low) / hiClose * 100;
+      const sd = s.sd.step(wvf);
+      const midLine = s.mid.step(wvf);
+      const hiWvf = s.hiWvf.step(wvf);
+      const ma1Dev = s.ma1Dev.step(close, vol) ?? NaN;
+      const atrTrmad = s.atrTrmad.step(s.tr.step(b.high, b.low, close), vol) ?? NaN;
+      const maClose = s.maClose.step(close, vol) ?? NaN;
+
+      const sDev = cfg.mult * sd;
+      const upperBand = midLine + sDev;
+      const rangeHigh = hiWvf * cfg.ph;
+      const cond1VixLime = ge(wvf, upperBand) || ge(wvf, rangeHigh);
+
+      // Plain division: x / 0 is +-infinity, 0 / 0 is na
+      const defVal = (close - ma1Dev) / ma1Dev * 100;
+      const cond2DevBuy = lt(defVal, -cfg.percentDev);
+      const cond2DevSell = gt(defVal, cfg.percentDev);
+
+      const distanceTrmad = close - maClose;
+      const ratio = distanceTrmad / atrTrmad;
+      // nz(): na and +-infinity give 0
+      const trmadVal = Number.isFinite(ratio) ? ratio : 0;
+      const cond3TrmadBuy = lt(trmadVal, cfg.trmadLevelBuy);
+      const cond3TrmadSell = gt(trmadVal, cfg.trmadLevelSell);
+
+      const buySignal = cond1VixLime && cond2DevBuy && cond3TrmadBuy;
+      const sellSignal = cond1VixLime && cond2DevSell && cond3TrmadSell;
+
+      // barcolor(buy ? green : sell ? red : na, display.none) and bgcolor(buy ? green 85 : sell ? red 85 : na,
+      // display.none): not drawn
+      // plotshape(buySignal, 'Buy', shape.labelup, location.belowbar, color.new(color.green, 60), size.small)
+      if (buySignal) s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: buyColor, size: 'small' });
+      // plotshape(sellSignal, 'Sell', shape.labeldown, location.abovebar, color.new(color.red, 60), size.small,
+      // display.none): not drawn
+      void sellSignal;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DipBuySellSignalsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<DipBuySellSignalsInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (values: number[]) => Series.fromArray(bars, values);
-  const close = bars.map((b) => b.close);
-  const closeS = S(close);
-  const volumeS = S(bars.map((b) => b.volume ?? NaN));
-
-  // f_tema_dev(s, p): 3 * ema1 - 3 * ema2 + ema3
-  const temaDev = (s: Series, p: number): number[] => {
-    const ema1 = ta.ema(s, p);
-    const ema2 = ta.ema(ema1, p);
-    const ema3 = ta.ema(ema2, p);
-    const e1 = A(ema1);
-    const e2 = A(ema2);
-    const e3 = A(ema3);
-    return e1.map((v, i) => 3 * v - 3 * e2[i] + e3[i]);
-  };
-
-  // f_ma_dev(t, s, p)
-  const maDev = (t: string, s: Series, p: number): number[] => {
-    switch (t) {
-      case 'ema': return A(ta.ema(s, p));
-      case 'rma': return A(ta.rma(s, p));
-      case 'vwma': return A(ta.vwma(s, p, volumeS));
-      case 'wma': return A(ta.wma(s, p));
-      case 'tema': return temaDev(s, p);
-      default: return A(ta.sma(s, p));
-    }
-  };
-
-  // f_ma_trmad(source, length, type)
-  const maTrmad = (source: Series, length: number, type: string): number[] => {
-    switch (type) {
-      case 'SMA': return A(ta.sma(source, length));
-      case 'EMA': return A(ta.ema(source, length));
-      case 'SMMA (RMA)': return A(ta.rma(source, length));
-      case 'WMA': return A(ta.wma(source, length));
-      case 'VWMA': return A(ta.vwma(source, length, volumeS));
-      default: return A(ta.sma(source, length));
-    }
-  };
-
-  // 1. CM Williams Vix Fix
-  const hiClose = A(ta.highest(closeS, cfg.pd));
-  const wvf = bars.map((b, i) => (hiClose[i] - b.low) / hiClose[i] * 100);
-  const wvfS = S(wvf);
-  const sd = A(ta.stdev(wvfS, cfg.bbl));
-  const midLine = A(ta.sma(wvfS, cfg.bbl));
-  const hiWvf = A(ta.highest(wvfS, cfg.lb));
-
-  // 2. Deviation from MA
-  const ma1Dev = maDev(cfg.matDev, closeS, cfg.lenDev);
-
-  // 3. TRMAD
-  const atrTrmad = maTrmad(ta.tr(bars, true), cfg.trLengthInputTrmad, cfg.trTypeInputTrmad);
-  const maClose = maTrmad(closeS, cfg.maLengthInputTrmad, cfg.maTypeInputTrmad);
-
-  const buyColor = String(color.new(color.green, 60));
-  const markers: MarkerData[] = [];
-  bars.forEach((b, i) => {
-    const sDev = cfg.mult * sd[i];
-    const upperBand = midLine[i] + sDev;
-    const rangeHigh = hiWvf[i] * cfg.ph;
-    const cond1VixLime = ge(wvf[i], upperBand) || ge(wvf[i], rangeHigh);
-
-    // Plain division: x / 0 is +-infinity, 0 / 0 is na
-    const defVal = (close[i] - ma1Dev[i]) / ma1Dev[i] * 100;
-    const cond2DevBuy = lt(defVal, -cfg.percentDev);
-    const cond2DevSell = gt(defVal, cfg.percentDev);
-
-    const distanceTrmad = close[i] - maClose[i];
-    const ratio = distanceTrmad / atrTrmad[i];
-    // nz(): na and +-infinity give 0
-    const trmadVal = Number.isFinite(ratio) ? ratio : 0;
-    const cond3TrmadBuy = lt(trmadVal, cfg.trmadLevelBuy);
-    const cond3TrmadSell = gt(trmadVal, cfg.trmadLevelSell);
-
-    const buySignal = cond1VixLime && cond2DevBuy && cond3TrmadBuy;
-    const sellSignal = cond1VixLime && cond2DevSell && cond3TrmadSell;
-
-    // barcolor(buy ? green : sell ? red : na, display.none) and bgcolor(buy ? green 85 : sell ? red 85 : na,
-    // display.none): not drawn
-    // plotshape(buySignal, 'Buy', shape.labelup, location.belowbar, color.new(color.green, 60), size.small)
-    if (buySignal) markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: buyColor, size: 'small' });
-    // plotshape(sellSignal, 'Sell', shape.labeldown, location.abovebar, color.new(color.red, 60), size.small,
-    // display.none): not drawn
-    void sellSignal;
-  });
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
-export const DipBuySellSignals = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+export const DipBuySellSignals = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

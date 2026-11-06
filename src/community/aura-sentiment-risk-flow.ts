@@ -14,9 +14,11 @@
  * Original notice: © Pineify
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AuraSentimentRiskFlowInputs {
   /** RSI length of the sentiment */
@@ -74,95 +76,125 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AuraSentimentRiskFlowInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface AuraRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  sma: WindowSma;
+  atr: ReturnType<typeof taStep.atr>;
+  hi: WindowExtreme;
+  lo: WindowExtreme;
+  up: ReturnType<typeof taStep.crossover>;
+  dn: ReturnType<typeof taStep.crossunder>;
+  sentiment: number[];
+  plots: Point[][];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<AuraSentimentRiskFlowInputs>): BarStudy<AuraRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
-
-  // 1. Sentiment
-  const rawRSI = A(ta.rsi(close, cfg.rsiLen));
-  const sentimentSeries = ta.sma(S(rawRSI.map((v) => v - 50)), cfg.smoothLen);
-  const sentiment = A(sentimentSeries);
-
-  // 2. Risk (Chandelier exits)
-  const atrValue = A(ta.atr(bars, cfg.atrLen));
-  const highestHigh = A(ta.highest(close, cfg.atrLen));
-  const lowestLow = A(ta.lowest(close, cfg.atrLen));
-
-  // Signals: ta.crossover / ta.crossunder of the sentiment with 0
-  const crossUp = A(ta.crossover(sentimentSeries, 0));
-  const crossDn = A(ta.crossunder(sentimentSeries, 0));
-
   const neutFade = String(color.new(cfg.colNeut, 50));
   const bearGrad = String(color.new(cfg.colBear, 20));
   const bullGrad = String(color.new(cfg.colBull, 20));
   const edgeColor = String(color.new(color.white, 80));
   const flowColor = String(color.new(cfg.colNeut, 70));
   const bgExtreme = String(color.new(cfg.colNeut, 90));
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const plot2: { time: number; value: number; color: string }[] = [];
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  const buyFlags: boolean[] = [], sellFlags: boolean[] = [], extremeFlags: boolean[] = [];
-
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time as number;
-    const s = sentiment[i];
-    const prev = i > 0 ? sentiment[i - 1] : NaN;
-
-    const chandLong = highestHigh[i] - atrValue[i] * cfg.atrMult;
-    const chandShort = lowestLow[i] + atrValue[i] * cfg.atrMult;
-    const riskRange = highestHigh[i] - lowestLow[i];
-    // riskRange > 0 ? ... : 0 (na compares false)
-    const riskOsc = gt(riskRange, 0) ? ((bars[i].close - chandShort) / riskRange) * 50 : 0;
-    const riskOscInv = gt(riskRange, 0) ? ((chandLong - bars[i].close) / riskRange) * 50 : 0;
-
-    const isUptrend = gt(s, 0);
-    const isDowntrend = lt(s, 0);
-    const momentumFading = (isUptrend && lt(s, prev)) || (isDowntrend && gt(s, prev));
-    const colorAura = momentumFading ? neutFade : color.from_gradient(s, -50, 50, bearGrad, bullGrad);
-
-    plot0.push({ time: t, value: s, color: colorAura });
-    plot1.push({ time: t, value: s, color: edgeColor });
-    const riskFlow = Math.abs(s) - Math.abs(riskOsc - riskOscInv);
-    plot2.push({ time: t, value: Number.isFinite(riskFlow) ? riskFlow : NaN, color: flowColor });
-
-    // plotshape(buySignal ? -5 : na, style = shape.labelup, location = location.absolute, ...)
-    if (crossUp[i]) {
-      markers.push({ time: t, position: 'atPriceBottom', price: -5, shape: 'labelUp', color: cfg.colBull,
-        text: 'BUY', textColor: color.white, size: 'tiny' });
-    }
-    // plotshape(sellSignal ? 5 : na, style = shape.labeldown, location = location.absolute, ...)
-    if (crossDn[i]) {
-      markers.push({ time: t, position: 'atPriceTop', price: 5, shape: 'labelDown', color: cfg.colBear,
-        text: 'SELL', textColor: color.white, size: 'tiny' });
-    }
-    // bgcolor(math.abs(sentimentOsc) > 40 ? color.new(colNeut, 90) : na)
-    const isExtreme = gt(Math.abs(s), 40);
-    if (isExtreme) bgColors.push({ time: t, color: bgExtreme });
-    buyFlags.push(!!crossUp[i]);
-    sellFlags.push(!!crossDn[i]);
-    extremeFlags.push(isExtreme);
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    hlines: [
-      { value: 0, options: { title: 'Zero Line', color: String(color.new(cfg.colNeut, 70)), linestyle: 'dotted' } },
-    ],
-    markers,
-    bgColors,
-    // alertcondition(buySignal) / alertcondition(sellSignal) / alertcondition(isExtreme)
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags, extremeFlags]),
+    init() {
+      const s: AuraRun = {
+        rsi: taStep.rsi(cfg.rsiLen), sma: new WindowSma(cfg.smoothLen), atr: taStep.atr(cfg.atrLen),
+        hi: new WindowExtreme(false, cfg.atrLen), lo: new WindowExtreme(true, cfg.atrLen),
+        up: taStep.crossover(), dn: taStep.crossunder(),
+        sentiment: [], plots: [[], [], []], markers: [], bgColors: [], flags: [[], [], []], times: [[], [], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.rsi, s.sma, s.atr, s.hi, s.lo, s.up, s.dn];
+      s.lists = [s.markers, s.bgColors, ...s.times];
+      s.series = [s.sentiment, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(st, i, bars) {
+      const b = bars[i];
+      const t = b.time as number;
+      // 1. Sentiment
+      const rawRSI = st.rsi.step(b.close);
+      const s = st.sma.step(rawRSI - 50);
+      st.sentiment[i] = s;
+      const prev = i > 0 ? st.sentiment[i - 1] : NaN;
+
+      // 2. Risk (Chandelier exits)
+      const atrValue = st.atr.step(b.high, b.low, b.close);
+      const highestHigh = st.hi.step(b.close);
+      const lowestLow = st.lo.step(b.close);
+
+      // Signals: ta.crossover / ta.crossunder of the sentiment with 0
+      const crossUp = st.up.step(s, 0);
+      const crossDn = st.dn.step(s, 0);
+
+      const chandLong = highestHigh - atrValue * cfg.atrMult;
+      const chandShort = lowestLow + atrValue * cfg.atrMult;
+      const riskRange = highestHigh - lowestLow;
+      // riskRange > 0 ? ... : 0 (na compares false)
+      const riskOsc = gt(riskRange, 0) ? ((b.close - chandShort) / riskRange) * 50 : 0;
+      const riskOscInv = gt(riskRange, 0) ? ((chandLong - b.close) / riskRange) * 50 : 0;
+
+      const isUptrend = gt(s, 0);
+      const isDowntrend = lt(s, 0);
+      const momentumFading = (isUptrend && lt(s, prev)) || (isDowntrend && gt(s, prev));
+      const colorAura = momentumFading ? neutFade : color.from_gradient(s, -50, 50, bearGrad, bullGrad);
+
+      st.plots[0][i] = { time: t, value: s, color: colorAura };
+      st.plots[1][i] = { time: t, value: s, color: edgeColor };
+      const riskFlow = Math.abs(s) - Math.abs(riskOsc - riskOscInv);
+      st.plots[2][i] = { time: t, value: Number.isFinite(riskFlow) ? riskFlow : NaN, color: flowColor };
+
+      // plotshape(buySignal ? -5 : na, style = shape.labelup, location = location.absolute, ...)
+      if (crossUp) {
+        st.markers.push({ time: t, position: 'atPriceBottom', price: -5, shape: 'labelUp', color: cfg.colBull,
+          text: 'BUY', textColor: color.white, size: 'tiny' });
+      }
+      // plotshape(sellSignal ? 5 : na, style = shape.labeldown, location = location.absolute, ...)
+      if (crossDn) {
+        st.markers.push({ time: t, position: 'atPriceTop', price: 5, shape: 'labelDown', color: cfg.colBear,
+          text: 'SELL', textColor: color.white, size: 'tiny' });
+      }
+      // bgcolor(math.abs(sentimentOsc) > 40 ? color.new(colNeut, 90) : na)
+      const isExtreme = gt(Math.abs(s), 40);
+      if (isExtreme) st.bgColors.push({ time: t, color: bgExtreme });
+      // alertcondition(buySignal) / alertcondition(sellSignal) / alertcondition(isExtreme)
+      const f = [crossUp, crossDn, isExtreme];
+      for (let k = 0; k < 3; k++) {
+        st.flags[k][i] = f[k];
+        if (f[k]) st.times[k].push(t);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+        hlines: [
+          { value: 0, options: { title: 'Zero Line', color: String(color.new(cfg.colNeut, 70)), linestyle: 'dotted' } },
+        ],
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AuraSentimentRiskFlowInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AuraSentimentRiskFlowInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -174,6 +206,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const AuraSentimentRiskFlow = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

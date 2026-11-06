@@ -14,8 +14,10 @@
  * Reference: "MACD Support and Resistance [ChartPrime]" by ChartPrime
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, LineDrawingData, LabelData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MacdSupportResistanceInputs {
   fastLength: number;
@@ -61,203 +63,219 @@ interface Level {
   startIdx: number;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MacdSupportResistanceInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[]; labels: LabelData[]; markers: MarkerData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[]; labels: LabelData[]; markers: MarkerData[] };
+type Ma = { step(v: number): number; commit(): void };
+
+/** ta.sma / ta.ema of one MA type with a constant length */
+const maStep = (type: 'EMA' | 'SMA', length: number): Ma => (type === 'SMA' ? new WindowSma(length) : taStep.ema(length));
+
+interface MacdSrVars {
+  /** Tracked S/R levels (the array is changed in place, its items are never changed) */
+  levels: Level[];
+}
+
+interface MacdSrRun extends BarRunState<MacdSrVars> {
+  fast: Ma;
+  slow: Ma;
+  sig: Ma;
+  hi: WindowExtreme;
+  lo: WindowExtreme;
+  macdArr: number[];
+  signalArr: number[];
+  macdPlot: Point[];
+  signalPlot: Point[];
+  fillColors: string[];
+  localHighPlot: Point[];
+  localLowPlot: Point[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<MacdSupportResistanceInputs>): BarStudy<MacdSrRun, Result> {
   const { fastLength, slowLength, signalLength, oscMaType, sigMaType } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const closeSeries = new Series(bars, (b) => b.close);
-
-  // MACD calculation
-  const fastMaArr = (oscMaType === 'SMA'
-    ? ta.sma(closeSeries, fastLength)
-    : ta.ema(closeSeries, fastLength)
-  ).toArray();
-
-  const slowMaArr = (oscMaType === 'SMA'
-    ? ta.sma(closeSeries, slowLength)
-    : ta.ema(closeSeries, slowLength)
-  ).toArray();
-
-  const macdArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const f = fastMaArr[i];
-    const s = slowMaArr[i];
-    macdArr[i] = (f != null && s != null) ? (f as number) - (s as number) : NaN;
-  }
-
-  const macdSeries = new Series(bars, (_b, i) => macdArr[i]);
-  const signalArr = (sigMaType === 'SMA'
-    ? ta.sma(macdSeries, signalLength)
-    : ta.ema(macdSeries, signalLength)
-  ).toArray().map(v => v != null ? v as number : NaN);
-
-  // Highest MACD and lowest MACD over 100 bars for local high/low dashed lines
-  const macdHighArr = ta.highest(macdSeries, 100).toArray();
-  const macdLowArr = ta.lowest(macdSeries, 100).toArray();
-
-  // Track S/R levels
-  const levels: Level[] = [];
-  const lines: LineDrawingData[] = [];
-  const labels: LabelData[] = [];
-  const markers: MarkerData[] = [];
-
   const warmup = slowLength;
   const colUp = '#2962FF';
   const colDn = '#FF6D00';
-
-  for (let i = 1; i < n; i++) {
-    if (isNaN(macdArr[i]) || isNaN(signalArr[i]) || isNaN(macdArr[i - 1]) || isNaN(signalArr[i - 1])) continue;
-
-    const prevMacd = macdArr[i - 1];
-    const prevSignal = signalArr[i - 1];
-    const curMacd = macdArr[i];
-    const curSignal = signalArr[i];
-
-    // Crossunder: MACD crosses below signal → RESISTANCE (highest high in last 6 bars)
-    if (prevMacd >= prevSignal && curMacd < curSignal) {
-      let maxHigh = -Infinity;
-      let maxIdx = i;
-      for (let j = 0; j <= 5 && i - j >= 0; j++) {
-        if (bars[i - j].high > maxHigh) {
-          maxHigh = bars[i - j].high;
-          maxIdx = i - j;
-        }
-      }
-      levels.push({ isSupport: false, price: maxHigh, startIdx: maxIdx });
-
-      // plotshape(ta.crossunder(macd, signal) ? signal : na, "Macd DN", shape.diamond, location.absolute, size.tiny,
-      //   color = macd_col)
-      markers.push({
-        time: bars[i].time,
-        position: 'atPriceMiddle',
-        price: curSignal,
-        shape: 'diamond',
-        color: curMacd > curSignal ? colUp : colDn,
-        size: 'tiny',
-        id: 'shape1',
-      });
-    }
-
-    // Crossover: MACD crosses above signal → SUPPORT (lowest low in last 6 bars)
-    if (prevMacd <= prevSignal && curMacd > curSignal) {
-      let minLow = Infinity;
-      let minIdx = i;
-      for (let j = 0; j <= 5 && i - j >= 0; j++) {
-        if (bars[i - j].low < minLow) {
-          minLow = bars[i - j].low;
-          minIdx = i - j;
-        }
-      }
-      levels.push({ isSupport: true, price: minLow, startIdx: minIdx });
-
-      // plotshape(ta.crossover(macd, signal) ? signal : na, "Macd UP", shape.diamond, location.absolute, size.tiny,
-      //   color = macd_col)
-      markers.push({
-        time: bars[i].time,
-        position: 'atPriceMiddle',
-        price: curSignal,
-        shape: 'diamond',
-        color: curMacd > curSignal ? colUp : colDn,
-        size: 'tiny',
-        id: 'shape0',
-      });
-    }
-
-    // Trim to max 20 levels
-    while (levels.length > 20) {
-      levels.shift();
-    }
-
-    // Remove crossed levels (iterate backward so removal doesn't skip entries)
-    for (let k = levels.length - 1; k >= 0; k--) {
-      const lv = levels[k];
-      if (i <= lv.startIdx) continue;
-      if (lv.isSupport && bars[i].low < lv.price) {
-        levels.splice(k, 1);
-      } else if (!lv.isSupport && bars[i].high > lv.price) {
-        levels.splice(k, 1);
-      }
-    }
-  }
-
-  // Draw remaining levels as lines from their start bar to last bar
-  for (const lv of levels) {
-    const col = lv.isSupport ? colUp : colDn;
-    lines.push({
-      time1: bars[lv.startIdx].time,
-      price1: lv.price,
-      time2: bars[n - 1].time,
-      price2: lv.price,
-      color: col,
-      width: 1,
-      style: 'solid',
-    });
-    // Diamond label at start
-    labels.push({
-      time: bars[lv.startIdx].time,
-      price: lv.price,
-      text: '',
-      color: col,
-      style: 'label_center',
-      size: 'tiny',
-    });
-    // Price label at end
-    labels.push({
-      time: bars[n - 1].time,
-      price: lv.price,
-      text: lv.price.toFixed(2),
-      color: col,
-      textColor: '#FFFFFF',
-      style: 'label_left',
-      size: 'small',
-    });
-  }
-
-  // Build plots
-  const signalPlot = signalArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : v,
-    color: macdArr[i] > v ? colUp : colDn,
-  }));
-
-  const macdPlot = macdArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : v,
-    color: v > signalArr[i] ? colUp : colDn,
-  }));
-  // fill(pm, ps, color.new(macd_col, 70))
-  const fillColors = macdArr.map((v, i) => String(color.new(v > signalArr[i] ? colUp : colDn, 70)));
-
-  // Local high/low as dashed lines (skip every bar where i%5==0 || i%4==0 || i%3==0 to create dashes)
-  const localHighPlot = macdHighArr.map((v, i) => {
-    const skip = i % 5 === 0 || i % 4 === 0 || i % 3 === 0;
-    return { time: bars[i].time, value: (i < warmup || skip || v == null) ? NaN : v as number };
-  });
-  const localLowPlot = macdLowArr.map((v, i) => {
-    const skip = i % 5 === 0 || i % 4 === 0 || i % 3 === 0;
-    return { time: bars[i].time, value: (i < warmup || skip || v == null) ? NaN : v as number };
-  });
-
+  const fillUp = String(color.new(colUp, 70));
+  const fillDn = String(color.new(colDn, 70));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      macd: macdPlot,
-      signal: signalPlot,
-      localHigh: localHighPlot,
-      localLow: localLowPlot,
+    init() {
+      const s: MacdSrRun = {
+        fast: maStep(oscMaType, fastLength), slow: maStep(oscMaType, slowLength), sig: maStep(sigMaType, signalLength),
+        // Highest MACD and lowest MACD over 100 bars for local high/low dashed lines
+        hi: new WindowExtreme(false, 100), lo: new WindowExtreme(true, 100),
+        macdArr: [], signalArr: [], macdPlot: [], signalPlot: [], fillColors: [], localHighPlot: [], localLowPlot: [],
+        markers: [], steps: [], vars: { levels: [] }, lists: [], series: [],
+      };
+      s.steps = [s.fast, s.slow, s.sig, s.hi, s.lo];
+      s.lists = [s.markers];
+      s.series = [s.macdArr, s.signalArr, s.macdPlot, s.signalPlot, s.fillColors, s.localHighPlot, s.localLowPlot];
+      return s;
     },
-    // hline(0, "Zero Line", color = color.new(#787B86, 30)): default style dashed, width 1
-    hlines: [
-      { value: 0, options: { title: 'Zero Line', color: String(color.new('#787B86', 30)), linestyle: 'dashed', linewidth: 1 } },
-    ],
-    fills: [{ plot1: 'macd', plot2: 'signal', options: { title: 'Plots Background' }, colors: fillColors }],
-    lines,
-    labels,
-    markers,
+    copyVars: (v) => ({ levels: v.levels.slice() }),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // MACD calculation
+      const f = s.fast.step(b.close);
+      const sl = s.slow.step(b.close);
+      const macd = (f != null && sl != null) ? f - sl : NaN;
+      s.macdArr[i] = macd;
+      const sg = s.sig.step(macd);
+      const signal = sg != null ? sg : NaN;
+      s.signalArr[i] = signal;
+      const macdHigh = s.hi.step(macd);
+      const macdLow = s.lo.step(macd);
+
+      // Track S/R levels
+      const levels = s.vars.levels;
+      if (i >= 1 && !(isNaN(macd) || isNaN(signal) || isNaN(s.macdArr[i - 1]) || isNaN(s.signalArr[i - 1]))) {
+        const prevMacd = s.macdArr[i - 1];
+        const prevSignal = s.signalArr[i - 1];
+        const curMacd = macd;
+        const curSignal = signal;
+
+        // Crossunder: MACD crosses below signal → RESISTANCE (highest high in last 6 bars)
+        if (prevMacd >= prevSignal && curMacd < curSignal) {
+          let maxHigh = -Infinity;
+          let maxIdx = i;
+          for (let j = 0; j <= 5 && i - j >= 0; j++) {
+            if (bars[i - j].high > maxHigh) {
+              maxHigh = bars[i - j].high;
+              maxIdx = i - j;
+            }
+          }
+          levels.push({ isSupport: false, price: maxHigh, startIdx: maxIdx });
+
+          // plotshape(ta.crossunder(macd, signal) ? signal : na, "Macd DN", shape.diamond, location.absolute, size.tiny,
+          //   color = macd_col)
+          s.markers.push({
+            time,
+            position: 'atPriceMiddle',
+            price: curSignal,
+            shape: 'diamond',
+            color: curMacd > curSignal ? colUp : colDn,
+            size: 'tiny',
+            id: 'shape1',
+          });
+        }
+
+        // Crossover: MACD crosses above signal → SUPPORT (lowest low in last 6 bars)
+        if (prevMacd <= prevSignal && curMacd > curSignal) {
+          let minLow = Infinity;
+          let minIdx = i;
+          for (let j = 0; j <= 5 && i - j >= 0; j++) {
+            if (bars[i - j].low < minLow) {
+              minLow = bars[i - j].low;
+              minIdx = i - j;
+            }
+          }
+          levels.push({ isSupport: true, price: minLow, startIdx: minIdx });
+
+          // plotshape(ta.crossover(macd, signal) ? signal : na, "Macd UP", shape.diamond, location.absolute, size.tiny,
+          //   color = macd_col)
+          s.markers.push({
+            time,
+            position: 'atPriceMiddle',
+            price: curSignal,
+            shape: 'diamond',
+            color: curMacd > curSignal ? colUp : colDn,
+            size: 'tiny',
+            id: 'shape0',
+          });
+        }
+
+        // Trim to max 20 levels
+        while (levels.length > 20) {
+          levels.shift();
+        }
+
+        // Remove crossed levels (iterate backward so removal doesn't skip entries)
+        for (let k = levels.length - 1; k >= 0; k--) {
+          const lv = levels[k];
+          if (i <= lv.startIdx) continue;
+          if (lv.isSupport && b.low < lv.price) {
+            levels.splice(k, 1);
+          } else if (!lv.isSupport && b.high > lv.price) {
+            levels.splice(k, 1);
+          }
+        }
+      }
+
+      // Build plots
+      s.signalPlot[i] = { time, value: i < warmup ? NaN : signal, color: macd > signal ? colUp : colDn };
+      s.macdPlot[i] = { time, value: i < warmup ? NaN : macd, color: macd > signal ? colUp : colDn };
+      // fill(pm, ps, color.new(macd_col, 70))
+      s.fillColors[i] = macd > signal ? fillUp : fillDn;
+      // Local high/low as dashed lines (skip every bar where i%5==0 || i%4==0 || i%3==0 to create dashes)
+      const skip = i % 5 === 0 || i % 4 === 0 || i % 3 === 0;
+      s.localHighPlot[i] = { time, value: (i < warmup || skip || macdHigh == null) ? NaN : macdHigh };
+      s.localLowPlot[i] = { time, value: (i < warmup || skip || macdLow == null) ? NaN : macdLow };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const lines: LineDrawingData[] = [];
+      const labels: LabelData[] = [];
+      // Draw remaining levels as lines from their start bar to last bar
+      for (const lv of s.vars.levels) {
+        const col = lv.isSupport ? colUp : colDn;
+        lines.push({
+          time1: bars[lv.startIdx].time,
+          price1: lv.price,
+          time2: bars[n - 1].time,
+          price2: lv.price,
+          color: col,
+          width: 1,
+          style: 'solid',
+        });
+        // Diamond label at start
+        labels.push({
+          time: bars[lv.startIdx].time,
+          price: lv.price,
+          text: '',
+          color: col,
+          style: 'label_center',
+          size: 'tiny',
+        });
+        // Price label at end
+        labels.push({
+          time: bars[n - 1].time,
+          price: lv.price,
+          text: lv.price.toFixed(2),
+          color: col,
+          textColor: '#FFFFFF',
+          style: 'label_left',
+          size: 'small',
+        });
+      }
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          macd: s.macdPlot.slice(),
+          signal: s.signalPlot.slice(),
+          localHigh: s.localHighPlot.slice(),
+          localLow: s.localLowPlot.slice(),
+        },
+        // hline(0, "Zero Line", color = color.new(#787B86, 30)): default style dashed, width 1
+        hlines: [
+          { value: 0, options: { title: 'Zero Line', color: String(color.new('#787B86', 30)), linestyle: 'dashed', linewidth: 1 } },
+        ],
+        fills: [{ plot1: 'macd', plot2: 'signal', options: { title: 'Plots Background' }, colors: s.fillColors.slice() }],
+        lines,
+        labels,
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const MacdSupportResistance = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MacdSupportResistanceInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MacdSupportResistanceInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MacdSupportResistance = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

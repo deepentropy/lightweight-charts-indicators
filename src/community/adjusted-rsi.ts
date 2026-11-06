@@ -11,7 +11,9 @@
  * Original notice: © JTCapitalNL
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AdjustedRsiInputs {
   /** RSI length */
@@ -60,77 +62,124 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(bars: Bar[], inputs: Partial<AdjustedRsiInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface AdjustedRsiVars {
+  /** var float normRSI = na; var float smooth1 = na; var float norm = na; var float smooth2 = na */
+  normRSI: number;
+  s1: number;
+  norm: number;
+  s2: number;
+  /** finalLine[1] */
+  prevFinal: number;
+}
+
+interface AdjustedRsiRun extends BarRunState<AdjustedRsiVars> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  sma: WindowSma;
+  lowRSI: WindowExtreme;
+  highRSI: WindowExtreme;
+  lowS: WindowExtreme;
+  highS: WindowExtreme;
+  finalLine: number[];
+  lineColor: string[];
+  plot0: Point[];
+  plot2: Point[];
+  plot4: Point[];
+}
+
+function study(inputs: Partial<AdjustedRsiInputs>): BarStudy<AdjustedRsiRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const f = cfg.smoothFact;
-
-  // adjRSI = sma(rsi(close, rsiLen) - 50, rsismlen), clamped to -10..10 (math.max / min give na with na)
-  const close = S(bars.map((b) => b.close));
-  const rsiC = A(ta.rsi(close, cfg.rsiLen)).map((v) => v - 50);
-  const adjRSI = A(ta.sma(S(rsiC), cfg.rsiSmoothLen)).map((v) => Math.min(Math.max(v, -10), 10));
-
-  // First normalisation and smoothing
-  const lowRSI = A(ta.lowest(S(adjRSI), cfg.len));
-  const highRSI = A(ta.highest(S(adjRSI), cfg.len));
-  const smooth1: number[] = new Array(n);
-  let normRSI = NaN; // var float normRSI = na
-  let s1 = NaN; // var float smooth1 = na
-  for (let i = 0; i < n; i++) {
-    const range = highRSI[i] - lowRSI[i];
-    // rangeRSI > 0 ? ... : nz(normRSI[1])
-    normRSI = gt(range, 0) ? ((adjRSI[i] - lowRSI[i]) / range) * 100 : isNaN(normRSI) ? 0 : normRSI;
-    s1 = isNaN(s1) ? normRSI : s1 + f * (normRSI - s1);
-    smooth1[i] = s1;
-  }
-
-  // Second normalisation and smoothing, re-centred
-  const lowS = A(ta.lowest(S(smooth1), cfg.len));
-  const highS = A(ta.highest(S(smooth1), cfg.len));
-  const finalLine: number[] = new Array(n);
-  let norm = NaN; // var float norm = na
-  let s2 = NaN; // var float smooth2 = na
-  for (let i = 0; i < n; i++) {
-    const range = highS[i] - lowS[i];
-    norm = gt(range, 0) ? ((smooth1[i] - lowS[i]) / range) * 100 : isNaN(norm) ? 0 : norm;
-    s2 = isNaN(s2) ? norm : s2 + f * (norm - s2);
-    finalLine[i] = s2 - 50;
-  }
-
-  // lineColor = finalLine >= finalLine[1] ? BullColor : BearColor
-  const up = finalLine.map((v, i) => i > 0 && ge(v, finalLine[i - 1]));
-  const lineColor = up.map((u) => (u ? BULL : BEAR));
-  const glowColor = up.map((u) => String(color.new(u ? BULL : BEAR, 80)));
-  const line = (c: string[]) => bars.map((b, i) => ({ time: b.time, value: finalLine[i], color: c[i] }));
-
+  const glowBull = String(color.new(BULL, 80));
+  const glowBear = String(color.new(BEAR, 80));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(lineColor),
-      plot1: line(lineColor),
-      plot2: line(glowColor),
-      plot3: line(lineColor),
-      // plot12 = plot(0, color = lineColor, display = display.none)
-      plot4: bars.map((b, i) => ({ time: b.time, value: 0, color: lineColor[i] })),
+    init() {
+      const s: AdjustedRsiRun = {
+        rsi: taStep.rsi(cfg.rsiLen), sma: new WindowSma(cfg.rsiSmoothLen),
+        lowRSI: new WindowExtreme(true, cfg.len), highRSI: new WindowExtreme(false, cfg.len),
+        lowS: new WindowExtreme(true, cfg.len), highS: new WindowExtreme(false, cfg.len),
+        finalLine: [], lineColor: [], plot0: [], plot2: [], plot4: [],
+        steps: [], vars: { normRSI: NaN, s1: NaN, norm: NaN, s2: NaN, prevFinal: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.rsi, s.sma, s.lowRSI, s.highRSI, s.lowS, s.highS];
+      s.series = [s.finalLine, s.lineColor, s.plot0, s.plot2, s.plot4];
+      return s;
     },
-    fills: [
-      // fill(plot1, plot12, top_value = finalLine, bottom_value = 0, top_color = lineColor,
-      //      bottom_color = color.new(color.black, 100))
-      { plot1: 'plot3', plot2: 'plot4', options: { title: 'Adjusted RSI Fill' },
-        gradient: {
-          topValue: finalLine.slice(),
-          bottomValue: new Array<number>(n).fill(0),
-          topColor: lineColor.slice(),
-          bottomColor: new Array<string | null>(n).fill(String(color.new(color.black, 100))),
-        } },
-    ],
+    bar(s, i, bars) {
+      const v = s.vars;
+      const time = bars[i].time;
+      // adjRSI = sma(rsi(close, rsiLen) - 50, rsismlen), clamped to -10..10 (math.max / min give na with na)
+      const adjRSI = Math.min(Math.max(s.sma.step(s.rsi.step(bars[i].close) - 50), -10), 10);
+
+      // First normalisation and smoothing
+      const lowRSI = s.lowRSI.step(adjRSI);
+      const highRSI = s.highRSI.step(adjRSI);
+      const range1 = highRSI - lowRSI;
+      // rangeRSI > 0 ? ... : nz(normRSI[1])
+      v.normRSI = gt(range1, 0) ? ((adjRSI - lowRSI) / range1) * 100 : isNaN(v.normRSI) ? 0 : v.normRSI;
+      v.s1 = isNaN(v.s1) ? v.normRSI : v.s1 + f * (v.normRSI - v.s1);
+      const smooth1 = v.s1;
+
+      // Second normalisation and smoothing, re-centred
+      const lowS = s.lowS.step(smooth1);
+      const highS = s.highS.step(smooth1);
+      const range2 = highS - lowS;
+      v.norm = gt(range2, 0) ? ((smooth1 - lowS) / range2) * 100 : isNaN(v.norm) ? 0 : v.norm;
+      v.s2 = isNaN(v.s2) ? v.norm : v.s2 + f * (v.norm - v.s2);
+      const finalLine = v.s2 - 50;
+
+      // lineColor = finalLine >= finalLine[1] ? BullColor : BearColor
+      const up = i > 0 && ge(finalLine, v.prevFinal);
+      v.prevFinal = finalLine;
+      const lineColor = up ? BULL : BEAR;
+      s.finalLine[i] = finalLine;
+      s.lineColor[i] = lineColor;
+      s.plot0[i] = { time, value: finalLine, color: lineColor };
+      s.plot2[i] = { time, value: finalLine, color: up ? glowBull : glowBear };
+      // plot12 = plot(0, color = lineColor, display = display.none)
+      s.plot4[i] = { time, value: 0, color: lineColor };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const line = () => s.plot0.map((p) => ({ ...p }));
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plot0.slice(),
+          plot1: line(),
+          plot2: s.plot2.slice(),
+          plot3: line(),
+          plot4: s.plot4.slice(),
+        },
+        fills: [
+          // fill(plot1, plot12, top_value = finalLine, bottom_value = 0, top_color = lineColor,
+          //      bottom_color = color.new(color.black, 100))
+          { plot1: 'plot3', plot2: 'plot4', options: { title: 'Adjusted RSI Fill' },
+            gradient: {
+              topValue: s.finalLine.slice(),
+              bottomValue: new Array<number>(n).fill(0),
+              topColor: s.lineColor.slice(),
+              bottomColor: new Array<string | null>(n).fill(String(color.new(color.black, 100))),
+            } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdjustedRsiInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AdjustedRsiInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AdjustedRsi = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

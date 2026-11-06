@@ -12,9 +12,11 @@
  */
 
 import {
-  ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
+  taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VisualisationTendancesInputs {
   /** Show the trend view (EMA, SMA(3) and their fill) */
@@ -84,51 +86,96 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<VisualisationTendancesInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface VisuRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  sma3: WindowSma;
+  basis: WindowSma;
+  sd: WindowStdev;
+  emaArr: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  trendFill: string[];
+}
+
+function study(inputs: Partial<VisualisationTendancesInputs>): BarStudy<VisuRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-
-  const ema = A(ta.ema(getSourceSeries(bars, cfg.src), cfg.emaLength)); // Sortie_4
-  const sma3 = A(ta.sma(close, 3)); // Prix_2
-  const basis = A(ta.sma(close, cfg.bbLength));
-  const sd = A(ta.stdev(close, cfg.bbLength));
-  const upper = basis.map((b, i) => b + cfg.mult * sd[i]);
-  const lower = basis.map((b, i) => b - cfg.mult * sd[i]);
-
-  const interval = barInterval(bars);
+  const value = barSource(cfg.src);
   const emaCol = cfg.showTrend ? EMA_COLOR : 'transparent';
   const smaCol = cfg.showTrend ? color.blue : 'transparent';
   const bbCol = cfg.showBollinger ? BB_COLOR : 'transparent';
-
-  // plot(Sortie_4, ..., offset = offset): the value of bar i is drawn on bar i + offset (future bars with barTime)
-  const plot0 = ema.map((v, i) => ({ time: barTime(bars, i + cfg.offset, interval), value: v, color: emaCol }));
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: sma3[i], color: smaCol }));
-  // display = display.all - display.status_line
-  const plot2 = bars.map((b, i) => ({ time: b.time, value: upper[i], color: bbCol }));
-  const plot3 = bars.map((b, i) => ({ time: b.time, value: lower[i], color: bbCol }));
-
-  // fill(Plot4, Plot5, montrer_moyenne_decalee ? (Sortie_4 > Prix_2 ? color_below : color_above) : na)
-  const trendFill: string[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    trendFill[i] = cfg.showTrend ? (gt(ema[i], sma3[i]) ? cfg.colorBelow : cfg.colorAbove) : 'transparent';
-  }
-  // fill(plot13, plot14, montrer_Bollinger ? color.rgb(33, 149, 243, 91) : na, title = "Background")
-  const bbFillColor = cfg.showBollinger ? String(color.rgb(33, 149, 243, 91)) : 'transparent';
-
+  const offset = cfg.offset;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', colors: trendFill },
-      { plot1: 'plot2', plot2: 'plot3', options: { title: 'Background' }, colors: new Array(n).fill(bbFillColor) },
-    ],
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: VisuRun = {
+        ema: taStep.ema(cfg.emaLength), sma3: new WindowSma(3), basis: new WindowSma(cfg.bbLength),
+        sd: new WindowStdev(cfg.bbLength),
+        emaArr: [], plot0: [], plot1: [], plot2: [], plot3: [], trendFill: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.ema, s.sma3, s.basis, s.sd];
+      s.series = [s.emaArr, s.plot0, s.plot1, s.plot2, s.plot3, s.trendFill];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const ema = s.ema.step(value(b)); // Sortie_4
+      const sma3 = s.sma3.step(b.close); // Prix_2
+      const basis = s.basis.step(b.close);
+      const sd = s.sd.step(b.close);
+      s.emaArr[i] = ema;
+      // plot(Sortie_4, ..., offset = offset): the value of bar i is drawn on bar i + offset; bar i writes the point of
+      // bar i - offset at its own time (the points of the last `offset` bars, on future bars, are added by result)
+      if (i >= offset) s.plot0[i - offset] = { time, value: s.emaArr[i - offset], color: emaCol };
+      s.plot1[i] = { time, value: sma3, color: smaCol };
+      // display = display.all - display.status_line
+      s.plot2[i] = { time, value: basis + cfg.mult * sd, color: bbCol };
+      s.plot3[i] = { time, value: basis - cfg.mult * sd, color: bbCol };
+      // fill(Plot4, Plot5, montrer_moyenne_decalee ? (Sortie_4 > Prix_2 ? color_below : color_above) : na)
+      s.trendFill[i] = cfg.showTrend ? (gt(ema, sma3) ? cfg.colorBelow : cfg.colorAbove) : 'transparent';
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // the points of the last `offset` bars: future bars (barTime)
+      const plot0 = s.plot0.slice(0, Math.max(0, n - offset));
+      if (n > 0) {
+        const interval = barInterval(bars);
+        for (let i = Math.max(0, n - offset); i < n; i++) {
+          plot0.push({ time: barTime(bars, i + offset, interval), value: s.emaArr[i], color: emaCol });
+        }
+      }
+      // fill(plot13, plot14, montrer_Bollinger ? color.rgb(33, 149, 243, 91) : na, title = "Background")
+      const bbFillColor = cfg.showBollinger ? String(color.rgb(33, 149, 243, 91)) : 'transparent';
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0, plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', colors: s.trendFill.slice() },
+          { plot1: 'plot2', plot2: 'plot3', options: { title: 'Background' }, colors: new Array(n).fill(bbFillColor) },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VisualisationTendancesInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VisualisationTendancesInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const VisualisationTendances = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

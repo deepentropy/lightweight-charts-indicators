@@ -12,8 +12,10 @@
  * Original notice: Copyright All rights reserved @ozzy_livin
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeRsiMaDifferentialInputs {
   /** RSI buy level (Pine input `low`) */
@@ -67,53 +69,81 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<VolumeRsiMaDifferentialInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+interface VrmaRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  volSma: WindowSma;
+  fastSma: WindowSma;
+  slowSma: WindowSma;
+  diffMA: number[];
+  plots: Point[][];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<VolumeRsiMaDifferentialInputs>): BarStudy<VrmaRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-  const volume = bars.map((b) => b.volume ?? NaN);
-
-  const rs = A(ta.rsi(S(close), 14));
-  const volumeMA = A(ta.sma(S(volume), 20));
-  const fastMA = A(ta.sma(S(close), cfg.fastLength));
-  const slowMA = A(ta.sma(S(close), cfg.slowLength));
-  // diffMA = (fastMA - slowMA) * (volumeMA / 2)
-  const diffMA = bars.map((_b, i) => (fastMA[i] - slowMA[i]) * (volumeMA[i] / 2));
-
-  const barColors: BarColorData[] = [];
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const plot2: { time: number; value: number; color: string }[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const buy = lt(rs[i], cfg.rsiBuy) && gt(volume[i], volumeMA[i]);
-    const sell = gt(rs[i], cfg.rsiSell) && lt(fastMA[i], close[i]);
-    // barcolor(rs < low and volume > volumeMA ? #ffcc80 : rs > high and fastMA < close ? #e91e63 : #0097a7)
-    barColors.push({ time: t, color: buy ? BAR_BUY : sell ? BAR_SELL : BAR_NEUTRAL });
-    // plot(volumeMA, color = ..., style = plot.style_columns)
-    plot0.push({ time: t, value: volumeMA[i], color: buy ? COL_BUY : sell ? COL_SELL : COL_NEUTRAL });
-    // plot(volumeMA, color = #FFCD50)
-    plot1.push({ time: t, value: volumeMA[i], color: '#FFCD50' });
-    // plot(1, color = diffMA > diffMA[1] ? #111111 : diffMA > volumeMA / 2 ? #e91e63 : #ffcc80, linewidth = 4)
-    const prev = i > 0 ? diffMA[i - 1] : NaN;
-    const c = gt(diffMA[i], prev) ? DIFF_UP : gt(diffMA[i], volumeMA[i] / 2) ? DIFF_HIGH : DIFF_LOW;
-    plot2.push({ time: t, value: 1, color: c });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    barColors,
+    init() {
+      const s: VrmaRun = {
+        rsi: taStep.rsi(14), volSma: new WindowSma(20), fastSma: new WindowSma(cfg.fastLength),
+        slowSma: new WindowSma(cfg.slowLength), diffMA: [], plots: [[], [], []], barColors: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.rsi, s.volSma, s.fastSma, s.slowSma];
+      s.lists = [s.barColors];
+      s.series = [s.diffMA, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const close = b.close;
+      const volume = b.volume ?? NaN;
+      const rs = s.rsi.step(close);
+      const volumeMA = s.volSma.step(volume);
+      const fastMA = s.fastSma.step(close);
+      const slowMA = s.slowSma.step(close);
+      // diffMA = (fastMA - slowMA) * (volumeMA / 2)
+      const diffMA = (fastMA - slowMA) * (volumeMA / 2);
+      s.diffMA[i] = diffMA;
+
+      const buy = lt(rs, cfg.rsiBuy) && gt(volume, volumeMA);
+      const sell = gt(rs, cfg.rsiSell) && lt(fastMA, close);
+      // barcolor(rs < low and volume > volumeMA ? #ffcc80 : rs > high and fastMA < close ? #e91e63 : #0097a7)
+      s.barColors.push({ time: t, color: buy ? BAR_BUY : sell ? BAR_SELL : BAR_NEUTRAL });
+      // plot(volumeMA, color = ..., style = plot.style_columns)
+      s.plots[0][i] = { time: t, value: volumeMA, color: buy ? COL_BUY : sell ? COL_SELL : COL_NEUTRAL };
+      // plot(volumeMA, color = #FFCD50)
+      s.plots[1][i] = { time: t, value: volumeMA, color: '#FFCD50' };
+      // plot(1, color = diffMA > diffMA[1] ? #111111 : diffMA > volumeMA / 2 ? #e91e63 : #ffcc80, linewidth = 4)
+      const prev = i > 0 ? s.diffMA[i - 1] : NaN;
+      const c = gt(diffMA, prev) ? DIFF_UP : gt(diffMA, volumeMA / 2) ? DIFF_HIGH : DIFF_LOW;
+      s.plots[2][i] = { time: t, value: 1, color: c };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeRsiMaDifferentialInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolumeRsiMaDifferentialInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const VolumeRsiMaDifferential = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

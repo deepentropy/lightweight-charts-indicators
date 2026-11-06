@@ -11,8 +11,10 @@
  * Reference: "Optimized Trend Tracker Bands" by KivancOzbilgic
  */
 
-import { getSourceSeries, ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface OTTBandsInputs {
   period: number;
@@ -67,207 +69,212 @@ export const metadata = {
   overlay: true,
 };
 
-// VAR (Variable Index Dynamic Average) calculation
-function varFunc(srcArr: number[], length: number): number[] {
-  const n = srcArr.length;
-  const out: number[] = new Array(n);
-  const valpha = 2 / (length + 1);
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
 
-  for (let i = 0; i < n; i++) {
-    const s = srcArr[i];
-    let vUD = 0;
-    let vDD = 0;
-    for (let j = Math.max(0, i - 8); j <= i; j++) {
-      const cur = srcArr[j];
-      const prev = j > 0 ? srcArr[j - 1] : cur;
-      if (cur > prev) vUD += cur - prev;
-      if (cur < prev) vDD += prev - cur;
-    }
-    const vCMO = (vUD + vDD) === 0 ? 0 : (vUD - vDD) / (vUD + vDD);
-    out[i] = i === 0 ? s : valpha * Math.abs(vCMO) * s + (1 - valpha * Math.abs(vCMO)) * out[i - 1];
-  }
-  return out;
+interface OttVars {
+  /** VAR / WWMA of the bar before */
+  prevMa: number;
+  longStop: number;
+  shortStop: number;
+  dir: number;
 }
 
-// WWMA (Welles Wilder Moving Average)
-function wwmaFunc(srcArr: number[], length: number): number[] {
-  const n = srcArr.length;
-  const out: number[] = new Array(n);
-  const wwalpha = 1 / length;
-  for (let i = 0; i < n; i++) {
-    out[i] = i === 0 ? srcArr[i] : wwalpha * srcArr[i] + (1 - wwalpha) * out[i - 1];
-  }
-  return out;
+interface OttRun extends BarRunState<OttVars> {
+  ma: { step(v: number): number; commit(): void } | null;
+  srcArr: number[];
+  mavg: number[];
+  ott2: number[];
+  ott: number[];
+  out: Point[][];
+  flags: boolean[][];
+  times: number[][];
 }
 
-export function calculate(bars: Bar[], inputs: Partial<OTTBandsInputs> = {}): IndicatorResult & { alerts: AlertConditionState[] } {
+const PLOT_IDS = ['ottMain', 'support', 'ottUpper', 'ottUpperHalf', 'ottUpperFibo', 'ottLower', 'ottLowerHalf', 'ottLowerFibo'] as const;
+
+function study(inputs: Partial<OTTBandsInputs>): BarStudy<OttRun, Result> {
   const { period, percent, upperCoeff, lowerCoeff, showFiboLines, showSupport, highlight, mav, src } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const srcSeries = getSourceSeries(bars, src);
-  const srcArr = srcSeries.toArray().map(v => v ?? 0);
-
-  // Compute selected MA type
-  // Pine: MAvg=getMA(src, length) with mav selector
-  let mavg: number[];
-  const sSeries = Series.fromArray(bars, srcArr);
-
-  if (mav === 'SMA') {
-    mavg = ta.sma(sSeries, period).toArray();
-  } else if (mav === 'EMA') {
-    mavg = ta.ema(sSeries, period).toArray();
-  } else if (mav === 'WMA') {
-    mavg = ta.wma(sSeries, period).toArray();
-  } else if (mav === 'TMA') {
-    // Pine: sma(sma(src, ceil(length/2)), floor(length/2) + 1)
-    const sma1 = ta.sma(sSeries, Math.max(1, Math.ceil(period / 2)));
-    mavg = ta.sma(sma1, Math.floor(period / 2) + 1).toArray();
-  } else if (mav === 'WWMA') {
-    mavg = wwmaFunc(srcArr, period);
-  } else if (mav === 'ZLEMA') {
-    // Pine: zxLag = length/2==round(length/2) ? length/2 : (length-1)/2
-    const zxLag = (period / 2) === Math.round(period / 2) ? Math.floor(period / 2) : Math.floor((period - 1) / 2);
-    const zxData: number[] = new Array(n);
-    for (let i = 0; i < n; i++) {
-      const lagged = i >= zxLag ? srcArr[i - zxLag] : srcArr[0];
-      zxData[i] = srcArr[i] + srcArr[i] - lagged;
-    }
-    mavg = ta.ema(Series.fromArray(bars, zxData), period).toArray();
-  } else if (mav === 'TSF') {
-    // Pine: lrc = linreg(src,length,0), lrc1 = linreg(src,length,1), TSF = lrc + (lrc - lrc1)
-    const lrc = ta.linreg(sSeries, period, 0).toArray();
-    const lrc1 = ta.linreg(sSeries, period, 1).toArray();
-    mavg = lrc.map((v, i) => (v ?? 0) + ((v ?? 0) - (lrc1[i] ?? 0)));
-  } else {
-    // Default: VAR
-    mavg = varFunc(srcArr, period);
-  }
-
-  // Replace NaN/undefined with 0 for downstream computation
-  for (let i = 0; i < n; i++) {
-    if (mavg[i] == null || isNaN(mavg[i])) mavg[i] = 0;
-  }
-
-  // OTT trailing stop logic
-  const fark = mavg.map((v) => v * percent * 0.01);
-  const longStop: number[] = new Array(n);
-  const shortStop: number[] = new Array(n);
-  const dir: number[] = new Array(n);
-  const ott: number[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    longStop[i] = mavg[i] - fark[i];
-    shortStop[i] = mavg[i] + fark[i];
-
-    if (i > 0) {
-      if (mavg[i] > longStop[i - 1]) longStop[i] = Math.max(longStop[i], longStop[i - 1]);
-      if (mavg[i] < shortStop[i - 1]) shortStop[i] = Math.min(shortStop[i], shortStop[i - 1]);
-
-      dir[i] = dir[i - 1];
-      if (dir[i - 1] === -1 && mavg[i] > shortStop[i - 1]) dir[i] = 1;
-      else if (dir[i - 1] === 1 && mavg[i] < longStop[i - 1]) dir[i] = -1;
-    } else {
-      dir[i] = 1;
-    }
-
-    const mt = dir[i] === 1 ? longStop[i] : shortStop[i];
-    ott[i] = mavg[i] > mt ? mt * (200 + percent) / 200 : mt * (200 - percent) / 200;
-  }
-
+  const value = barSource(src);
+  // VAR (Variable Index Dynamic Average) and WWMA (Welles Wilder Moving Average) factors
+  const valpha = 2 / (period + 1);
+  const wwalpha = 1 / period;
+  // Pine: zxLag = length/2==round(length/2) ? length/2 : (length-1)/2
+  const zxLag = (period / 2) === Math.round(period / 2) ? Math.floor(period / 2) : Math.floor((period - 1) / 2);
   const warmup = period + 9;
   const X3 = upperCoeff;
   const X5 = lowerCoeff;
 
-  // Pine: OTTMAIN=plot(nz(OTT[2]), color=#B800D9, linewidth=2)
-  const ottMain = ott.map((_v, i) => {
-    if (i < warmup + 2) return { time: bars[i].time, value: NaN };
-    return { time: bars[i].time, value: ott[i - 2] };
-  });
-
-  // Pine: OTTC = highlight ? MAvg > MAvg[1] ? color.green : color.red : #0585E1
-  // Pine: plot(showsupport ? MAvg : na, color=OTTC, linewidth=2, title="Support Line")
-  const support = mavg.map((v, i) => {
-    if (i < warmup || !showSupport) return { time: bars[i].time, value: NaN };
-    const color = highlight
-      ? (i > 0 && v > mavg[i - 1]) ? '#26A69A' : '#EF5350'
-      : '#0585E1';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  // Pine: OTTUST=plot(nz(OTT[2])*(1+X3), color=#4500C4, linewidth=2)
-  const ottUpper = ott.map((_v, i) => {
-    if (i < warmup + 2) return { time: bars[i].time, value: NaN };
-    return { time: bars[i].time, value: ott[i - 2] * (1 + X3) };
-  });
-
-  // Pine: OTTUSTYARI=plot(showfibolines ? nz(OTT[2])*(1+X3*0.618) : nz(OTT[2])*(1+X3/2))
-  const ottUpperHalf = ott.map((_v, i) => {
-    if (i < warmup + 2) return { time: bars[i].time, value: NaN };
-    const base = ott[i - 2];
-    return { time: bars[i].time, value: showFiboLines ? base * (1 + X3 * 0.618) : base * (1 + X3 / 2) };
-  });
-
-  // Pine: OTTFIBOUST2=plot(showfibolines ? nz(OTT[2])*(1+X3*0.382) : na)
-  const ottUpperFibo = ott.map((_v, i) => {
-    if (i < warmup + 2 || !showFiboLines) return { time: bars[i].time, value: NaN };
-    return { time: bars[i].time, value: ott[i - 2] * (1 + X3 * 0.382) };
-  });
-
-  // Pine: OTTALT=plot(nz(OTT[2])*(1-X5), color=#00A6FF, linewidth=2)
-  const ottLower = ott.map((_v, i) => {
-    if (i < warmup + 2) return { time: bars[i].time, value: NaN };
-    return { time: bars[i].time, value: ott[i - 2] * (1 - X5) };
-  });
-
-  // Pine: OTTALTYARI=plot(showfibolines ? nz(OTT[2])*(1-X5*0.618) : nz(OTT[2])*(1-X5/2))
-  const ottLowerHalf = ott.map((_v, i) => {
-    if (i < warmup + 2) return { time: bars[i].time, value: NaN };
-    const base = ott[i - 2];
-    return { time: bars[i].time, value: showFiboLines ? base * (1 - X5 * 0.618) : base * (1 - X5 / 2) };
-  });
-
-  // Pine: OTTALTFIBO2=plot(showfibolines ? nz(OTT[2])*(1-X5*0.382) : na)
-  const ottLowerFibo = ott.map((_v, i) => {
-    if (i < warmup + 2 || !showFiboLines) return { time: bars[i].time, value: NaN };
-    return { time: bars[i].time, value: ott[i - 2] * (1 - X5 * 0.382) };
-  });
-
-  // Alerts: crosses of MAvg and of the source with OTT[2] (na on the first two bars)
-  const ott2 = ott.map((_v, i) => (i >= 2 ? ott[i - 2] : NaN));
-  const either = (a: boolean[], b: boolean[]) => a.map((v, i) => v || b[i]);
-  const supUp = crossedOver(mavg, ott2), supDown = crossedUnder(mavg, ott2);
-  const priceUp = crossedOver(srcArr, ott2), priceDown = crossedUnder(srcArr, ott2);
+  // Compute selected MA type
+  // Pine: MAvg=getMA(src, length) with mav selector
+  const maStep = (): OttRun['ma'] => {
+    switch (mav) {
+      case 'SMA': return new WindowSma(period);
+      case 'EMA':
+      case 'ZLEMA': return taStep.ema(period);
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, period), commit: () => m.commit() }; }
+      case 'TMA': {
+        // Pine: sma(sma(src, ceil(length/2)), floor(length/2) + 1)
+        const a = new WindowSma(Math.max(1, Math.ceil(period / 2)));
+        const b = new WindowSma(Math.floor(period / 2) + 1);
+        return { step: (v) => b.step(a.step(v)), commit: () => { a.commit(); b.commit(); } };
+      }
+      case 'TSF': {
+        // Pine: lrc = linreg(src,length,0), lrc1 = linreg(src,length,1), TSF = lrc + (lrc - lrc1)
+        const a = taStep.linreg(period, 0);
+        const b = taStep.linreg(period, 1);
+        return {
+          step: (v) => { const l = a.step(v) ?? 0; const l1 = b.step(v) ?? 0; return l + (l - l1); },
+          commit: () => { a.commit(); b.commit(); },
+        };
+      }
+      default: return null;
+    }
+  };
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    // alertcondition(cross / crossover / crossunder(MAvg, OTT[2]), cross / crossover / crossunder(src, OTT[2]))
-    alerts: alertStates(alertConditions, bars, [
-      either(supUp, supDown), supUp, supDown, either(priceUp, priceDown), priceUp, priceDown,
-    ]),
-    plots: {
-      'ottMain': ottMain, 'support': support,
-      'ottUpper': ottUpper, 'ottUpperHalf': ottUpperHalf, 'ottUpperFibo': ottUpperFibo,
-      'ottLower': ottLower, 'ottLowerHalf': ottLowerHalf, 'ottLowerFibo': ottLowerFibo,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const ma = maStep();
+      const s: OttRun = {
+        ma, srcArr: [], mavg: [], ott2: [], ott: [], out: PLOT_IDS.map(() => []), flags: [[], [], [], [], [], []],
+        times: [[], [], [], [], [], []],
+        steps: ma ? [ma] : [], vars: { prevMa: NaN, longStop: NaN, shortStop: NaN, dir: NaN }, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.srcArr, s.mavg, s.ott2, s.ott, ...s.out, ...s.flags];
+      return s;
     },
-    fills: [
-      // Pine: fill(OTTUST, OTTUSTYARI, color=#4500C4, transp=88)
-      { plot1: 'ottUpper', plot2: 'ottUpperHalf', options: { color: 'rgba(69,0,196,0.12)' } },
-      // Pine: fill(OTTFIBOUST2, OTTUSTYARI, color=#8400FF, transp=88)
-      { plot1: 'ottUpperFibo', plot2: 'ottUpperHalf', options: { color: 'rgba(132,0,255,0.12)' } },
-      // Pine: fill(OTTUSTYARI, OTTMAIN, color=#C810FF, transp=88)
-      { plot1: 'ottUpperHalf', plot2: 'ottMain', options: { color: 'rgba(200,16,255,0.12)' } },
-      // Pine: fill(OTTFIBOUST2, OTTMAIN, color=#C810FF, transp=88)
-      { plot1: 'ottUpperFibo', plot2: 'ottMain', options: { color: 'rgba(200,16,255,0.12)' } },
-      // Pine: fill(OTTALT, OTTALTYARI, color=#00A6FF, transp=88)
-      { plot1: 'ottLower', plot2: 'ottLowerHalf', options: { color: 'rgba(0,166,255,0.12)' } },
-      // Pine: fill(OTTALTFIBO2, OTTALTYARI, color=#007BBD, transp=88)
-      { plot1: 'ottLowerFibo', plot2: 'ottLowerHalf', options: { color: 'rgba(0,123,189,0.12)' } },
-      // Pine: fill(OTTALTYARI, OTTMAIN, color=#024DE3, transp=88)
-      { plot1: 'ottLowerHalf', plot2: 'ottMain', options: { color: 'rgba(2,77,227,0.12)' } },
-      // Pine: fill(OTTALTFIBO2, OTTMAIN, color=#024DE3, transp=88)
-      { plot1: 'ottLowerFibo', plot2: 'ottMain', options: { color: 'rgba(2,77,227,0.12)' } },
-    ],
+    bar(s, i, bars) {
+      const v = s.vars;
+      const time = bars[i].time;
+      const x = value(bars[i]) ?? 0;
+      s.srcArr[i] = x;
+      let m: number;
+      if (mav === 'WWMA') {
+        m = i === 0 ? x : wwalpha * x + (1 - wwalpha) * v.prevMa;
+        v.prevMa = m;
+      } else if (mav === 'ZLEMA') {
+        const lagged = i >= zxLag ? s.srcArr[i - zxLag] : s.srcArr[0];
+        m = s.ma!.step(x + x - lagged);
+      } else if (s.ma) {
+        m = s.ma.step(x);
+      } else {
+        // Default: VAR
+        let vUD = 0;
+        let vDD = 0;
+        for (let j = Math.max(0, i - 8); j <= i; j++) {
+          const cur = s.srcArr[j];
+          const prev = j > 0 ? s.srcArr[j - 1] : cur;
+          if (cur > prev) vUD += cur - prev;
+          if (cur < prev) vDD += prev - cur;
+        }
+        const vCMO = (vUD + vDD) === 0 ? 0 : (vUD - vDD) / (vUD + vDD);
+        m = i === 0 ? x : valpha * Math.abs(vCMO) * x + (1 - valpha * Math.abs(vCMO)) * v.prevMa;
+        v.prevMa = m;
+      }
+      // Replace NaN/undefined with 0 for downstream computation
+      if (m == null || isNaN(m)) m = 0;
+      s.mavg[i] = m;
+
+      // OTT trailing stop logic
+      const fark = m * percent * 0.01;
+      let longStop = m - fark;
+      let shortStop = m + fark;
+      let dir: number;
+      if (i > 0) {
+        if (m > v.longStop) longStop = Math.max(longStop, v.longStop);
+        if (m < v.shortStop) shortStop = Math.min(shortStop, v.shortStop);
+        dir = v.dir;
+        if (v.dir === -1 && m > v.shortStop) dir = 1;
+        else if (v.dir === 1 && m < v.longStop) dir = -1;
+      } else {
+        dir = 1;
+      }
+      v.longStop = longStop;
+      v.shortStop = shortStop;
+      v.dir = dir;
+      const mt = dir === 1 ? longStop : shortStop;
+      s.ott[i] = m > mt ? mt * (200 + percent) / 200 : mt * (200 - percent) / 200;
+
+      const o = s.out;
+      const early = i < warmup + 2;
+      const base = early ? NaN : s.ott[i - 2];
+      // Pine: OTTMAIN=plot(nz(OTT[2]), color=#B800D9, linewidth=2)
+      o[0][i] = early ? { time, value: NaN } : { time, value: base };
+      // Pine: OTTC = highlight ? MAvg > MAvg[1] ? color.green : color.red : #0585E1
+      // Pine: plot(showsupport ? MAvg : na, color=OTTC, linewidth=2, title="Support Line")
+      if (i < warmup || !showSupport) o[1][i] = { time, value: NaN };
+      else {
+        const c = highlight ? (i > 0 && m > s.mavg[i - 1]) ? '#26A69A' : '#EF5350' : '#0585E1';
+        o[1][i] = { time, value: m, color: c };
+      }
+      // Pine: OTTUST=plot(nz(OTT[2])*(1+X3), color=#4500C4, linewidth=2)
+      o[2][i] = early ? { time, value: NaN } : { time, value: base * (1 + X3) };
+      // Pine: OTTUSTYARI=plot(showfibolines ? nz(OTT[2])*(1+X3*0.618) : nz(OTT[2])*(1+X3/2))
+      o[3][i] = early ? { time, value: NaN } : { time, value: showFiboLines ? base * (1 + X3 * 0.618) : base * (1 + X3 / 2) };
+      // Pine: OTTFIBOUST2=plot(showfibolines ? nz(OTT[2])*(1+X3*0.382) : na)
+      o[4][i] = early || !showFiboLines ? { time, value: NaN } : { time, value: base * (1 + X3 * 0.382) };
+      // Pine: OTTALT=plot(nz(OTT[2])*(1-X5), color=#00A6FF, linewidth=2)
+      o[5][i] = early ? { time, value: NaN } : { time, value: base * (1 - X5) };
+      // Pine: OTTALTYARI=plot(showfibolines ? nz(OTT[2])*(1-X5*0.618) : nz(OTT[2])*(1-X5/2))
+      o[6][i] = early ? { time, value: NaN } : { time, value: showFiboLines ? base * (1 - X5 * 0.618) : base * (1 - X5 / 2) };
+      // Pine: OTTALTFIBO2=plot(showfibolines ? nz(OTT[2])*(1-X5*0.382) : na)
+      o[7][i] = early || !showFiboLines ? { time, value: NaN } : { time, value: base * (1 - X5 * 0.382) };
+
+      // Alerts: crosses of MAvg and of the source with OTT[2] (na on the first two bars)
+      const t2 = i >= 2 ? s.ott[i - 2] : NaN;
+      s.ott2[i] = t2;
+      const pt = i > 0 ? s.ott2[i - 1] : NaN;
+      const pm = i > 0 ? s.mavg[i - 1] : NaN;
+      const px = i > 0 ? s.srcArr[i - 1] : NaN;
+      const supUp = m > t2 && pm <= pt, supDown = m < t2 && pm >= pt;
+      const priceUp = x > t2 && px <= pt, priceDown = x < t2 && px >= pt;
+      // alertcondition(cross / crossover / crossunder(MAvg, OTT[2]), cross / crossover / crossunder(src, OTT[2]))
+      const f = [supUp || supDown, supUp, supDown, priceUp || priceDown, priceUp, priceDown];
+      for (let k = 0; k < 6; k++) {
+        s.flags[k][i] = f[k];
+        if (f[k]) s.times[k].push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: IndicatorResult['plots'] = {};
+      PLOT_IDS.forEach((id, k) => { plots[id] = s.out[k].slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+        plots,
+        fills: [
+          // Pine: fill(OTTUST, OTTUSTYARI, color=#4500C4, transp=88)
+          { plot1: 'ottUpper', plot2: 'ottUpperHalf', options: { color: 'rgba(69,0,196,0.12)' } },
+          // Pine: fill(OTTFIBOUST2, OTTUSTYARI, color=#8400FF, transp=88)
+          { plot1: 'ottUpperFibo', plot2: 'ottUpperHalf', options: { color: 'rgba(132,0,255,0.12)' } },
+          // Pine: fill(OTTUSTYARI, OTTMAIN, color=#C810FF, transp=88)
+          { plot1: 'ottUpperHalf', plot2: 'ottMain', options: { color: 'rgba(200,16,255,0.12)' } },
+          // Pine: fill(OTTFIBOUST2, OTTMAIN, color=#C810FF, transp=88)
+          { plot1: 'ottUpperFibo', plot2: 'ottMain', options: { color: 'rgba(200,16,255,0.12)' } },
+          // Pine: fill(OTTALT, OTTALTYARI, color=#00A6FF, transp=88)
+          { plot1: 'ottLower', plot2: 'ottLowerHalf', options: { color: 'rgba(0,166,255,0.12)' } },
+          // Pine: fill(OTTALTFIBO2, OTTALTYARI, color=#007BBD, transp=88)
+          { plot1: 'ottLowerFibo', plot2: 'ottLowerHalf', options: { color: 'rgba(0,123,189,0.12)' } },
+          // Pine: fill(OTTALTYARI, OTTMAIN, color=#024DE3, transp=88)
+          { plot1: 'ottLowerHalf', plot2: 'ottMain', options: { color: 'rgba(2,77,227,0.12)' } },
+          // Pine: fill(OTTALTFIBO2, OTTMAIN, color=#024DE3, transp=88)
+          { plot1: 'ottLowerFibo', plot2: 'ottMain', options: { color: 'rgba(2,77,227,0.12)' } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<OTTBandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<OTTBandsInputs> = {}): IndicatorResult & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -280,4 +287,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert5', title: 'Price Crossunder Alarm', message: 'PRICE UNDER OTT - SELL SIGNAL!' },
 ];
 
-export const OTTBands = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const OTTBands = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

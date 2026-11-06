@@ -26,12 +26,13 @@
  */
 
 import {
-  ta, Series, color, timeframe, resample, mapToChart,
+  ta, taStep, Series, color, timeframe, resample, mapToChart,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar,
 } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
 import { periodStarts, chartTimeframe, securityBars } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CmUltimateRsiMtfInputs {
   len: number;
@@ -154,59 +155,122 @@ function rsiOf(bars: Bar[], tf: string, len: number, context?: ChartContext): nu
   return toChart(up.map((u, i) => (eq(down[i], 0) ? 100 : eq(u, 0) ? 0 : 100 - 100 / (1 + u / down[i]))));
 }
 
-export function calculate(bars: Bar[], inputs: Partial<CmUltimateRsiMtfInputs> = {}, chart?: ChartContext): IndicatorResult {
+/** The RSI of the chart timeframe one bar at a time (rsiOf with the chart timeframe: the same doubles) */
+class ChartRsi {
+  private readonly up: ReturnType<typeof taStep.rma>;
+  private readonly down: ReturnType<typeof taStep.rma>;
+  private prev = NaN;
+  private pending = NaN;
+
+  constructor(len: number) {
+    this.up = taStep.rma(len);
+    this.down = taStep.rma(len);
+  }
+
+  step(i: number, close: number): number {
+    this.pending = close;
+    const c = i > 0 ? close - this.prev : NaN;
+    const u = this.up.step(isNaN(c) ? NaN : Math.max(c, 0)) ?? NaN;
+    const d = this.down.step(isNaN(c) ? NaN : -Math.min(c, 0)) ?? NaN;
+    return eq(d, 0) ? 100 : eq(u, 0) ? 0 : 100 - 100 / (1 + u / d);
+  }
+
+  commit(): void {
+    this.prev = this.pending;
+    this.up.commit();
+    this.down.commit();
+  }
+}
+
+type Point = { time: number; value: number };
+
+interface CmRsiRun extends BarRunState<Record<string, never>> {
+  /** RSI machines on the chart timeframe, else the values of the other timeframe (computed on the whole bars) */
+  rsi: ChartRsi | number[];
+  rsi2: ChartRsi | number[] | null;
+  outRSI: number[];
+  plots: Point[][];
+  bgColors: BgColorData[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<CmUltimateRsiMtfInputs>): BarStudy<CmRsiRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const { upLine, lowLine } = cfg;
-
-  // res = useCurrentRes ? period : resCustom; res2 = useCurrentRes2 ? period : resCustom2
-  const outRSI = rsiOf(bars, cfg.useCurrentRes ? '' : cfg.resCustom, cfg.len, chart);
-  // The second RSI is only drawn when ssRSI is on: it is not computed otherwise
-  const outRSI2 = cfg.ssRSI ? rsiOf(bars, cfg.useCurrentRes2 ? '' : cfg.resCustom2, cfg.len2, chart) : null;
-
   const red70 = String(color.new(RED_HEX, 70));
   const green70 = String(color.new(GREEN_HEX, 70));
   const red40 = String(color.new(RED_HEX, 40));
   const lime40 = String(color.new(LIME_HEX, 40));
-
-  const plots: Record<string, Array<{ time: number; value: number }>> = { plot0: [], plot1: [], plot2: [], plot3: [], plot4: [] };
-  const bgColors: BgColorData[] = [];
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    const rsi = outRSI[i];
-    const rsi1 = i > 0 ? outRSI[i - 1] : NaN;
-    const aboveLine = gt(rsi, upLine);
-    const belowLine = lt(rsi, lowLine);
-    const crossUp = lt(rsi1, lowLine) && gt(rsi, lowLine);
-    const crossDn = gt(rsi1, upLine) && lt(rsi, upLine);
-
-    // Four bgcolor calls, in the order of the original (a later call is drawn over an earlier one)
-    if (cfg.sbh && aboveLine) bgColors.push({ time, color: red70 });
-    if (cfg.sbh && belowLine) bgColors.push({ time, color: green70 });
-    if (cfg.sch && crossUp) bgColors.push({ time, color: lime40 });
-    if (cfg.sch && crossDn) bgColors.push({ time, color: red40 });
-
-    plots.plot0.push({ time, value: rsi });
-    // plot(ssRSI and outRSI2 ? outRSI2 : na): a value of 0 or na is not drawn
-    plots.plot1.push({ time, value: outRSI2 && truthy(outRSI2[i]) ? outRSI2[i] : NaN });
-    plots.plot2.push({ time, value: upLine });
-    plots.plot3.push({ time, value: lowLine });
-    plots.plot4.push({ time, value: cfg.sml ? 50 : NaN });
-
-    // plotchar 'B' at the bottom / 'S' at the top (transp = 0)
-    if (cfg.sl && crossUp) markers.push({ time, position: 'bottom', shape: 'circle', color: 'transparent', text: 'B', textColor: LIME_HEX });
-    if (cfg.sl && crossDn) markers.push({ time, position: 'top', shape: 'circle', color: 'transparent', text: 'S', textColor: RED_HEX });
-  }
-
+  // res = useCurrentRes ? period : resCustom; res2 = useCurrentRes2 ? period : resCustom2
+  const res = cfg.useCurrentRes ? '' : cfg.resCustom;
+  const res2 = cfg.useCurrentRes2 ? '' : cfg.resCustom2;
+  const otherTf = res.trim() !== '' || (cfg.ssRSI && res2.trim() !== '');
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    // fill(p1, p2, color = silver, transp = 70)
-    fills: [{ plot1: 'plot2', plot2: 'plot3', options: { color: String(color.new('#C0C0C0', 70)) } }],
-    bgColors,
-    markers,
+    // every chart bar of a period shows the value of the period at its end: a later bar changes the earlier ones
+    fullRunReason: () => (otherTf ? 'other timeframe (the bars of a period show its value at its end)' : null),
+    init(bars, chart) {
+      const ctx = Object.keys(chart).length > 0 ? chart : undefined;
+      const rsi = res.trim() === '' ? new ChartRsi(cfg.len) : rsiOf(bars, res, cfg.len, ctx);
+      // The second RSI is only drawn when ssRSI is on: it is not computed otherwise
+      const rsi2 = !cfg.ssRSI ? null : res2.trim() === '' ? new ChartRsi(cfg.len2) : rsiOf(bars, res2, cfg.len2, ctx);
+      const s: CmRsiRun = {
+        rsi, rsi2, outRSI: [], plots: [[], [], [], [], []], bgColors: [], markers: [],
+        steps: [rsi, rsi2].filter((m): m is ChartRsi => m instanceof ChartRsi), vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.bgColors, s.markers];
+      s.series = [s.outRSI, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const { time, close } = bars[i];
+      const rsi = s.rsi instanceof ChartRsi ? s.rsi.step(i, close) : s.rsi[i];
+      const rsi2 = s.rsi2 === null ? NaN : s.rsi2 instanceof ChartRsi ? s.rsi2.step(i, close) : s.rsi2[i];
+      s.outRSI[i] = rsi;
+      const rsi1 = i > 0 ? s.outRSI[i - 1] : NaN;
+      const aboveLine = gt(rsi, upLine);
+      const belowLine = lt(rsi, lowLine);
+      const crossUp = lt(rsi1, lowLine) && gt(rsi, lowLine);
+      const crossDn = gt(rsi1, upLine) && lt(rsi, upLine);
+
+      // Four bgcolor calls, in the order of the original (a later call is drawn over an earlier one)
+      const bgColors = s.bgColors;
+      if (cfg.sbh && aboveLine) bgColors.push({ time, color: red70 });
+      if (cfg.sbh && belowLine) bgColors.push({ time, color: green70 });
+      if (cfg.sch && crossUp) bgColors.push({ time, color: lime40 });
+      if (cfg.sch && crossDn) bgColors.push({ time, color: red40 });
+
+      const p = s.plots;
+      p[0][i] = { time, value: rsi };
+      // plot(ssRSI and outRSI2 ? outRSI2 : na): a value of 0 or na is not drawn
+      p[1][i] = { time, value: s.rsi2 !== null && truthy(rsi2) ? rsi2 : NaN };
+      p[2][i] = { time, value: upLine };
+      p[3][i] = { time, value: lowLine };
+      p[4][i] = { time, value: cfg.sml ? 50 : NaN };
+
+      // plotchar 'B' at the bottom / 'S' at the top (transp = 0)
+      if (cfg.sl && crossUp) s.markers.push({ time, position: 'bottom', shape: 'circle', color: 'transparent', text: 'B', textColor: LIME_HEX });
+      if (cfg.sl && crossDn) s.markers.push({ time, position: 'top', shape: 'circle', color: 'transparent', text: 'S', textColor: RED_HEX });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice(), plot4: s.plots[4].slice() },
+        // fill(p1, p2, color = silver, transp = 70)
+        fills: [{ plot1: 'plot2', plot2: 'plot3', options: { color: String(color.new('#C0C0C0', 70)) } }],
+        bgColors: s.bgColors.slice(),
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const CmUltimateRsiMtf = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CmUltimateRsiMtfInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CmUltimateRsiMtfInputs> = {}, chart?: ChartContext): IndicatorResult {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const CmUltimateRsiMtf = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

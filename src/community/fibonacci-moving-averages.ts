@@ -13,9 +13,10 @@
  * Original notice: © ukutaindicators
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { AlertCall } from '../types';
-import { crossedOver, crossedUnder } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -121,70 +122,102 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<FibonacciMovingAveragesInputs> = {},
-): IndicatorResult & { alertCalls: AlertCall[] } {
+type Ma = { step(v: number, volume: number): number; commit(): void };
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { alertCalls: AlertCall[] };
+
+interface FibRun extends BarRunState<Record<string, never>> {
+  mas: Ma[];
+  plots: Point[][];
+  /** The 21 / 34 / 55 / 89 averages and the closes (the crosses read the bar before) */
+  maOf: number[][];
+  close: number[];
+  alertCalls: AlertCall[];
+}
+
+function study(inputs: Partial<FibonacciMovingAveragesInputs>): BarStudy<FibRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = getSourceSeries(bars, cfg.maSource);
-  const volume = Series.fromArray(bars, bars.map((b) => b.volume ?? NaN));
+  const value = barSource(cfg.maSource);
 
   // MA(maSource, maType, maPeriod): the type is a constant input, one branch runs on every bar
-  const ma = (len: number): number[] => {
+  const ma = (len: number): Ma => {
     switch (cfg.maType) {
-      case 'EMA':
-        return A(ta.ema(src, len));
-      case 'SMA':
-        return A(ta.sma(src, len));
-      case 'VWMA':
-        return A(ta.vwma(src, len, volume));
-      case 'WMA':
-        return A(ta.wma(src, len));
-      case 'HMA':
-        return A(ta.hma(src, len));
-      default:
-        return A(ta.rma(src, len));
+      case 'EMA': { const m = taStep.ema(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'SMA': { const m = new WindowSma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'VWMA': return new WindowVwma(len);
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+      case 'HMA': { const m = taStep.hma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      default: { const m = taStep.rma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
     }
   };
 
   const hidden = String(color.new('#ffffff', 100));
-  const plots: IndicatorResult['plots'] = {};
-  const maOf: Record<number, number[]> = {};
-  LENGTHS.forEach((len, k) => {
-    const values = ma(len);
-    maOf[len] = values;
-    const c = (cfg as unknown as Record<string, boolean>)[`enable${len}`]
-      ? (cfg as unknown as Record<string, string>)[`color${len}`] : hidden;
-    plots[`plot${k}`] = bars.map((b, i) => ({ time: b.time, value: values[i], color: c }));
-  });
-
-  // if AlertNNMAPrice and (xNNUp or xNNDown): alert("Price has crossed NN Period MA", alert.freq_once_per_bar_close),
-  // in the order 21, 34, 55, 89 on each bar; xNNUp / xNNDown = ta.crossover / ta.crossunder(close, MA(..., NN))
-  const close = bars.map((b) => b.close);
-  const crosses = ALERT_LENGTHS.map((len) => {
-    const up = crossedOver(close, maOf[len]);
-    const down = crossedUnder(close, maOf[len]);
-    return up.map((u, i) => u || down[i]);
-  });
-  const alertCalls: AlertCall[] = [];
-  bars.forEach((b, i) => {
-    ALERT_LENGTHS.forEach((len, k) => {
-      if ((cfg as unknown as Record<string, boolean>)[`alert${len}`] && crosses[k][i]) {
-        alertCalls.push({ time: b.time as number, message: `Price has crossed ${len} Period MA`, freq: 'once_per_bar_close' });
-      }
-    });
-  });
-
+  const colors = LENGTHS.map((len) => ((cfg as unknown as Record<string, boolean>)[`enable${len}`]
+    ? (cfg as unknown as Record<string, string>)[`color${len}`] : hidden));
+  const alertOn = ALERT_LENGTHS.map((len) => (cfg as unknown as Record<string, boolean>)[`alert${len}`]);
+  const alertIndex = ALERT_LENGTHS.map((len) => LENGTHS.indexOf(len));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    alertCalls,
+    fullRunReason: () => (isBarSource(cfg.maSource) ? null : 'source of another study'),
+    init() {
+      const mas = LENGTHS.map((len) => ma(len));
+      const s: FibRun = {
+        mas, plots: LENGTHS.map(() => []), maOf: ALERT_LENGTHS.map(() => []), close: [], alertCalls: [],
+        steps: mas, vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.alertCalls];
+      s.series = [...s.plots, ...s.maOf, s.close];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = value(b);
+      const vol = b.volume ?? NaN;
+      for (let k = 0; k < LENGTHS.length; k++) {
+        const m = s.mas[k].step(v, vol);
+        s.plots[k][i] = { time: b.time, value: m, color: colors[k] };
+      }
+      const c = b.close;
+      s.close[i] = c;
+      // if AlertNNMAPrice and (xNNUp or xNNDown): alert("Price has crossed NN Period MA", alert.freq_once_per_bar_close),
+      // in the order 21, 34, 55, 89 on each bar; xNNUp / xNNDown = ta.crossover / ta.crossunder(close, MA(..., NN))
+      const pc = i > 0 ? s.close[i - 1] : NaN;
+      for (let k = 0; k < ALERT_LENGTHS.length; k++) {
+        const m = s.plots[alertIndex[k]][i].value;
+        s.maOf[k][i] = m;
+        const pm = i > 0 ? s.maOf[k][i - 1] : NaN;
+        const cross = (c > m && pc <= pm) || (c < m && pc >= pm);
+        if (alertOn[k] && cross) {
+          s.alertCalls.push({ time: b.time as number, message: `Price has crossed ${ALERT_LENGTHS[k]} Period MA`, freq: 'once_per_bar_close' });
+        }
+      }
+    },
+    result(s) {
+      const plots: IndicatorResult['plots'] = {};
+      LENGTHS.forEach((_len, k) => { plots[`plot${k}`] = s.plots[k].slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FibonacciMovingAveragesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<FibonacciMovingAveragesInputs> = {},
+): IndicatorResult & { alertCalls: AlertCall[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const FibonacciMovingAverages = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

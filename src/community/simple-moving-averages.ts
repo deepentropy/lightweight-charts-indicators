@@ -7,7 +7,9 @@
  * Reference: "Simple Moving Averages" (community)
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SimpleMovingAveragesInputs {
   src: SourceType;
@@ -42,29 +44,57 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SimpleMovingAveragesInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+const ABOVE = lengths.map((_l, idx) => (idx < 5 ? '#2196F3' : '#4CAF50'));
+const BELOW = lengths.map((_l, idx) => (idx < 5 ? '#FF9800' : '#EF5350'));
+
+interface SmasRun extends BarRunState<Record<string, never>> {
+  smas: WindowSma[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<SimpleMovingAveragesInputs>): BarStudy<SmasRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const src = getSourceSeries(bars, cfg.src);
-
-  const smaArrays = lengths.map((len) => ta.sma(src, len).toArray());
-
-  // Pine: SMAs #1-#5 use close >= sma ? blue : orange, #6-#10 use close >= sma ? green : red
-  const plots: Record<string, Array<{ time: number; value: number; color?: string }>> = {};
-  for (let idx = 0; idx < lengths.length; idx++) {
-    const arr = smaArrays[idx];
-    const aboveColor = idx < 5 ? '#2196F3' : '#4CAF50';
-    const belowColor = idx < 5 ? '#FF9800' : '#EF5350';
-    plots[`plot${idx}`] = arr.map((v, i) => {
-      if (i < lengths[idx] || v == null) return { time: bars[i].time, value: NaN };
-      const color = bars[i].close >= v ? aboveColor : belowColor;
-      return { time: bars[i].time, value: v, color };
-    });
-  }
-
+  const value = barSource(cfg.src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const smas = lengths.map((len) => new WindowSma(len));
+      const plots: Point[][] = lengths.map(() => []);
+      return { smas, plots, steps: smas, vars: {}, lists: [], series: plots };
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const close = b.close;
+      const v = value(b);
+      // Pine: SMAs #1-#5 use close >= sma ? blue : orange, #6-#10 use close >= sma ? green : red
+      for (let idx = 0; idx < lengths.length; idx++) {
+        const sma = s.smas[idx].step(v);
+        s.plots[idx][i] = i < lengths[idx] || sma == null
+          ? { time, value: NaN }
+          : { time, value: sma, color: close >= sma ? ABOVE[idx] : BELOW[idx] };
+      }
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, idx) => { plots[`plot${idx}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
 }
 
-export const SimpleMovingAverages = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SimpleMovingAveragesInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SimpleMovingAveragesInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const SimpleMovingAverages = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

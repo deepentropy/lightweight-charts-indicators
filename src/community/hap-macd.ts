@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface HaPMACDInputs {
   src: SourceType;
@@ -54,85 +56,140 @@ export const metadata = {
   overlay: false,
 };
 
+type Ma = { step(v: number): number; commit(): void };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+function maStep(length: number, type: string): Ma {
+  return type === 'SMA' ? new WindowSma(length) : taStep.ema(length);
+}
+
+/** f_dema(source, length) = 2 * ema(source) - ema(ema(source)) */
+function demaStep(length: number): Ma {
+  const e1 = taStep.ema(length);
+  const e2 = taStep.ema(length);
+  return {
+    step: (v) => {
+      const a1 = e1.step(v) ?? NaN;
+      const a2 = e2.step(a1) ?? NaN;
+      return 2 * a1 - a2;
+    },
+    commit: () => { e1.commit(); e2.commit(); },
+  };
+}
+
+interface HapRun extends BarRunState<Record<string, never>> {
+  fast: Ma;
+  slow: Ma;
+  sig: Ma;
+  demaFast: Ma;
+  demaSlow: Ma;
+  demaSig: Ma;
+  macd: number[];
+  signal: number[];
+  hist: number[];
+  demaSignal: number[];
+  buy: boolean[];
+  histPlot: { time: number; value: number; color: string }[];
+  macdPlot: { time: number; value: number }[];
+  signalPlot: { time: number; value: number }[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<HaPMACDInputs>): BarStudy<HapRun, Result> {
+  const { src, fastLength, slowLength, signalLength, oscType, sigType } = { ...defaultInputs, ...inputs };
+  const value = barSource(src);
+  return {
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const fast = maStep(fastLength, oscType);
+      const slow = maStep(slowLength, oscType);
+      const sig = maStep(signalLength, sigType);
+      const demaFast = demaStep(fastLength);
+      const demaSlow = demaStep(slowLength);
+      const demaSig = demaStep(signalLength);
+      const s: HapRun = {
+        fast, slow, sig, demaFast, demaSlow, demaSig, macd: [], signal: [], hist: [], demaSignal: [], buy: [],
+        histPlot: [], macdPlot: [], signalPlot: [], markers: [],
+        steps: [fast, slow, sig, demaFast, demaSlow, demaSig], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.macd, s.signal, s.hist, s.demaSignal, s.buy, s.histPlot, s.macdPlot, s.signalPlot];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time;
+      const x = value(bars[i]);
+      const macd = (s.fast.step(x) ?? NaN) - (s.slow.step(x) ?? NaN);
+      const signal = s.sig.step(macd) ?? NaN;
+      const hist = macd - signal;
+      s.macd[i] = macd;
+      s.signal[i] = signal;
+      s.hist[i] = hist;
+
+      const demaMacd = s.demaFast.step(x) - s.demaSlow.step(x);
+      const demaSignal = s.demaSig.step(demaMacd);
+      s.demaSignal[i] = demaSignal;
+      // buy_condition = dema_macd_line > dema_signal_line and dema_signal_line > dema_signal_line[1]
+      // (a comparison with na is false; a bool history before the first bar is false)
+      const buy = demaMacd > demaSignal && i > 0 && demaSignal > s.demaSignal[i - 1];
+      s.buy[i] = buy;
+
+      const prevBuy = i > 0 && s.buy[i - 1];
+      // hColor = hist >= 0 ? (hist > hist[1] ? #26a69a : #b2dfdb) : (hist > hist[1] ? #ffcdd2 : #ff5252)
+      const rising = i > 0 && hist > s.hist[i - 1];
+      s.histPlot[i] = { time: t, value: hist, color: hist >= 0 ? (rising ? '#26a69a' : '#b2dfdb') : (rising ? '#ffcdd2' : '#ff5252') };
+      s.macdPlot[i] = { time: t, value: macd };
+      s.signalPlot[i] = { time: t, value: signal };
+      // plotshape(buy_condition ? macd : na, shape.circle, location.absolute, color = dot_color, size.tiny)
+      // dot_color: blue on the first signal bar, else green when macd > macd[1], else orange
+      const markers = s.markers;
+      if (buy && !isNaN(macd)) {
+        const dot = !prevBuy ? color.blue : i > 0 && macd > s.macd[i - 1] ? color.green : color.orange;
+        markers.push({ time: t, position: 'atPriceMiddle', price: macd, shape: 'circle', color: dot, size: 'tiny', id: 'shape0' });
+      }
+      // plotshape(buy_condition[1] and not buy_condition ? macd : na, shape.circle, color.red, size.tiny)
+      if (prevBuy && !buy && !isNaN(macd)) {
+        markers.push({ time: t, position: 'atPriceMiddle', price: macd, shape: 'circle', color: color.red, size: 'tiny', id: 'shape1' });
+      }
+      // bull_cross = ta.crossover(macd, signal) / bear_cross = ta.crossunder(macd, signal) (false while a value is na)
+      // plotshape(bull_cross ? macd : na, shape.triangleup, location.absolute, color.lime, size.small, display.none)
+      // plotshape(bear_cross ? macd : na, shape.triangledown, location.absolute, color.red, size.small, display.none)
+      if (i > 0) {
+        const m0 = macd, s0 = signal, m1 = s.macd[i - 1], s1 = s.signal[i - 1];
+        if (m0 > s0 && m1 <= s1) {
+          markers.push({ time: t, position: 'atPriceMiddle', price: m0, shape: 'triangleUp', color: color.lime, size: 'small', id: 'shape2' });
+        }
+        if (m0 < s0 && m1 >= s1) {
+          markers.push({ time: t, position: 'atPriceMiddle', price: m0, shape: 'triangleDown', color: color.red, size: 'small', id: 'shape3' });
+        }
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.histPlot.slice(), plot1: s.macdPlot.slice(), plot2: s.signalPlot.slice() },
+        hlines: [{ value: 0, options: { title: 'Zero Line', color: String(color.new(color.gray, 50)), linestyle: 'dashed' } }],
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HaPMACDInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<HaPMACDInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const { src, fastLength, slowLength, signalLength, oscType, sigType } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const source = getSourceSeries(bars, src);
-
-  const arr = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const ma = (s: Series, length: number, type: string) => arr(type === 'SMA' ? ta.sma(s, length) : ta.ema(s, length));
-  // f_dema(source, length) = 2 * ema(source) - ema(ema(source))
-  const dema = (s: Series, length: number) => {
-    const e1 = ta.ema(s, length);
-    const a1 = arr(e1);
-    const a2 = arr(ta.ema(e1, length));
-    return a1.map((v, i) => 2 * v - a2[i]);
-  };
-
-  const maFast = ma(source, fastLength, oscType);
-  const maSlow = ma(source, slowLength, oscType);
-  const macd = maFast.map((v, i) => v - maSlow[i]);
-  const signal = ma(Series.fromArray(bars, macd), signalLength, sigType);
-  const hist = macd.map((v, i) => v - signal[i]);
-
-  const demaFast = dema(source, fastLength);
-  const demaSlow = dema(source, slowLength);
-  const demaMacd = demaFast.map((v, i) => v - demaSlow[i]);
-  const demaSignal = dema(Series.fromArray(bars, demaMacd), signalLength);
-
-  // buy_condition = dema_macd_line > dema_signal_line and dema_signal_line > dema_signal_line[1]
-  // (a comparison with na is false; a bool history before the first bar is false)
-  const buy: boolean[] = demaMacd.map((v, i) => v > demaSignal[i] && i > 0 && demaSignal[i] > demaSignal[i - 1]);
-
-  const markers: MarkerData[] = [];
-  const histPlot: { time: number; value: number; color: string }[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const prevBuy = i > 0 && buy[i - 1];
-    // hColor = hist >= 0 ? (hist > hist[1] ? #26a69a : #b2dfdb) : (hist > hist[1] ? #ffcdd2 : #ff5252)
-    const rising = i > 0 && hist[i] > hist[i - 1];
-    histPlot.push({ time: t, value: hist[i], color: hist[i] >= 0 ? (rising ? '#26a69a' : '#b2dfdb') : (rising ? '#ffcdd2' : '#ff5252') });
-    // plotshape(buy_condition ? macd : na, shape.circle, location.absolute, color = dot_color, size.tiny)
-    // dot_color: blue on the first signal bar, else green when macd > macd[1], else orange
-    if (buy[i] && !isNaN(macd[i])) {
-      const dot = !prevBuy ? color.blue : i > 0 && macd[i] > macd[i - 1] ? color.green : color.orange;
-      markers.push({ time: t, position: 'atPriceMiddle', price: macd[i], shape: 'circle', color: dot, size: 'tiny', id: 'shape0' });
-    }
-    // plotshape(buy_condition[1] and not buy_condition ? macd : na, shape.circle, color.red, size.tiny)
-    if (prevBuy && !buy[i] && !isNaN(macd[i])) {
-      markers.push({ time: t, position: 'atPriceMiddle', price: macd[i], shape: 'circle', color: color.red, size: 'tiny', id: 'shape1' });
-    }
-    // bull_cross = ta.crossover(macd, signal) / bear_cross = ta.crossunder(macd, signal) (false while a value is na)
-    // plotshape(bull_cross ? macd : na, shape.triangleup, location.absolute, color.lime, size.small, display.none)
-    // plotshape(bear_cross ? macd : na, shape.triangledown, location.absolute, color.red, size.small, display.none)
-    if (i > 0) {
-      const m0 = macd[i], s0 = signal[i], m1 = macd[i - 1], s1 = signal[i - 1];
-      if (m0 > s0 && m1 <= s1) {
-        markers.push({ time: t, position: 'atPriceMiddle', price: m0, shape: 'triangleUp', color: color.lime, size: 'small', id: 'shape2' });
-      }
-      if (m0 < s0 && m1 >= s1) {
-        markers.push({ time: t, position: 'atPriceMiddle', price: m0, shape: 'triangleDown', color: color.red, size: 'small', id: 'shape3' });
-      }
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: histPlot,
-      plot1: bars.map((b, i) => ({ time: b.time, value: macd[i] })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: signal[i] })),
-    },
-    hlines: [{ value: 0, options: { title: 'Zero Line', color: String(color.new(color.gray, 50)), linestyle: 'dashed' } }],
-    markers,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const HaPMACD = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

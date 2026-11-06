@@ -18,11 +18,12 @@
  * Original notice: © BackQuant
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
 import type { ChartContext } from '../chart-context';
-import { periodChanges } from '../anchor-period';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { chartTimeframe, hasCalendar, periodChanges } from '../anchor-period';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface KalmanVwapFilterInputs {
   /** Price the filter observes */
@@ -97,13 +98,161 @@ export const metadata = {
 /** Pine a > b: a - b > 1e-10 (false with na) */
 const gt = (a: number, b: number) => a - b > 1e-10;
 
-/**
- * Start of a new day (Pine ta.vwap anchor: timeframe.change("1D")); true on the first bar. With the time zone and the
- * session of the chart context: the trading days of the exchange. Else: UTC days.
- */
-function newDay(bars: Bar[], chart?: ChartContext): boolean[] {
-  const changes = periodChanges(bars, '1D', chart);
-  return changes.map((c, i) => i === 0 || c);
+type Result = IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+
+const DAY_MS = 86400000;
+
+interface KalmanVars {
+  /** ta.vwap sums */
+  sumPV: number;
+  sumV: number;
+  /** Kalman state and error covariance */
+  x: number;
+  P: number;
+}
+
+interface KalmanRun extends BarRunState<KalmanVars> {
+  vwN: WindowSma;
+  vwD: WindowSma;
+  price: number[];
+  kalman: number[];
+  vwapBase: number[];
+  plot0: Point[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<KalmanVwapFilterInputs>): BarStudy<KalmanRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const priceOf = barSource(cfg.pricesource);
+  const vwapPriceOf = barSource(cfg.vwapPriceSrc);
+  /** Chart context of the day changes (with the chart timeframe) and the time unit, set by init */
+  let calChart: ChartContext = {};
+  let ms = false;
+
+  /**
+   * Start of a new day (Pine ta.vwap anchor: timeframe.change("1D")) of bar i; true on the first bar. With the time
+   * zone and the session of the chart context: the trading days of the exchange (the change of bars i - 1 and i, the
+   * calendar reads the chart timeframe of the whole set). Else: UTC days.
+   */
+  const newDay = (bars: Bar[], i: number): boolean => {
+    if (i === 0) return true;
+    if (hasCalendar(calChart)) return periodChanges([bars[i - 1]!, bars[i]!], '1D', calChart)[1]!;
+    const day = (t: number) => Math.floor((ms ? t : t * 1000) / DAY_MS);
+    return day(bars[i]!.time) !== day(bars[i - 1]!.time);
+  };
+
+  return {
+    fullRunReason: () => (isBarSource(cfg.pricesource) && isBarSource(cfg.vwapPriceSrc) ? null : 'source of another study'),
+    // the day changes read the chart timeframe of the bar gaps (or the context) and the time unit of the first bar
+    key: (bars, chart) => `${chartTimeframe(bars, chart)}|${bars.length > 0 && bars[0].time >= 1e12}`,
+    init(bars, chart) {
+      ms = bars.length > 0 && bars[0].time >= 1e12;
+      const tfName = chartTimeframe(bars, chart);
+      calChart = tfName === '' || chart.timeframe ? chart : { ...chart, timeframe: tfName };
+      const s: KalmanRun = {
+        vwN: new WindowSma(cfg.vwapLen), vwD: new WindowSma(cfg.vwapLen),
+        price: [], kalman: [], vwapBase: [], plot0: [], barColors: [],
+        flags: Array.from({ length: 6 }, () => []), times: Array.from({ length: 6 }, () => []),
+        steps: [],
+        // var stateEstimate = na, errorCovariance = 100
+        vars: { sumPV: NaN, sumV: NaN, x: NaN, P: 100.0 },
+        lists: [], series: [],
+      };
+      s.steps = [s.vwN, s.vwD];
+      s.lists = [...s.times];
+      s.series = [s.price, s.kalman, s.vwapBase, s.plot0, s.barColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const v = s.vars;
+      const price = priceOf(b);
+      const volume = b.volume ?? NaN;
+      s.price[i] = price;
+
+      // sessionVWAP = ta.vwap(hlc3); rollingVWAP = sma(price * volume, len) / sma(volume, len) (x / 0 is +-infinity)
+      const hlc3 = (b.high + b.low + b.close) / 3;
+      if (newDay(bars, i)) {
+        v.sumPV = hlc3 * volume;
+        v.sumV = volume;
+      } else {
+        // An na source or volume makes the sums na until the next anchor
+        v.sumPV += hlc3 * volume;
+        v.sumV += volume;
+      }
+      const sessionVwap = v.sumV === 0 ? NaN : v.sumPV / v.sumV;
+      const vwN = s.vwN.step(vwapPriceOf(b) * volume);
+      const vwD = s.vwD.step(volume);
+      const rollingVwap = vwN / vwD;
+      // vwapBase = useSession ? nz(sessionVWAP, rollingVWAP) : rollingVWAP (nz replaces na and +-infinity)
+      const vwapBase = cfg.vwapMode === 'Session'
+        ? (Number.isFinite(sessionVwap) ? sessionVwap : rollingVwap) : rollingVwap;
+      s.vwapBase[i] = vwapBase;
+      const z = (1.0 - cfg.vwapWeight) * price + cfg.vwapWeight * vwapBase;
+
+      // Kalman filter: the N states of the Pine script start and update the same way, so one state is kept.
+      // f_init: when the state is na (na() is also true for +-infinity), state = meas and covariance = 1.
+      if (!Number.isFinite(v.x)) {
+        v.x = z;
+        v.P = 1.0;
+      }
+      const p = v.P + cfg.processNoise;
+      const kg = p / (p + cfg.measurementNoise);
+      v.x = v.x + kg * (z - v.x);
+      v.P = (1 - kg) * p;
+      const k = v.x;
+      s.kalman[i] = k;
+
+      // up = kalmanVW > nz(kalmanVW[1], kalmanVW) (nz replaces na and +-infinity; > uses an infinite value)
+      const k1 = i > 0 ? s.kalman[i - 1]! : NaN;
+      const prev = i > 0 && Number.isFinite(k1) ? k1 : k;
+      const barCol = gt(k, prev) ? cfg.longColor : cfg.shortColor;
+      s.barColors[i] = { time: b.time, color: barCol };
+
+      s.plot0[i] = {
+        // a plot draws nothing for +-infinity
+        time: b.time, value: cfg.showkalman && Number.isFinite(k) ? k : NaN,
+        color: String(color.new(barCol, cfg.transp)),
+      };
+
+      // slopeUp / slopeDown = ta.crossover / crossunder(kalmanVW, kalmanVW[1]); priceAbove / priceBelow =
+      // ta.crossover / crossunder(pricesource, kalmanVW); baseUp / baseDown = ta.crossover / crossunder(kalmanVW, vwapBase)
+      const k2 = i > 1 ? s.kalman[i - 2]! : NaN;
+      const pp = i > 0 ? s.price[i - 1]! : NaN;
+      const pb = i > 0 ? s.vwapBase[i - 1]! : NaN;
+      const f0 = k > k1 && k1 <= k2;
+      const f1 = k < k1 && k1 >= k2;
+      const f2 = price > k && pp <= k1;
+      const f3 = price < k && pp >= k1;
+      const f4 = k > vwapBase && k1 <= pb;
+      const f5 = k < vwapBase && k1 >= pb;
+      const fl = s.flags;
+      fl[0]![i] = f0; fl[1]![i] = f1; fl[2]![i] = f2; fl[3]![i] = f3; fl[4]![i] = f4; fl[5]![i] = f5;
+      if (f0) s.times[0]!.push(b.time as number);
+      if (f1) s.times[1]!.push(b.time as number);
+      if (f2) s.times[2]!.push(b.time as number);
+      if (f3) s.times[3]!.push(b.time as number);
+      if (f4) s.times[4]!.push(b.time as number);
+      if (f5) s.times[5]!.push(b.time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 2 },
+        plots: { plot0: s.plot0.slice() },
+        barColors: cfg.paintCandles ? s.barColors.slice() : [],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<KalmanVwapFilterInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(
@@ -111,74 +260,7 @@ export function calculate(
   inputs: Partial<KalmanVwapFilterInputs> = {},
   chart?: ChartContext,
 ): IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const price = A(getSourceSeries(bars, cfg.pricesource));
-  const vwapPrice = A(getSourceSeries(bars, cfg.vwapPriceSrc));
-  const volume = bars.map((b) => b.volume ?? NaN);
-
-  // sessionVWAP = ta.vwap(hlc3); rollingVWAP = sma(price * volume, len) / sma(volume, len) (x / 0 is +-infinity)
-  const sessionVwap = A(ta.vwap(S(bars.map((b) => (b.high + b.low + b.close) / 3)), S(volume), S(newDay(bars, chart).map(Number))));
-  const vwN = A(ta.sma(S(vwapPrice.map((p, i) => p * volume[i])), cfg.vwapLen));
-  const vwD = A(ta.sma(S(volume), cfg.vwapLen));
-  const rollingVwap = vwN.map((v, i) => v / vwD[i]);
-  // vwapBase = useSession ? nz(sessionVWAP, rollingVWAP) : rollingVWAP (nz replaces na and +-infinity)
-  const vwapBase = bars.map((_, i) => (cfg.vwapMode === 'Session'
-    ? (Number.isFinite(sessionVwap[i]) ? sessionVwap[i] : rollingVwap[i]) : rollingVwap[i]));
-  const meas = price.map((p, i) => (1.0 - cfg.vwapWeight) * p + cfg.vwapWeight * vwapBase[i]);
-
-  // Kalman filter: the N states of the Pine script start and update the same way, so one state is kept.
-  // var stateEstimate = na, errorCovariance = 100; f_init: when the state is na (na() is also true for +-infinity),
-  // state = meas and covariance = 1.
-  const kalman: number[] = new Array(n);
-  let x = NaN;
-  let P = 100.0;
-  for (let i = 0; i < n; i++) {
-    const z = meas[i];
-    if (!Number.isFinite(x)) {
-      x = z;
-      P = 1.0;
-    }
-    const p = P + cfg.processNoise;
-    const kg = p / (p + cfg.measurementNoise);
-    x = x + kg * (z - x);
-    P = (1 - kg) * p;
-    kalman[i] = x;
-  }
-
-  // up = kalmanVW > nz(kalmanVW[1], kalmanVW) (nz replaces na and +-infinity; > uses an infinite value)
-  const barCol = kalman.map((k, i) => {
-    const prev = i > 0 && Number.isFinite(kalman[i - 1]) ? kalman[i - 1] : k;
-    return gt(k, prev) ? cfg.longColor : cfg.shortColor;
-  });
-
-  const barColors: BarColorData[] = cfg.paintCandles
-    ? bars.map((b, i) => ({ time: b.time, color: barCol[i] }))
-    : [];
-
-  // slopeUp / slopeDown = ta.crossover / crossunder(kalmanVW, kalmanVW[1]); priceAbove / priceBelow =
-  // ta.crossover / crossunder(pricesource, kalmanVW); baseUp / baseDown = ta.crossover / crossunder(kalmanVW, vwapBase)
-  const kalman1 = kalman.map((_k, i) => (i > 0 ? kalman[i - 1] : NaN));
-  const alerts = alertStates(alertConditions, bars, [
-    crossedOver(kalman, kalman1), crossedUnder(kalman, kalman1),
-    crossedOver(price, kalman), crossedUnder(price, kalman),
-    crossedOver(kalman, vwapBase), crossedUnder(kalman, vwapBase),
-  ]);
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 2 },
-    plots: {
-      plot0: bars.map((b, i) => ({
-        // a plot draws nothing for +-infinity
-        time: b.time, value: cfg.showkalman && Number.isFinite(kalman[i]) ? kalman[i] : NaN,
-        color: String(color.new(barCol[i], cfg.transp)),
-      })),
-    },
-    barColors,
-    alerts,
-  };
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 /** The original's alertconditions */
@@ -193,6 +275,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const KalmanVwapFilter = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

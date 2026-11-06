@@ -5,7 +5,9 @@
  * smoothed by SMAs. Signal line is SMA of KST.
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface KSTInputs {
   roclen1: number;
@@ -58,51 +60,65 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<KSTInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface KstRun extends BarRunState<Record<string, never>> {
+  smas: WindowSma[];
+  sig: WindowSma;
+  kstData: Point[];
+  sigData: Point[];
+}
+
+/** ta.roc(close, len) on bar i = 100 * (close - close[len]) / close[len] */
+function roc(bars: Bar[], i: number, len: number): number {
+  if (i < len) return NaN;
+  const v = bars[i].close;
+  const old = bars[i - len].close;
+  if (Number.isNaN(old) || Number.isNaN(v)) return NaN;
+  return (100 * (v - old)) / old;
+}
+
+function study(inputs: Partial<KSTInputs>): BarStudy<KstRun, IndicatorResult> {
   const { roclen1, roclen2, roclen3, roclen4, smalen1, smalen2, smalen3, smalen4, siglen } = { ...defaultInputs, ...inputs };
-
-  const close = new Series(bars, b => b.close);
-
-  // smaroc(roclen, smalen) => ta.sma(ta.roc(close, roclen), smalen)
-  const smaroc1 = ta.sma(ta.roc(close, roclen1), smalen1);
-  const smaroc2 = ta.sma(ta.roc(close, roclen2), smalen2);
-  const smaroc3 = ta.sma(ta.roc(close, roclen3), smalen3);
-  const smaroc4 = ta.sma(ta.roc(close, roclen4), smalen4);
-
-  const arr1 = smaroc1.toArray();
-  const arr2 = smaroc2.toArray();
-  const arr3 = smaroc3.toArray();
-  const arr4 = smaroc4.toArray();
-
-  // KST = smaroc1 + 2*smaroc2 + 3*smaroc3 + 4*smaroc4
-  const kstArr: number[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const v1 = arr1[i], v2 = arr2[i], v3 = arr3[i], v4 = arr4[i];
-    if (v1 == null || v2 == null || v3 == null || v4 == null) {
-      kstArr.push(NaN);
-    } else {
-      kstArr.push(v1 + 2 * v2 + 3 * v3 + 4 * v4);
-    }
-  }
-
-  const kstSeries = new Series(bars, (_, i) => kstArr[i]);
-  const signal = ta.sma(kstSeries, siglen);
-  const sigArr = signal.toArray();
-
-  const kstData = kstArr.map((value, i) => ({
-    time: bars[i].time,
-    value: isNaN(value) ? NaN : value,
-  }));
-
-  const sigData = sigArr.map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
+  // the length checks of ta.roc
+  for (const len of [roclen1, roclen2, roclen3, roclen4]) taStep.roc(len);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': kstData, 'plot1': sigData },
+    init() {
+      // smaroc(roclen, smalen) => ta.sma(ta.roc(close, roclen), smalen)
+      const smas = [smalen1, smalen2, smalen3, smalen4].map((l) => new WindowSma(l));
+      const sig = new WindowSma(siglen);
+      const s: KstRun = { smas, sig, kstData: [], sigData: [], steps: [...smas, sig], vars: {}, lists: [], series: [] };
+      s.series = [s.kstData, s.sigData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v1 = s.smas[0].step(roc(bars, i, roclen1));
+      const v2 = s.smas[1].step(roc(bars, i, roclen2));
+      const v3 = s.smas[2].step(roc(bars, i, roclen3));
+      const v4 = s.smas[3].step(roc(bars, i, roclen4));
+      // KST = smaroc1 + 2*smaroc2 + 3*smaroc3 + 4*smaroc4
+      const kst = v1 + 2 * v2 + 3 * v3 + 4 * v4;
+      const signal = s.sig.step(kst);
+      s.kstData[i] = { time: b.time, value: isNaN(kst) ? NaN : kst };
+      s.sigData[i] = { time: b.time, value: signal };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.kstData.slice(), 'plot1': s.sigData.slice() },
+      };
+    },
   };
 }
 
-export const KnowSureThing = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<KSTInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<KSTInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const KnowSureThing = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig };

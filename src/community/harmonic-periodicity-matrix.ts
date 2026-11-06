@@ -12,8 +12,10 @@
  * Original notice: © Pineify
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface HarmonicPeriodicityMatrixInputs {
   /** Primary cycle length */
@@ -78,77 +80,112 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<HarmonicPeriodicityMatrixInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface HarmonicRun extends BarRunState<Record<string, never>> {
+  stochs: ReturnType<typeof taStep.stoch>[];
+  wma: ReturnType<typeof taStep.wma>;
+  ema: ReturnType<typeof taStep.ema>;
+  cycleWave: number[];
+  signalLine: number[];
+  plot0: Point[];
+  plot1: Point[];
+  ribbon: string[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<HarmonicPeriodicityMatrixInputs>): BarStudy<HarmonicRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
-  const high = S(bars.map((b) => b.high));
-  const low = S(bars.map((b) => b.low));
-
-  // Three stochastic %K: cycleLen, max(2, round(cycleLen * 1.5)), max(2, round(cycleLen / 2))
-  const stoch1 = A(ta.stoch(close, high, low, cfg.cycleLen));
-  const stoch2 = A(ta.stoch(close, high, low, Math.max(2, Math.round(cfg.cycleLen * 1.5))));
-  const stoch3 = A(ta.stoch(close, high, low, Math.max(2, Math.round(cfg.cycleLen / 2))));
-  const avgCycle = stoch1.map((s, i) => (s + stoch2[i] + stoch3[i]) / 3);
-  const cycleWave = A(ta.wma(S(avgCycle), cfg.smooth)).map((v) => v - 50);
-  const signalLine = A(ta.ema(S(cycleWave), cfg.smooth * 2));
-
-  // gradColor = cycleWave > 0 ? from_gradient(cycleWave, 0, 40, midColor, upColor)
-  //                           : from_gradient(cycleWave, -40, 0, midColor, dnColor)
-  const gradColor = cycleWave.map((w) => (gt(w, 0)
-    ? color.from_gradient(w, 0, 40, cfg.midColor, cfg.upColor)
-    : color.from_gradient(w, -40, 0, cfg.midColor, cfg.dnColor)));
-
   const ribbonUp = String(color.new(cfg.upColor, 75));
   const ribbonDn = String(color.new(cfg.dnColor, 75));
-  const markers: MarkerData[] = [];
-  for (let i = 1; i < n; i++) {
-    const w = cycleWave[i];
-    // ta.crossover / ta.crossunder: exact comparisons (a tie on the previous bar counts)
-    const crossUp = w > signalLine[i] && cycleWave[i - 1] <= signalLine[i - 1];
-    const crossDn = w < signalLine[i] && cycleWave[i - 1] >= signalLine[i - 1];
-    // plotshape(buySignal ? cycleWave - 8 : na, "Buy", shape.circle, location.absolute, upColor, size = size.tiny)
-    if (crossUp && lt(w, -15)) {
-      markers.push({ time: bars[i].time, position: 'atPriceMiddle', price: w - 8, shape: 'circle', color: cfg.upColor, size: 'tiny', id: 'shape0' });
-    }
-    if (crossDn && gt(w, 15)) {
-      markers.push({ time: bars[i].time, position: 'atPriceMiddle', price: w + 8, shape: 'circle', color: cfg.dnColor, size: 'tiny', id: 'shape1' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: cycleWave[i], color: gradColor[i] })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: signalLine[i], color: SIGNAL_COLOR })),
+    init() {
+      const s: HarmonicRun = {
+        // Three stochastic %K: cycleLen, max(2, round(cycleLen * 1.5)), max(2, round(cycleLen / 2))
+        stochs: [cfg.cycleLen, Math.max(2, Math.round(cfg.cycleLen * 1.5)), Math.max(2, Math.round(cfg.cycleLen / 2))]
+          .map((l) => taStep.stoch(l)),
+        wma: taStep.wma(), ema: taStep.ema(cfg.smooth * 2),
+        cycleWave: [], signalLine: [], plot0: [], plot1: [], ribbon: [], markers: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [...s.stochs, s.wma, s.ema];
+      s.lists = [s.markers];
+      s.series = [s.cycleWave, s.signalLine, s.plot0, s.plot1, s.ribbon];
+      return s;
     },
-    hlines: [
-      { value: 25, options: { title: 'Overbought', color: String(color.new(cfg.dnColor, 70)), linestyle: 'dashed' } },
-      { value: -25, options: { title: 'Oversold', color: String(color.new(cfg.upColor, 70)), linestyle: 'dashed' } },
-      { value: 0, options: { title: 'Equilibrium', color: String(color.new(color.gray, 50)), linestyle: 'dotted' } },
-    ],
-    fills: [
-      // fill(obLevel, hline(50, display = display.none), color.new(dnColor, 90), title = "OB Zone")
-      { plot1: 'hline_ob', plot2: 'hline_top', options: { title: 'OB Zone' },
-        colors: new Array<string>(n).fill(String(color.new(cfg.dnColor, 90))) },
-      // fill(osLevel, hline(-50, display = display.none), color.new(upColor, 90), title = "OS Zone")
-      { plot1: 'hline_os', plot2: 'hline_bottom', options: { title: 'OS Zone' },
-        colors: new Array<string>(n).fill(String(color.new(cfg.upColor, 90))) },
-      // fill(p1, p2, cycleWave > signalLine ? color.new(upColor, 75) : color.new(dnColor, 75), title = "Momentum Ribbon")
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Momentum Ribbon' },
-        colors: cycleWave.map((w, i) => (gt(w, signalLine[i]) ? ribbonUp : ribbonDn)) },
-    ],
-    markers,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const st = s.stochs;
+      const stoch1 = st[0].step(b.close, b.high, b.low);
+      const stoch2 = st[1].step(b.close, b.high, b.low);
+      const stoch3 = st[2].step(b.close, b.high, b.low);
+      const avgCycle = (stoch1 + stoch2 + stoch3) / 3;
+      const w = s.wma.step(avgCycle, cfg.smooth) - 50;
+      const sig = s.ema.step(w);
+      s.cycleWave[i] = w;
+      s.signalLine[i] = sig;
+
+      // gradColor = cycleWave > 0 ? from_gradient(cycleWave, 0, 40, midColor, upColor)
+      //                           : from_gradient(cycleWave, -40, 0, midColor, dnColor)
+      const gradColor = gt(w, 0)
+        ? color.from_gradient(w, 0, 40, cfg.midColor, cfg.upColor)
+        : color.from_gradient(w, -40, 0, cfg.midColor, cfg.dnColor);
+      s.plot0[i] = { time: b.time, value: w, color: gradColor };
+      s.plot1[i] = { time: b.time, value: sig, color: SIGNAL_COLOR };
+      s.ribbon[i] = gt(w, sig) ? ribbonUp : ribbonDn;
+
+      if (i > 0) {
+        // ta.crossover / ta.crossunder: exact comparisons (a tie on the previous bar counts)
+        const crossUp = w > sig && s.cycleWave[i - 1] <= s.signalLine[i - 1];
+        const crossDn = w < sig && s.cycleWave[i - 1] >= s.signalLine[i - 1];
+        // plotshape(buySignal ? cycleWave - 8 : na, "Buy", shape.circle, location.absolute, upColor, size = size.tiny)
+        if (crossUp && lt(w, -15)) {
+          s.markers.push({ time: b.time, position: 'atPriceMiddle', price: w - 8, shape: 'circle', color: cfg.upColor, size: 'tiny', id: 'shape0' });
+        }
+        if (crossDn && gt(w, 15)) {
+          s.markers.push({ time: b.time, position: 'atPriceMiddle', price: w + 8, shape: 'circle', color: cfg.dnColor, size: 'tiny', id: 'shape1' });
+        }
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [
+          { value: 25, options: { title: 'Overbought', color: String(color.new(cfg.dnColor, 70)), linestyle: 'dashed' } },
+          { value: -25, options: { title: 'Oversold', color: String(color.new(cfg.upColor, 70)), linestyle: 'dashed' } },
+          { value: 0, options: { title: 'Equilibrium', color: String(color.new(color.gray, 50)), linestyle: 'dotted' } },
+        ],
+        fills: [
+          // fill(obLevel, hline(50, display = display.none), color.new(dnColor, 90), title = "OB Zone")
+          { plot1: 'hline_ob', plot2: 'hline_top', options: { title: 'OB Zone' },
+            colors: new Array<string>(n).fill(String(color.new(cfg.dnColor, 90))) },
+          // fill(osLevel, hline(-50, display = display.none), color.new(upColor, 90), title = "OS Zone")
+          { plot1: 'hline_os', plot2: 'hline_bottom', options: { title: 'OS Zone' },
+            colors: new Array<string>(n).fill(String(color.new(cfg.upColor, 90))) },
+          // fill(p1, p2, cycleWave > signalLine ? color.new(upColor, 75) : color.new(dnColor, 75), title = "Momentum Ribbon")
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Momentum Ribbon' }, colors: s.ribbon.slice() },
+        ],
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HarmonicPeriodicityMatrixInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<HarmonicPeriodicityMatrixInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const HarmonicPeriodicityMatrix = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

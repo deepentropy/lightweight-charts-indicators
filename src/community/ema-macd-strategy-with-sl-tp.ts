@@ -13,9 +13,11 @@
  * Original notice: © mamachi-
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EmaMacdStrategyWithSlTpInputs {
   /** EMA channel length */
@@ -79,101 +81,145 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<EmaMacdStrategyWithSlTpInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface EmaMacdVars {
+  /** var float slLine = na, var float tpLine = na */
+  sl: number;
+  tp: number;
+}
+
+interface EmaMacdRun extends BarRunState<EmaMacdVars> {
+  emaHigh: ReturnType<typeof taStep.ema>;
+  emaLow: ReturnType<typeof taStep.ema>;
+  ema200: ReturnType<typeof taStep.ema>;
+  macd: ReturnType<typeof taStep.macd>;
+  priceUnderLow: ReturnType<typeof taStep.crossunder>;
+  priceOverHigh: ReturnType<typeof taStep.crossover>;
+  histUnderZero: ReturnType<typeof taStep.crossunder>;
+  histOverZero: ReturnType<typeof taStep.crossover>;
+  sincePriceLow: ReturnType<typeof taStep.barssince>;
+  sincePriceHigh: ReturnType<typeof taStep.barssince>;
+  sinceHistLow: ReturnType<typeof taStep.barssince>;
+  sinceHistHigh: ReturnType<typeof taStep.barssince>;
+  plots: Point[][];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<EmaMacdStrategyWithSlTpInputs>): BarStudy<EmaMacdRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
-
-  const emaHighS = ta.ema(S(bars.map((b) => b.high)), cfg.emaShortLen);
-  const emaLowS = ta.ema(S(bars.map((b) => b.low)), cfg.emaShortLen);
-  const emaHigh = A(emaHighS);
-  const emaLow = A(emaLowS);
-  const ema200 = A(ta.ema(close, cfg.emaLongLen));
-  const [, , macdHistS] = ta.macd(close, cfg.macdFast, cfg.macdSlow, cfg.macdSignal);
-  const macdHist = A(macdHistS);
-
-  // Crosses (exact comparisons, oakscriptjs)
-  const priceCrossUnderLowS = ta.crossunder(close, emaLowS);
-  const priceCrossOverHighS = ta.crossover(close, emaHighS);
-  const histCrossUnderZeroS = ta.crossunder(macdHistS, 0);
-  const histCrossOverZeroS = ta.crossover(macdHistS, 0);
-  const priceCrossUnderLow = A(priceCrossUnderLowS);
-  const priceCrossOverHigh = A(priceCrossOverHighS);
-  const histCrossUnderZero = A(histCrossUnderZeroS);
-  const histCrossOverZero = A(histCrossOverZeroS);
-
-  const barsSincePriceLow = A(ta.barssince(priceCrossUnderLowS));
-  const barsSincePriceHigh = A(ta.barssince(priceCrossOverHighS));
-  const barsSinceHistLow = A(ta.barssince(histCrossUnderZeroS));
-  const barsSinceHistHigh = A(ta.barssince(histCrossOverZeroS));
-
   const lb = cfg.lookbackPeriod;
-  const slLine: number[] = new Array(n);
-  const tpLine: number[] = new Array(n);
-  const markers: MarkerData[] = [];
-  const longFlags: boolean[] = [];
-  const shortFlags: boolean[] = [];
-  let sl = NaN; // var float slLine = na
-  let tp = NaN; // var float tpLine = na
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const isAbove200 = gt(emaLow[i], ema200[i]);
-    const isBelow200 = lt(emaHigh[i], ema200[i]);
-    const longCondition = isAbove200 && gt(macdHist[i], 0) && le(barsSincePriceHigh[i], lb)
-      && le(barsSinceHistHigh[i], lb) && (priceCrossOverHigh[i] === 1 || histCrossOverZero[i] === 1);
-    const shortCondition = isBelow200 && lt(macdHist[i], 0) && le(barsSincePriceLow[i], lb)
-      && le(barsSinceHistLow[i], lb) && (priceCrossUnderLow[i] === 1 || histCrossUnderZero[i] === 1);
-
-    longFlags.push(longCondition);
-    shortFlags.push(shortCondition);
-
-    const prevClose = i > 0 ? bars[i - 1].close : NaN;
-    if (longCondition) {
-      sl = emaLow[i];
-      tp = b.close + (b.close - sl) * cfg.rewardRatio;
-    } else if (shortCondition) {
-      sl = emaHigh[i];
-      tp = b.close - (sl - b.close) * cfg.rewardRatio;
-    } else if ((lt(b.low, sl) && gt(prevClose, sl)) || (gt(b.high, sl) && lt(prevClose, sl))) {
-      sl = NaN;
-      tp = NaN;
-    }
-    slLine[i] = sl;
-    tpLine[i] = tp;
-
-    // plotshape(longCondition, shape.triangleup, location.belowbar, color.green, size.small, text = 'BUY')
-    if (longCondition) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'small',
-        text: 'BUY', textColor: color.blue });
-    }
-    // plotshape(shortCondition, shape.triangledown, location.abovebar, color.red, size.small, text = 'SELL')
-    if (shortCondition) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'small',
-        text: 'SELL', textColor: color.blue });
-    }
-  }
-
-  const P = (vals: number[], c: string) => bars.map((b, i) => ({ time: b.time, value: vals[i], color: c }));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: P(emaHigh, CHANNEL_COL),
-      plot1: P(emaLow, CHANNEL_COL),
-      plot2: P(ema200, color.red),
-      plot3: P(slLine, SL_COL),
-      plot4: P(tpLine, TP_COL),
+    init() {
+      const s: EmaMacdRun = {
+        emaHigh: taStep.ema(cfg.emaShortLen), emaLow: taStep.ema(cfg.emaShortLen), ema200: taStep.ema(cfg.emaLongLen),
+        macd: taStep.macd(cfg.macdFast, cfg.macdSlow, cfg.macdSignal),
+        priceUnderLow: taStep.crossunder(), priceOverHigh: taStep.crossover(),
+        histUnderZero: taStep.crossunder(), histOverZero: taStep.crossover(),
+        sincePriceLow: taStep.barssince(), sincePriceHigh: taStep.barssince(),
+        sinceHistLow: taStep.barssince(), sinceHistHigh: taStep.barssince(),
+        plots: [[], [], [], [], []], markers: [], flags: [[], []], times: [[], []],
+        steps: [], vars: { sl: NaN, tp: NaN }, lists: [], series: [],
+      };
+      s.steps = [
+        s.emaHigh, s.emaLow, s.ema200, s.macd, s.priceUnderLow, s.priceOverHigh, s.histUnderZero, s.histOverZero,
+        s.sincePriceLow, s.sincePriceHigh, s.sinceHistLow, s.sinceHistHigh,
+      ];
+      s.lists = [s.markers, ...s.times];
+      s.series = [...s.plots, ...s.flags];
+      return s;
     },
-    // fill(p_high, p_low, color = color.new(color.blue, 90), title = 'Channel Fill')
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: FILL_COL, title: 'Channel Fill' } }],
-    markers,
-    // alertcondition(longCondition, 'Buy Alert') / alertcondition(shortCondition, 'Sell Alert')
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const close = b.close;
+      const emaHigh = s.emaHigh.step(b.high);
+      const emaLow = s.emaLow.step(b.low);
+      const ema200 = s.ema200.step(close);
+      const macdHist = s.macd.step(close)[2];
+
+      // Crosses (exact comparisons, oakscriptjs)
+      const priceCrossUnderLow = s.priceUnderLow.step(close, emaLow);
+      const priceCrossOverHigh = s.priceOverHigh.step(close, emaHigh);
+      const histCrossUnderZero = s.histUnderZero.step(macdHist, 0);
+      const histCrossOverZero = s.histOverZero.step(macdHist, 0);
+      const barsSincePriceLow = s.sincePriceLow.step(priceCrossUnderLow);
+      const barsSincePriceHigh = s.sincePriceHigh.step(priceCrossOverHigh);
+      const barsSinceHistLow = s.sinceHistLow.step(histCrossUnderZero);
+      const barsSinceHistHigh = s.sinceHistHigh.step(histCrossOverZero);
+
+      const isAbove200 = gt(emaLow, ema200);
+      const isBelow200 = lt(emaHigh, ema200);
+      const longCondition = isAbove200 && gt(macdHist, 0) && le(barsSincePriceHigh, lb)
+        && le(barsSinceHistHigh, lb) && (priceCrossOverHigh || histCrossOverZero);
+      const shortCondition = isBelow200 && lt(macdHist, 0) && le(barsSincePriceLow, lb)
+        && le(barsSinceHistLow, lb) && (priceCrossUnderLow || histCrossUnderZero);
+
+      const prevClose = i > 0 ? bars[i - 1].close : NaN;
+      if (longCondition) {
+        v.sl = emaLow;
+        v.tp = close + (close - v.sl) * cfg.rewardRatio;
+      } else if (shortCondition) {
+        v.sl = emaHigh;
+        v.tp = close - (v.sl - close) * cfg.rewardRatio;
+      } else if ((lt(b.low, v.sl) && gt(prevClose, v.sl)) || (gt(b.high, v.sl) && lt(prevClose, v.sl))) {
+        v.sl = NaN;
+        v.tp = NaN;
+      }
+
+      const time = b.time;
+      s.plots[0][i] = { time, value: emaHigh, color: CHANNEL_COL };
+      s.plots[1][i] = { time, value: emaLow, color: CHANNEL_COL };
+      s.plots[2][i] = { time, value: ema200, color: color.red };
+      s.plots[3][i] = { time, value: v.sl, color: SL_COL };
+      s.plots[4][i] = { time, value: v.tp, color: TP_COL };
+
+      // plotshape(longCondition, shape.triangleup, location.belowbar, color.green, size.small, text = 'BUY')
+      if (longCondition) {
+        s.markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'small',
+          text: 'BUY', textColor: color.blue });
+      }
+      // plotshape(shortCondition, shape.triangledown, location.abovebar, color.red, size.small, text = 'SELL')
+      if (shortCondition) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'small',
+          text: 'SELL', textColor: color.blue });
+      }
+      // alertcondition(longCondition, 'Buy Alert') / alertcondition(shortCondition, 'Sell Alert')
+      s.flags[0][i] = longCondition;
+      s.flags[1][i] = shortCondition;
+      if (longCondition) s.times[0].push(time as number);
+      if (shortCondition) s.times[1].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(),
+          plot1: s.plots[1].slice(),
+          plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(),
+          plot4: s.plots[4].slice(),
+        },
+        // fill(p_high, p_low, color = color.new(color.blue, 90), title = 'Channel Fill')
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: FILL_COL, title: 'Channel Fill' } }],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EmaMacdStrategyWithSlTpInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EmaMacdStrategyWithSlTpInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -184,6 +230,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const EmaMacdStrategyWithSlTp = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

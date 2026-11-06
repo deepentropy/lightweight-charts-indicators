@@ -9,9 +9,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowStdev, WindowVwma, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 type BasisMaType = 'SMA' | 'EMA' | 'SMMA (RMA)' | 'WMA' | 'VWMA';
 
@@ -99,83 +101,134 @@ const lt = (a: number, b: number) => b - a > EPS;
 
 type Point = { time: number; value: number; color?: string };
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
+type Ma = { step(v: number, volume: number): number; commit(): void };
+
+interface E9Run extends BarRunState<Record<string, never>> {
+  ema1: Committable & { step(v: number): number };
+  ema2: Committable & { step(v: number): number };
+  ma: Ma;
+  dev: WindowStdev;
+  up: ReturnType<typeof taStep.crossover>;
+  dn: ReturnType<typeof taStep.crossunder>;
+  basis: number[];
+  sd: number[];
+  plot0: Point[];
+  plot1: Point[];
+  /** The basis and bands of each bar (offset 0 only: else built from basis / sd in result) */
+  bands: Point[][];
+  barColors: BarColorData[];
+  markers: MarkerData[];
+}
+
+const BAND_COLORS = [BASIS, UPPER1, LOWER1, UPPER2, LOWER2, UPPER3, LOWER3, UPPER4, LOWER4];
+
+function study(inputs: Partial<E9BollingerRangeInputs>): BarStudy<E9Run, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  const mults = [cfg.mult, cfg.mult, cfg.mult1, cfg.mult1, cfg.mult2, cfg.mult2, cfg.mult3, cfg.mult3];
+  const band = (k: number, basis: number, sd: number): number =>
+    k === 0 ? basis : basis + (k % 2 === 1 ? 1 : -1) * (mults[k - 1]! * sd);
+  const maStep = (): Ma => {
+    const len = cfg.length;
+    switch (cfg.maType) {
+      case 'SMA': { const m = new WindowSma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'SMMA (RMA)': { const m = taStep.rma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+      case 'VWMA': return new WindowVwma(len);
+      default: { const m = taStep.ema(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    }
+  };
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const ema1 = taStep.ema(20);
+      const ema2 = taStep.ema(150);
+      const ma = maStep();
+      const dev = new WindowStdev(cfg.length);
+      const up = taStep.crossover();
+      const dn = taStep.crossunder();
+      const s: E9Run = {
+        ema1, ema2, ma, dev, up, dn, basis: [], sd: [], plot0: [], plot1: [], bands: BAND_COLORS.map(() => []),
+        barColors: [], markers: [], steps: [ema1, ema2, ma, dev, up, dn], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.barColors, s.markers];
+      s.series = [s.basis, s.sd, s.plot0, s.plot1, ...(cfg.offset === 0 ? s.bands : [])];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const c = b.close;
+      s.plot0[i] = { time: t, value: s.ema1.step(c), color: '#6e65eb' };
+      s.plot1[i] = { time: t, value: s.ema2.step(c), color: color.red };
+      const v = value(b);
+      const basis = s.ma.step(v, b.volume ?? NaN);
+      const sd = s.dev.step(v);
+      s.basis[i] = basis;
+      s.sd[i] = sd;
+      if (cfg.offset === 0) {
+        for (let k = 0; k < 9; k++) {
+          const x = band(k, basis, sd);
+          s.bands[k]![i] = { time: t, value: Number.isFinite(x) ? x : NaN, color: BAND_COLORS[k]! };
+        }
+      }
+      const crossUp = s.up.step(c, basis);
+      const crossDn = s.dn.step(c, basis);
+      // barcolor(show_HB ? (trend_up ? col_trnd_Up : trend_dn ? col_trnd_Dn : na) : na)
+      if (cfg.showHB) {
+        const col = gt(c, basis) ? cfg.colTrndUp : lt(c, basis) ? cfg.colTrndDn : null;
+        if (col) s.barColors.push({ time: t, color: col });
+      }
+      if (crossUp) s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: color.white, size: 'tiny' });
+      if (crossDn) s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: color.white, size: 'tiny' });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      let bands: Point[][];
+      if (cfg.offset === 0) {
+        bands = s.bands.map((p) => p.slice());
+      } else {
+        // plot(..., offset = offset): the value of bar i is drawn on bar i + offset (none before bar 0)
+        const interval = barInterval(bars);
+        bands = BAND_COLORS.map((col, k) => {
+          const out: Point[] = [];
+          for (let i = 0; i < n; i++) {
+            const j = i + cfg.offset;
+            if (j < 0) continue;
+            const x = band(k, s.basis[i]!, s.sd[i]!);
+            out.push({ time: barTime(bars, j, interval), value: Number.isFinite(x) ? x : NaN, color: col });
+          }
+          return out;
+        });
+      }
+      const plots: Record<string, Point[]> = { plot0: s.plot0.slice(), plot1: s.plot1.slice() };
+      bands.forEach((p, k) => { plots[`plot${k + 2}`] = p; });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<E9BollingerRangeInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<E9BollingerRangeInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const closeS = Series.fromArray(bars, bars.map((b) => b.close));
-
-  const ema1 = A(ta.ema(closeS, 20));
-  const ema2 = A(ta.ema(closeS, 150));
-
-  const src = getSourceSeries(bars, cfg.src);
-  let basisS: Series;
-  switch (cfg.maType) {
-    case 'SMA': basisS = ta.sma(src, cfg.length); break;
-    case 'SMMA (RMA)': basisS = ta.rma(src, cfg.length); break;
-    case 'WMA': basisS = ta.wma(src, cfg.length); break;
-    case 'VWMA': basisS = ta.vwma(src, cfg.length, Series.fromArray(bars, bars.map((b) => b.volume ?? NaN))); break;
-    default: basisS = ta.ema(src, cfg.length); break;
-  }
-  const basis = A(basisS);
-  const sd = A(ta.stdev(src, cfg.length));
-  const crossUp = A(ta.crossover(closeS, basisS));
-  const crossDn = A(ta.crossunder(closeS, basisS));
-
-  const t = (i: number) => bars[i].time;
-  const interval = barInterval(bars);
-  // plot(..., offset = offset): the value of bar i is drawn on bar i + offset (none before bar 0)
-  const shifted = (vals: number[], col: string): Point[] => {
-    const out: Point[] = [];
-    for (let i = 0; i < n; i++) {
-      const j = i + cfg.offset;
-      if (j < 0) continue;
-      out.push({ time: barTime(bars, j, interval), value: Number.isFinite(vals[i]) ? vals[i] : NaN, color: col });
-    }
-    return out;
-  };
-  const band = (m: number, sign: number) => basis.map((b, i) => b + sign * (m * sd[i]));
-
-  const plots = {
-    plot0: bars.map((_b, i) => ({ time: t(i), value: ema1[i], color: '#6e65eb' })),
-    plot1: bars.map((_b, i) => ({ time: t(i), value: ema2[i], color: color.red })),
-    plot2: shifted(basis, BASIS),
-    plot3: shifted(band(cfg.mult, 1), UPPER1),
-    plot4: shifted(band(cfg.mult, -1), LOWER1),
-    plot5: shifted(band(cfg.mult1, 1), UPPER2),
-    plot6: shifted(band(cfg.mult1, -1), LOWER2),
-    plot7: shifted(band(cfg.mult2, 1), UPPER3),
-    plot8: shifted(band(cfg.mult2, -1), LOWER3),
-    plot9: shifted(band(cfg.mult3, 1), UPPER4),
-    plot10: shifted(band(cfg.mult3, -1), LOWER4),
-  };
-
-  const barColors: BarColorData[] = [];
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    // barcolor(show_HB ? (trend_up ? col_trnd_Up : trend_dn ? col_trnd_Dn : na) : na)
-    if (cfg.showHB) {
-      const c = bars[i].close;
-      const col = gt(c, basis[i]) ? cfg.colTrndUp : lt(c, basis[i]) ? cfg.colTrndDn : null;
-      if (col) barColors.push({ time: t(i), color: col });
-    }
-    if (crossUp[i]) markers.push({ time: t(i), position: 'belowBar', shape: 'triangleUp', color: color.white, size: 'tiny' });
-    if (crossDn[i]) markers.push({ time: t(i), position: 'aboveBar', shape: 'triangleDown', color: color.white, size: 'tiny' });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    markers,
-    barColors,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const E9BollingerRange = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

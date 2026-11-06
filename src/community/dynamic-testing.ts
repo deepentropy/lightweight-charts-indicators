@@ -10,7 +10,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DynamicTestingInputs {
   /** Channel length (EMA of hlc3 and of the distance) */
@@ -68,59 +70,91 @@ const gt = (a: number, b: number) => a - b > EPS;
 /** Non-finite values (na, +-infinity) are na for the averages and the plots */
 const fin = (x: number) => (Number.isFinite(x) ? x : NaN);
 
-export function calculate(bars: Bar[], inputs: Partial<DynamicTestingInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface DtVars {
+  /** The last wt1 / wt2 where both were not na (ta.cross) */
+  p1: number;
+  p2: number;
+}
+
+interface DtRun extends BarRunState<DtVars> {
+  esa: ReturnType<typeof taStep.ema>;
+  d: ReturnType<typeof taStep.ema>;
+  wt1: ReturnType<typeof taStep.ema>;
+  wt2: WindowSma;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<DynamicTestingInputs>): BarStudy<DtRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const ap = bars.map((b) => (b.high + b.low + b.close) / 3);
-  const esa = A(ta.ema(S(ap), cfg.n1));
-  const d = A(ta.ema(S(ap.map((x, i) => Math.abs(x - esa[i]))), cfg.n1));
-  // ci = (ap - esa) / (0.015 * d): x / 0 is +-infinity, 0 / 0 na; ta.ema skips both
-  const ci = ap.map((x, i) => (x - esa[i]) / (0.015 * d[i]));
-  const wt1 = A(ta.ema(S(ci.map(fin)), cfg.n2));
-  const wt2 = A(ta.sma(S(wt1), 4));
-
-  // ta.cross(wt1, wt2): compared with the last bar where both values were not na; a tie there counts; exact
-  // comparisons (no tolerance)
-  const cross: boolean[] = new Array(n).fill(false);
-  let p1 = NaN;
-  let p2 = NaN;
-  for (let i = 0; i < n; i++) {
-    const a = wt1[i];
-    const b = wt2[i];
-    cross[i] = (a > b && p1 <= p2) || (a < b && p1 >= p2);
-    if (!isNaN(a) && !isNaN(b)) {
-      p1 = a;
-      p2 = b;
-    }
-  }
-
-  const t = (i: number) => bars[i].time;
-  const line = (v: number) => bars.map((b) => ({ time: b.time, value: v }));
-  const plots = {
-    plot0: line(0),
-    plot1: line(cfg.obLevel1),
-    plot2: line(cfg.osLevel1),
-    plot3: line(cfg.obLevel2),
-    plot4: line(cfg.osLevel2),
-    plot5: wt1.map((v, i) => ({ time: t(i), value: v })),
-    plot6: wt2.map((v, i) => ({ time: t(i), value: v })),
-    plot7: wt1.map((v, i) => ({ time: t(i), value: v - wt2[i] })),
-    plot8: wt2.map((v, i) => ({ time: t(i), value: cross[i] ? v : NaN })),
-    // color = wt2 - wt1 > 0 ? color.red : color.lime
-    plot9: wt2.map((v, i) => ({ time: t(i), value: cross[i] ? v : NaN, color: gt(v - wt1[i], 0) ? color.red : color.lime })),
-  };
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    init() {
+      const s: DtRun = {
+        esa: taStep.ema(cfg.n1), d: taStep.ema(cfg.n1), wt1: taStep.ema(cfg.n2), wt2: new WindowSma(4),
+        plots: Array.from({ length: 10 }, () => []),
+        steps: [], vars: { p1: NaN, p2: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.esa, s.d, s.wt1, s.wt2];
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const ap = (b.high + b.low + b.close) / 3;
+      const esa = s.esa.step(ap);
+      const d = s.d.step(Math.abs(ap - esa));
+      // ci = (ap - esa) / (0.015 * d): x / 0 is +-infinity, 0 / 0 na; ta.ema skips both
+      const ci = (ap - esa) / (0.015 * d);
+      const wt1 = s.wt1.step(fin(ci));
+      const wt2 = s.wt2.step(wt1);
+
+      // ta.cross(wt1, wt2): compared with the last bar where both values were not na; a tie there counts; exact
+      // comparisons (no tolerance)
+      const v = s.vars;
+      const cross = (wt1 > wt2 && v.p1 <= v.p2) || (wt1 < wt2 && v.p1 >= v.p2);
+      if (!isNaN(wt1) && !isNaN(wt2)) {
+        v.p1 = wt1;
+        v.p2 = wt2;
+      }
+
+      const time = b.time as number;
+      const p = s.plots;
+      p[0][i] = { time, value: 0 };
+      p[1][i] = { time, value: cfg.obLevel1 };
+      p[2][i] = { time, value: cfg.osLevel1 };
+      p[3][i] = { time, value: cfg.obLevel2 };
+      p[4][i] = { time, value: cfg.osLevel2 };
+      p[5][i] = { time, value: wt1 };
+      p[6][i] = { time, value: wt2 };
+      p[7][i] = { time, value: wt1 - wt2 };
+      p[8][i] = { time, value: cross ? wt2 : NaN };
+      // color = wt2 - wt1 > 0 ? color.red : color.lime
+      p[9][i] = { time, value: cross ? wt2 : NaN, color: gt(wt2 - wt1, 0) ? color.red : color.lime };
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DynamicTestingInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DynamicTestingInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const DynamicTesting = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

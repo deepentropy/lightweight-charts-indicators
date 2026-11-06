@@ -12,8 +12,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface GranvilleEntryGuideInputs {
   /** Start date (UNIX ms, Pine input.time) */
@@ -108,102 +110,133 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<GranvilleEntryGuideInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] };
+
+interface GranvilleRun extends BarRunState<Record<string, never>> {
+  sma1: WindowSma;
+  sma2: WindowSma;
+  sma3: WindowSma;
+  pl: PivotStep;
+  ph: PivotStep;
+  ma1: number[];
+  ma2: number[];
+  ma3: number[];
+  deviation: number[];
+  plots: Point[][];
+  bgColors: BgColorData[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<GranvilleEntryGuideInputs>): BarStudy<GranvilleRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-
-  const ma1 = A(ta.sma(S(close), cfg.len1));
-  const ma2 = A(ta.sma(S(close), cfg.len2));
-  const ma3 = A(ta.sma(S(close), cfg.len3));
-  // slopeN = ta.change(maN, 1)
-  const change = (a: number[]) => a.map((v, i) => (i > 0 ? v - a[i - 1] : NaN));
-  const slope1 = change(ma1);
-  const slope2 = change(ma2);
-  const slope3 = change(ma3);
-
-  const deviation = bars.map((_b, i) => ((ma1[i] - ma2[i]) / ma2[i]) * 100.0);
-  const upper = ma2.map((v) => v * (1 + cfg.deviationRate / 100.0));
-  const lower = ma2.map((v) => v * (1 - cfg.deviationRate / 100.0));
   const candle = cfg.source === 'candle';
-  const pl = A(ta.pivotlow(S(candle ? bars.map((b) => b.low) : ma1), cfg.leftBars, cfg.rightBars));
-  const ph = A(ta.pivothigh(S(candle ? bars.map((b) => b.high) : ma1), cfg.leftBars, cfg.rightBars));
   // bool(x): false for na and 0
   const bool = (x: number) => !isNaN(x) && x !== 0;
-
   const bgUp = String(color.new(color.red, 90));
   const bgDown = String(color.new(color.blue, 90));
-  const bgColors: BgColorData[] = [];
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const tMs = t * 1000;
-    const inDateRange = tMs >= cfg.startDate && tMs <= cfg.stopDate;
-    const uptrend = cfg.slopeCondition
-      ? gt(ma2[i], ma3[i]) && gt(slope2[i], 0) && gt(slope3[i], 0)
-      : gt(ma2[i], ma3[i]);
-    const downtrend = cfg.slopeCondition
-      ? lt(ma2[i], ma3[i]) && lt(slope2[i], 0) && lt(slope3[i], 0)
-      : lt(ma2[i], ma3[i]);
-    // bgcolor((uptrend and showTrend) ? color.new(color.red, 90) : na); bgcolor((downtrend and showTrend) ? ...blue...)
-    // (bgcolor0: the uptrend call, bgcolor1: the downtrend call)
-    if (cfg.showTrend && downtrend) bgColors.push({ id: 'bgcolor1', time: t, color: bgDown });
-    else if (cfg.showTrend && uptrend) bgColors.push({ id: 'bgcolor0', time: t, color: bgUp });
-
-    // inRange = math.abs(deviation[rightBars]) < deviationRate
-    const devPast = i - cfg.rightBars >= 0 ? deviation[i - cfg.rightBars] : NaN;
-    const inRange = lt(Math.abs(devPast), cfg.deviationRate);
-    const prevClose = i > 0 ? close[i - 1] : NaN;
-    const b = bars[i];
-    const dip = bool(pl[i]) && gt(b.close, b.open) && gt(b.close, prevClose) && gt(slope1[i], 0);
-    const trueDip = cfg.deviationFilter ? inRange && dip : dip;
-    const longCondition = cfg.trendFilter ? inDateRange && uptrend && trueDip : inDateRange && trueDip;
-    const retracement = bool(ph[i]) && lt(b.close, b.open) && lt(b.close, prevClose) && lt(slope1[i], 0);
-    const trueRetracement = cfg.deviationFilter ? inRange && retracement : retracement;
-    const shortCondition = cfg.trendFilter
-      ? inDateRange && downtrend && trueRetracement
-      : inDateRange && trueRetracement;
-    if (cfg.showEntryPoint && longCondition) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: color.red, size: 'tiny' });
-    }
-    if (cfg.showEntryPoint && shortCondition) {
-      markers.push({ time: t, position: 'belowBar', shape: 'circle', color: color.blue, size: 'tiny' });
-    }
-  }
-
-  const P = (vals: number[], c: string) => bars.map((b, i) => ({
-    time: b.time, value: Number.isFinite(vals[i]) ? vals[i] : NaN, color: c,
-  }));
   const envColor = String(color.new(cfg.col2, 70));
-  const nan = new Array<number>(n).fill(NaN);
-
+  const plotColors = [cfg.col1, cfg.col2, cfg.col3, cfg.col1, cfg.col2, cfg.col3, color.black, envColor, envColor];
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: P(ma1, cfg.col1),
-      plot1: P(ma2, cfg.col2),
-      plot2: P(ma3, cfg.col3),
-      plot3: P(slope1, cfg.col1),
-      plot4: P(slope2, cfg.col2),
-      plot5: P(slope3, cfg.col3),
-      plot6: P(deviation, color.black),
-      plot7: P(cfg.showEnvelope ? upper : nan, envColor),
-      plot8: P(cfg.showEnvelope ? lower : nan, envColor),
+    init() {
+      const s: GranvilleRun = {
+        sma1: new WindowSma(cfg.len1), sma2: new WindowSma(cfg.len2), sma3: new WindowSma(cfg.len3),
+        pl: new PivotStep(cfg.leftBars, cfg.rightBars, false), ph: new PivotStep(cfg.leftBars, cfg.rightBars, true),
+        ma1: [], ma2: [], ma3: [], deviation: [], plots: plotColors.map(() => []), bgColors: [], markers: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.sma1, s.sma2, s.sma3, s.pl, s.ph];
+      s.lists = [s.bgColors, s.markers];
+      s.series = [s.ma1, s.ma2, s.ma3, s.deviation, ...s.plots];
+      return s;
     },
-    // fill(p1, p2, color.new(col2, 90))
-    fills: [{ plot1: 'plot7', plot2: 'plot8', colors: new Array<string>(n).fill(String(color.new(cfg.col2, 90))) }],
-    bgColors,
-    markers,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const close = b.close;
+      const ma1 = s.sma1.step(close);
+      const ma2 = s.sma2.step(close);
+      const ma3 = s.sma3.step(close);
+      // slopeN = ta.change(maN, 1)
+      const slope1 = i > 0 ? ma1 - s.ma1[i - 1] : NaN;
+      const slope2 = i > 0 ? ma2 - s.ma2[i - 1] : NaN;
+      const slope3 = i > 0 ? ma3 - s.ma3[i - 1] : NaN;
+      s.ma1[i] = ma1;
+      s.ma2[i] = ma2;
+      s.ma3[i] = ma3;
+      const deviation = ((ma1 - ma2) / ma2) * 100.0;
+      s.deviation[i] = deviation;
+      const upper = ma2 * (1 + cfg.deviationRate / 100.0);
+      const lower = ma2 * (1 - cfg.deviationRate / 100.0);
+      const pl = s.pl.step(i, candle ? b.low : ma1);
+      const ph = s.ph.step(i, candle ? b.high : ma1);
+
+      const tMs = t * 1000;
+      const inDateRange = tMs >= cfg.startDate && tMs <= cfg.stopDate;
+      const uptrend = cfg.slopeCondition
+        ? gt(ma2, ma3) && gt(slope2, 0) && gt(slope3, 0)
+        : gt(ma2, ma3);
+      const downtrend = cfg.slopeCondition
+        ? lt(ma2, ma3) && lt(slope2, 0) && lt(slope3, 0)
+        : lt(ma2, ma3);
+      // bgcolor((uptrend and showTrend) ? color.new(color.red, 90) : na); bgcolor((downtrend and showTrend) ? ...blue...)
+      // (bgcolor0: the uptrend call, bgcolor1: the downtrend call)
+      if (cfg.showTrend && downtrend) s.bgColors.push({ id: 'bgcolor1', time: t, color: bgDown });
+      else if (cfg.showTrend && uptrend) s.bgColors.push({ id: 'bgcolor0', time: t, color: bgUp });
+
+      // inRange = math.abs(deviation[rightBars]) < deviationRate
+      const devPast = i - cfg.rightBars >= 0 ? s.deviation[i - cfg.rightBars] : NaN;
+      const inRange = lt(Math.abs(devPast), cfg.deviationRate);
+      const prevClose = i > 0 ? bars[i - 1].close : NaN;
+      const dip = bool(pl) && gt(b.close, b.open) && gt(b.close, prevClose) && gt(slope1, 0);
+      const trueDip = cfg.deviationFilter ? inRange && dip : dip;
+      const longCondition = cfg.trendFilter ? inDateRange && uptrend && trueDip : inDateRange && trueDip;
+      const retracement = bool(ph) && lt(b.close, b.open) && lt(b.close, prevClose) && lt(slope1, 0);
+      const trueRetracement = cfg.deviationFilter ? inRange && retracement : retracement;
+      const shortCondition = cfg.trendFilter
+        ? inDateRange && downtrend && trueRetracement
+        : inDateRange && trueRetracement;
+      if (cfg.showEntryPoint && longCondition) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: color.red, size: 'tiny' });
+      }
+      if (cfg.showEntryPoint && shortCondition) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'circle', color: color.blue, size: 'tiny' });
+      }
+
+      const vals = [
+        ma1, ma2, ma3, slope1, slope2, slope3, deviation, cfg.showEnvelope ? upper : NaN, cfg.showEnvelope ? lower : NaN,
+      ];
+      for (let k = 0; k < vals.length; k++) s.plots[k][i] = { time: t, value: fin(vals[k]), color: plotColors[k] };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        // fill(p1, p2, color.new(col2, 90))
+        fills: [{ plot1: 'plot7', plot2: 'plot8', colors: new Array<string>(n).fill(String(color.new(cfg.col2, 90))) }],
+        bgColors: s.bgColors.slice(),
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GranvilleEntryGuideInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<GranvilleEntryGuideInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const GranvilleEntryGuide = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -11,7 +11,9 @@
  * Original notice: © EdgeTerminal
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ZScoreTrendMonitorInputs {
   /** Short SMA length */
@@ -56,37 +58,65 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ZScoreTrendMonitorInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface ZRun extends BarRunState<Record<string, never>> {
+  smaShort: WindowSma;
+  smaLong: WindowSma;
+  spreadMean: WindowSma;
+  spreadStd: WindowStdev;
+  plot0: Point[];
+}
+
+function study(inputs: Partial<ZScoreTrendMonitorInputs>): BarStudy<ZRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const close = S(bars.map((b) => b.close));
-  const smaShort = A(ta.sma(close, cfg.lenShort)).map((v) => v * cfg.weiShort);
-  const smaLong = A(ta.sma(close, cfg.lenLong)).map((v) => v * cfg.weiLong);
-  const spread = smaShort.map((v, i) => v - smaLong[i]);
-  const spreadMean = A(ta.sma(S(spread), cfg.lookback));
-  const spreadStd = A(ta.stdev(S(spread), cfg.lookback));
-
-  const plot0 = bars.map((b, i) => {
-    // A plain division: x / 0 is +-infinity (the plot shows na), 0 / 0 is na
-    const z = (spread[i] - spreadMean[i]) / spreadStd[i];
-    return { time: b.time, value: Number.isFinite(z) ? z : NaN, color: color.blue };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    hlines: [
-      { value: cfg.zThreshold, options: { title: 'Upper Threshold', color: color.red, linestyle: 'dashed' } },
-      { value: -cfg.zThreshold, options: { title: 'Lower Threshold', color: color.green, linestyle: 'dashed' } },
-      { value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dashed' } },
-    ],
+    init() {
+      const s: ZRun = {
+        smaShort: new WindowSma(cfg.lenShort), smaLong: new WindowSma(cfg.lenLong), spreadMean: new WindowSma(cfg.lookback),
+        spreadStd: new WindowStdev(cfg.lookback), plot0: [], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.smaShort, s.smaLong, s.spreadMean, s.spreadStd];
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const smaShort = s.smaShort.step(b.close) * cfg.weiShort;
+      const smaLong = s.smaLong.step(b.close) * cfg.weiLong;
+      const spread = smaShort - smaLong;
+      const spreadMean = s.spreadMean.step(spread);
+      const spreadStd = s.spreadStd.step(spread);
+      // A plain division: x / 0 is +-infinity (the plot shows na), 0 / 0 is na
+      const z = (spread - spreadMean) / spreadStd;
+      s.plot0[i] = { time: b.time as number, value: Number.isFinite(z) ? z : NaN, color: color.blue };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        hlines: [
+          { value: cfg.zThreshold, options: { title: 'Upper Threshold', color: color.red, linestyle: 'dashed' } },
+          { value: -cfg.zThreshold, options: { title: 'Lower Threshold', color: color.green, linestyle: 'dashed' } },
+          { value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dashed' } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ZScoreTrendMonitorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ZScoreTrendMonitorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const ZScoreTrendMonitor = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

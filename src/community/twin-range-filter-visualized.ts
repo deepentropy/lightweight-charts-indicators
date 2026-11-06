@@ -14,11 +14,13 @@
  */
 
 import {
-  ta, Series, color, getSourceSeries,
+  taStep, color,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TwinRangeFilterVisualizedInputs {
   source: SourceType;
@@ -75,86 +77,126 @@ const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <= EPS;
 const nz = (v: number) => (isNaN(v) ? 0 : v);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TwinRangeFilterVisualizedInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Ema = ReturnType<typeof taStep.ema>;
+
+interface TwinRun extends BarRunState<Record<string, never>> {
+  /** ema(abs(x - x[1]), t) and ema(.., t * 2 - 1) for the fast and the slow range */
+  emas: Ema[];
+  long: ReturnType<typeof taStep.crossover>;
+  short: ReturnType<typeof taStep.crossunder>;
+  x: number[];
+  filt: number[];
+  fub: number[];
+  flb: number[];
+  trf: number[];
+  plot0: Point[];
+  plot1: Point[];
+  upColors: string[];
+  downColors: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<TwinRangeFilterVisualizedInputs>): BarStudy<TwinRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const x = A(getSourceSeries(bars, cfg.source));
-
-  // smoothrng(x, t, m) = ema(ema(abs(x - x[1]), t), t * 2 - 1) * m
-  const change = Series.fromArray(bars, x.map((v, i) => (i > 0 ? Math.abs(v - x[i - 1]) : NaN)));
-  const smoothrng = (t: number, m: number) => A(ta.ema(Series.fromArray(bars, A(ta.ema(change, t))), t * 2 - 1)).map((v) => v * m);
-  const smrng1 = smoothrng(cfg.per1, cfg.mult1);
-  const smrng2 = smoothrng(cfg.per2, cfg.mult2);
-  const smrng = smrng1.map((v, i) => (v + smrng2[i]) / 2);
-
-  const filt = new Array<number>(n);
-  const fub = new Array<number>(n);
-  const flb = new Array<number>(n);
-  const trf = new Array<number>(n);
-  for (let i = 0; i < n; i++) {
-    // rngfilt(x, r)
-    const xi = x[i];
-    const r = smrng[i];
-    const prev = nz(i > 0 ? filt[i - 1] : NaN);
-    filt[i] = gt(xi, prev) ? (lt(xi - r, prev) ? prev : xi - r) : (gt(xi + r, prev) ? prev : xi + r);
-    const str = filt[i] + r;
-    const sts = filt[i] - r;
-    const close = bars[i].close;
-    const close1 = i > 0 ? bars[i - 1].close : NaN;
-    const fub1 = i > 0 ? fub[i - 1] : NaN;
-    const flb1 = i > 0 ? flb[i - 1] : NaN;
-    fub[i] = lt(str, nz(fub1)) || gt(close1, nz(fub1)) ? str : nz(fub1);
-    flb[i] = gt(sts, nz(flb1)) || lt(close1, nz(flb1)) ? sts : nz(flb1);
-    const t1 = nz(i > 0 ? trf[i - 1] : NaN);
-    trf[i] = eq(t1, fub1) && le(close, fub[i]) ? fub[i]
-      : eq(t1, fub1) && ge(close, fub[i]) ? flb[i]
-        : eq(t1, flb1) && ge(close, flb[i]) ? flb[i]
-          : eq(t1, flb1) && le(close, flb[i]) ? fub[i]
-            : fub[i];
-  }
-
-  const closeS = new Series(bars, (b) => b.close);
-  const trfS = Series.fromArray(bars, trf);
-  const long = ta.crossover(closeS, trfS).toArray();
-  const short = ta.crossunder(closeS, trfS).toArray();
-
-  const markers: MarkerData[] = [];
-  if (cfg.showsignals) {
-    for (let i = 0; i < n; i++) {
-      const time = bars[i].time;
-      if (long[i]) {
-        markers.push({ time, position: 'belowBar', shape: 'labelUp', color: SIGNAL, text: 'BUY', textColor: '#FFFFFF', size: 'tiny' });
-      }
-      if (short[i]) {
-        markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: SIGNAL, text: 'SELL', textColor: '#FFFFFF', size: 'tiny' });
-      }
-    }
-  }
-
+  const value = barSource(cfg.source);
   // fill(mPlot, Trfff, color = close > TRF ? color.green : na, transp = 90), and the same in red below the line
   const green = String(color.new(color.green, 90));
   const red = String(color.new('#FF5252', 90)); // color.red of Pine v5
-  const upColors = bars.map((b, i) => (gt(b.close, trf[i]) ? green : 'transparent'));
-  const downColors = bars.map((b, i) => (lt(b.close, trf[i]) ? red : 'transparent'));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: Number.isFinite(trf[i]) ? trf[i] : NaN, color: BLUE })),
-      plot1: bars.map((b) => ({ time: b.time, value: (b.open + b.high + b.low + b.close) / 4, color: BLUE })),
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const s: TwinRun = {
+        emas: [taStep.ema(cfg.per1), taStep.ema(cfg.per1 * 2 - 1), taStep.ema(cfg.per2), taStep.ema(cfg.per2 * 2 - 1)],
+        long: taStep.crossover(), short: taStep.crossunder(),
+        x: [], filt: [], fub: [], flb: [], trf: [], plot0: [], plot1: [], upColors: [], downColors: [], markers: [],
+        flags: [[], []], times: [[], []], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [...s.emas, s.long, s.short];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.x, s.filt, s.fub, s.flb, s.trf, s.plot0, s.plot1, s.upColors, s.downColors, ...s.flags];
+      return s;
     },
-    markers,
-    fills: [
-      { plot1: 'plot1', plot2: 'plot0', options: { title: 'UpTrend Highligter' }, colors: upColors },
-      { plot1: 'plot1', plot2: 'plot0', options: { title: 'DownTrend Highligter' }, colors: downColors },
-    ],
-    // alertcondition(long, 'Long') / alertcondition(short, 'Short')
-    alerts: alertStates(alertConditions, bars, [long.map((v) => !!v), short.map((v) => !!v)]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const xi = value(b);
+      s.x[i] = xi;
+      // smoothrng(x, t, m) = ema(ema(abs(x - x[1]), t), t * 2 - 1) * m
+      const change = i > 0 ? Math.abs(xi - s.x[i - 1]) : NaN;
+      const e = s.emas;
+      const smrng1 = e[1].step(e[0].step(change)) * cfg.mult1;
+      const smrng2 = e[3].step(e[2].step(change)) * cfg.mult2;
+      const r = (smrng1 + smrng2) / 2;
+
+      // rngfilt(x, r)
+      const prev = nz(i > 0 ? s.filt[i - 1] : NaN);
+      const filt = gt(xi, prev) ? (lt(xi - r, prev) ? prev : xi - r) : (gt(xi + r, prev) ? prev : xi + r);
+      s.filt[i] = filt;
+      const str = filt + r;
+      const sts = filt - r;
+      const close = b.close;
+      const close1 = i > 0 ? bars[i - 1].close : NaN;
+      const fub1 = i > 0 ? s.fub[i - 1] : NaN;
+      const flb1 = i > 0 ? s.flb[i - 1] : NaN;
+      const fub = lt(str, nz(fub1)) || gt(close1, nz(fub1)) ? str : nz(fub1);
+      const flb = gt(sts, nz(flb1)) || lt(close1, nz(flb1)) ? sts : nz(flb1);
+      s.fub[i] = fub;
+      s.flb[i] = flb;
+      const t1 = nz(i > 0 ? s.trf[i - 1] : NaN);
+      const trf = eq(t1, fub1) && le(close, fub) ? fub
+        : eq(t1, fub1) && ge(close, fub) ? flb
+          : eq(t1, flb1) && ge(close, flb) ? flb
+            : eq(t1, flb1) && le(close, flb) ? fub
+              : fub;
+      s.trf[i] = trf;
+
+      const long = s.long.step(close, trf);
+      const short = s.short.step(close, trf);
+      if (cfg.showsignals) {
+        if (long) {
+          s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: SIGNAL, text: 'BUY', textColor: '#FFFFFF', size: 'tiny' });
+        }
+        if (short) {
+          s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: SIGNAL, text: 'SELL', textColor: '#FFFFFF', size: 'tiny' });
+        }
+      }
+      s.upColors[i] = gt(close, trf) ? green : 'transparent';
+      s.downColors[i] = lt(close, trf) ? red : 'transparent';
+      s.plot0[i] = { time, value: Number.isFinite(trf) ? trf : NaN, color: BLUE };
+      s.plot1[i] = { time, value: (b.open + b.high + b.low + b.close) / 4, color: BLUE };
+      // alertcondition(long, 'Long') / alertcondition(short, 'Short')
+      s.flags[0][i] = long;
+      s.flags[1][i] = short;
+      if (long) s.times[0].push(time as number);
+      if (short) s.times[1].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        fills: [
+          { plot1: 'plot1', plot2: 'plot0', options: { title: 'UpTrend Highligter' }, colors: s.upColors.slice() },
+          { plot1: 'plot1', plot2: 'plot0', options: { title: 'DownTrend Highligter' }, colors: s.downColors.slice() },
+        ],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TwinRangeFilterVisualizedInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TwinRangeFilterVisualizedInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -163,4 +205,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'Short', message: 'Short' },
 ];
 
-export const TwinRangeFilterVisualized = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const TwinRangeFilterVisualized = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

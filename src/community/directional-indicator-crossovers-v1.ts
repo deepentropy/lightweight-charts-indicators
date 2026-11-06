@@ -14,9 +14,11 @@
  * Index (ADX) by J. Welles Wilder Jr. (1978).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DirectionalIndicatorCrossoversV1Inputs {
   /** DI length */
@@ -75,87 +77,120 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DirectionalIndicatorCrossoversV1Inputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Smooth = { step(v: number): number; commit(): void };
+
+interface DixRun extends BarRunState<Record<string, never>> {
+  tr: ReturnType<typeof taStep.tr>;
+  den: Smooth;
+  sPlus: Smooth;
+  sMinus: Smooth;
+  sDx: Smooth;
+  plusDI: number[];
+  minusDI: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  bullColors: string[];
+  bearColors: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<DirectionalIndicatorCrossoversV1Inputs>): BarStudy<DixRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   // smooth(src, len) => sMethod == "EMA" ? ta.ema(src, len) : ta.rma(src, len)
-  const smooth = (a: number[], len: number) => A(cfg.sMethod === 'EMA' ? ta.ema(S(a), len) : ta.rma(S(a), len));
-
-  // up = ta.change(high); down = -ta.change(low)
-  const plusDM = bars.map((b, i) => {
-    const up = i > 0 ? b.high - bars[i - 1].high : NaN;
-    const down = i > 0 ? -(b.low - bars[i - 1].low) : NaN;
-    return gt(up, down) && gt(up, 0) ? up : 0.0;
-  });
-  const minusDM = bars.map((b, i) => {
-    const up = i > 0 ? b.high - bars[i - 1].high : NaN;
-    const down = i > 0 ? -(b.low - bars[i - 1].low) : NaN;
-    return gt(down, up) && gt(down, 0) ? down : 0.0;
-  });
-
-  // tr = ta.tr (na on the first bar); den = math.max(smooth(tr, dilen), 1e-10) (na with an na argument)
-  const tr = A(ta.tr(bars, false));
-  const den = smooth(tr, cfg.dilen).map((v) => (isNaN(v) ? NaN : Math.max(v, 1e-10)));
-  const sPlus = smooth(plusDM, cfg.dilen);
-  const sMinus = smooth(minusDM, cfg.dilen);
-  const plusDI = sPlus.map((v, i) => (100.0 * v) / den[i]);
-  const minusDI = sMinus.map((v, i) => (100.0 * v) / den[i]);
-
-  // dx = sumDI == 0 ? 0.0 : math.abs(plusDI - minusDI) / sumDI; adx = 100.0 * smooth(dx, adxLen)
-  const dx = plusDI.map((p, i) => {
-    const sumDI = p + minusDI[i];
-    return eq(sumDI, 0) ? 0.0 : Math.abs(p - minusDI[i]) / sumDI;
-  });
-  const adx = smooth(dx, cfg.adxLen).map((v) => 100.0 * v);
-
-  const markers: MarkerData[] = [];
-  const bullFlags: boolean[] = [], bearFlags: boolean[] = [];
-  // ta.crossover(a, b): a > b and a[1] <= b[1], compared exactly (no 1e-10 tolerance; na compares false)
-  const crossover = (a: number[], b: number[], i: number) => i > 0 && a[i] > b[i] && a[i - 1] <= b[i - 1];
-  for (let i = 0; i < n; i++) {
-    const bullX = crossover(plusDI, minusDI, i);
-    const bearX = crossover(minusDI, plusDI, i);
-    const sigBull = cfg.useAdxFilt ? bullX && gt(adx[i], cfg.adxThr) : bullX;
-    const sigBear = cfg.useAdxFilt ? bearX && gt(adx[i], cfg.adxThr) : bearX;
-    bullFlags.push(sigBull);
-    bearFlags.push(sigBear);
-    // plotshape(showMarks and sigBull, "Bullish DI Crossover", location.top, shape.circle, size.tiny, color.lime)
-    if (cfg.showMarks && sigBull) {
-      markers.push({ time: bars[i].time, position: 'top', shape: 'circle', color: color.lime, size: 'tiny' });
-    }
-    // plotshape(showMarks and sigBear, "Bearish DI Crossover", location.bottom, shape.circle, size.tiny, color.red)
-    if (cfg.showMarks && sigBear) {
-      markers.push({ time: bars[i].time, position: 'bottom', shape: 'circle', color: color.red, size: 'tiny' });
-    }
-  }
-
+  const smooth = (len: number): Smooth => (cfg.sMethod === 'EMA' ? taStep.ema(len) : taStep.rma(len));
   const bullFill = String(color.new(color.lime, 85));
   const bearFill = String(color.new(color.red, 85));
+  const white = String(color.new(color.white, 0));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: plusDI[i], color: color.lime })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: minusDI[i], color: color.red })),
-      // plot(adx, "ADX", color.new(color.white, 0), linewidth = 2, display = showADX ? display.all : display.none)
-      plot2: bars.map((b, i) => ({ time: b.time, value: adx[i], color: String(color.new(color.white, 0)) })),
+    init() {
+      const s: DixRun = {
+        tr: taStep.tr(false), den: smooth(cfg.dilen), sPlus: smooth(cfg.dilen), sMinus: smooth(cfg.dilen),
+        sDx: smooth(cfg.adxLen), plusDI: [], minusDI: [], plot0: [], plot1: [], plot2: [], bullColors: [],
+        bearColors: [], markers: [], flags: [[], []], times: [[], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.tr, s.den, s.sPlus, s.sMinus, s.sDx];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.plusDI, s.minusDI, s.plot0, s.plot1, s.plot2, s.bullColors, s.bearColors, ...s.flags];
+      return s;
     },
-    fills: [
+    bar(s, i, bars) {
+      const b = bars[i];
+      // up = ta.change(high); down = -ta.change(low)
+      const up = i > 0 ? b.high - bars[i - 1].high : NaN;
+      const down = i > 0 ? -(b.low - bars[i - 1].low) : NaN;
+      const plusDM = gt(up, down) && gt(up, 0) ? up : 0.0;
+      const minusDM = gt(down, up) && gt(down, 0) ? down : 0.0;
+
+      // tr = ta.tr (na on the first bar); den = math.max(smooth(tr, dilen), 1e-10) (na with an na argument)
+      const sTr = s.den.step(s.tr.step(b.high, b.low, b.close));
+      const den = isNaN(sTr) ? NaN : Math.max(sTr, 1e-10);
+      const plusDI = (100.0 * s.sPlus.step(plusDM)) / den;
+      const minusDI = (100.0 * s.sMinus.step(minusDM)) / den;
+      s.plusDI[i] = plusDI;
+      s.minusDI[i] = minusDI;
+
+      // dx = sumDI == 0 ? 0.0 : math.abs(plusDI - minusDI) / sumDI; adx = 100.0 * smooth(dx, adxLen)
+      const sumDI = plusDI + minusDI;
+      const dx = eq(sumDI, 0) ? 0.0 : Math.abs(plusDI - minusDI) / sumDI;
+      const adx = 100.0 * s.sDx.step(dx);
+
+      // ta.crossover(a, b): a > b and a[1] <= b[1], compared exactly (no 1e-10 tolerance; na compares false)
+      const bullX = i > 0 && plusDI > minusDI && s.plusDI[i - 1] <= s.minusDI[i - 1];
+      const bearX = i > 0 && minusDI > plusDI && s.minusDI[i - 1] <= s.plusDI[i - 1];
+      const sigBull = cfg.useAdxFilt ? bullX && gt(adx, cfg.adxThr) : bullX;
+      const sigBear = cfg.useAdxFilt ? bearX && gt(adx, cfg.adxThr) : bearX;
+      // plotshape(showMarks and sigBull, "Bullish DI Crossover", location.top, shape.circle, size.tiny, color.lime)
+      if (cfg.showMarks && sigBull) {
+        s.markers.push({ time: b.time, position: 'top', shape: 'circle', color: color.lime, size: 'tiny' });
+      }
+      // plotshape(showMarks and sigBear, "Bearish DI Crossover", location.bottom, shape.circle, size.tiny, color.red)
+      if (cfg.showMarks && sigBear) {
+        s.markers.push({ time: b.time, position: 'bottom', shape: 'circle', color: color.red, size: 'tiny' });
+      }
+      [sigBull, sigBear].forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(b.time as number);
+      });
+
+      s.plot0[i] = { time: b.time as number, value: plusDI, color: color.lime };
+      s.plot1[i] = { time: b.time as number, value: minusDI, color: color.red };
+      // plot(adx, "ADX", color.new(color.white, 0), linewidth = 2, display = showADX ? display.all : display.none)
+      s.plot2[i] = { time: b.time as number, value: adx, color: white };
       // fill(pPlus, pMinus, color = (showFill and plusDI > minusDI) ? color.new(color.lime, 85) : na, title = "Bull Zone")
-      { plot1: 'plot0', plot2: 'plot1',
-        colors: plusDI.map((p, i) => (cfg.showFill && gt(p, minusDI[i]) ? bullFill : 'transparent')) },
+      s.bullColors[i] = cfg.showFill && gt(plusDI, minusDI) ? bullFill : 'transparent';
       // fill(pMinus, pPlus, color = (showFill and minusDI > plusDI) ? color.new(color.red, 85) : na, title = "Bear Zone")
-      { plot1: 'plot1', plot2: 'plot0',
-        colors: minusDI.map((m, i) => (cfg.showFill && gt(m, plusDI[i]) ? bearFill : 'transparent')) },
-    ],
-    markers,
-    // alertcondition(sigBull, "Bullish DI Crossover") / alertcondition(sigBear, "Bearish DI Crossover")
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags]),
+      s.bearColors[i] = cfg.showFill && gt(minusDI, plusDI) ? bearFill : 'transparent';
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', colors: s.bullColors.slice() },
+          { plot1: 'plot1', plot2: 'plot0', colors: s.bearColors.slice() },
+        ],
+        markers: s.markers.slice(),
+        // alertcondition(sigBull, "Bullish DI Crossover") / alertcondition(sigBear, "Bearish DI Crossover")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DirectionalIndicatorCrossoversV1Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DirectionalIndicatorCrossoversV1Inputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -166,6 +201,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const DirectionalIndicatorCrossoversV1 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

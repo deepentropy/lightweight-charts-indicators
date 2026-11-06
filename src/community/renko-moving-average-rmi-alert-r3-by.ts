@@ -27,12 +27,13 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, compare, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
 import type { ArrowData } from 'oakscriptjs';
-import { securityStarts } from '../anchor-period';
+import { hasCalendar, securityStarts } from '../anchor-period';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, WindowVwma, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 import type { ChartContext } from '../chart-context';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
 
 type MaType = 'SMA' | 'EMA' | 'WMA' | 'VWMA' | 'SMMA' | 'DEMA' | 'TEMA' | 'HullMA' | 'ZEMA' | 'TMA' | 'SSMA';
 type Source = 'open' | 'high' | 'low' | 'close' | 'hl2' | 'hlc3' | 'ohlc4' | 'volume';
@@ -110,67 +111,130 @@ const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <= EPS;
 const nz = (x: number, y = 0) => (isNaN(x) ? y : x);
 
-function sourceOf(bars: Bar[], src: Source): number[] {
-  return bars.map((b) => {
-    switch (src) {
-      case 'open': return b.open;
-      case 'high': return b.high;
-      case 'low': return b.low;
-      case 'hl2': return (b.high + b.low) / 2;
-      case 'hlc3': return (b.high + b.low + b.close) / 3;
-      case 'ohlc4': return (b.open + b.high + b.low + b.close) / 4;
-      case 'volume': return b.volume ?? NaN;
-      default: return b.close;
-    }
-  });
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; arrows: ArrowData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+
+const DAY = 86400000;
+/** The open line periods computed bar by bar (UTC calendar of `periodStarts`) */
+const UTC_PERIODS = new Set(['1D', '1W', '1M']);
+
+/** Start (UNIX ms, UTC) of the 1D / 1W / 1M period that contains the day `day` (00:00 UTC, ms), as periodStarts */
+function utcPeriodStart(day: number, tf: string): number {
+  const d = new Date(day);
+  if (tf === '1D') return day;
+  if (tf === '1W') return day - ((d.getUTCDay() + 6) % 7) * DAY;
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RenkoMovingAverageRmiAlertR3ByInputs> = {},
-  chart?: ChartContext,
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; arrows: ArrowData[] } & { alerts: AlertConditionState[] } {
+/** The bar times are in ms (from the first bar) */
+const msTimes = (bars: Bar[]) => bars.length > 0 && bars[0]!.time >= 1e12;
+
+/** periodStarts: a bar on a Saturday or Sunday makes the periods start on the calendar dates, else on their first bar */
+function everyDay(bars: Bar[], ms: boolean): boolean {
+  for (const b of bars) {
+    const day = Math.floor((ms ? b.time : b.time * 1000) / DAY);
+    const wd = (((day % 7) + 7) + 4) % 7;
+    if (wd === 0 || wd === 6) return true;
+  }
+  return false;
+}
+
+/** One `variant(type, src, len)` value per bar */
+interface MaStep {
+  step(s: RenkoRun, i: number, v: number, volume: number): number;
+  steps: Committable[];
+}
+
+/** ta.rising / ta.falling(ma, 3): a counter of strict rises (falls) from the previous bar, na steps leave it as is */
+interface RenkoVars {
+  rises: number;
+  falls: number;
+  direction: number;
+  dopen: number;
+  olong: number;
+  oshort: number;
+  /** periodStarts state: the period key of the last bar and its start */
+  prevKey: number;
+  start: number;
+}
+
+interface RenkoRun extends BarRunState<RenkoVars> {
+  up: ReturnType<typeof taStep.ema>;
+  dn: ReturnType<typeof taStep.ema>;
+  rsi: ReturnType<typeof taStep.rsi> | null;
+  src: number[];
+  ma: number[];
+  rmi: number[];
+  starts: number[];
+  maPlot: Point[];
+  openPlot: Point[];
+  markers: MarkerData[];
+  arrows: ArrowData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<RenkoMovingAverageRmiAlertR3ByInputs>): BarStudy<RenkoRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const len = Math.trunc(cfg.maLen);
   const rmiLen = Math.trunc(cfg.rmiLen);
   const mom = Math.trunc(cfg.mom);
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = sourceOf(bars, cfg.maSrc);
-  const srcS = S(src);
+  const srcOf = barSource(cfg.maSrc);
+  /** The open line periods of the whole set (exchange calendar or another period): computed in init */
+  const fullStarts = (c: ChartContext) => hasCalendar(c) || !UTC_PERIODS.has(cfg.dPeriod);
+  let ms = false;
+  let allDays = false;
+  let precomputed: number[] | null = null;
 
   // variant(type, src, len)
-  const variant = (): number[] => {
+  const variant = (): MaStep => {
+    const ema = () => taStep.ema(len);
     switch (cfg.maType) {
-      case 'EMA': return A(ta.ema(srcS, len));
-      case 'WMA': return A(ta.wma(srcS, len));
-      case 'VWMA': return A(ta.vwma(srcS, len, S(bars.map((b) => b.volume ?? NaN))));
+      case 'EMA': { const m = ema(); return { step: (_s, _i, v) => m.step(v), steps: [m] }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (_s, _i, v) => m.step(v, len), steps: [m] }; }
+      case 'VWMA': { const m = new WindowVwma(len); return { step: (_s, _i, v, vol) => m.step(v, vol), steps: [m] }; }
       case 'SMMA': {
         // v5 := na(v5[1]) ? sma(src, len) : (v5[1] * (len - 1) + src) / len
-        const sma = A(ta.sma(srcS, len));
-        const out: number[] = [];
-        for (let i = 0; i < n; i++) {
-          const prev = i > 0 ? out[i - 1] : NaN;
-          out.push(isNaN(prev) ? sma[i] : (prev * (len - 1) + src[i]) / len);
-        }
-        return out;
+        const sma = new WindowSma(len);
+        return {
+          step: (s, i, v) => {
+            const m = sma.step(v);
+            const prev = i > 0 ? s.ma[i - 1]! : NaN;
+            return isNaN(prev) ? m : (prev * (len - 1) + v) / len;
+          },
+          steps: [sma],
+        };
       }
       case 'DEMA': {
-        const v2 = A(ta.ema(srcS, len));
-        const e2 = A(ta.ema(S(v2), len));
-        return v2.map((v, i) => 2 * v - e2[i]);
+        const e1 = ema();
+        const e2 = ema();
+        return { step: (_s, _i, v) => { const v2 = e1.step(v); return 2 * v2 - e2.step(v2); }, steps: [e1, e2] };
       }
       case 'TEMA': {
-        const v2 = A(ta.ema(srcS, len));
-        const e2 = A(ta.ema(S(v2), len));
-        const e3 = A(ta.ema(S(e2), len));
-        return v2.map((v, i) => 3 * (v - e2[i]) + e3[i]);
+        const e1 = ema();
+        const e2 = ema();
+        const e3 = ema();
+        return {
+          step: (_s, _i, v) => {
+            const v2 = e1.step(v);
+            const x2 = e2.step(v2);
+            return 3 * (v2 - x2) + e3.step(x2);
+          },
+          steps: [e1, e2, e3],
+        };
       }
       case 'HullMA': {
-        const half = A(ta.wma(srcS, len / 2));
-        const full = A(ta.wma(srcS, len));
-        return A(ta.wma(S(half.map((v, i) => 2 * v - full[i])), Math.round(Math.sqrt(len))));
+        const half = taStep.wma();
+        const full = taStep.wma();
+        const outer = taStep.wma();
+        const sq = Math.round(Math.sqrt(len));
+        return {
+          step: (_s, _i, v) => {
+            const h = half.step(v, len / 2);
+            return outer.step(2 * h - full.step(v, len), sq);
+          },
+          steps: [half, full, outer],
+        };
       }
       case 'SSMA': {
         // Ehlers super smoother
@@ -179,111 +243,173 @@ export function calculate(
         const c2 = b1;
         const c3 = -a1 * a1;
         const c1 = 1 - c2 - c3;
-        const out: number[] = [];
-        for (let i = 0; i < n; i++) {
-          const p1 = i > 0 ? src[i - 1] : NaN;
-          const v1 = i > 0 ? out[i - 1] : NaN;
-          const v2 = i > 1 ? out[i - 2] : NaN;
-          out.push((c1 * (src[i] + nz(p1))) / 2 + c2 * nz(v1) + c3 * nz(v2));
-        }
-        return out;
+        return {
+          step: (s, i, v) => {
+            const p1 = i > 0 ? s.src[i - 1]! : NaN;
+            const v1 = i > 0 ? s.ma[i - 1]! : NaN;
+            const v2 = i > 1 ? s.ma[i - 2]! : NaN;
+            return (c1 * (v + nz(p1))) / 2 + c2 * nz(v1) + c3 * nz(v2);
+          },
+          steps: [],
+        };
       }
       case 'ZEMA': {
-        const e1 = A(ta.ema(srcS, len));
-        const e2 = A(ta.ema(S(e1), len));
-        return e1.map((v, i) => v + (v - e2[i]));
+        const e1 = ema();
+        const e2 = ema();
+        return { step: (_s, _i, v) => { const x = e1.step(v); return x + (x - e2.step(x)); }, steps: [e1, e2] };
       }
-      case 'TMA': return A(ta.sma(ta.sma(srcS, len), len));
-      default: return A(ta.sma(srcS, len));
+      case 'TMA': {
+        const a = new WindowSma(len);
+        const b = new WindowSma(len);
+        return { step: (_s, _i, v) => b.step(a.step(v)), steps: [a, b] };
+      }
+      default: { const m = new WindowSma(len); return { step: (_s, _i, v) => m.step(v), steps: [m] }; }
     }
   };
-  const ma = variant();
-  const maS = S(ma);
-  const rising = ta.rising(maS, 3).toArray();
-  const falling = ta.falling(maS, 3).toArray();
+  let ma: MaStep;
 
-  // Open line: security(ticker, dperiod, time, gaps_off, lookahead_on), newDay = change(start)
-  const start = securityStarts(bars, cfg.dPeriod, chart);
-
-  // RMI
-  const up = A(ta.ema(S(src.map((v, i) => (i >= mom ? Math.max(v - src[i - mom], 0) : NaN))), rmiLen));
-  const dn = A(ta.ema(S(src.map((v, i) => (i >= mom ? Math.max(src[i - mom] - v, 0) : NaN))), rmiLen));
-  const rmi = cfg.uRSI
-    ? A(ta.rsi(srcS, rmiLen))
-    : up.map((u, i) => (eq(dn[i], 0) ? 0 : 100 - 100 / (1 + u / dn[i])));
-
-  const maPlot: Array<{ time: number; value: number; color: string }> = [];
-  const openPlot: Array<{ time: number; value: number; color: string }> = [];
-  const markers: MarkerData[] = [];
-  const arrows: ArrowData[] = [];
   const lime = String(color.new(LIME, 10));
   const red = String(color.new(RED, 10));
   const purple = String(color.new(PURPLE, 40));
   const arrowUp = String(color.new(LIME, 20));
   const arrowDown = String(color.new(RED, 20));
-  // alertcondition flags: olong==1, oshort==1, olong[1]>0 and olong==0, oshort[1]>0 and oshort==0
-  const flags: boolean[][] = [0, 1, 2, 3].map(() => new Array<boolean>(n).fill(false));
-
-  let direction = 0;
-  let dopen = NaN;
-  let olong = NaN;
-  let oshort = NaN;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time;
-    // direction := rising(ma, 3) ? 1 : falling(ma, 3) ? -1 : nz(direction[1])
-    direction = rising[i] ? 1 : falling[i] ? -1 : direction;
-    maPlot.push({ time: t, value: ma[i], color: direction > 0 ? lime : direction < 0 ? red : 'transparent' });
-
-    // change(start): na on the first bar; valuewhen(start[1] <= time, src, 0)
-    const newDay = i > 0 && start[i] !== start[i - 1];
-    const dopenNow = i > 0 && start[i - 1] <= t ? src[i] : NaN;
-    dopen = newDay ? dopenNow : nz(dopen, dopenNow);
-    openPlot.push({ time: t, value: dopen, color: newDay ? 'transparent' : purple });
-
-    const pa = gt(b.close, b.open) && (!cfg.udOpen || gt(b.close, dopen)) ? 1
-      : lt(b.close, b.open) && (!cfg.udOpen || lt(b.close, dopen)) ? -1 : 0;
-    const has = direction;
-    const prevRmi = i > 0 ? rmi[i - 1] : NaN;
-    const r = rmi[i];
-    const rmiSig = ge(r, prevRmi) && ge(r, cfg.ob) ? 1 : le(r, prevRmi) && le(r, cfg.os) ? -1 : 0;
-    const long = pa === 1 && has === 1 && rmiSig === 1;
-    const short = pa === -1 && has === -1 && rmiSig === -1;
-    const prev = i > 0 ? bars[i - 1] : null;
-    const downBrick = lt(b.close, b.open) && prev !== null && gt(prev.close, prev.open);
-    const upBrick = gt(b.close, b.open) && prev !== null && lt(prev.close, prev.open);
-
-    const pl = olong;
-    olong = gt(pl, 0) && (has < 0 || (!cfg.uRSI && rmiSig <= 0) || (cfg.exitFirst && downBrick)) ? 0
-      : nz(pl) === 0 && long ? 1
-      : gt(pl, 0) && has === 1 ? pl + 1 : 0;
-    const ps = oshort;
-    oshort = gt(ps, 0) && (has > 1 || (!cfg.uRSI && rmiSig >= 0) || (cfg.exitFirst && upBrick)) ? 0
-      : nz(ps) === 0 && short ? 1
-      : gt(ps, 0) && has === -1 ? ps + 1 : 0;
-
-    // plotarrow(olong==1?1:na, "BUY Arrow", colorup=lime) / plotarrow(oshort==1?-1:na, "SELL Arrow", colordown=red)
-    if (eq(olong, 1)) arrows.push({ time: t, id: 'arrow0', value: 1, color: arrowUp });
-    if (eq(oshort, 1)) arrows.push({ time: t, id: 'arrow1', value: -1, color: arrowDown });
-    if (gt(pl, 0) && olong === 0) {
-      markers.push({ id: 'shape0', time: t, position: 'belowBar', shape: 'xcross', color: GRAY, text: 'Exit\nBuy', textColor: '#2962FF' });
-    }
-    if (gt(ps, 0) && oshort === 0) {
-      markers.push({ id: 'shape1', time: t, position: 'aboveBar', shape: 'xcross', color: GRAY, text: 'Exit\nSell', textColor: '#2962FF' });
-    }
-    flags[0][i] = eq(olong, 1);
-    flags[1][i] = eq(oshort, 1);
-    flags[2][i] = gt(pl, 0) && olong === 0;
-    flags[3][i] = gt(ps, 0) && oshort === 0;
-  }
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: maPlot, plot1: openPlot },
-    markers,
-    arrows,
-    alerts: alertStates(alertConditions, bars, flags),
+    fullRunReason: (c) => (!isBarSource(cfg.maSrc) ? 'source of another study'
+      : fullStarts(c) ? 'open line periods of the exchange calendar' : null),
+    // the UTC periods read the time unit of the first bar and whether a bar is on a weekend
+    key: (bars, c) => (fullStarts(c) ? '' : `${msTimes(bars)}|${everyDay(bars, msTimes(bars))}`),
+    init(bars, c) {
+      ms = msTimes(bars);
+      // Open line: security(ticker, dperiod, time, gaps_off, lookahead_on), newDay = change(start)
+      if (fullStarts(c)) precomputed = securityStarts(bars, cfg.dPeriod, c);
+      else {
+        precomputed = null;
+        allDays = everyDay(bars, ms);
+      }
+      ma = variant();
+      const s: RenkoRun = {
+        // RMI
+        up: taStep.ema(rmiLen), dn: taStep.ema(rmiLen), rsi: cfg.uRSI ? taStep.rsi(rmiLen) : null, src: [], ma: [], rmi: [], starts: [],
+        maPlot: [], openPlot: [], markers: [], arrows: [],
+        // alertcondition flags: olong==1, oshort==1, olong[1]>0 and olong==0, oshort[1]>0 and oshort==0
+        flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [], lists: [], series: [],
+        vars: { rises: 0, falls: 0, direction: 0, dopen: NaN, olong: NaN, oshort: NaN, prevKey: NaN, start: NaN },
+      };
+      s.steps = [...ma.steps, s.up, s.dn, ...(s.rsi ? [s.rsi] : [])];
+      s.lists = [s.markers, s.arrows, ...s.times];
+      s.series = [s.src, s.ma, s.rmi, s.starts, s.maPlot, s.openPlot, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const t = b.time;
+      const v = s.vars;
+      const src = srcOf(b);
+      s.src[i] = src;
+      const m = ma.step(s, i, src, b.volume ?? NaN);
+      s.ma[i] = m;
+      const prevMa = i > 0 ? s.ma[i - 1]! : NaN;
+      if (Number.isFinite(m) && Number.isFinite(prevMa)) {
+        v.rises = compare.gt(m, prevMa) ? v.rises + 1 : 0;
+        v.falls = compare.lt(m, prevMa) ? v.falls + 1 : 0;
+      }
+      const rising = v.rises >= 3;
+      const falling = v.falls >= 3;
+
+      // the period start of the bar (periodStarts on the UTC calendar)
+      let start: number;
+      if (precomputed) start = precomputed[i]!;
+      else {
+        const tm = ms ? t : t * 1000;
+        const day = Math.floor(tm / DAY) * DAY;
+        const k = utcPeriodStart(day, cfg.dPeriod);
+        if (k !== v.prevKey) v.start = allDays ? k : tm;
+        v.prevKey = k;
+        start = ms ? v.start : Math.floor(v.start / 1000);
+      }
+      s.starts[i] = start;
+
+      const pastSrc = i >= mom ? s.src[i - mom]! : NaN;
+      const u = s.up.step(i >= mom ? Math.max(src - pastSrc, 0) : NaN);
+      const d = s.dn.step(i >= mom ? Math.max(pastSrc - src, 0) : NaN);
+      const r = s.rsi ? s.rsi.step(src) : eq(d, 0) ? 0 : 100 - 100 / (1 + u / d);
+      s.rmi[i] = r;
+
+      // direction := rising(ma, 3) ? 1 : falling(ma, 3) ? -1 : nz(direction[1])
+      v.direction = rising ? 1 : falling ? -1 : v.direction;
+      const direction = v.direction;
+      s.maPlot[i] = { time: t, value: m, color: direction > 0 ? lime : direction < 0 ? red : 'transparent' };
+
+      // change(start): na on the first bar; valuewhen(start[1] <= time, src, 0)
+      const newDay = i > 0 && start !== s.starts[i - 1];
+      const dopenNow = i > 0 && s.starts[i - 1]! <= t ? src : NaN;
+      v.dopen = newDay ? dopenNow : nz(v.dopen, dopenNow);
+      const dopen = v.dopen;
+      s.openPlot[i] = { time: t, value: dopen, color: newDay ? 'transparent' : purple };
+
+      const pa = gt(b.close, b.open) && (!cfg.udOpen || gt(b.close, dopen)) ? 1
+        : lt(b.close, b.open) && (!cfg.udOpen || lt(b.close, dopen)) ? -1 : 0;
+      const has = direction;
+      const prevRmi = i > 0 ? s.rmi[i - 1]! : NaN;
+      const rmiSig = ge(r, prevRmi) && ge(r, cfg.ob) ? 1 : le(r, prevRmi) && le(r, cfg.os) ? -1 : 0;
+      const long = pa === 1 && has === 1 && rmiSig === 1;
+      const short = pa === -1 && has === -1 && rmiSig === -1;
+      const prev = i > 0 ? bars[i - 1]! : null;
+      const downBrick = lt(b.close, b.open) && prev !== null && gt(prev.close, prev.open);
+      const upBrick = gt(b.close, b.open) && prev !== null && lt(prev.close, prev.open);
+
+      const pl = v.olong;
+      v.olong = gt(pl, 0) && (has < 0 || (!cfg.uRSI && rmiSig <= 0) || (cfg.exitFirst && downBrick)) ? 0
+        : nz(pl) === 0 && long ? 1
+        : gt(pl, 0) && has === 1 ? pl + 1 : 0;
+      const ps = v.oshort;
+      v.oshort = gt(ps, 0) && (has > 1 || (!cfg.uRSI && rmiSig >= 0) || (cfg.exitFirst && upBrick)) ? 0
+        : nz(ps) === 0 && short ? 1
+        : gt(ps, 0) && has === -1 ? ps + 1 : 0;
+      const olong = v.olong;
+      const oshort = v.oshort;
+
+      // plotarrow(olong==1?1:na, "BUY Arrow", colorup=lime) / plotarrow(oshort==1?-1:na, "SELL Arrow", colordown=red)
+      if (eq(olong, 1)) s.arrows.push({ time: t, id: 'arrow0', value: 1, color: arrowUp });
+      if (eq(oshort, 1)) s.arrows.push({ time: t, id: 'arrow1', value: -1, color: arrowDown });
+      if (gt(pl, 0) && olong === 0) {
+        s.markers.push({ id: 'shape0', time: t, position: 'belowBar', shape: 'xcross', color: GRAY, text: 'Exit\nBuy', textColor: '#2962FF' });
+      }
+      if (gt(ps, 0) && oshort === 0) {
+        s.markers.push({ id: 'shape1', time: t, position: 'aboveBar', shape: 'xcross', color: GRAY, text: 'Exit\nSell', textColor: '#2962FF' });
+      }
+      const flags = [eq(olong, 1), eq(oshort, 1), gt(pl, 0) && olong === 0, gt(ps, 0) && oshort === 0];
+      for (let k = 0; k < 4; k++) {
+        s.flags[k]![i] = flags[k]!;
+        if (flags[k]) s.times[k]!.push(t as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.maPlot.slice(), plot1: s.openPlot.slice() },
+        markers: s.markers.slice(),
+        arrows: s.arrows.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RenkoMovingAverageRmiAlertR3ByInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<RenkoMovingAverageRmiAlertR3ByInputs> = {},
+  chart?: ChartContext,
+): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 /** The original's alertconditions */
@@ -294,4 +420,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert3', title: 'Swing SELL Exit Alert', message: 'SELL Exit' },
 ];
 
-export const RenkoMovingAverageRmiAlertR3By = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const RenkoMovingAverageRmiAlertR3By = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

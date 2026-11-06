@@ -15,9 +15,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, math, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData, MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrendDoublePullbackV10Inputs {
   /** Short EMA 1 (top) */
@@ -86,205 +88,244 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
 type Band = 'NA' | 'SHORT' | 'MEDIUM';
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TrendDoublePullbackV10Inputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface TdpVars {
+  /** var int consecutive_break_long / short */
+  breakLong: number;
+  breakShort: number;
+  /** var int last_long_signal_bar / last_short_signal_bar */
+  lastLong: number;
+  lastShort: number;
+  stateLong: number;
+  bandLong: Band;
+  stateShort: number;
+  bandShort: Band;
+  /** state_long[1] (na on the first bar) and the others of the bar before */
+  prevStateLong: number;
+  prevBandLong: Band | null;
+  prevStateShort: number;
+  prevBandShort: Band | null;
+}
+
+interface TdpRun extends BarRunState<TdpVars> {
+  emas: Array<ReturnType<typeof taStep.ema>>;
+  sumUp: WindowSum;
+  sumDown: WindowSum;
+  plots: Point[][];
+  bgColors: BgColorData[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<TrendDoublePullbackV10Inputs>): BarStudy<TdpRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
-
-  const ema15 = A(ta.ema(close, cfg.lenEma15));
-  const ema25 = A(ta.ema(close, cfg.lenEma25));
-  const ema50 = A(ta.ema(close, cfg.lenEma50));
-  const ema70 = A(ta.ema(close, cfg.lenEma70));
-  const ema199 = A(ta.ema(close, cfg.lenEma199));
-
-  // Raw structure: short band above (below) the medium band; math.max / math.min give na with an na EMA
-  const rawUp: boolean[] = new Array(n);
-  const rawDown: boolean[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const fastTop = Math.max(ema15[i], ema25[i]);
-    const fastBottom = Math.min(ema15[i], ema25[i]);
-    const slowTop = Math.max(ema50[i], ema70[i]);
-    const slowBottom = Math.min(ema50[i], ema70[i]);
-    rawUp[i] = gt(fastBottom, slowTop);
-    rawDown[i] = lt(fastTop, slowBottom);
-  }
-  // math.sum(raw ? 1 : 0, trend_stability) == trend_stability (na during the first bars)
-  const sumUp = A(math.sum(S(rawUp.map((x) => (x ? 1 : 0))), cfg.trendStability) as Series);
-  const sumDown = A(math.sum(S(rawDown.map((x) => (x ? 1 : 0))), cfg.trendStability) as Series);
-
   const blue = String(color.new(color.blue, 0));
   const red = String(color.new(color.red, 0));
   const bgStableUp = String(color.new(color.green, 85));
   const bgUnstableUp = String(color.new(color.green, 95));
   const bgStableDown = String(color.new(color.red, 85));
   const bgUnstableDown = String(color.new(color.red, 95));
-
-  let breakLong = 0; // var int consecutive_break_long
-  let breakShort = 0;
-  let lastLong = -999999; // var int last_long_signal_bar
-  let lastShort = -999999;
-  let stateLong = 0;
-  let bandLong: Band = 'NA';
-  let stateShort = 0;
-  let bandShort: Band = 'NA';
-  let prevStateLong = NaN; // state_long[1] (na on the first bar)
-  let prevBandLong: Band | null = null;
-  let prevStateShort = NaN;
-  let prevBandShort: Band | null = null;
-
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  const buyFlags: boolean[] = [];
-  const sellFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time;
-    const range = b.high - b.low;
-    const lowerShadow = gt(range, 0) ? (lt(b.close, b.open) ? (b.close - b.low) / range : (b.open - b.low) / range) : 0;
-    const upperShadow = gt(range, 0) ? (lt(b.close, b.open) ? (b.high - b.open) / range : (b.high - b.close) / range) : 0;
-    const isGreen = gt(b.close, b.open);
-    const isRed = lt(b.close, b.open);
-
-    const stableUp = !isNaN(sumUp[i]) && Math.abs(sumUp[i] - cfg.trendStability) <= EPS;
-    const stableDown = !isNaN(sumDown[i]) && Math.abs(sumDown[i] - cfg.trendStability) <= EPS;
-
-    if (lt(b.close, ema70[i])) breakLong += 1;
-    else breakLong = 0;
-    if (gt(b.close, ema70[i])) breakShort += 1;
-    else breakShort = 0;
-    const brokenLong = breakLong > cfg.breakoutTolerance;
-    const brokenShort = breakShort > cfg.breakoutTolerance;
-
-    const isUp = stableUp && !brokenLong;
-    const isDown = stableDown && !brokenShort;
-    const isUnstableUp = rawUp[i] && !stableUp && !brokenLong;
-    const isUnstableDown = rawDown[i] && !stableDown && !brokenShort;
-
-    // Support / resistance
-    const supportShort = le(b.low, ema15[i]) && ge(b.close, ema25[i]);
-    const supportMedium = le(b.low, ema50[i]) && ge(b.close, ema70[i]);
-    const validLong = isGreen || gt(lowerShadow, 0.3);
-    const longTrigShort = isUp && supportShort && validLong;
-    const longTrigMedium = isUp && supportMedium && validLong;
-    const resistShort = ge(b.high, ema15[i]) && le(b.close, ema25[i]);
-    const resistMedium = ge(b.high, ema50[i]) && le(b.close, ema70[i]);
-    const validShort = isRed || gt(upperShadow, 0.3);
-    const shortTrigShort = isDown && resistShort && validShort;
-    const shortTrigMedium = isDown && resistMedium && validShort;
-
-    // Cooldown
-    const longCooldown = i - lastLong > cfg.signalCooldown;
-    const shortCooldown = i - lastShort > cfg.signalCooldown;
-
-    // Long state machine
-    if (brokenLong) {
-      stateLong = 0;
-      bandLong = 'NA';
-    } else if (isUp) {
-      if (stateLong === 0) {
-        if (longCooldown) {
-          if (longTrigShort) {
-            stateLong = 1;
-            bandLong = 'SHORT';
-            lastLong = i;
-          } else if (longTrigMedium) {
-            stateLong = 1;
-            bandLong = 'MEDIUM';
-            lastLong = i;
-          }
-        }
-      } else if (stateLong === 1) {
-        if ((bandLong === 'SHORT' && longTrigShort) || (bandLong === 'MEDIUM' && longTrigMedium)) {
-          // state_long := 2, then 0 on the same bar
-          lastLong = i;
-          stateLong = 0;
-          bandLong = 'NA';
-        }
-      }
-    }
-    // Short state machine
-    if (brokenShort) {
-      stateShort = 0;
-      bandShort = 'NA';
-    } else if (isDown) {
-      if (stateShort === 0) {
-        if (shortCooldown) {
-          if (shortTrigShort) {
-            stateShort = 1;
-            bandShort = 'SHORT';
-            lastShort = i;
-          } else if (shortTrigMedium) {
-            stateShort = 1;
-            bandShort = 'MEDIUM';
-            lastShort = i;
-          }
-        }
-      } else if (stateShort === 1) {
-        if ((bandShort === 'SHORT' && shortTrigShort) || (bandShort === 'MEDIUM' && shortTrigMedium)) {
-          lastShort = i;
-          stateShort = 0;
-          bandShort = 'NA';
-        }
-      }
-    }
-
-    // Background (var color, only written when show_bg)
-    if (cfg.showBg) {
-      const bg = isUp ? bgStableUp : isUnstableUp ? bgUnstableUp : isDown ? bgStableDown
-        : isUnstableDown ? bgUnstableDown : null;
-      if (bg) bgColors.push({ time: t, color: bg });
-    }
-
-    // Signals
-    if (stateLong === 1 && prevStateLong === 0) {
-      markers.push({ time: t, position: 'belowBar', shape: 'arrowUp', color: blue, size: 'tiny', text: '一探', textColor: color.blue });
-    }
-    const isBuy = prevStateLong === 1
-      && ((prevBandLong === 'SHORT' && longTrigShort) || (prevBandLong === 'MEDIUM' && longTrigMedium));
-    if (isBuy) {
-      markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: blue, size: 'tiny', text: '买入', textColor: color.blue });
-    }
-    if (stateShort === 1 && prevStateShort === 0) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'arrowDown', color: red, size: 'tiny', text: '一探', textColor: color.red });
-    }
-    const isSell = prevStateShort === 1
-      && ((prevBandShort === 'SHORT' && shortTrigShort) || (prevBandShort === 'MEDIUM' && shortTrigMedium));
-    if (isSell) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: red, size: 'tiny', text: '卖出', textColor: color.red });
-    }
-
-    buyFlags.push(isBuy);
-    sellFlags.push(isSell);
-    prevStateLong = stateLong;
-    prevBandLong = bandLong;
-    prevStateShort = stateShort;
-    prevBandShort = bandShort;
-  }
-
-  const line = (v: number[], c: string) => bars.map((b, i) => ({ time: b.time, value: v[i], color: c }));
+  const lineColors = [
+    String(color.new(color.fuchsia, 0)), String(color.new('#C71585', 0)), String(color.new(color.orange, 0)),
+    String(color.new(color.orange, 0)), color.purple,
+  ];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(ema15, String(color.new(color.fuchsia, 0))),
-      plot1: line(ema25, String(color.new('#C71585', 0))),
-      plot2: line(ema50, String(color.new(color.orange, 0))),
-      plot3: line(ema70, String(color.new(color.orange, 0))),
-      plot4: line(ema199, color.purple),
+    init() {
+      const emas = [cfg.lenEma15, cfg.lenEma25, cfg.lenEma50, cfg.lenEma70, cfg.lenEma199].map((l) => taStep.ema(l));
+      const sumUp = new WindowSum(cfg.trendStability);
+      const sumDown = new WindowSum(cfg.trendStability);
+      const s: TdpRun = {
+        emas, sumUp, sumDown, plots: [[], [], [], [], []], bgColors: [], markers: [], flags: [[], []], times: [[], []],
+        steps: [...emas, sumUp, sumDown],
+        vars: {
+          breakLong: 0, breakShort: 0, lastLong: -999999, lastShort: -999999, stateLong: 0, bandLong: 'NA',
+          stateShort: 0, bandShort: 'NA', prevStateLong: NaN, prevBandLong: null, prevStateShort: NaN, prevBandShort: null,
+        },
+        lists: [], series: [],
+      };
+      s.lists = [s.bgColors, s.markers, ...s.times];
+      s.series = [...s.plots, ...s.flags];
+      return s;
     },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Short Band Fill', color: String(color.new(color.fuchsia, 85)) } },
-      { plot1: 'plot2', plot2: 'plot3', options: { title: 'Medium Band Fill', color: String(color.new(color.orange, 85)) } },
-    ],
-    bgColors,
-    markers,
-    // alertcondition(is_buy_signal, "[Alert] Buy Signal") / alertcondition(is_sell_signal, "[Alert] Sell Signal")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const v = s.vars;
+      const ema15 = s.emas[0]!.step(b.close);
+      const ema25 = s.emas[1]!.step(b.close);
+      const ema50 = s.emas[2]!.step(b.close);
+      const ema70 = s.emas[3]!.step(b.close);
+      const ema199 = s.emas[4]!.step(b.close);
+      const values = [ema15, ema25, ema50, ema70, ema199];
+      for (let k = 0; k < 5; k++) s.plots[k]![i] = { time: t, value: values[k]!, color: lineColors[k]! };
+
+      // Raw structure: short band above (below) the medium band; math.max / math.min give na with an na EMA
+      const fastTop = Math.max(ema15, ema25);
+      const fastBottom = Math.min(ema15, ema25);
+      const slowTop = Math.max(ema50, ema70);
+      const slowBottom = Math.min(ema50, ema70);
+      const rawUp = gt(fastBottom, slowTop);
+      const rawDown = lt(fastTop, slowBottom);
+      // math.sum(raw ? 1 : 0, trend_stability) == trend_stability (na during the first bars)
+      const sumUp = s.sumUp.step(rawUp ? 1 : 0);
+      const sumDown = s.sumDown.step(rawDown ? 1 : 0);
+
+      const range = b.high - b.low;
+      const lowerShadow = gt(range, 0) ? (lt(b.close, b.open) ? (b.close - b.low) / range : (b.open - b.low) / range) : 0;
+      const upperShadow = gt(range, 0) ? (lt(b.close, b.open) ? (b.high - b.open) / range : (b.high - b.close) / range) : 0;
+      const isGreen = gt(b.close, b.open);
+      const isRed = lt(b.close, b.open);
+
+      const stableUp = !isNaN(sumUp) && Math.abs(sumUp - cfg.trendStability) <= EPS;
+      const stableDown = !isNaN(sumDown) && Math.abs(sumDown - cfg.trendStability) <= EPS;
+
+      if (lt(b.close, ema70)) v.breakLong += 1;
+      else v.breakLong = 0;
+      if (gt(b.close, ema70)) v.breakShort += 1;
+      else v.breakShort = 0;
+      const brokenLong = v.breakLong > cfg.breakoutTolerance;
+      const brokenShort = v.breakShort > cfg.breakoutTolerance;
+
+      const isUp = stableUp && !brokenLong;
+      const isDown = stableDown && !brokenShort;
+      const isUnstableUp = rawUp && !stableUp && !brokenLong;
+      const isUnstableDown = rawDown && !stableDown && !brokenShort;
+
+      // Support / resistance
+      const supportShort = le(b.low, ema15) && ge(b.close, ema25);
+      const supportMedium = le(b.low, ema50) && ge(b.close, ema70);
+      const validLong = isGreen || gt(lowerShadow, 0.3);
+      const longTrigShort = isUp && supportShort && validLong;
+      const longTrigMedium = isUp && supportMedium && validLong;
+      const resistShort = ge(b.high, ema15) && le(b.close, ema25);
+      const resistMedium = ge(b.high, ema50) && le(b.close, ema70);
+      const validShort = isRed || gt(upperShadow, 0.3);
+      const shortTrigShort = isDown && resistShort && validShort;
+      const shortTrigMedium = isDown && resistMedium && validShort;
+
+      // Cooldown
+      const longCooldown = i - v.lastLong > cfg.signalCooldown;
+      const shortCooldown = i - v.lastShort > cfg.signalCooldown;
+
+      // Long state machine
+      if (brokenLong) {
+        v.stateLong = 0;
+        v.bandLong = 'NA';
+      } else if (isUp) {
+        if (v.stateLong === 0) {
+          if (longCooldown) {
+            if (longTrigShort) {
+              v.stateLong = 1;
+              v.bandLong = 'SHORT';
+              v.lastLong = i;
+            } else if (longTrigMedium) {
+              v.stateLong = 1;
+              v.bandLong = 'MEDIUM';
+              v.lastLong = i;
+            }
+          }
+        } else if (v.stateLong === 1) {
+          if ((v.bandLong === 'SHORT' && longTrigShort) || (v.bandLong === 'MEDIUM' && longTrigMedium)) {
+            // state_long := 2, then 0 on the same bar
+            v.lastLong = i;
+            v.stateLong = 0;
+            v.bandLong = 'NA';
+          }
+        }
+      }
+      // Short state machine
+      if (brokenShort) {
+        v.stateShort = 0;
+        v.bandShort = 'NA';
+      } else if (isDown) {
+        if (v.stateShort === 0) {
+          if (shortCooldown) {
+            if (shortTrigShort) {
+              v.stateShort = 1;
+              v.bandShort = 'SHORT';
+              v.lastShort = i;
+            } else if (shortTrigMedium) {
+              v.stateShort = 1;
+              v.bandShort = 'MEDIUM';
+              v.lastShort = i;
+            }
+          }
+        } else if (v.stateShort === 1) {
+          if ((v.bandShort === 'SHORT' && shortTrigShort) || (v.bandShort === 'MEDIUM' && shortTrigMedium)) {
+            v.lastShort = i;
+            v.stateShort = 0;
+            v.bandShort = 'NA';
+          }
+        }
+      }
+
+      // Background (var color, only written when show_bg)
+      if (cfg.showBg) {
+        const bg = isUp ? bgStableUp : isUnstableUp ? bgUnstableUp : isDown ? bgStableDown
+          : isUnstableDown ? bgUnstableDown : null;
+        if (bg) s.bgColors.push({ time: t, color: bg });
+      }
+
+      // Signals
+      const markers = s.markers;
+      if (v.stateLong === 1 && v.prevStateLong === 0) {
+        markers.push({ time: t, position: 'belowBar', shape: 'arrowUp', color: blue, size: 'tiny', text: '一探', textColor: color.blue });
+      }
+      const isBuy = v.prevStateLong === 1
+        && ((v.prevBandLong === 'SHORT' && longTrigShort) || (v.prevBandLong === 'MEDIUM' && longTrigMedium));
+      if (isBuy) {
+        markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: blue, size: 'tiny', text: '买入', textColor: color.blue });
+      }
+      if (v.stateShort === 1 && v.prevStateShort === 0) {
+        markers.push({ time: t, position: 'aboveBar', shape: 'arrowDown', color: red, size: 'tiny', text: '一探', textColor: color.red });
+      }
+      const isSell = v.prevStateShort === 1
+        && ((v.prevBandShort === 'SHORT' && shortTrigShort) || (v.prevBandShort === 'MEDIUM' && shortTrigMedium));
+      if (isSell) {
+        markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: red, size: 'tiny', text: '卖出', textColor: color.red });
+      }
+
+      s.flags[0]![i] = isBuy;
+      s.flags[1]![i] = isSell;
+      if (isBuy) s.times[0]!.push(t as number);
+      if (isSell) s.times[1]!.push(t as number);
+      v.prevStateLong = v.stateLong;
+      v.prevBandLong = v.bandLong;
+      v.prevStateShort = v.stateShort;
+      v.prevBandShort = v.bandShort;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0]!.slice(), plot1: p[1]!.slice(), plot2: p[2]!.slice(), plot3: p[3]!.slice(), plot4: p[4]!.slice() },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Short Band Fill', color: String(color.new(color.fuchsia, 85)) } },
+          { plot1: 'plot2', plot2: 'plot3', options: { title: 'Medium Band Fill', color: String(color.new(color.orange, 85)) } },
+        ],
+        bgColors: s.bgColors.slice(),
+        markers: s.markers.slice(),
+        // alertcondition(is_buy_signal, "[Alert] Buy Signal") / alertcondition(is_sell_signal, "[Alert] Sell Signal")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrendDoublePullbackV10Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<TrendDoublePullbackV10Inputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -295,6 +336,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const TrendDoublePullbackV10 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

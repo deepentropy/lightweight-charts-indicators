@@ -12,6 +12,8 @@
  */
 
 import { time, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface OpalInputs {
   show0300: boolean;
@@ -81,65 +83,94 @@ export const metadata = {
 
 const TZ = 'America/New_York';
 
-export function calculate(bars: Bar[], inputs: Partial<OpalInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const plots: Record<string, { time: number; value: number; color: string }[]> = {};
-  for (let k = 0; k < 8; k++) plots[`plot${k}`] = [];
-  const colours = [C0300, C0700, C0820, C0900, C0930, C1550, C1800, CCRYPTO];
+type Point = { time: number; value: number; color: string };
 
+interface OpalVars {
   // var float price_xxxx = na
-  let p0300 = NaN;
-  let p0700 = NaN;
-  let p0820 = NaN;
-  let p0900 = NaN;
-  let p0930 = NaN;
-  let p1550 = NaN;
-  let p1800 = NaN;
-  let pCrypto = NaN;
+  p0300: number;
+  p0700: number;
+  p0820: number;
+  p0900: number;
+  p0930: number;
+  p1550: number;
+  p1800: number;
+  pCrypto: number;
+}
+
+interface OpalRun extends BarRunState<OpalVars> {
+  plots: Point[][];
+}
+
+const colours = [C0300, C0700, C0820, C0900, C0930, C1550, C1800, CCRYPTO];
+
+function study(inputs: Partial<OpalInputs>): BarStudy<OpalRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
   const cryptoTarget = cfg.isDst ? 2000 : 1900;
-
-  for (const b of bars) {
-    // current_time = hour(time, "America/New_York") * 100 + minute(time, "America/New_York")
-    const ms = b.time * 1000;
-    const ct = time.hour(ms, TZ) * 100 + time.minute(ms, TZ);
-    if (ct >= 1700 && ct < 1701) {
-      p0300 = NaN;
-      p0700 = NaN;
-      p0820 = NaN;
-      p0900 = NaN;
-      p0930 = NaN;
-      p1550 = NaN;
-    }
-    if (ct >= 300 && ct < 301) p0300 = b.open;
-    if (ct >= 700 && ct < 701) p0700 = b.open;
-    if (ct >= 820 && ct < 821) p0820 = b.open;
-    if (ct >= 900 && ct < 901) p0900 = b.open;
-    if (ct >= 930 && ct < 931) p0930 = b.open;
-    if (ct >= 1550 && ct < 1551) p1550 = b.open;
-    if (ct >= 1800 && ct < 1801) p1800 = b.open;
-    if (ct >= cryptoTarget && ct < cryptoTarget + 1) pCrypto = b.open;
-
-    const values = [
-      cfg.show0300 && ct >= 300 && ct <= 1659 ? p0300 : NaN,
-      cfg.show0700 && ct >= 700 && ct <= 1659 ? p0700 : NaN,
-      cfg.show0820 && ct >= 820 && ct <= 1659 ? p0820 : NaN,
-      cfg.show0900 && ct >= 900 && ct <= 1659 ? p0900 : NaN,
-      cfg.show0930 && ct >= 930 && ct <= 1659 ? p0930 : NaN,
-      cfg.show1550 && ct >= 1550 && ct <= 1659 ? p1550 : NaN,
-      cfg.show1800 && (ct >= 1800 || ct <= 1659) ? p1800 : NaN,
-      cfg.showCrypto && (ct >= cryptoTarget || ct <= 1659) ? pCrypto : NaN,
-    ];
-    for (let k = 0; k < 8; k++) plots[`plot${k}`].push({ time: b.time, value: values[k], color: colours[k] });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    init() {
+      const plots: Point[][] = Array.from({ length: 8 }, () => []);
+      return {
+        plots, steps: [], lists: [], series: plots,
+        vars: { p0300: NaN, p0700: NaN, p0820: NaN, p0900: NaN, p0930: NaN, p1550: NaN, p1800: NaN, pCrypto: NaN },
+      };
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const v = s.vars;
+      // current_time = hour(time, "America/New_York") * 100 + minute(time, "America/New_York")
+      const ms = b.time * 1000;
+      const ct = time.hour(ms, TZ) * 100 + time.minute(ms, TZ);
+      if (ct >= 1700 && ct < 1701) {
+        v.p0300 = NaN;
+        v.p0700 = NaN;
+        v.p0820 = NaN;
+        v.p0900 = NaN;
+        v.p0930 = NaN;
+        v.p1550 = NaN;
+      }
+      if (ct >= 300 && ct < 301) v.p0300 = b.open;
+      if (ct >= 700 && ct < 701) v.p0700 = b.open;
+      if (ct >= 820 && ct < 821) v.p0820 = b.open;
+      if (ct >= 900 && ct < 901) v.p0900 = b.open;
+      if (ct >= 930 && ct < 931) v.p0930 = b.open;
+      if (ct >= 1550 && ct < 1551) v.p1550 = b.open;
+      if (ct >= 1800 && ct < 1801) v.p1800 = b.open;
+      if (ct >= cryptoTarget && ct < cryptoTarget + 1) v.pCrypto = b.open;
+
+      const t = b.time as number;
+      const p = s.plots;
+      p[0]![i] = { time: t, value: cfg.show0300 && ct >= 300 && ct <= 1659 ? v.p0300 : NaN, color: colours[0]! };
+      p[1]![i] = { time: t, value: cfg.show0700 && ct >= 700 && ct <= 1659 ? v.p0700 : NaN, color: colours[1]! };
+      p[2]![i] = { time: t, value: cfg.show0820 && ct >= 820 && ct <= 1659 ? v.p0820 : NaN, color: colours[2]! };
+      p[3]![i] = { time: t, value: cfg.show0900 && ct >= 900 && ct <= 1659 ? v.p0900 : NaN, color: colours[3]! };
+      p[4]![i] = { time: t, value: cfg.show0930 && ct >= 930 && ct <= 1659 ? v.p0930 : NaN, color: colours[4]! };
+      p[5]![i] = { time: t, value: cfg.show1550 && ct >= 1550 && ct <= 1659 ? v.p1550 : NaN, color: colours[5]! };
+      p[6]![i] = { time: t, value: cfg.show1800 && (ct >= 1800 || ct <= 1659) ? v.p1800 : NaN, color: colours[6]! };
+      p[7]![i] = { time: t, value: cfg.showCrypto && (ct >= cryptoTarget || ct <= 1659) ? v.pCrypto : NaN, color: colours[7]! };
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<OpalInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<OpalInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const OpalLines = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

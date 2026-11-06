@@ -12,7 +12,9 @@
  * Original notice: © AmGlad_Trader
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { BarColorData, MarkerData } from '../types';
 
 export interface BreakoutAnReversalSignalDetectorWithColoredInBarTrendsInputs {
@@ -44,93 +46,129 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<BreakoutAnReversalSignalDetectorWithColoredInBarTrendsInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
+
+interface BreakoutVars {
+  /** var bool prev_bullish_signal = false */
+  prevBullishSignal: boolean;
+  /** var bool prev_bearish_signal = false */
+  prevBearishSignal: boolean;
+  /** var bool in_bullish_phase = false */
+  inBullishPhase: boolean;
+  /** var bool in_bearish_phase = false */
+  inBearishPhase: boolean;
+  vwBelowLow: number;
+  vwAboveHigh: number;
+}
+
+interface BreakoutRun extends BarRunState<BreakoutVars> {
+  hi: WindowExtreme;
+  lo: WindowExtreme;
+  plot0: { time: number; value: number }[];
+  plot1: { time: number; value: number }[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<BreakoutAnReversalSignalDetectorWithColoredInBarTrendsInputs>): BarStudy<BreakoutRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // highest_high = ta.highest(high[1], x), lowest_low = ta.lowest(low[1], x)
-  const highest = A(ta.highest(S(bars.map((_b, i) => (i > 0 ? bars[i - 1].high : NaN))), cfg.x));
-  const lowest = A(ta.lowest(S(bars.map((_b, i) => (i > 0 ? bars[i - 1].low : NaN))), cfg.x));
-
-  const plot0: { time: number; value: number }[] = [];
-  const plot1: { time: number; value: number }[] = [];
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-
-  let prevBullishSignal = false; // var bool prev_bullish_signal = false
-  let prevBearishSignal = false; // var bool prev_bearish_signal = false
-  let inBullishPhase = false; // var bool in_bullish_phase = false
-  let inBearishPhase = false; // var bool in_bearish_phase = false
-  // ta.valuewhen(close_below_low, close, 0) / ta.valuewhen(close_above_high, close, 0): each call keeps the history
-  // of the bars where it runs (the right side of the lazy `and` / `or`)
-  let vwBelowLow = NaN;
-  let vwAboveHigh = NaN;
-
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time;
-    const closeBelowLow = lt(b.close, lowest[i]);
-    const closeAboveHigh = gt(b.close, highest[i]);
-
-    // bullish_condition = close_above_high and (not prev_bullish_signal or ta.valuewhen(close_below_low, close, 0) < close)
-    let bullish = false;
-    if (closeAboveHigh) {
-      if (!prevBullishSignal) bullish = true;
-      else {
-        if (closeBelowLow) vwBelowLow = b.close;
-        bullish = lt(vwBelowLow, b.close);
-      }
-    }
-    // bearish_condition = close_below_low and (not prev_bearish_signal or ta.valuewhen(close_above_high, close, 0) > close)
-    let bearish = false;
-    if (closeBelowLow) {
-      if (!prevBearishSignal) bearish = true;
-      else {
-        if (closeAboveHigh) vwAboveHigh = b.close;
-        bearish = gt(vwAboveHigh, b.close);
-      }
-    }
-
-    plot0.push({ time: t, value: highest[i] });
-    plot1.push({ time: t, value: lowest[i] });
-    // plotshape(bearish_condition, shape.triangledown, location.abovebar, color.red, size.tiny)
-    if (bearish) markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'tiny' });
-    // plotshape(bullish_condition, shape.triangleup, location.belowbar, color.green, size.tiny)
-    if (bullish) markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'tiny' });
-
-    if (bullish) {
-      inBullishPhase = true;
-      inBearishPhase = false;
-      prevBullishSignal = true;
-      prevBearishSignal = false;
-    }
-    if (bearish) {
-      inBearishPhase = true;
-      inBullishPhase = false;
-      prevBearishSignal = true;
-      prevBullishSignal = false;
-    }
-
-    // barcolor(in_bullish_phase ? color.green : na), then barcolor(in_bearish_phase ? color.red : na) on top
-    if (inBearishPhase) barColors.push({ time: t, color: color.red });
-    else if (inBullishPhase) barColors.push({ time: t, color: color.green });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    markers,
-    barColors,
+    init() {
+      const s: BreakoutRun = {
+        hi: new WindowExtreme(false, cfg.x), lo: new WindowExtreme(true, cfg.x),
+        plot0: [], plot1: [], markers: [], barColors: [], steps: [],
+        vars: {
+          prevBullishSignal: false, prevBearishSignal: false, inBullishPhase: false, inBearishPhase: false,
+          // ta.valuewhen(close_below_low, close, 0) / ta.valuewhen(close_above_high, close, 0): each call keeps the
+          // history of the bars where it runs (the right side of the lazy `and` / `or`)
+          vwBelowLow: NaN, vwAboveHigh: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.hi, s.lo];
+      s.lists = [s.markers, s.barColors];
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      // highest_high = ta.highest(high[1], x), lowest_low = ta.lowest(low[1], x)
+      const highest = s.hi.step(i > 0 ? bars[i - 1].high : NaN);
+      const lowest = s.lo.step(i > 0 ? bars[i - 1].low : NaN);
+      const closeBelowLow = lt(b.close, lowest);
+      const closeAboveHigh = gt(b.close, highest);
+
+      // bullish_condition = close_above_high and (not prev_bullish_signal or ta.valuewhen(close_below_low, close, 0) < close)
+      let bullish = false;
+      if (closeAboveHigh) {
+        if (!v.prevBullishSignal) bullish = true;
+        else {
+          if (closeBelowLow) v.vwBelowLow = b.close;
+          bullish = lt(v.vwBelowLow, b.close);
+        }
+      }
+      // bearish_condition = close_below_low and (not prev_bearish_signal or ta.valuewhen(close_above_high, close, 0) > close)
+      let bearish = false;
+      if (closeBelowLow) {
+        if (!v.prevBearishSignal) bearish = true;
+        else {
+          if (closeAboveHigh) v.vwAboveHigh = b.close;
+          bearish = gt(v.vwAboveHigh, b.close);
+        }
+      }
+
+      s.plot0[i] = { time: t, value: highest };
+      s.plot1[i] = { time: t, value: lowest };
+      // plotshape(bearish_condition, shape.triangledown, location.abovebar, color.red, size.tiny)
+      if (bearish) s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'tiny' });
+      // plotshape(bullish_condition, shape.triangleup, location.belowbar, color.green, size.tiny)
+      if (bullish) s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'tiny' });
+
+      if (bullish) {
+        v.inBullishPhase = true;
+        v.inBearishPhase = false;
+        v.prevBullishSignal = true;
+        v.prevBearishSignal = false;
+      }
+      if (bearish) {
+        v.inBearishPhase = true;
+        v.inBullishPhase = false;
+        v.prevBearishSignal = true;
+        v.prevBullishSignal = false;
+      }
+
+      // barcolor(in_bullish_phase ? color.green : na), then barcolor(in_bearish_phase ? color.red : na) on top
+      if (v.inBearishPhase) s.barColors.push({ time: t, color: color.red });
+      else if (v.inBullishPhase) s.barColors.push({ time: t, color: color.green });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(
+  inputs: Partial<BreakoutAnReversalSignalDetectorWithColoredInBarTrendsInputs> = {},
+  chart: ChartContext = {},
+): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BreakoutAnReversalSignalDetectorWithColoredInBarTrendsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const BreakoutAnReversalSignalDetectorWithColoredInBarTrends = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

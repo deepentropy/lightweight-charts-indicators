@@ -15,7 +15,9 @@
  * Original notice: © zachsprad
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { AlertCall, MarkerData } from '../types';
 
 /** The original calls alert() */
@@ -72,74 +74,110 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RenkoSniperProInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alertCalls: AlertCall[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alertCalls: AlertCall[] };
+
+interface RenkoVars {
+  /** emaFast[1], emaSlow[1] */
+  prevFast: number;
+  prevSlow: number;
+}
+
+interface RenkoRun extends BarRunState<RenkoVars> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  st: ReturnType<typeof taStep.supertrend>;
+  hh: WindowExtreme;
+  ll: WindowExtreme;
+  rsi: ReturnType<typeof taStep.rsi>;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  markers: MarkerData[];
+  alertCalls: AlertCall[];
+}
+
+function study(inputs: Partial<RenkoSniperProInputs>): BarStudy<RenkoRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const close = bars.map((b) => b.close);
-  const emaFast = A(ta.ema(S(close), cfg.emaFastLen));
-  const emaSlow = A(ta.ema(S(close), cfg.emaSlowLen));
-  const [stSeries, dirSeries] = ta.supertrend(bars, cfg.factor, cfg.atrLen);
-  const supertrend = A(stSeries);
-  const direction = A(dirSeries);
-  const highestHigh = A(ta.highest(S(bars.map((b) => b.high)), cfg.lookback));
-  const lowestLow = A(ta.lowest(S(bars.map((b) => b.low)), cfg.lookback));
-  const rsi = A(ta.rsi(S(close), cfg.rsiLen));
-
   const finite = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: finite(emaFast[i]) }));
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: finite(emaSlow[i]) }));
-  // plot(supertrend, color = direction == 1 ? color.green : color.red)
-  const plot2 = bars.map((b, i) => ({
-    time: b.time, value: finite(supertrend[i]), color: eq(direction[i], 1) ? color.green : color.red,
-  }));
-
-  const markers: MarkerData[] = [];
-  const alertCalls: AlertCall[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time as number;
-    const liquiditySweepLow = lt(b.low, lowestLow[i]) && gt(b.close, lowestLow[i]);
-    const liquiditySweepHigh = gt(b.high, highestHigh[i]) && lt(b.close, highestHigh[i]);
-    // bullCross = ta.crossover(emaFast, emaSlow), bearCross = ta.crossunder(emaFast, emaSlow)
-    const bullCross = i > 0 && gt(emaFast[i], emaSlow[i]) && !gt(emaFast[i - 1], emaSlow[i - 1])
-      && !isNaN(emaFast[i - 1]) && !isNaN(emaSlow[i - 1]);
-    const bearCross = i > 0 && lt(emaFast[i], emaSlow[i]) && !lt(emaFast[i - 1], emaSlow[i - 1])
-      && !isNaN(emaFast[i - 1]) && !isNaN(emaSlow[i - 1]);
-    // longCondition = liquiditySweepLow and bullCross and close > emaSlow and direction == 1 and rsi > 50
-    const longCondition = liquiditySweepLow && bullCross && gt(b.close, emaSlow[i]) && eq(direction[i], 1) && gt(rsi[i], 50);
-    const shortCondition = liquiditySweepHigh && bearCross && lt(b.close, emaSlow[i]) && eq(direction[i], -1) && lt(rsi[i], 50);
-    if (longCondition) {
-      alertCalls.push({ time: t, message: '🟢 LONG SWEEP: Liquidity Grab + Bullish Confirmation', freq: 'once_per_bar_close' });
-    }
-    if (shortCondition) {
-      alertCalls.push({ time: t, message: '🔴 SHORT SWEEP: Liquidity Grab + Bearish Confirmation', freq: 'once_per_bar_close' });
-    }
-    // liquiditySweepLow = low < lowestLow and close > lowestLow
-    if (liquiditySweepLow) {
-      markers.push({ time: b.time as number, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'small' });
-    }
-    // liquiditySweepHigh = high > highestHigh and close < highestHigh
-    if (liquiditySweepHigh) {
-      markers.push({ time: b.time as number, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'small' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    markers,
-    alertCalls,
+    init() {
+      const s: RenkoRun = {
+        fast: taStep.ema(cfg.emaFastLen), slow: taStep.ema(cfg.emaSlowLen), st: taStep.supertrend(cfg.factor, cfg.atrLen),
+        hh: new WindowExtreme(false, cfg.lookback), ll: new WindowExtreme(true, cfg.lookback), rsi: taStep.rsi(cfg.rsiLen),
+        plot0: [], plot1: [], plot2: [], markers: [], alertCalls: [],
+        steps: [], vars: { prevFast: NaN, prevSlow: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.fast, s.slow, s.st, s.hh, s.ll, s.rsi];
+      s.lists = [s.markers, s.alertCalls];
+      s.series = [s.plot0, s.plot1, s.plot2];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time as number;
+      const v = s.vars;
+      const emaFast = s.fast.step(b.close);
+      const emaSlow = s.slow.step(b.close);
+      const [supertrend, direction] = s.st.step(b.high, b.low, b.close);
+      const highestHigh = s.hh.step(b.high);
+      const lowestLow = s.ll.step(b.low);
+      const rsi = s.rsi.step(b.close);
+      s.plot0[i] = { time: b.time, value: finite(emaFast) };
+      s.plot1[i] = { time: b.time, value: finite(emaSlow) };
+      // plot(supertrend, color = direction == 1 ? color.green : color.red)
+      s.plot2[i] = { time: b.time, value: finite(supertrend), color: eq(direction, 1) ? color.green : color.red };
+
+      const liquiditySweepLow = lt(b.low, lowestLow) && gt(b.close, lowestLow);
+      const liquiditySweepHigh = gt(b.high, highestHigh) && lt(b.close, highestHigh);
+      // bullCross = ta.crossover(emaFast, emaSlow), bearCross = ta.crossunder(emaFast, emaSlow)
+      const bullCross = i > 0 && gt(emaFast, emaSlow) && !gt(v.prevFast, v.prevSlow)
+        && !isNaN(v.prevFast) && !isNaN(v.prevSlow);
+      const bearCross = i > 0 && lt(emaFast, emaSlow) && !lt(v.prevFast, v.prevSlow)
+        && !isNaN(v.prevFast) && !isNaN(v.prevSlow);
+      v.prevFast = emaFast;
+      v.prevSlow = emaSlow;
+      // longCondition = liquiditySweepLow and bullCross and close > emaSlow and direction == 1 and rsi > 50
+      const longCondition = liquiditySweepLow && bullCross && gt(b.close, emaSlow) && eq(direction, 1) && gt(rsi, 50);
+      const shortCondition = liquiditySweepHigh && bearCross && lt(b.close, emaSlow) && eq(direction, -1) && lt(rsi, 50);
+      if (longCondition) {
+        s.alertCalls.push({ time: t, message: '🟢 LONG SWEEP: Liquidity Grab + Bullish Confirmation', freq: 'once_per_bar_close' });
+      }
+      if (shortCondition) {
+        s.alertCalls.push({ time: t, message: '🔴 SHORT SWEEP: Liquidity Grab + Bearish Confirmation', freq: 'once_per_bar_close' });
+      }
+      // liquiditySweepLow = low < lowestLow and close > lowestLow
+      if (liquiditySweepLow) {
+        s.markers.push({ time: b.time as number, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'small' });
+      }
+      // liquiditySweepHigh = high > highestHigh and close < highestHigh
+      if (liquiditySweepHigh) {
+        s.markers.push({ time: b.time as number, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'small' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        markers: s.markers.slice(),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RenkoSniperProInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RenkoSniperProInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RenkoSniperPro = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

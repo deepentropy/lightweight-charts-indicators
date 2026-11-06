@@ -13,6 +13,8 @@
  */
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolatilityBandsInputs {}
 
@@ -55,104 +57,119 @@ function erf(x: number): number {
     + 1.421413741 * Math.pow(t, 3) - 1.453152027 * Math.pow(t, 4) + 1.061405429 * Math.pow(t, 5));
 }
 
-/** dev(input, mu): one state per Pine call site (input[1] and variance[1] are kept by the site) */
-function devSite() {
-  let prevInput = NaN;
-  let variance = NaN;
-  return (input: number, mu: number): number => {
-    const dev = Math.pow(input - mu, 2);
-    const x = Math.abs(input - nz(prevInput, input));
-    const b0 = erf(x);
-    variance = b0 * dev + (1 - b0) * nz(variance, dev);
-    prevInput = input;
-    return Math.sqrt(variance);
+interface VbVars {
+  /** dev(input, mu): one state per Pine call site (input[1] and variance[1] are kept by the site), changed in place */
+  prevInput: number[];
+  variance: number[];
+  out: number;
+  prevClose: number;
+  prevUma: number;
+}
+
+/** dev(input, mu) of call site `k` */
+function dev(v: VbVars, k: number, input: number, mu: number): number {
+  const d = Math.pow(input - mu, 2);
+  const x = Math.abs(input - nz(v.prevInput[k], input));
+  const b0 = erf(x);
+  v.variance[k] = b0 * d + (1 - b0) * nz(v.variance[k], d);
+  v.prevInput[k] = input;
+  return Math.sqrt(v.variance[k]);
+}
+
+type Point = { time: number; value: number; color?: string };
+
+interface VbRun extends BarRunState<VbVars> {
+  plots: Point[][];
+}
+
+const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+
+function study(): BarStudy<VbRun, IndicatorResult> {
+  return {
+    init() {
+      const s: VbRun = {
+        plots: Array.from({ length: 7 }, () => []),
+        steps: [],
+        vars: { prevInput: new Array(6).fill(NaN), variance: new Array(6).fill(NaN), out: NaN, prevClose: NaN, prevUma: NaN },
+        lists: [], series: [],
+      };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const c = bars[i].close;
+      const time = bars[i].time;
+      // uma(close): x = |log(close / nz(close[1], close))|; out := b0 * close + (1 - b0) * nz(out[1], close)
+      const prevClose = i > 0 ? v.prevClose : NaN;
+      const b0 = erf(Math.abs(Math.log(c / nz(prevClose, c))));
+      const out = b0 * c + (1 - b0) * nz(v.out, c);
+      v.out = out;
+      v.prevClose = c;
+
+      const mid = Math.log(out);
+      const hi = Math.log(bars[i].high);
+      const lo = Math.log(bars[i].low);
+
+      const u0Band = mid + dev(v, 0, hi, mid);
+      const d0Band = mid - dev(v, 1, lo, mid);
+      let tempD = Math.min(Math.abs(hi - u0Band), Math.abs(hi - d0Band));
+      const u1BandD = eq(Math.abs(hi - u0Band), tempD) ? u0Band : d0Band;
+      const u1Band = u0Band + dev(v, 2, hi, u1BandD);
+      tempD = Math.min(Math.abs(lo - d0Band), Math.abs(lo - u0Band));
+      const d1BandD = eq(Math.abs(lo - d0Band), tempD) ? d0Band : u0Band;
+      const d1Band = d0Band - dev(v, 3, lo, d1BandD);
+      tempD = Math.min(Math.abs(hi - u1Band), Math.abs(hi - d0Band), Math.abs(hi - mid));
+      const u2BandD = eq(Math.abs(hi - u1Band), tempD) ? u1Band : eq(Math.abs(hi - d0Band), tempD) ? d0Band : mid;
+      const u2Band = u1Band + dev(v, 4, hi, u2BandD);
+      tempD = Math.min(Math.abs(lo - d1Band), Math.abs(lo - u0Band), Math.abs(lo - mid));
+      const d2BandD = eq(Math.abs(lo - d1Band), tempD) ? d1Band : eq(Math.abs(lo - u0Band), tempD) ? u0Band : mid;
+      const d2Band = d1Band - dev(v, 5, lo, d2BandD);
+
+      // middle_color = uma > uma[1] ? lime : uma < uma[1] ? red : navy
+      const prev = i > 0 ? v.prevUma : NaN;
+      v.prevUma = out;
+      const col = gt(out, prev) ? color.lime : gt(prev, out) ? color.red : color.navy;
+      const p = s.plots;
+      p[0][i] = { time, value: fin(out), color: col };
+      p[1][i] = { time, value: fin(Math.exp(u0Band)) }; // uuu
+      p[2][i] = { time, value: fin(Math.exp(d0Band)) }; // ddd
+      p[3][i] = { time, value: fin(Math.exp(u2Band)) }; // cloud_uuu_1
+      p[4][i] = { time, value: fin(Math.exp(u1Band)) }; // cloud_uuu_2
+      p[5][i] = { time, value: fin(Math.exp(d1Band)) }; // cloud_ddd_1
+      p[6][i] = { time, value: fin(Math.exp(d2Band)) }; // cloud_ddd_2
+    },
+    copyVars: (v) => ({ ...v, prevInput: v.prevInput.slice(), variance: v.variance.slice() }),
+    result(s) {
+      const fill = (plot1: string, plot2: string, c: string) => ({ plot1, plot2, options: { color: c } });
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: [
+          fill('plot4', 'plot1', UPPER_OUTER), // fill(cloud_uuu_2, uuu)
+          fill('plot5', 'plot2', LOWER_OUTER), // fill(cloud_ddd_1, ddd)
+          fill('plot3', 'plot4', UPPER_INNER), // fill(cloud_uuu_1, cloud_uuu_2)
+          fill('plot5', 'plot6', LOWER_INNER), // fill(cloud_ddd_1, cloud_ddd_2)
+        ],
+      };
+    },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<VolatilityBandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(), chart);
+}
+
 export function calculate(bars: Bar[], _inputs: Partial<VolatilityBandsInputs> = {}): IndicatorResult {
-  const n = bars.length;
-  const devU0 = devSite();
-  const devD0 = devSite();
-  const devU1 = devSite();
-  const devD1 = devSite();
-  const devU2 = devSite();
-  const devD2 = devSite();
-
-  const uma: number[] = new Array(n);
-  const u0: number[] = new Array(n);
-  const d0: number[] = new Array(n);
-  const u1: number[] = new Array(n);
-  const d1: number[] = new Array(n);
-  const u2: number[] = new Array(n);
-  const d2: number[] = new Array(n);
-  let out = NaN;
-  for (let i = 0; i < n; i++) {
-    const c = bars[i].close;
-    // uma(close): x = |log(close / nz(close[1], close))|; out := b0 * close + (1 - b0) * nz(out[1], close)
-    const prevClose = i > 0 ? bars[i - 1].close : NaN;
-    const b0 = erf(Math.abs(Math.log(c / nz(prevClose, c))));
-    out = b0 * c + (1 - b0) * nz(out, c);
-    uma[i] = out;
-
-    const mid = Math.log(out);
-    const hi = Math.log(bars[i].high);
-    const lo = Math.log(bars[i].low);
-
-    const u0Band = mid + devU0(hi, mid);
-    const d0Band = mid - devD0(lo, mid);
-    let tempD = Math.min(Math.abs(hi - u0Band), Math.abs(hi - d0Band));
-    const u1BandD = eq(Math.abs(hi - u0Band), tempD) ? u0Band : d0Band;
-    const u1Band = u0Band + devU1(hi, u1BandD);
-    tempD = Math.min(Math.abs(lo - d0Band), Math.abs(lo - u0Band));
-    const d1BandD = eq(Math.abs(lo - d0Band), tempD) ? d0Band : u0Band;
-    const d1Band = d0Band - devD1(lo, d1BandD);
-    tempD = Math.min(Math.abs(hi - u1Band), Math.abs(hi - d0Band), Math.abs(hi - mid));
-    const u2BandD = eq(Math.abs(hi - u1Band), tempD) ? u1Band : eq(Math.abs(hi - d0Band), tempD) ? d0Band : mid;
-    const u2Band = u1Band + devU2(hi, u2BandD);
-    tempD = Math.min(Math.abs(lo - d1Band), Math.abs(lo - u0Band), Math.abs(lo - mid));
-    const d2BandD = eq(Math.abs(lo - d1Band), tempD) ? d1Band : eq(Math.abs(lo - u0Band), tempD) ? u0Band : mid;
-    const d2Band = d1Band - devD2(lo, d2BandD);
-
-    u0[i] = Math.exp(u0Band);
-    d0[i] = Math.exp(d0Band);
-    u1[i] = Math.exp(u1Band);
-    d1[i] = Math.exp(d1Band);
-    u2[i] = Math.exp(u2Band);
-    d2[i] = Math.exp(d2Band);
-  }
-
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const line = (a: number[]) => bars.map((b, i) => ({ time: b.time, value: fin(a[i]) }));
-  // middle_color = uma > uma[1] ? lime : uma < uma[1] ? red : navy
-  const plot0 = bars.map((b, i) => {
-    const prev = i > 0 ? uma[i - 1] : NaN;
-    const col = gt(uma[i], prev) ? color.lime : gt(prev, uma[i]) ? color.red : color.navy;
-    return { time: b.time, value: fin(uma[i]), color: col };
-  });
-
-  const fill = (plot1: string, plot2: string, c: string) => ({ plot1, plot2, options: { color: c } });
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0,
-      plot1: line(u0), // uuu
-      plot2: line(d0), // ddd
-      plot3: line(u2), // cloud_uuu_1
-      plot4: line(u1), // cloud_uuu_2
-      plot5: line(d1), // cloud_ddd_1
-      plot6: line(d2), // cloud_ddd_2
-    },
-    fills: [
-      fill('plot4', 'plot1', UPPER_OUTER), // fill(cloud_uuu_2, uuu)
-      fill('plot5', 'plot2', LOWER_OUTER), // fill(cloud_ddd_1, ddd)
-      fill('plot3', 'plot4', UPPER_INNER), // fill(cloud_uuu_1, cloud_uuu_2)
-      fill('plot5', 'plot6', LOWER_INNER), // fill(cloud_ddd_1, cloud_ddd_2)
-    ],
-  };
+  return fullResult(createRun(_inputs).update(bars));
 }
 
 export const VolatilityBands = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

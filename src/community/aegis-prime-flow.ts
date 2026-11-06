@@ -15,9 +15,11 @@
  * Original notice: © wjdtks255
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AegisPrimeFlowInputs {
   /** Oscillator calculation period */
@@ -84,91 +86,126 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AegisPrimeFlowInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Cross = ReturnType<typeof taStep.crossover>;
+
+interface AegisRun extends BarRunState<Record<string, never>> {
+  esa: ReturnType<typeof taStep.ema>;
+  dEma: ReturnType<typeof taStep.ema>;
+  tciEma: ReturnType<typeof taStep.ema>;
+  wt2Sma: WindowSma;
+  mfSma: WindowSma;
+  /** is_os, is_ob, crossover(tci, wt2), crossunder(tci, wt2) */
+  crosses: Cross[];
+  plots: Point[][];
+  fillColors: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<AegisPrimeFlowInputs>): BarStudy<AegisRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const B = (s: Series) => s.toArray().map((v) => v === 1);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const ap = A(getSourceSeries(bars, cfg.src));
-  const esa = A(ta.ema(S(ap), cfg.len));
-  const d = A(ta.ema(S(ap.map((v, i) => Math.abs(v - esa[i]))), cfg.len));
-  // A plain division: x / 0 is +-infinity (0 / 0 NaN); ta.ema skips the infinite value as na
-  const ci = ap.map((v, i) => (v - esa[i]) / (0.015 * d[i]));
-  const tci = A(ta.ema(S(ci), cfg.smooth));
-  const tciS = S(tci);
-  const wt2 = A(ta.sma(tciS, 4));
-  const mf = A(ta.sma(tciS, 10));
-
-  // ta.crossover / ta.crossunder: exact comparisons with the last bar where both values were not na
-  const isOs = B(ta.crossunder(tciS, S(new Array(n).fill(-60))));
-  const isOb = B(ta.crossover(tciS, S(new Array(n).fill(60))));
-  const crossUp = B(ta.crossover(tciS, S(wt2)));
-  const crossDown = B(ta.crossunder(tciS, S(wt2)));
-
-  const markers: MarkerData[] = [];
-  const buyFlags: boolean[] = new Array(n).fill(false);
-  const sellFlags: boolean[] = new Array(n).fill(false);
-  const fillColors: string[] = new Array(n);
-  const plot0 = [];
-  const plot1 = [];
-  const plot2 = [];
-  const plot3 = [];
-  const plot4 = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const v = tci[i];
-    plot0.push({ time: t, value: Number.isFinite(mf[i]) ? mf[i] : NaN, color: 'transparent' });
-    plot1.push({ time: t, value: 0, color: 'transparent' });
-    // fill(p_mf, p_z, color = mf > 0 ? color_bg_teal : color_bg_red)
-    fillColors[i] = gt(mf[i], 0) ? BG_TEAL : BG_RED;
-    // bar_color_top = tci > 0 ? (tci > 60 ? color_teal : color.new(color_teal, 50)) : color.new(color.gray, 80)
-    const top = gt(v, 0) ? (gt(v, 60) ? TEAL : TEAL_50) : GRAY_80;
-    const bot = lt(v, 0) ? (lt(v, -60) ? RED : RED_50) : GRAY_80;
-    plot2.push({ time: t, value: 90, color: top });
-    plot3.push({ time: t, value: -90, color: bot });
-    // osc_color = tci > wt2 ? color_teal : color_red
-    plot4.push({ time: t, value: Number.isFinite(v) ? v : NaN, color: gt(v, wt2[i]) ? TEAL : RED });
-
-    // plotshape(is_os, "OS", shape.labelup, location.bottom, color.orange, textcolor = color.black, size.tiny)
-    if (isOs[i]) {
-      markers.push({ time: t, position: 'bottom', shape: 'labelUp', color: color.orange, text: 'OS',
-        textColor: color.black, size: 'tiny' });
-    }
-    if (isOb[i]) {
-      markers.push({ time: t, position: 'top', shape: 'labelDown', color: color.orange, text: 'OB',
-        textColor: color.black, size: 'tiny' });
-    }
-    // buy_sig = ta.crossover(tci, wt2) and tci < -50; sell_sig = ta.crossunder(tci, wt2) and tci > 50
-    buyFlags[i] = crossUp[i] && lt(v, -50);
-    sellFlags[i] = crossDown[i] && gt(v, 50);
-    if (buyFlags[i]) {
-      markers.push({ time: t, position: 'bottom', shape: 'triangleUp', color: TEAL, size: 'small' });
-    }
-    if (sellFlags[i]) {
-      markers.push({ time: t, position: 'top', shape: 'triangleDown', color: RED, size: 'small' });
-    }
-  }
-
+  const value = barSource(cfg.src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3, plot4 },
-    hlines: [
-      { value: 60, options: { title: 'Overbought Boundary', color: GUIDE, linestyle: 'dashed' } },
-      { value: -60, options: { title: 'Oversold Boundary', color: GUIDE, linestyle: 'dashed' } },
-      { value: 0, options: { title: 'Quantum Zero Line', color: ZERO_LINE, linestyle: 'dashed' } },
-    ],
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Money Flow Cloud Layer' }, colors: fillColors },
-    ],
-    markers,
-    // alertcondition(buy_sig) / (sell_sig) / (is_os) / (is_ob)
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags, isOs, isOb]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: AegisRun = {
+        esa: taStep.ema(cfg.len), dEma: taStep.ema(cfg.len), tciEma: taStep.ema(cfg.smooth),
+        wt2Sma: new WindowSma(4), mfSma: new WindowSma(10),
+        crosses: [taStep.crossunder(), taStep.crossover(), taStep.crossover(), taStep.crossunder()],
+        plots: [[], [], [], [], []], fillColors: [], markers: [], flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.esa, s.dEma, s.tciEma, s.wt2Sma, s.mfSma, ...s.crosses];
+      s.lists = [s.markers, ...s.times];
+      s.series = [...s.plots, s.fillColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time;
+      const ap = value(bars[i]);
+      const esa = s.esa.step(ap);
+      const d = s.dEma.step(Math.abs(ap - esa));
+      // A plain division: x / 0 is +-infinity (0 / 0 NaN); ta.ema skips the infinite value as na
+      const ci = (ap - esa) / (0.015 * d);
+      const v = s.tciEma.step(ci);
+      const wt2 = s.wt2Sma.step(v);
+      const mf = s.mfSma.step(v);
+
+      // ta.crossover / ta.crossunder: exact comparisons with the last bar where both values were not na
+      const isOs = s.crosses[0].step(v, -60);
+      const isOb = s.crosses[1].step(v, 60);
+      const crossUp = s.crosses[2].step(v, wt2);
+      const crossDown = s.crosses[3].step(v, wt2);
+
+      const p = s.plots;
+      p[0][i] = { time: t, value: Number.isFinite(mf) ? mf : NaN, color: 'transparent' };
+      p[1][i] = { time: t, value: 0, color: 'transparent' };
+      // fill(p_mf, p_z, color = mf > 0 ? color_bg_teal : color_bg_red)
+      s.fillColors[i] = gt(mf, 0) ? BG_TEAL : BG_RED;
+      // bar_color_top = tci > 0 ? (tci > 60 ? color_teal : color.new(color_teal, 50)) : color.new(color.gray, 80)
+      const top = gt(v, 0) ? (gt(v, 60) ? TEAL : TEAL_50) : GRAY_80;
+      const bot = lt(v, 0) ? (lt(v, -60) ? RED : RED_50) : GRAY_80;
+      p[2][i] = { time: t, value: 90, color: top };
+      p[3][i] = { time: t, value: -90, color: bot };
+      // osc_color = tci > wt2 ? color_teal : color_red
+      p[4][i] = { time: t, value: Number.isFinite(v) ? v : NaN, color: gt(v, wt2) ? TEAL : RED };
+
+      // plotshape(is_os, "OS", shape.labelup, location.bottom, color.orange, textcolor = color.black, size.tiny)
+      if (isOs) {
+        s.markers.push({ time: t, position: 'bottom', shape: 'labelUp', color: color.orange, text: 'OS',
+          textColor: color.black, size: 'tiny' });
+      }
+      if (isOb) {
+        s.markers.push({ time: t, position: 'top', shape: 'labelDown', color: color.orange, text: 'OB',
+          textColor: color.black, size: 'tiny' });
+      }
+      // buy_sig = ta.crossover(tci, wt2) and tci < -50; sell_sig = ta.crossunder(tci, wt2) and tci > 50
+      const buy = crossUp && lt(v, -50);
+      const sell = crossDown && gt(v, 50);
+      if (buy) {
+        s.markers.push({ time: t, position: 'bottom', shape: 'triangleUp', color: TEAL, size: 'small' });
+      }
+      if (sell) {
+        s.markers.push({ time: t, position: 'top', shape: 'triangleDown', color: RED, size: 'small' });
+      }
+      // alertcondition(buy_sig) / (sell_sig) / (is_os) / (is_ob)
+      const flags = [buy, sell, isOs, isOb];
+      for (let k = 0; k < 4; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice() },
+        hlines: [
+          { value: 60, options: { title: 'Overbought Boundary', color: GUIDE, linestyle: 'dashed' } },
+          { value: -60, options: { title: 'Oversold Boundary', color: GUIDE, linestyle: 'dashed' } },
+          { value: 0, options: { title: 'Quantum Zero Line', color: ZERO_LINE, linestyle: 'dashed' } },
+        ],
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Money Flow Cloud Layer' }, colors: s.fillColors.slice() },
+        ],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AegisPrimeFlowInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AegisPrimeFlowInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -181,6 +218,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const AegisPrimeFlow = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

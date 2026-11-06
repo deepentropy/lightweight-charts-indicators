@@ -14,8 +14,10 @@
  * Original notice: © Zettt 2021
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData, MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type PeakReversalBands = 'Tight' | 'Normal' | 'Extreme';
 
@@ -102,109 +104,143 @@ const EPS = 1e-10;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<PeakReversalV2Inputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
+
+interface PeakVars {
+  /** ta.barssince(firstFreeBarUp), ta.barssince(firstFreeBarDown) */
+  sinceUp: number;
+  sinceDown: number;
+  /** longCross[1], shortCross[1] */
+  prevLongCross: boolean;
+  prevShortCross: boolean;
+}
+
+interface PeakRun extends BarRunState<PeakVars> {
+  ma: ReturnType<typeof taStep.ema>;
+  tr: ReturnType<typeof taStep.tr>;
+  rangeEma: ReturnType<typeof taStep.ema>;
+  plots: Point[][];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<PeakReversalV2Inputs>): BarStudy<PeakRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const closeSeries = Series.fromArray(bars, bars.map((b) => b.close));
-  const kc = (mult: number) => ta.kc(bars, closeSeries, cfg.keltnerEMAlength, mult).map(A);
-
-  // ta.kc(close, keltnerEMAlength, mult): EMA of the close +- EMA of the true range * mult
-  const [, upTight, downTight] = kc(cfg.tightKeltnerMultiplier);
-  const [keltnerMA, upNormal, downNormal] = kc(cfg.keltnerMultiplier);
-  const [, upExtreme, downExtreme] = kc(cfg.extremePeakMultiplier);
-
-  const up = cfg.bandsToUse === 'Tight' ? upTight : cfg.bandsToUse === 'Normal' ? upNormal
-    : cfg.bandsToUse === 'Extreme' ? upExtreme : null;
-  const down = cfg.bandsToUse === 'Tight' ? downTight : cfg.bandsToUse === 'Normal' ? downNormal
-    : cfg.bandsToUse === 'Extreme' ? downExtreme : null;
-  // An if without a matching branch gives false
-  const upAt = (i: number) => (up ? up[i] : NaN);
-  const downAt = (i: number) => (down ? down[i] : NaN);
-
   const adv = cfg.advancedMode;
   const shade = (k: number, strong: string, mid: string, weak: string): string | null =>
     (k > 5 ? strong : k > 2 ? mid : k > 0 ? weak : null);
-
-  const barColors: BarColorData[] = [];
-  const markers: MarkerData[] = [];
   const upTriangleShape: MarkerData['shape'] = adv ? 'triangleUp' : 'triangleDown';
   const upTriangleColor = adv ? '#81c784' : '#e57373';
   const downTriangleShape: MarkerData['shape'] = adv ? 'triangleDown' : 'triangleUp';
   const downTriangleColor = adv ? '#e57373' : '#81c784';
   const upStarColor = adv ? '#81c784' : '#e57373';
   const downStarColor = adv ? '#e57373' : '#81c784';
-
-  let sinceUp = NaN; // ta.barssince(firstFreeBarUp)
-  let sinceDown = NaN; // ta.barssince(firstFreeBarDown)
-  let prevLongCross = false;
-  let prevShortCross = false;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const u = upAt(i);
-    const d = downAt(i);
-
-    // firstFreeBarUp = high <= band and close <= band
-    const firstFreeBarUp = le(b.high, u) && le(b.close, u);
-    sinceUp = firstFreeBarUp ? 0 : isNaN(sinceUp) ? NaN : sinceUp + 1;
-    // firstFreeBarDown = low >= band and close >= band
-    const firstFreeBarDown = ge(b.low, d) && ge(b.close, d);
-    sinceDown = firstFreeBarDown ? 0 : isNaN(sinceDown) ? NaN : sinceDown + 1;
-
-    // na > k is false: colour na
-    const colorBarUp = shade(sinceUp, adv ? '#1b5e20' : '#b71c1c', adv ? '#66bb6a' : '#ef5350', adv ? '#a5d6a7' : '#ef9a9a');
-    const colorBarDown = shade(sinceDown, adv ? '#b71c1c' : '#1b5e20', adv ? '#ef5350' : '#66bb6a', adv ? '#ef9a9a' : '#a5d6a7');
-    // barcolor(Mean Deviations Up) then barcolor(Mean Deviations Down): the later non-na colour is drawn
-    if (cfg.showDeviations && colorBarUp) barColors.push({ id: 'barcolor0', time: b.time, color: colorBarUp });
-    if (cfg.showDeviations && colorBarDown) barColors.push({ id: 'barcolor1', time: b.time, color: colorBarDown });
-
-    const longCross = ge(b.high, u);
-    const shortCross = le(b.close, d);
-    // showOnlyFirstSignal = true: cross and not cross[1]
-    if (cfg.showBandCross && longCross && !prevLongCross) {
-      markers.push({ id: 'shape0', time: b.time, position: 'aboveBar', shape: upTriangleShape, color: upTriangleColor, size: 'tiny' });
-    }
-    if (cfg.showBandCross && shortCross && !prevShortCross) {
-      markers.push({ id: 'shape1', time: b.time, position: 'belowBar', shape: downTriangleShape, color: downTriangleColor, size: 'tiny' });
-    }
-    prevLongCross = longCross;
-    prevShortCross = shortCross;
-
-    // plotchar('★', size.tiny): the character as text in the plotchar colour
-    if (cfg.showFreeBars && ge(b.low, u)) {
-      markers.push({ id: 'char2', time: b.time, position: 'aboveBar', shape: 'circle', color: 'transparent', text: '★',
-        textColor: upStarColor, size: 'tiny' });
-    }
-    if (cfg.showFreeBars && le(b.high, d)) {
-      markers.push({ id: 'char3', time: b.time, position: 'belowBar', shape: 'circle', color: 'transparent', text: '★',
-        textColor: downStarColor, size: 'tiny' });
-    }
-  }
-
-  const line = (on: boolean, values: number[], c: string) =>
-    bars.map((b, i) => ({ time: b.time, value: on ? values[i] : NaN, color: c }));
-
+  // index of the band pair used for the crosses (-1: none, an if without a matching branch gives false)
+  const use = cfg.bandsToUse === 'Tight' ? 0 : cfg.bandsToUse === 'Normal' ? 1 : cfg.bandsToUse === 'Extreme' ? 2 : -1;
+  const mults = [cfg.tightKeltnerMultiplier, cfg.keltnerMultiplier, cfg.extremePeakMultiplier];
+  const shown = [cfg.showMeanEMA, cfg.showTightBand, cfg.showTightBand, cfg.showNormalBand, cfg.showNormalBand,
+    cfg.showExtremeBand, cfg.showExtremeBand];
+  const colors = [MEAN_COLOR, TIGHT_COLOR, TIGHT_COLOR, NORMAL_COLOR, NORMAL_COLOR, EXTREME_COLOR, EXTREME_COLOR];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(cfg.showMeanEMA, keltnerMA, MEAN_COLOR),
-      plot1: line(cfg.showTightBand, upTight, TIGHT_COLOR),
-      plot2: line(cfg.showTightBand, downTight, TIGHT_COLOR),
-      plot3: line(cfg.showNormalBand, upNormal, NORMAL_COLOR),
-      plot4: line(cfg.showNormalBand, downNormal, NORMAL_COLOR),
-      plot5: line(cfg.showExtremeBand, upExtreme, EXTREME_COLOR),
-      plot6: line(cfg.showExtremeBand, downExtreme, EXTREME_COLOR),
+    init() {
+      const s: PeakRun = {
+        ma: taStep.ema(cfg.keltnerEMAlength), tr: taStep.tr(false), rangeEma: taStep.ema(cfg.keltnerEMAlength),
+        plots: colors.map(() => []), markers: [], barColors: [],
+        steps: [], vars: { sinceUp: NaN, sinceDown: NaN, prevLongCross: false, prevShortCross: false },
+        lists: [], series: [],
+      };
+      s.steps = [s.ma, s.tr, s.rangeEma];
+      s.lists = [s.markers, s.barColors];
+      s.series = s.plots;
+      return s;
     },
-    markers,
-    barColors,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      // ta.kc(close, keltnerEMAlength, mult): EMA of the close +- EMA of the true range * mult
+      const middle = s.ma.step(b.close);
+      const rangeEma = s.rangeEma.step(s.tr.step(b.high, b.low, b.close));
+      const upTight = middle + rangeEma * mults[0];
+      const downTight = middle - rangeEma * mults[0];
+      const upNormal = middle + rangeEma * mults[1];
+      const downNormal = middle - rangeEma * mults[1];
+      const upExtreme = middle + rangeEma * mults[2];
+      const downExtreme = middle - rangeEma * mults[2];
+      const u = use === 0 ? upTight : use === 1 ? upNormal : use === 2 ? upExtreme : NaN;
+      const d = use === 0 ? downTight : use === 1 ? downNormal : use === 2 ? downExtreme : NaN;
+
+      // firstFreeBarUp = high <= band and close <= band
+      const firstFreeBarUp = le(b.high, u) && le(b.close, u);
+      v.sinceUp = firstFreeBarUp ? 0 : isNaN(v.sinceUp) ? NaN : v.sinceUp + 1;
+      // firstFreeBarDown = low >= band and close >= band
+      const firstFreeBarDown = ge(b.low, d) && ge(b.close, d);
+      v.sinceDown = firstFreeBarDown ? 0 : isNaN(v.sinceDown) ? NaN : v.sinceDown + 1;
+
+      // na > k is false: colour na
+      const colorBarUp = shade(v.sinceUp, adv ? '#1b5e20' : '#b71c1c', adv ? '#66bb6a' : '#ef5350', adv ? '#a5d6a7' : '#ef9a9a');
+      const colorBarDown = shade(v.sinceDown, adv ? '#b71c1c' : '#1b5e20', adv ? '#ef5350' : '#66bb6a', adv ? '#ef9a9a' : '#a5d6a7');
+      // barcolor(Mean Deviations Up) then barcolor(Mean Deviations Down): the later non-na colour is drawn
+      if (cfg.showDeviations && colorBarUp) s.barColors.push({ id: 'barcolor0', time: b.time, color: colorBarUp });
+      if (cfg.showDeviations && colorBarDown) s.barColors.push({ id: 'barcolor1', time: b.time, color: colorBarDown });
+
+      const longCross = ge(b.high, u);
+      const shortCross = le(b.close, d);
+      // showOnlyFirstSignal = true: cross and not cross[1]
+      if (cfg.showBandCross && longCross && !v.prevLongCross) {
+        s.markers.push({ id: 'shape0', time: b.time, position: 'aboveBar', shape: upTriangleShape, color: upTriangleColor, size: 'tiny' });
+      }
+      if (cfg.showBandCross && shortCross && !v.prevShortCross) {
+        s.markers.push({ id: 'shape1', time: b.time, position: 'belowBar', shape: downTriangleShape, color: downTriangleColor, size: 'tiny' });
+      }
+      v.prevLongCross = longCross;
+      v.prevShortCross = shortCross;
+
+      // plotchar('★', size.tiny): the character as text in the plotchar colour
+      if (cfg.showFreeBars && ge(b.low, u)) {
+        s.markers.push({ id: 'char2', time: b.time, position: 'aboveBar', shape: 'circle', color: 'transparent', text: '★',
+          textColor: upStarColor, size: 'tiny' });
+      }
+      if (cfg.showFreeBars && le(b.high, d)) {
+        s.markers.push({ id: 'char3', time: b.time, position: 'belowBar', shape: 'circle', color: 'transparent', text: '★',
+          textColor: downStarColor, size: 'tiny' });
+      }
+
+      const values = s.plots;
+      const time = b.time;
+      values[0][i] = { time, value: shown[0] ? middle : NaN, color: colors[0] };
+      values[1][i] = { time, value: shown[1] ? upTight : NaN, color: colors[1] };
+      values[2][i] = { time, value: shown[2] ? downTight : NaN, color: colors[2] };
+      values[3][i] = { time, value: shown[3] ? upNormal : NaN, color: colors[3] };
+      values[4][i] = { time, value: shown[4] ? downNormal : NaN, color: colors[4] };
+      values[5][i] = { time, value: shown[5] ? upExtreme : NaN, color: colors[5] };
+      values[6][i] = { time, value: shown[6] ? downExtreme : NaN, color: colors[6] };
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PeakReversalV2Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PeakReversalV2Inputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PeakReversalV2 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

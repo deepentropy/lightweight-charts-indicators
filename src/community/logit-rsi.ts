@@ -12,7 +12,9 @@
  * Original notice: © AdaptiveRSI
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type LogitRsiPlotType = 'standardized logit' | 'logit RSI' | 'regular RSI';
 
@@ -107,62 +109,96 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<LogitRsiInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface LogitRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  ma: WindowSma;
+  sd: WindowStdev;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<LogitRsiInputs>): BarStudy<LogitRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
   const eps = 0.000001;
-
-  const rsiRaw = A(ta.rsi(Series.fromArray(bars, bars.map((b) => b.close)), cfg.length));
-  // logit_transform: xc = math.min(math.max(x, eps), 100 - eps); math.log(xc / (100 - xc)) (na stays na)
-  const logit = rsiRaw.map((x) => {
-    const xc = Math.min(Math.max(x, eps), 100 - eps);
-    return Math.log(xc / (100 - xc));
-  });
   const logitScale = 2.0 / Math.sqrt(cfg.length - 1);
-  const plotRsi = cfg.rsiType === 'standardized logit' ? logit.map((v) => v / logitScale)
-    : cfg.rsiType === 'logit RSI' ? logit : rsiRaw;
-
   const isStd = cfg.rsiType === 'standardized logit';
   const showStdLevels = cfg.showLevels && isStd;
   const showSecondary = cfg.showSecondaryLevels && isStd;
   const showZero = showStdLevels || showSecondary;
-
-  const plotSeries = Series.fromArray(bars, plotRsi);
-  const ma = A(ta.sma(plotSeries, cfg.maLength));
-  const sd = A(ta.stdev(plotSeries, cfg.maLength)).map((v) => v * cfg.bbMult);
-
-  const line = (values: (i: number) => number, c: string) =>
-    bars.map((b, i) => ({ time: b.time, value: values(i), color: c }));
-  const level = (on: boolean, v: number, c: string) => line(() => (on ? v : NaN), c);
-
+  // the level plots: [on, value, colour]
+  const levels: [boolean, number, string][] = [
+    [showZero, 0, ZERO_COLOR],
+    [showStdLevels, cfg.bodyLevel, LEVEL_MID],
+    [showStdLevels, -cfg.bodyLevel, LEVEL_MID],
+    [showStdLevels, cfg.tailLevel, LEVEL_HARD],
+    [showStdLevels, -cfg.tailLevel, LEVEL_HARD],
+    [showSecondary, cfg.breakoutLevel, LEVEL_SOFT],
+    [showSecondary, -cfg.breakoutLevel, LEVEL_SOFT],
+    [showSecondary, cfg.overextLevel, LEVEL_SOFT],
+    [showSecondary, -cfg.overextLevel, LEVEL_SOFT],
+  ];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 2 },
-    plots: {
-      plot0: line((i) => plotRsi[i], RSI_COLOR),
-      plot1: level(showZero, 0, ZERO_COLOR),
-      plot2: level(showStdLevels, cfg.bodyLevel, LEVEL_MID),
-      plot3: level(showStdLevels, -cfg.bodyLevel, LEVEL_MID),
-      plot4: level(showStdLevels, cfg.tailLevel, LEVEL_HARD),
-      plot5: level(showStdLevels, -cfg.tailLevel, LEVEL_HARD),
-      plot6: level(showSecondary, cfg.breakoutLevel, LEVEL_SOFT),
-      plot7: level(showSecondary, -cfg.breakoutLevel, LEVEL_SOFT),
-      plot8: level(showSecondary, cfg.overextLevel, LEVEL_SOFT),
-      plot9: level(showSecondary, -cfg.overextLevel, LEVEL_SOFT),
-      plot10: line((i) => ma[i], '#F2BD1D'),
-      plot11: line((i) => ma[i] + sd[i], '#33E643'),
-      plot12: line((i) => ma[i] - sd[i], '#33E643'),
+    init() {
+      const rsi = taStep.rsi(cfg.length);
+      const ma = new WindowSma(cfg.maLength);
+      const sd = new WindowStdev(cfg.maLength);
+      const s: LogitRun = {
+        rsi, ma, sd, plots: Array.from({ length: 13 }, () => []),
+        steps: [rsi, ma, sd], vars: {}, lists: [], series: [],
+      };
+      s.series = s.plots;
+      return s;
     },
-    fills: [
-      // fill(bbUpperBand, bbLowerBand, color = show_BB ? color.new(#33A645, 90) : na)
-      { plot1: 'plot11', plot2: 'plot12', options: { title: 'Bollinger Bands Background Fill' },
-        colors: new Array<string>(n).fill(cfg.showBB ? BB_FILL : 'transparent') },
-    ],
+    bar(s, i, bars) {
+      const { time, close } = bars[i];
+      const rsiRaw = s.rsi.step(close) ?? NaN;
+      // logit_transform: xc = math.min(math.max(x, eps), 100 - eps); math.log(xc / (100 - xc)) (na stays na)
+      const xc = Math.min(Math.max(rsiRaw, eps), 100 - eps);
+      const logit = Math.log(xc / (100 - xc));
+      const plotRsi = cfg.rsiType === 'standardized logit' ? logit / logitScale
+        : cfg.rsiType === 'logit RSI' ? logit : rsiRaw;
+      const ma = s.ma.step(plotRsi) ?? NaN;
+      const sd = (s.sd.step(plotRsi) ?? NaN) * cfg.bbMult;
+      const p = s.plots;
+      p[0][i] = { time, value: plotRsi, color: RSI_COLOR };
+      for (let k = 0; k < 9; k++) {
+        const [on, v, c] = levels[k];
+        p[k + 1][i] = { time, value: on ? v : NaN, color: c };
+      }
+      p[10][i] = { time, value: ma, color: '#F2BD1D' };
+      p[11][i] = { time, value: ma + sd, color: '#33E643' };
+      p[12][i] = { time, value: ma - sd, color: '#33E643' };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: IndicatorResult['plots'] = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 2 },
+        plots,
+        fills: [
+          // fill(bbUpperBand, bbLowerBand, color = show_BB ? color.new(#33A645, 90) : na)
+          { plot1: 'plot11', plot2: 'plot12', options: { title: 'Bollinger Bands Background Fill' },
+            colors: new Array<string>(n).fill(cfg.showBB ? BB_FILL : 'transparent') },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<LogitRsiInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<LogitRsiInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const LogitRsi = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -11,9 +11,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RsiAdxAtr180125Inputs {
   rsiLength: number;
@@ -70,70 +72,106 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
+type Point = { time: number; value: number };
+type Result = IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface RaaRun extends BarRunState<Record<string, never>> {
+  up: ReturnType<typeof taStep.rma>;
+  down: ReturnType<typeof taStep.rma>;
+  plusDI: ReturnType<typeof taStep.rma>;
+  minusDI: ReturnType<typeof taStep.rma>;
+  adx: WindowSma;
+  atr: ReturnType<typeof taStep.atr>;
+  plots: Point[][];
+  bgColors: BgColorData[];
+  flags: boolean[];
+  times: number[];
+}
+
+function study(inputs: Partial<RsiAdxAtr180125Inputs>): BarStudy<RaaRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.rsiSource);
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+  const bg = String(color.rgb(255, 59, 59, 73));
+  return {
+    fullRunReason: () => (isBarSource(cfg.rsiSource) ? null : 'source of another study'),
+    init() {
+      const up = taStep.rma(cfg.rsiLength);
+      const down = taStep.rma(cfg.rsiLength);
+      const plusDI = taStep.rma(cfg.adxLength);
+      const minusDI = taStep.rma(cfg.adxLength);
+      const adx = new WindowSma(cfg.adxLength);
+      const atr = taStep.atr(cfg.atrLength);
+      const s: RaaRun = {
+        up, down, plusDI, minusDI, adx, atr, plots: [[], [], []], bgColors: [], flags: [], times: [],
+        steps: [up, down, plusDI, minusDI, adx, atr], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.bgColors, s.times];
+      s.series = [...s.plots, s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // change = ta.change(src); math.max(na, 0) is na
+      const change = i > 0 ? value(b) - value(bars[i - 1]) : NaN;
+      const gain = isNaN(change) ? NaN : Math.max(change, 0);
+      const loss = isNaN(change) ? NaN : -Math.min(change, 0);
+      const chHigh = i > 0 ? b.high - bars[i - 1].high : NaN;
+      const chLow = i > 0 ? b.low - bars[i - 1].low : NaN;
+      const hiUp = isNaN(chHigh) ? NaN : Math.max(chHigh, 0);
+      const loDown = isNaN(chLow) ? NaN : Math.max(-chLow, 0);
+      const up = s.up.step(gain);
+      const down = s.down.step(loss);
+      // rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+      const rsi = eq(down, 0) ? 100 : eq(up, 0) ? 0 : 100 - 100 / (1 + up / down);
+
+      const plusDI = s.plusDI.step(hiUp);
+      const minusDI = s.minusDI.step(loDown);
+      // Plain division: 0 / 0 is na, ta.sma skips it as Pine
+      const dx = (Math.abs(plusDI - minusDI) / (plusDI + minusDI)) * 100;
+      const adx = s.adx.step(dx);
+      const atr = s.atr.step(b.high, b.low, b.close);
+
+      // bgcolor((rsi > lower and rsi < upper) and adx < adxThreshold and atr < atrThreshold ? color.rgb(255, 59, 59, 73) : na)
+      const cond = gt(rsi, cfg.rsiLowerBound) && lt(rsi, cfg.rsiUpperBound) && lt(adx, cfg.adxThreshold)
+        && lt(atr, cfg.atrThreshold);
+      s.flags[i] = cond;
+      if (cond) {
+        s.bgColors.push({ time: b.time, color: bg });
+        s.times.push(b.time as number);
+      }
+      s.plots[0]![i] = { time: b.time, value: fin(rsi) };
+      s.plots[1]![i] = { time: b.time, value: fin(adx) };
+      s.plots[2]![i] = { time: b.time, value: fin(atr) };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0]!.slice(), plot1: s.plots[1]!.slice(), plot2: s.plots[2]!.slice() },
+        hlines: [
+          { value: cfg.rsiUpperBound, options: { title: 'RSI Upper Bound (Dynamic)', color: color.red, linestyle: 'dashed' } },
+          { value: cfg.rsiLowerBound, options: { title: 'RSI Lower Bound (Dynamic)', color: color.green, linestyle: 'dashed' } },
+          { value: cfg.adxThreshold, options: { title: 'ADX Threshold', color: color.gray, linestyle: 'dashed' } },
+        ],
+        bgColors: s.bgColors.slice(),
+        // alertcondition(the background condition, "RSI, ADX, and ATR Condition Met")
+        alerts: liveAlertStates(alertConditions, [s.times], [n > 0 && s.flags[n - 1]!]),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RsiAdxAtr180125Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<RsiAdxAtr180125Inputs> = {},
 ): IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // change = ta.change(src); math.max(na, 0) is na
-  const src = A(getSourceSeries(bars, cfg.rsiSource));
-  const gain: number[] = new Array(n);
-  const loss: number[] = new Array(n);
-  const hiUp: number[] = new Array(n);
-  const loDown: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const change = i > 0 ? src[i] - src[i - 1] : NaN;
-    gain[i] = isNaN(change) ? NaN : Math.max(change, 0);
-    loss[i] = isNaN(change) ? NaN : -Math.min(change, 0);
-    const chHigh = i > 0 ? bars[i].high - bars[i - 1].high : NaN;
-    const chLow = i > 0 ? bars[i].low - bars[i - 1].low : NaN;
-    hiUp[i] = isNaN(chHigh) ? NaN : Math.max(chHigh, 0);
-    loDown[i] = isNaN(chLow) ? NaN : Math.max(-chLow, 0);
-  }
-  const up = A(ta.rma(S(gain), cfg.rsiLength));
-  const down = A(ta.rma(S(loss), cfg.rsiLength));
-  // rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
-  const rsi = bars.map((_b, i) => (eq(down[i], 0) ? 100 : eq(up[i], 0) ? 0 : 100 - 100 / (1 + up[i] / down[i])));
-
-  const plusDI = A(ta.rma(S(hiUp), cfg.adxLength));
-  const minusDI = A(ta.rma(S(loDown), cfg.adxLength));
-  // Plain division: 0 / 0 is na, ta.sma skips it as Pine
-  const dx = bars.map((_b, i) => (Math.abs(plusDI[i] - minusDI[i]) / (plusDI[i] + minusDI[i])) * 100);
-  const adx = A(ta.sma(S(dx), cfg.adxLength));
-  const atr = A(ta.atr(bars, cfg.atrLength));
-
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const bg = String(color.rgb(255, 59, 59, 73));
-  const bgColors: BgColorData[] = [];
-  const condFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    // bgcolor((rsi > lower and rsi < upper) and adx < adxThreshold and atr < atrThreshold ? color.rgb(255, 59, 59, 73) : na)
-    const cond = gt(rsi[i], cfg.rsiLowerBound) && lt(rsi[i], cfg.rsiUpperBound) && lt(adx[i], cfg.adxThreshold)
-      && lt(atr[i], cfg.atrThreshold);
-    condFlags.push(cond);
-    if (cond) bgColors.push({ time: bars[i].time, color: bg });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: fin(rsi[i]) })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: fin(adx[i]) })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: fin(atr[i]) })),
-    },
-    hlines: [
-      { value: cfg.rsiUpperBound, options: { title: 'RSI Upper Bound (Dynamic)', color: color.red, linestyle: 'dashed' } },
-      { value: cfg.rsiLowerBound, options: { title: 'RSI Lower Bound (Dynamic)', color: color.green, linestyle: 'dashed' } },
-      { value: cfg.adxThreshold, options: { title: 'ADX Threshold', color: color.gray, linestyle: 'dashed' } },
-    ],
-    bgColors,
-    // alertcondition(the background condition, "RSI, ADX, and ATR Condition Met")
-    alerts: alertStates(alertConditions, bars, [condFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertcondition */
@@ -147,6 +185,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const RsiAdxAtr180125 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

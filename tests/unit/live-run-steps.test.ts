@@ -108,3 +108,16 @@ describe('live-run steps', () => {
     });
   }
 });
+
+describe('live-run steps: invalid lengths', () => {
+  it('throw the runtime error of the oakscriptjs function', () => {
+    for (const length of [0, -1, 0.5]) {
+      expect(() => new WindowSma(length)).toThrow(/'sma' function/);
+      expect(() => new WindowStdev(length)).toThrow(/'stdev'/);
+      expect(() => new WindowExtreme(false, length)).toThrow(/'highest' function/);
+      expect(() => new WindowExtreme(true, length)).toThrow(/'lowest' function/);
+      expect(() => new WindowVwma(length)).toThrow(/'vwma'/);
+      expect(() => new AlmaStep(length)).toThrow();
+    }
+  });
+});

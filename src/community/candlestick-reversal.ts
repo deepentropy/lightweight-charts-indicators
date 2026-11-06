@@ -14,9 +14,11 @@
  * Reference: "Candlestick Reversal System" by LonesomeTheBlue (community)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
 
 export interface CandlestickReversalInputs {
   pivotLen: number;
@@ -85,10 +87,28 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CandlestickReversalInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+
+interface CdlRun extends BarRunState<Record<string, never>> {
+  ph: PivotStep;
+  pl: PivotStep;
+  sma: WindowSma;
+  rangeAvg50: WindowSma;
+  avgBody: WindowSma;
+  avgCandle: WindowSma;
+  avgCandleOutside: WindowSma;
+  sma10: WindowSma;
+  /** The distinct averages, stepped once per bar */
+  closeAvgs: WindowSma[];
+  rangeAvgs: WindowSma[];
+  plot0: Point[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<CandlestickReversalInputs>): BarStudy<CdlRun, Result> {
   const {
     pivotLen, showMA, maLen, maColor,
     enableWick, wickMultiplier, wickBodyPct,
@@ -97,84 +117,96 @@ export function calculate(
     enableDoji, dojiPct,
   } = { ...defaultInputs, ...inputs };
 
-  const n = bars.length;
-  const markers: MarkerData[] = [];
-  const longFlags: boolean[] = [], shortFlags: boolean[] = [];
+  return {
+    init() {
+      // one average per series and length (the same doubles): the range averages of 50, extremeBarsBack and
+      // outsideBarsBack bars, the close averages of maLen and 10 bars
+      const ranges = new Map<number, WindowSma>();
+      const closes = new Map<number, WindowSma>();
+      const average = (m: Map<number, WindowSma>, length: number): WindowSma => {
+        let a = m.get(length);
+        if (!a) {
+          a = new WindowSma(length);
+          m.set(length, a);
+        }
+        return a;
+      };
+      const ph = new PivotStep(pivotLen, 0, true);
+      const pl = new PivotStep(pivotLen, 0, false);
+      // --- Optional SMA ---
+      const sma = average(closes, maLen);
+      // --- SMA for wick system (range average over 50 bars) ---
+      const rangeAvg50 = average(ranges, 50);
+      // --- Extreme system: body and candle size averages ---
+      const avgBody = new WindowSma(extremeBarsBack);
+      const avgCandle = average(ranges, extremeBarsBack);
+      // --- Outside system: candle average ---
+      const avgCandleOutside = average(ranges, outsideBarsBack);
+      // --- Doji system: SMA(close, 10) ---
+      const sma10 = average(closes, 10);
+      const s: CdlRun = {
+        // --- Pivot high/low for trend context (left=pivotLen, right=0) ---
+        ph, pl, sma, rangeAvg50, avgBody, avgCandle, avgCandleOutside, sma10, closeAvgs: [...closes.values()],
+        rangeAvgs: [...ranges.values()], plot0: [], markers: [], flags: [[], []], times: [[], []], steps: [], vars: {},
+        lists: [], series: [],
+      };
+      s.steps = [ph, pl, ...s.closeAvgs, ...s.rangeAvgs, avgBody];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.plot0, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const O = bars[i]!.open;
+      const C = bars[i]!.close;
+      const H = bars[i]!.high;
+      const L = bars[i]!.low;
+      const time = bars[i]!.time as number;
 
-  // --- Pivot high/low for trend context (left=pivotLen, right=0) ---
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-  const closeSeries = new Series(bars, (b) => b.close);
+      const highleftempty = !isNaN(s.ph.step(i, H));
+      const lowleftempty = !isNaN(s.pl.step(i, L));
 
-  const pivotHighArr = ta.pivothigh(highSeries, pivotLen, 0).toArray();
-  const pivotLowArr = ta.pivotlow(lowSeries, pivotLen, 0).toArray();
+      // Pine: plot(showma ? sma(close, malen) : na, color = showma ? macol : na, linewidth = 2)
+      const c0 = s.closeAvgs[0]!.step(C);
+      const c1 = s.closeAvgs.length > 1 ? s.closeAvgs[1]!.step(C) : c0;
+      const sma = s.sma === s.closeAvgs[0] ? c0 : c1;
+      s.plot0[i] = { time, value: showMA ? sma : NaN, color: maColor };
+      const sma10 = s.sma10 === s.closeAvgs[0] ? c0 : c1;
 
-  // --- Optional SMA ---
-  // Pine: plot(showma ? sma(close, malen) : na, color = showma ? macol : na, linewidth = 2)
-  const smaArr = ta.sma(closeSeries, maLen).toArray();
+      const r = s.rangeAvgs;
+      const r0 = r[0]!.step(H - L);
+      const r1 = r.length > 1 ? r[1]!.step(H - L) : r0;
+      const r2 = r.length > 2 ? r[2]!.step(H - L) : r0;
+      const rangeAvg = s.rangeAvg50 === r[0] ? r0 : s.rangeAvg50 === r[1] ? r1 : r2;
+      const avgBody = s.avgBody.step(Math.abs(C - O));
+      const avgCandle = s.avgCandle === r[0] ? r0 : s.avgCandle === r[1] ? r1 : r2;
+      const avgCandle1 = s.avgCandleOutside === r[0] ? r0 : s.avgCandleOutside === r[1] ? r1 : r2;
 
-  const plot0 = bars.map((b, i) => ({
-    time: b.time,
-    value: showMA && smaArr[i] != null ? smaArr[i]! : NaN,
-    color: maColor,
-  }));
+      // Pine computes every bar; a comparison with an na average is false, so no warm-up skip is needed.
+      // --- Wick Reversal System ---
+      let Wlongsignal = false;
 
-  // --- SMA for wick system (range average over 50 bars) ---
-  const rangeSeries = new Series(bars, (b) => b.high - b.low);
-  const rangeAvg50Arr = ta.sma(rangeSeries, 50).toArray();
+      if (enableWick) {
+        const hl = H - L;
 
-  // --- Extreme system: body and candle size averages ---
-  const bodySizeSeries = new Series(bars, (b) => Math.abs(b.close - b.open));
-  const candleSizeSeries = new Series(bars, (b) => b.high - b.low);
-  const avgBodyArr = ta.sma(bodySizeSeries, extremeBarsBack).toArray();
-  const avgCandleArr = ta.sma(candleSizeSeries, extremeBarsBack).toArray();
+        Wlongsignal =
+          ((C > O) && (O - L) >= ((C - O) * wickMultiplier) && (H - C) <= (hl * wickBodyPct)) ||
+          ((C < O) && (C - L) >= ((O - C) * wickMultiplier) && (H - C) <= (hl * wickBodyPct)) ||
+          ((C === O && C !== H) && hl >= ((H - C) * wickMultiplier) && (H - C) <= (hl * wickBodyPct)) ||
+          ((O === H && C === H) && hl >= rangeAvg);
 
-  // --- Outside system: candle average ---
-  const avgCandleOutsideArr = ta.sma(candleSizeSeries, outsideBarsBack).toArray();
+        // Pine also defines Wshortsignal (line 30) but never uses it: line 72 uses Wlongsignal for shorts.
+      }
 
-  // --- Doji system: SMA(close, 10) ---
-  const sma10Arr = ta.sma(closeSeries, 10).toArray();
+      // --- Extreme Reversal System ---
+      let Elongsignal = false;
+      let Eshortsignal = false;
 
-  // Pine computes every bar; a comparison with an na average is false, so no warm-up skip is needed.
-  for (let i = 0; i < n; i++) {
-    const O = bars[i].open;
-    const C = bars[i].close;
-    const H = bars[i].high;
-    const L = bars[i].low;
-    const time = bars[i].time as number;
+      if (enableExtreme && i >= 1) {
+        const O1 = bars[i - 1]!.open;
+        const C1 = bars[i - 1]!.close;
+        const H1 = bars[i - 1]!.high;
+        const L1 = bars[i - 1]!.low;
 
-    const highleftempty = pivotHighArr[i] != null && !isNaN(pivotHighArr[i]!);
-    const lowleftempty = pivotLowArr[i] != null && !isNaN(pivotLowArr[i]!);
-
-    // --- Wick Reversal System ---
-    let Wlongsignal = false;
-
-    if (enableWick) {
-      const rangeAvg = rangeAvg50Arr[i];
-      const hl = H - L;
-
-      Wlongsignal =
-        ((C > O) && (O - L) >= ((C - O) * wickMultiplier) && (H - C) <= (hl * wickBodyPct)) ||
-        ((C < O) && (C - L) >= ((O - C) * wickMultiplier) && (H - C) <= (hl * wickBodyPct)) ||
-        ((C === O && C !== H) && hl >= ((H - C) * wickMultiplier) && (H - C) <= (hl * wickBodyPct)) ||
-        ((O === H && C === H) && rangeAvg != null && hl >= rangeAvg);
-
-      // Pine also defines Wshortsignal (line 30) but never uses it: line 72 uses Wlongsignal for shorts.
-    }
-
-    // --- Extreme Reversal System ---
-    let Elongsignal = false;
-    let Eshortsignal = false;
-
-    if (enableExtreme && i >= 1) {
-      const O1 = bars[i - 1].open;
-      const C1 = bars[i - 1].close;
-      const H1 = bars[i - 1].high;
-      const L1 = bars[i - 1].low;
-      const avgBody = avgBodyArr[i];
-      const avgCandle = avgCandleArr[i];
-
-      if (avgBody != null && avgCandle != null) {
         // Previous bar bearish with large body => current bar bullish = long
         Elongsignal = (O1 - C1) >= (bodySize * (H1 - L1)) &&
           (H1 - L1) > (avgCandle * bodyMultiplier) &&
@@ -187,40 +219,34 @@ export function calculate(
           (C1 - O1) > avgBody &&
           O > C;
       }
-    }
 
-    // --- Outside Reversal System ---
-    let Olongsignal = false;
-    let Oshortsignal = false;
+      // --- Outside Reversal System ---
+      let Olongsignal = false;
+      let Oshortsignal = false;
 
-    if (enableOutside && i >= 1) {
-      const H1 = bars[i - 1].high;
-      const L1 = bars[i - 1].low;
-      const avgCandle1 = avgCandleOutsideArr[i];
+      if (enableOutside && i >= 1) {
+        const H1 = bars[i - 1]!.high;
+        const L1 = bars[i - 1]!.low;
 
-      if (avgCandle1 != null) {
         Olongsignal = L < L1 && C > H1 && (H - L) >= avgCandle1 * barMultiplier;
         Oshortsignal = H > H1 && C < L1 && (H - L) >= avgCandle1 * barMultiplier;
       }
-    }
 
-    // --- Doji Reversal System ---
-    let Dlongsignal = false;
-    let Dshortsignal = false;
+      // --- Doji Reversal System ---
+      let Dlongsignal = false;
+      let Dshortsignal = false;
 
-    if (enableDoji && i >= 2) {
-      const H1 = bars[i - 1].high;
-      const L1 = bars[i - 1].low;
-      const O1 = bars[i - 1].open;
-      const C1 = bars[i - 1].close;
-      const H2 = bars[i - 2].high;
-      const L2 = bars[i - 2].low;
-      const C1_val = bars[i - 1].close;
-      const frangehl = H1 - L1;
-      const frangeco = Math.abs(C1 - O1);
-      const sma10 = sma10Arr[i];
+      if (enableDoji && i >= 2) {
+        const H1 = bars[i - 1]!.high;
+        const L1 = bars[i - 1]!.low;
+        const O1 = bars[i - 1]!.open;
+        const C1 = bars[i - 1]!.close;
+        const H2 = bars[i - 2]!.high;
+        const L2 = bars[i - 2]!.low;
+        const C1_val = bars[i - 1]!.close;
+        const frangehl = H1 - L1;
+        const frangeco = Math.abs(C1 - O1);
 
-      if (sma10 != null) {
         Dshortsignal =
           (frangeco <= frangehl * dojiPct && C < L1 && L1 > sma10 && C < O) ||
           (C < L2 && C1_val >= L2 && frangeco <= frangeco * dojiPct && C < O && L2 > sma10);
@@ -229,44 +255,57 @@ export function calculate(
           (frangeco <= frangehl * dojiPct && C > H1 && H1 < sma10 && C > O) ||
           (C > H2 && C1_val <= H2 && frangeco <= frangeco * dojiPct && C > O && H2 < sma10);
       }
-    }
 
-    // --- Combined signals with pivot context ---
-    const longsignal = lowleftempty && (
-      (enableWick && Wlongsignal) ||
-      (enableExtreme && Elongsignal) ||
-      (enableOutside && Olongsignal) ||
-      (enableDoji && Dlongsignal)
-    );
+      // --- Combined signals with pivot context ---
+      const longsignal = lowleftempty && (
+        (enableWick && Wlongsignal) ||
+        (enableExtreme && Elongsignal) ||
+        (enableOutside && Olongsignal) ||
+        (enableDoji && Dlongsignal)
+      );
 
-    // Pine line 72 uses Wlongsignal (not Wshortsignal) for the short signal; kept as written.
-    const shortsignal = highleftempty && (
-      (enableWick && Wlongsignal) ||
-      (enableExtreme && Eshortsignal) ||
-      (enableOutside && Oshortsignal) ||
-      (enableDoji && Dshortsignal)
-    );
+      // Pine line 72 uses Wlongsignal (not Wshortsignal) for the short signal; kept as written.
+      const shortsignal = highleftempty && (
+        (enableWick && Wlongsignal) ||
+        (enableExtreme && Eshortsignal) ||
+        (enableOutside && Oshortsignal) ||
+        (enableDoji && Dshortsignal)
+      );
 
-    longFlags.push(longsignal);
-    shortFlags.push(shortsignal);
+      // alertcondition(longsignal, 'Long Signal') / alertcondition(shortsignal, 'Short Signal')
+      s.flags[0]![i] = longsignal;
+      s.flags[1]![i] = shortsignal;
+      if (longsignal) s.times[0]!.push(time);
+      if (shortsignal) s.times[1]!.push(time);
 
-    // Pine: plotshape(longsignal, color = color.blue, location = location.belowbar, style = shape.triangleup, size = size.small)
-    if (longsignal) {
-      markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: '#2196F3' });
-    }
-    // Pine: plotshape(shortsignal, color = color.red, location = location.abovebar, style = shape.triangledown, size = size.small)
-    if (shortsignal) {
-      markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: '#FF5252' });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
-    markers,
-    // alertcondition(longsignal, 'Long Signal') / alertcondition(shortsignal, 'Short Signal')
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags]),
+      // Pine: plotshape(longsignal, color = color.blue, location = location.belowbar, style = shape.triangleup, size = size.small)
+      if (longsignal) {
+        s.markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: '#2196F3' });
+      }
+      // Pine: plotshape(shortsignal, color = color.red, location = location.abovebar, style = shape.triangledown, size = size.small)
+      if (shortsignal) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: '#FF5252' });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice() },
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CandlestickReversalInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CandlestickReversalInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -275,4 +314,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'Short Signal', message: 'Short Signal' },
 ];
 
-export const CandlestickReversal = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const CandlestickReversal = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

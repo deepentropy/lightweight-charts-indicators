@@ -9,8 +9,10 @@
  * Reference: "Buying Selling Volume" by ceyhun (community)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BuyingSellVolumeInputs {
   vnLen: number;
@@ -39,124 +41,101 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<BuyingSellVolumeInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
+
+interface BsvRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  plots: Point[][];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<BuyingSellVolumeInputs>): BarStudy<BsvRun, Result> {
   const { vnLen } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  // BV = volume * (close - low) / (high - low); SV = volume * (high - close) / (high - low)
-  const bvArr: number[] = new Array(n);
-  const svArr: number[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    const vol = bars[i].volume ?? 0;
-    const range = bars[i].high - bars[i].low;
-    if (range === 0) {
-      bvArr[i] = 0;
-      svArr[i] = 0;
-    } else {
-      bvArr[i] = vol * (bars[i].close - bars[i].low) / range;
-      svArr[i] = vol * (bars[i].high - bars[i].close) / range;
-    }
-  }
-
-  // RAW Pressure Volume Calculations
-  const volArr = bars.map(b => Math.max(b.volume ?? 0, 1));
-  const tpArr: number[] = new Array(n);
-  const bpvArr: number[] = new Array(n);
-  const spvArr: number[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    tpArr[i] = bvArr[i] + svArr[i];
-    bpvArr[i] = tpArr[i] === 0 ? 0 : (bvArr[i] / tpArr[i]) * volArr[i];
-    spvArr[i] = tpArr[i] === 0 ? 0 : (svArr[i] / tpArr[i]) * volArr[i];
-  }
-
-  // Conditional columns: dominant positive, counterforce negative
-  const bpConArr: number[] = new Array(n);
-  const spConArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    bpConArr[i] = bpvArr[i] > spvArr[i] ? bpvArr[i] : -Math.abs(bpvArr[i]);
-    spConArr[i] = spvArr[i] > bpvArr[i] ? spvArr[i] : -Math.abs(spvArr[i]);
-  }
-
-  // BuyVolume% and SellVolume%
-  const buyPctArr: number[] = new Array(n);
-  const sellPctArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const total = bvArr[i] + svArr[i];
-    buyPctArr[i] = total === 0 ? 50 : 100 * bvArr[i] / total;
-    sellPctArr[i] = total === 0 ? 50 : 100 * svArr[i] / total;
-  }
-
-  // Volume Index: VN = vol / ema(vol, 20)
-  const volSeries = new Series(bars, (_b, i) => volArr[i]);
-  const volEma20 = ta.ema(volSeries, 20).toArray();
-
-  const vnArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    vnArr[i] = (volEma20[i] ?? 1) === 0 ? 0 : volArr[i] / (volEma20[i] ?? 1);
-  }
-
   const warmup = 20;
-
-  // Volume plot: colored by bar direction
-  const volumePlot = volArr.map((v, i) => {
-    const color = bars[i].close >= bars[i].open
-      ? 'rgba(76,175,80,0.30)' : 'rgba(244,67,54,0.30)';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  const buyVolPlot = bpConArr.map((v, i) => ({
-    time: bars[i].time,
-    value: v,
-    color: '#26A69A',
-  }));
-
-  const sellVolPlot = spConArr.map((v, i) => ({
-    time: bars[i].time,
-    value: v,
-    color: '#EF5350',
-  }));
-
-  const buyPctPlot = buyPctArr.map((v, i) => ({
-    time: bars[i].time,
-    value: v,
-    color: '#4CAF50',
-  }));
-
-  const sellPctPlot = sellPctArr.map((v, i) => ({
-    time: bars[i].time,
-    value: v,
-    color: '#EF5350',
-  }));
-
-  const volIndexPlot = vnArr.map((v, i) => {
-    if (i < warmup) return { time: bars[i].time, value: NaN };
-    const isUp = bars[i].close > bars[i].open;
-    const color = v > vnLen && isUp ? '#00FFFF' : v > vnLen ? 'rgba(158,158,158,0.90)' : 'rgba(255,255,0,0.90)';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  // barcolor: blue when buy > sell, purple when sell > buy, gray otherwise
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    if (bpConArr[i] > spConArr[i]) barColors.push({ time: bars[i].time, color: '#2196F3' });
-    else if (spConArr[i] > bpConArr[i]) barColors.push({ time: bars[i].time, color: '#9C27B0' });
-    else barColors.push({ time: bars[i].time, color: '#787B86' });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      volume: volumePlot,
-      buyVol: buyVolPlot,
-      sellVol: sellVolPlot,
-      buyPct: buyPctPlot,
-      sellPct: sellPctPlot,
-      volIndex: volIndexPlot,
+    init() {
+      const ema = taStep.ema(20);
+      const s: BsvRun = {
+        ema, plots: [[], [], [], [], [], []], barColors: [], steps: [ema], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.barColors];
+      s.series = s.plots;
+      return s;
     },
-    barColors,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // BV = volume * (close - low) / (high - low); SV = volume * (high - close) / (high - low)
+      const volume = b.volume ?? 0;
+      const range = b.high - b.low;
+      const bv = range === 0 ? 0 : volume * (b.close - b.low) / range;
+      const sv = range === 0 ? 0 : volume * (b.high - b.close) / range;
+
+      // RAW Pressure Volume Calculations
+      const vol = Math.max(b.volume ?? 0, 1);
+      const tp = bv + sv;
+      const bpv = tp === 0 ? 0 : (bv / tp) * vol;
+      const spv = tp === 0 ? 0 : (sv / tp) * vol;
+
+      // Conditional columns: dominant positive, counterforce negative
+      const bpCon = bpv > spv ? bpv : -Math.abs(bpv);
+      const spCon = spv > bpv ? spv : -Math.abs(spv);
+
+      // BuyVolume% and SellVolume%
+      const total = bv + sv;
+      const buyPct = total === 0 ? 50 : 100 * bv / total;
+      const sellPct = total === 0 ? 50 : 100 * sv / total;
+
+      // Volume Index: VN = vol / ema(vol, 20)
+      const volEma20 = s.ema.step(vol);
+      const vn = (volEma20 ?? 1) === 0 ? 0 : vol / (volEma20 ?? 1);
+
+      const p = s.plots;
+      // Volume plot: colored by bar direction
+      p[0]![i] = { time, value: vol, color: b.close >= b.open ? 'rgba(76,175,80,0.30)' : 'rgba(244,67,54,0.30)' };
+      p[1]![i] = { time, value: bpCon, color: '#26A69A' };
+      p[2]![i] = { time, value: spCon, color: '#EF5350' };
+      p[3]![i] = { time, value: buyPct, color: '#4CAF50' };
+      p[4]![i] = { time, value: sellPct, color: '#EF5350' };
+      if (i < warmup) {
+        p[5]![i] = { time, value: NaN };
+      } else {
+        const isUp = b.close > b.open;
+        const color = vn > vnLen && isUp ? '#00FFFF' : vn > vnLen ? 'rgba(158,158,158,0.90)' : 'rgba(255,255,0,0.90)';
+        p[5]![i] = { time, value: vn, color };
+      }
+
+      // barcolor: blue when buy > sell, purple when sell > buy, gray otherwise
+      if (bpCon > spCon) s.barColors.push({ time, color: '#2196F3' });
+      else if (spCon > bpCon) s.barColors.push({ time, color: '#9C27B0' });
+      else s.barColors.push({ time, color: '#787B86' });
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          volume: p[0]!.slice(),
+          buyVol: p[1]!.slice(),
+          sellVol: p[2]!.slice(),
+          buyPct: p[3]!.slice(),
+          sellPct: p[4]!.slice(),
+          volIndex: p[5]!.slice(),
+        },
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const BuyingSellVolume = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BuyingSellVolumeInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BuyingSellVolumeInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const BuyingSellVolume = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

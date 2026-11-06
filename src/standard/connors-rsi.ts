@@ -5,7 +5,9 @@
  * CRSI = avg(RSI(close,3), RSI(updown(close),2), percentrank(ROC(close,1),100))
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ConnorsRSIInputs {
   lenrsi: number;
@@ -45,48 +47,65 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ConnorsRSIInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface CrsiRun extends BarRunState<{ ud: number }> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  udRsi: ReturnType<typeof taStep.rsi>;
+  roc: ReturnType<typeof taStep.roc>;
+  pr: ReturnType<typeof taStep.percentrank>;
+  crsiData: Point[];
+}
+
+function study(inputs: Partial<ConnorsRSIInputs>): BarStudy<CrsiRun, IndicatorResult> {
   const { lenrsi, lenupdown, lenroc } = { ...defaultInputs, ...inputs };
-
-  const close = new Series(bars, b => b.close);
-
-  // updown streak counter
-  const ud: number[] = [0];
-  for (let i = 1; i < bars.length; i++) {
-    const s = bars[i].close;
-    const sPrev = bars[i - 1].close;
-    if (s === sPrev) {
-      ud.push(0);
-    } else if (s > sPrev) {
-      ud.push(ud[i - 1] <= 0 ? 1 : ud[i - 1] + 1);
-    } else {
-      ud.push(ud[i - 1] >= 0 ? -1 : ud[i - 1] - 1);
-    }
-  }
-
-  const udSeries = new Series(bars, (_, i) => ud[i]);
-
-  // Three components
-  const rsi = ta.rsi(close, lenrsi);
-  const updownRsi = ta.rsi(udSeries, lenupdown);
-  const roc1 = ta.roc(close, 1);
-  const pr = ta.percentrank(roc1, lenroc);
-
-  const rsiArr = rsi.toArray();
-  const udRsiArr = updownRsi.toArray();
-  const prArr = pr.toArray();
-
-  // CRSI = math.avg(rsi, updownrsi, percentrank) = (a + b + c) / 3
-  const crsiData = bars.map((bar, i) => {
-    const a = rsiArr[i], b = udRsiArr[i], c = prArr[i];
-    const value = (a != null && b != null && c != null) ? (a + b + c) / 3 : NaN;
-    return { time: bar.time, value };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': crsiData },
+    init() {
+      const s: CrsiRun = {
+        rsi: taStep.rsi(lenrsi), udRsi: taStep.rsi(lenupdown), roc: taStep.roc(1), pr: taStep.percentrank(lenroc),
+        crsiData: [], steps: [], vars: { ud: 0 }, lists: [], series: [],
+      };
+      s.steps = [s.rsi, s.udRsi, s.roc, s.pr];
+      s.series = [s.crsiData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const bar = bars[i];
+      // updown streak counter (0 on the first bar)
+      let ud = 0;
+      if (i > 0) {
+        const prev = s.vars.ud;
+        const c = bar.close;
+        const cPrev = bars[i - 1].close;
+        if (c === cPrev) ud = 0;
+        else if (c > cPrev) ud = prev <= 0 ? 1 : prev + 1;
+        else ud = prev >= 0 ? -1 : prev - 1;
+      }
+      s.vars.ud = ud;
+      // Three components
+      const a = s.rsi.step(bar.close);
+      const b = s.udRsi.step(ud);
+      const c = s.pr.step(s.roc.step(bar.close));
+      // CRSI = math.avg(rsi, updownrsi, percentrank) = (a + b + c) / 3
+      const value = (a != null && b != null && c != null) ? (a + b + c) / 3 : NaN;
+      s.crsiData[i] = { time: bar.time as number, value };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.crsiData.slice() },
+      };
+    },
   };
 }
 
-export const ConnorsRSI = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ConnorsRSIInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ConnorsRSIInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const ConnorsRSI = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig };

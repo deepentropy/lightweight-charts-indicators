@@ -7,7 +7,9 @@
  * Reference: "Triple MA Forecast" by yatrader2 (community)
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TripleMAForecastInputs {
   src: SourceType;
@@ -66,106 +68,133 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TripleMAForecastInputs> = {}): IndicatorResult {
-  const { src, forecastType, linregLen, showShort, len, showMid, lenMid, showLong, lenLong } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const srcSeries = getSourceSeries(bars, src);
-  const srcArr = srcSeries.toArray();
+type Point = { time: number; value: number };
 
+interface TripleRun extends BarRunState<Record<string, never>> {
+  smas: WindowSma[];
+  srcArr: number[];
+  maPlots: Point[][];
+}
+
+function study(inputs: Partial<TripleMAForecastInputs>): BarStudy<TripleRun, IndicatorResult> {
+  const { src, forecastType, linregLen, showShort, len, showMid, lenMid, showLong, lenLong } = { ...defaultInputs, ...inputs };
+  const value = barSource(src);
   const lengths = [len, lenMid, lenLong];
   const showFlags = [showShort, showMid, showLong];
-  const smaArrays = lengths.map((l) => ta.sma(srcSeries, l).toArray());
+  return {
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const smas = lengths.map((l) => new WindowSma(l));
+      const s: TripleRun = { smas, srcArr: [], maPlots: [[], [], []], steps: smas, vars: {}, lists: [], series: [] };
+      s.series = [s.srcArr, ...s.maPlots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = value(b);
+      s.srcArr[i] = v;
+      // Main MA plots (plot0, plot1, plot2) -- fixed colors per Pine (no slope coloring)
+      for (let idx = 0; idx < 3; idx++) {
+        const ma = s.smas[idx].step(v);
+        s.maPlots[idx][i] = { time: b.time, value: showFlags[idx] ? (ma ?? NaN) : NaN };
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const srcArr = s.srcArr;
+      const plots: Record<string, Array<{ time: number; value: number }>> = {};
+      for (let idx = 0; idx < 3; idx++) plots[`plot${idx}`] = s.maPlots[idx].slice();
 
-  const plots: Record<string, Array<{ time: number; value: number }>> = {};
-
-  // Main MA plots (plot0, plot1, plot2) -- fixed colors per Pine (no slope coloring)
-  for (let idx = 0; idx < 3; idx++) {
-    const arr = smaArrays[idx];
-    plots[`plot${idx}`] = arr.map((v, i) => ({
-      time: bars[i].time,
-      value: showFlags[idx] ? (v ?? NaN) : NaN,
-    }));
-  }
-
-  // Pine: forecast(_type,_src,_flen,_lrlen)
-  //   "flat" => _src (current source value)
-  //   "linreg" => linreg(_src, _lrlen, _flen)
-  const linregForecast = (i: number, flen: number): number => {
-    if (i < linregLen - 1) return NaN;
-    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-    for (let j = 0; j < linregLen; j++) {
-      const idx = i - linregLen + 1 + j;
-      const y = srcArr[idx] ?? NaN;
-      if (isNaN(y)) return NaN;
-      sumX += j;
-      sumY += y;
-      sumXY += j * y;
-      sumX2 += j * j;
-    }
-    const nLr = linregLen;
-    const denom = nLr * sumX2 - sumX * sumX;
-    if (denom === 0) return NaN;
-    const b = (nLr * sumXY - sumX * sumY) / denom;
-    const a = (sumY - b * sumX) / nLr;
-    return a + b * (nLr - 1 + flen);
-  };
-
-  // Forecast circle plots (9 total: 3 MAs x 3 forward steps)
-  // Pine formula: shortmaforecast_k = (SMA(src, L-k) * (L-k) + forecast1 + ... + forecastk) / L
-  // Pine: show_last=1 means only the last bar has a visible value
-  for (let maIdx = 0; maIdx < 3; maIdx++) {
-    const L = lengths[maIdx];
-    const show = showFlags[maIdx];
-    for (let fstep = 1; fstep <= 3; fstep++) {
-      const plotId = `plot${3 + maIdx * 3 + (fstep - 1)}`;
-      const forecastPlot: Array<{ time: number; value: number }> = [];
-
-      for (let i = 0; i < n; i++) {
-        // Only show on the last bar (Pine: show_last=1)
-        if (!show || i !== n - 1) {
-          forecastPlot.push({ time: bars[i].time, value: NaN });
-          continue;
+      // Pine: forecast(_type,_src,_flen,_lrlen)
+      //   "flat" => _src (current source value)
+      //   "linreg" => linreg(_src, _lrlen, _flen)
+      const linregForecast = (i: number, flen: number): number => {
+        if (i < linregLen - 1) return NaN;
+        let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+        for (let j = 0; j < linregLen; j++) {
+          const idx = i - linregLen + 1 + j;
+          const y = srcArr[idx] ?? NaN;
+          if (isNaN(y)) return NaN;
+          sumX += j;
+          sumY += y;
+          sumXY += j * y;
+          sumX2 += j * j;
         }
+        const nLr = linregLen;
+        const denom = nLr * sumX2 - sumX * sumX;
+        if (denom === 0) return NaN;
+        const b = (nLr * sumXY - sumX * sumY) / denom;
+        const a = (sumY - b * sumX) / nLr;
+        return a + b * (nLr - 1 + flen);
+      };
 
-        const partialLen = L - fstep;
-        if (partialLen <= 0 || i < L) {
-          forecastPlot.push({ time: bars[i].time, value: NaN });
-          continue;
-        }
+      // Forecast circle plots (9 total: 3 MAs x 3 forward steps)
+      // Pine formula: shortmaforecast_k = (SMA(src, L-k) * (L-k) + forecast1 + ... + forecastk) / L
+      // Pine: show_last=1 means only the last bar has a visible value (built from the bar count here)
+      for (let maIdx = 0; maIdx < 3; maIdx++) {
+        const L = lengths[maIdx];
+        const show = showFlags[maIdx];
+        for (let fstep = 1; fstep <= 3; fstep++) {
+          const plotId = `plot${3 + maIdx * 3 + (fstep - 1)}`;
+          const forecastPlot: Array<{ time: number; value: number }> = [];
 
-        // Compute forecasted source values for each forward step
-        const forecasts: number[] = [];
-        for (let f = 1; f <= fstep; f++) {
-          if (forecastType === 'flat') {
-            forecasts.push(srcArr[i] ?? NaN);
-          } else {
-            forecasts.push(linregForecast(i, f));
+          for (let i = 0; i < n; i++) {
+            // Only show on the last bar (Pine: show_last=1)
+            if (!show || i !== n - 1) {
+              forecastPlot.push({ time: bars[i].time, value: NaN });
+              continue;
+            }
+
+            const partialLen = L - fstep;
+            if (partialLen <= 0 || i < L) {
+              forecastPlot.push({ time: bars[i].time, value: NaN });
+              continue;
+            }
+
+            // Compute forecasted source values for each forward step
+            const forecasts: number[] = [];
+            for (let f = 1; f <= fstep; f++) {
+              if (forecastType === 'flat') {
+                forecasts.push(srcArr[i] ?? NaN);
+              } else {
+                forecasts.push(linregForecast(i, f));
+              }
+            }
+            if (forecasts.some(isNaN)) {
+              forecastPlot.push({ time: bars[i].time, value: NaN });
+              continue;
+            }
+
+            // SMA(src, L-fstep) * (L-fstep) = sum of last (L-fstep) source values
+            let partialSum = 0;
+            for (let j = 0; j < partialLen; j++) {
+              partialSum += srcArr[i - partialLen + 1 + j] ?? 0;
+            }
+            const forecastSum = forecasts.reduce((s, v) => s + v, 0);
+            const val = (partialSum + forecastSum) / L;
+
+            forecastPlot.push({ time: bars[i].time, value: val });
           }
-        }
-        if (forecasts.some(isNaN)) {
-          forecastPlot.push({ time: bars[i].time, value: NaN });
-          continue;
-        }
 
-        // SMA(src, L-fstep) * (L-fstep) = sum of last (L-fstep) source values
-        let partialSum = 0;
-        for (let j = 0; j < partialLen; j++) {
-          partialSum += srcArr[i - partialLen + 1 + j] ?? 0;
+          plots[plotId] = forecastPlot;
         }
-        const forecastSum = forecasts.reduce((s, v) => s + v, 0);
-        const val = (partialSum + forecastSum) / L;
-
-        forecastPlot.push({ time: bars[i].time, value: val });
       }
 
-      plots[plotId] = forecastPlot;
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
 }
 
-export const TripleMAForecast = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TripleMAForecastInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TripleMAForecastInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const TripleMAForecast = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

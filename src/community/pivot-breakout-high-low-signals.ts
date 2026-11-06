@@ -14,9 +14,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PivotBreakoutHighLowSignalsInputs {
   /** Pivot length (bars on each side of the pivot) */
@@ -65,119 +67,172 @@ const gt = (a: number, b: number) => a - b > EPS;
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface PivotVars {
+  lastPivotHigh: number; // var float lastPivotHigh
+  lastPivotLow: number; // var float lastPivotLow
+  bullLevel: number; // var float bullLevel
+  bearLevel: number; // var float bearLevel
+  waitingBullRetest: boolean;
+  waitingBearRetest: boolean;
+  /** close, lastPivotHigh, lastPivotLow and the EMA of the bar before (the crosses) */
+  pClose: number;
+  pHigh: number;
+  pLow: number;
+  pEma: number;
+}
+
+interface PivotRun extends BarRunState<PivotVars> {
+  ema: ReturnType<typeof taStep.ema>;
+  ph: PivotStep;
+  pl: PivotStep;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+const buyBg = String(color.new(color.green, 85));
+const sellBg = String(color.new(color.red, 85));
+
+function study(inputs: Partial<PivotBreakoutHighLowSignalsInputs>): BarStudy<PivotRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { pivotLen, emaFilter, emaLength } = cfg;
+  const retestTolerance = cfg.retestTolerance / 100;
+  const on = cfg.enableAlerts;
+  return {
+    init() {
+      const s: PivotRun = {
+        // ema = ta.ema(close, emaLength)
+        ema: taStep.ema(emaLength),
+        // pivotHigh = ta.pivothigh(high, pivotLen, pivotLen); pivotLow = ta.pivotlow(low, pivotLen, pivotLen)
+        ph: new PivotStep(pivotLen, pivotLen, true),
+        pl: new PivotStep(pivotLen, pivotLen, false),
+        plot0: [], plot1: [], plot2: [], markers: [], bgColors: [],
+        flags: Array.from({ length: 12 }, () => []), times: Array.from({ length: 12 }, () => []),
+        steps: [],
+        vars: {
+          lastPivotHigh: NaN, lastPivotLow: NaN, bullLevel: NaN, bearLevel: NaN,
+          waitingBullRetest: false, waitingBearRetest: false, pClose: NaN, pHigh: NaN, pLow: NaN, pEma: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.ema, s.ph, s.pl];
+      s.lists = [s.markers, s.bgColors, ...s.times];
+      s.series = [s.plot0, s.plot1, s.plot2, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const close = b.close;
+      const ema = s.ema.step(close);
+      const pivotHigh = s.ph.step(i, b.high);
+      const pivotLow = s.pl.step(i, b.low);
+      if (!isNaN(pivotHigh)) v.lastPivotHigh = pivotHigh;
+      if (!isNaN(pivotLow)) v.lastPivotLow = pivotLow;
+      const lastHigh = v.lastPivotHigh;
+      const lastLow = v.lastPivotLow;
+
+      // bullBreakout = ta.crossover(close, lastPivotHigh); bearBreakout = ta.crossunder(close, lastPivotLow)
+      // (exact comparisons, no 1e-10 tolerance; a tie on the previous bar counts: close[1] <= level[1]; na gives false)
+      const bullBreakout = i > 0 && close > lastHigh && v.pClose <= v.pHigh;
+      const bearBreakout = i > 0 && close < lastLow && v.pClose >= v.pLow;
+      if (bullBreakout) {
+        v.bullLevel = lastHigh;
+        v.waitingBullRetest = true;
+      }
+      if (bearBreakout) {
+        v.bearLevel = lastLow;
+        v.waitingBearRetest = true;
+      }
+
+      // bullRetest = waiting and low <= level * (1 + tol) and low >= level * (1 - tol) and close > level
+      const bullRetest = v.waitingBullRetest && le(b.low, v.bullLevel * (1 + retestTolerance))
+        && ge(b.low, v.bullLevel * (1 - retestTolerance)) && gt(b.close, v.bullLevel);
+      // bearRetest = waiting and high >= level * (1 - tol) and high <= level * (1 + tol) and close < level
+      const bearRetest = v.waitingBearRetest && ge(b.high, v.bearLevel * (1 - retestTolerance))
+        && le(b.high, v.bearLevel * (1 + retestTolerance)) && gt(v.bearLevel, b.close);
+
+      // buySignal = bullRetest and (not emaFilter or close > ema); sellSignal = bearRetest and (not emaFilter or close < ema)
+      const buySignal = bullRetest && (!emaFilter || gt(b.close, ema));
+      const sellSignal = bearRetest && (!emaFilter || gt(ema, b.close));
+      if (buySignal) v.waitingBullRetest = false;
+      if (sellSignal) v.waitingBearRetest = false;
+
+      // plotshape(buySignal, 'BUY', location.belowbar, shape.triangleup, color.lime, size.large, text 'BUY')
+      // plotshape(sellSignal, 'SELL', location.abovebar, shape.triangledown, color.red, size.large, text 'SELL')
+      // (Pine default text colour: color.blue)
+      if (buySignal) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.lime, text: 'BUY',
+          textColor: color.blue, size: 'large' });
+      }
+      if (sellSignal) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.red, text: 'SELL',
+          textColor: color.blue, size: 'large' });
+      }
+      // bgcolor(buySignal ? color.new(color.green, 85) : na); bgcolor(sellSignal ? color.new(color.red, 85) : na)
+      if (buySignal) s.bgColors.push({ time: b.time, color: buyBg });
+      if (sellSignal) s.bgColors.push({ time: b.time, color: sellBg });
+
+      // bullTrendChange = ta.crossover(close, ema); bearTrendChange = ta.crossunder(close, ema)
+      const bullTrend = close > ema && v.pClose <= v.pEma;
+      const bearTrend = close < ema && v.pClose >= v.pEma;
+      v.pClose = close;
+      v.pHigh = lastHigh;
+      v.pLow = lastLow;
+      v.pEma = ema;
+
+      const fl = s.flags;
+      fl[0]![i] = buySignal;
+      fl[1]![i] = sellSignal;
+      fl[2]![i] = on && bullBreakout;
+      fl[3]![i] = on && bearBreakout;
+      fl[4]![i] = on && bullRetest;
+      fl[5]![i] = on && bearRetest;
+      fl[6]![i] = on && buySignal;
+      fl[7]![i] = on && sellSignal;
+      fl[8]![i] = on && emaFilter && bullTrend;
+      fl[9]![i] = on && emaFilter && bearTrend;
+      fl[10]![i] = on && !isNaN(pivotHigh);
+      fl[11]![i] = on && !isNaN(pivotLow);
+      for (let k = 0; k < 12; k++) if (fl[k]![i]) s.times[k]!.push(b.time as number);
+
+      // plot(emaFilter ? ema : na, color = color.orange, linewidth = 2)
+      s.plot0[i] = { time: b.time, value: emaFilter ? ema : NaN };
+      // plot(lastPivotHigh, color = color.red, linewidth = 2, style = plot.style_linebr)
+      s.plot1[i] = { time: b.time, value: lastHigh };
+      // plot(lastPivotLow, color = color.lime, linewidth = 2, style = plot.style_linebr)
+      s.plot2[i] = { time: b.time, value: lastLow };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PivotBreakoutHighLowSignalsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<PivotBreakoutHighLowSignalsInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const { pivotLen, emaFilter, emaLength } = cfg;
-  const retestTolerance = cfg.retestTolerance / 100;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-
-  // ema = ta.ema(close, emaLength)
-  const ema = A(ta.ema(S(close), emaLength));
-  // pivotHigh = ta.pivothigh(high, pivotLen, pivotLen); pivotLow = ta.pivotlow(low, pivotLen, pivotLen)
-  const pivotHigh = A(ta.pivothigh(S(bars.map((b) => b.high)), pivotLen, pivotLen));
-  const pivotLow = A(ta.pivotlow(S(bars.map((b) => b.low)), pivotLen, pivotLen));
-
-  const lastHigh: number[] = new Array(n);
-  const lastLow: number[] = new Array(n);
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  const buyBg = String(color.new(color.green, 85));
-  const sellBg = String(color.new(color.red, 85));
-
-  let lastPivotHigh = NaN; // var float lastPivotHigh
-  let lastPivotLow = NaN; // var float lastPivotLow
-  let bullLevel = NaN; // var float bullLevel
-  let bearLevel = NaN; // var float bearLevel
-  let waitingBullRetest = false;
-  let waitingBearRetest = false;
-  const f = {
-    buy: [] as boolean[], sell: [] as boolean[], bullBo: [] as boolean[], bearBo: [] as boolean[],
-    bullRt: [] as boolean[], bearRt: [] as boolean[],
-  };
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    if (!isNaN(pivotHigh[i])) lastPivotHigh = pivotHigh[i];
-    if (!isNaN(pivotLow[i])) lastPivotLow = pivotLow[i];
-    lastHigh[i] = lastPivotHigh;
-    lastLow[i] = lastPivotLow;
-
-    // bullBreakout = ta.crossover(close, lastPivotHigh); bearBreakout = ta.crossunder(close, lastPivotLow)
-    // (exact comparisons, no 1e-10 tolerance; a tie on the previous bar counts: close[1] <= level[1]; na gives false)
-    const bullBreakout = i > 0 && close[i] > lastHigh[i] && close[i - 1] <= lastHigh[i - 1];
-    const bearBreakout = i > 0 && close[i] < lastLow[i] && close[i - 1] >= lastLow[i - 1];
-    if (bullBreakout) {
-      bullLevel = lastPivotHigh;
-      waitingBullRetest = true;
-    }
-    if (bearBreakout) {
-      bearLevel = lastPivotLow;
-      waitingBearRetest = true;
-    }
-
-    // bullRetest = waiting and low <= level * (1 + tol) and low >= level * (1 - tol) and close > level
-    const bullRetest = waitingBullRetest && le(b.low, bullLevel * (1 + retestTolerance))
-      && ge(b.low, bullLevel * (1 - retestTolerance)) && gt(b.close, bullLevel);
-    // bearRetest = waiting and high >= level * (1 - tol) and high <= level * (1 + tol) and close < level
-    const bearRetest = waitingBearRetest && ge(b.high, bearLevel * (1 - retestTolerance))
-      && le(b.high, bearLevel * (1 + retestTolerance)) && gt(bearLevel, b.close);
-
-    // buySignal = bullRetest and (not emaFilter or close > ema); sellSignal = bearRetest and (not emaFilter or close < ema)
-    const buySignal = bullRetest && (!emaFilter || gt(b.close, ema[i]));
-    const sellSignal = bearRetest && (!emaFilter || gt(ema[i], b.close));
-    if (buySignal) waitingBullRetest = false;
-    if (sellSignal) waitingBearRetest = false;
-    f.buy.push(buySignal); f.sell.push(sellSignal);
-    f.bullBo.push(bullBreakout); f.bearBo.push(bearBreakout);
-    f.bullRt.push(bullRetest); f.bearRt.push(bearRetest);
-
-    // plotshape(buySignal, 'BUY', location.belowbar, shape.triangleup, color.lime, size.large, text 'BUY')
-    // plotshape(sellSignal, 'SELL', location.abovebar, shape.triangledown, color.red, size.large, text 'SELL')
-    // (Pine default text colour: color.blue)
-    if (buySignal) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.lime, text: 'BUY',
-        textColor: color.blue, size: 'large' });
-    }
-    if (sellSignal) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.red, text: 'SELL',
-        textColor: color.blue, size: 'large' });
-    }
-    // bgcolor(buySignal ? color.new(color.green, 85) : na); bgcolor(sellSignal ? color.new(color.red, 85) : na)
-    if (buySignal) bgColors.push({ time: b.time, color: buyBg });
-    if (sellSignal) bgColors.push({ time: b.time, color: sellBg });
-  }
-
-  // bullTrendChange = ta.crossover(close, ema); bearTrendChange = ta.crossunder(close, ema)
-  const bullTrend = crossedOver(close, ema);
-  const bearTrend = crossedUnder(close, ema);
-  const on = cfg.enableAlerts;
-  const flags = [
-    f.buy, f.sell,
-    f.bullBo.map((v) => on && v), f.bearBo.map((v) => on && v),
-    f.bullRt.map((v) => on && v), f.bearRt.map((v) => on && v),
-    f.buy.map((v) => on && v), f.sell.map((v) => on && v),
-    bullTrend.map((v) => on && emaFilter && v), bearTrend.map((v) => on && emaFilter && v),
-    pivotHigh.map((v) => on && !isNaN(v)), pivotLow.map((v) => on && !isNaN(v)),
-  ];
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(emaFilter ? ema : na, color = color.orange, linewidth = 2)
-      plot0: bars.map((b, i) => ({ time: b.time, value: emaFilter ? ema[i] : NaN })),
-      // plot(lastPivotHigh, color = color.red, linewidth = 2, style = plot.style_linebr)
-      plot1: bars.map((b, i) => ({ time: b.time, value: lastHigh[i] })),
-      // plot(lastPivotLow, color = color.lime, linewidth = 2, style = plot.style_linebr)
-      plot2: bars.map((b, i) => ({ time: b.time, value: lastLow[i] })),
-    },
-    markers,
-    bgColors,
-    alerts: alertStates(alertConditions, bars, flags),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -198,6 +253,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const PivotBreakoutHighLowSignals = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

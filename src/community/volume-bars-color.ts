@@ -12,9 +12,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
 
 export interface VolumeBarsColorInputs {
   /** SMA / stdev length of the volume */
@@ -65,49 +67,82 @@ const EPS = 1e-10;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<VolumeBarsColorInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Result = IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+
+interface VbcRun extends BarRunState<Record<string, never>> {
+  mean: WindowSma;
+  dev: WindowStdev;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<VolumeBarsColorInputs>): BarStudy<VbcRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const volSeries = Series.fromArray(bars, volume);
-
-  const meanVolume = A(ta.sma(volSeries, cfg.meanPeriod));
-  const stdDevVolume = A(ta.stdev(volSeries, cfg.meanPeriod));
-  const hiBand = meanVolume.map((m, i) => m + stdDevVolume[i]);
-  const lowBand = meanVolume.map((m, i) => m - stdDevVolume[i]);
-  const highThreshold = meanVolume.map((m, i) => m + stdDevVolume[i] * cfg.devK);
-  const lowThreshold = meanVolume.map((m, i) => m - stdDevVolume[i] * cfg.devK);
-
-  const isHigh = (i: number) => ge(volume[i], highThreshold[i]);
-  const isLow = (i: number) => le(volume[i], lowThreshold[i]);
-  // volumeColor = volume >= highVolumeThreshold ? high : volume <= lowVolumeThreshold ? low : average
-  const volumeColor = (i: number) => (isHigh(i) ? HIGH_VOLUME : isLow(i) ? LOW_VOLUME : AVERAGE_VOLUME);
-
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    // barcolor(volume >= highVolumeThreshold and candles ? candlesClr : na)
-    if (isHigh(i) && cfg.candles) barColors.push({ time: bars[i].time, color: cfg.candlesClr });
-  }
-
   const bandFill = String(color.new('#9ad1ff', 90));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: metadata.precision },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: volume[i], color: volumeColor(i) })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: meanVolume[i], color: color.blue })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: hiBand[i], color: BAND })),
-      plot3: bars.map((b, i) => ({ time: b.time, value: lowBand[i], color: BAND })),
+    init() {
+      const s: VbcRun = {
+        mean: new WindowSma(cfg.meanPeriod), dev: new WindowStdev(cfg.meanPeriod), plot0: [], plot1: [], plot2: [],
+        plot3: [], barColors: [], flags: [[], []], times: [[], []], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.mean, s.dev];
+      s.lists = [s.barColors, ...s.times];
+      s.series = [s.plot0, s.plot1, s.plot2, s.plot3, ...s.flags];
+      return s;
     },
-    // fill(High Band, Low Band, color.new(#9ad1ff, 90), title = 'Band Fill')
-    fills: [{ plot1: 'plot2', plot2: 'plot3', options: { title: 'Band Fill', color: bandFill }, colors: new Array<string>(n).fill(bandFill) }],
-    barColors,
-    // alertcondition(volume >= highVolumeThreshold) / alertcondition(volume <= lowVolumeThreshold)
-    alerts: alertStates(alertConditions, bars, [bars.map((_, i) => isHigh(i)), bars.map((_, i) => isLow(i))]),
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const time = b.time as number;
+      const volume = b.volume ?? NaN;
+      const meanVolume = s.mean.step(volume);
+      const stdDevVolume = s.dev.step(volume);
+      const hiBand = meanVolume + stdDevVolume;
+      const lowBand = meanVolume - stdDevVolume;
+      const highThreshold = meanVolume + stdDevVolume * cfg.devK;
+      const lowThreshold = meanVolume - stdDevVolume * cfg.devK;
+      const isHigh = ge(volume, highThreshold);
+      const isLow = le(volume, lowThreshold);
+      // volumeColor = volume >= highVolumeThreshold ? high : volume <= lowVolumeThreshold ? low : average
+      const volumeColor = isHigh ? HIGH_VOLUME : isLow ? LOW_VOLUME : AVERAGE_VOLUME;
+      // barcolor(volume >= highVolumeThreshold and candles ? candlesClr : na)
+      if (isHigh && cfg.candles) s.barColors.push({ time: b.time, color: cfg.candlesClr });
+      s.plot0[i] = { time, value: volume, color: volumeColor };
+      s.plot1[i] = { time, value: meanVolume, color: color.blue };
+      s.plot2[i] = { time, value: hiBand, color: BAND };
+      s.plot3[i] = { time, value: lowBand, color: BAND };
+      // alertcondition(volume >= highVolumeThreshold) / alertcondition(volume <= lowVolumeThreshold)
+      s.flags[0]![i] = isHigh;
+      s.flags[1]![i] = isLow;
+      if (isHigh) s.times[0]!.push(time);
+      if (isLow) s.times[1]!.push(time);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: metadata.precision },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+        // fill(High Band, Low Band, color.new(#9ad1ff, 90), title = 'Band Fill')
+        fills: [{ plot1: 'plot2', plot2: 'plot3', options: { title: 'Band Fill', color: bandFill }, colors: new Array<string>(n).fill(bandFill) }],
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeBarsColorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolumeBarsColorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -118,6 +153,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const VolumeBarsColor = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

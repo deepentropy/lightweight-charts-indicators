@@ -13,7 +13,9 @@
  * Original notice: © peacefulLizard50262
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type NormalizedVolumeTrueRangeStyle = 'Body' | 'High/Low' | 'Close/Close';
 
@@ -85,116 +87,152 @@ const min = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.min(a, 
 const finite = (x: number) => (Number.isFinite(x) ? x : NaN);
 
 /** p_stdev(source, average): one-sided deviation of the values above the average (var state per call site) */
-function pStdev(source: number[], average: number[]): number[] {
-  let p = NaN;
-  let vari = 0;
-  let count = -1;
-  return source.map((s, i) => {
-    if (gt(s, average[i])) {
-      vari += Math.pow(s - average[i], 2);
-      count += 1;
-    }
-    if (count > 0) p = Math.sqrt(vari / count);
-    return p;
-  });
+interface PStdevState {
+  p: number;
+  vari: number;
+  count: number;
+}
+
+function pStdev(st: PStdevState, s: number, average: number): number {
+  if (gt(s, average)) {
+    st.vari += Math.pow(s - average, 2);
+    st.count += 1;
+  }
+  if (st.count > 0) st.p = Math.sqrt(st.vari / st.count);
+  return st.p;
 }
 
 /**
  * sma(source, length): sum of nz(source[i], first_value) for i = 0 .. length - 1, divided by length, once the first
  * non-na source value is seen (0 before it).
  */
-function firstFilledSma(source: number[], length: number): number[] {
-  let firstValue = NaN;
-  let ready = false;
-  return source.map((s, bar) => {
-    let sum = 0;
-    if (!ready && isNa(firstValue) && !isNa(s)) {
-      firstValue = s;
-      ready = true;
-    }
-    if (ready) {
-      for (let i = 0; i <= length - 1; i++) {
-        const v = bar - i >= 0 ? source[bar - i] : NaN;
-        sum += isNa(v) ? firstValue : v;
-      }
-    }
-    return sum / length;
-  });
+interface SmaState {
+  firstValue: number;
+  ready: boolean;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<NormalizedVolumeTrueRangeInputs> = {},
-): IndicatorResult & { visibility: Record<string, boolean> } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // true_range_select(tr_style)
-  const absPercent = bars.map((b, i) => {
-    let start: number;
-    let finish: number;
-    if (cfg.trStyle === 'High/Low') {
-      start = b.low;
-      finish = b.high;
-    } else if (cfg.trStyle === 'Close/Close') {
-      const prev = i > 0 ? bars[i - 1].close : NaN;
-      start = isNa(prev) ? b.close : prev;
-      finish = b.close;
-    } else {
-      start = b.open;
-      finish = b.close;
-    }
-    return Math.abs(finish - start) / min(finish, start);
-  });
-  const volume = bars.map((b) => b.volume ?? NaN);
-
-  // cum_avg(source) = ta.cum(source) / (bar_index + 1)
-  const cumAvg = (src: number[]) => A(ta.cum(S(src))).map((c, i) => c / (i + 1));
-
-  const avgAbsPercent = cumAvg(absPercent);
-  const pStdevAbsPercent = pStdev(absPercent, avgAbsPercent);
-  const avgVolume = cumAvg(volume);
-  const pStdevVolume = pStdev(volume, avgVolume);
-
-  const normalizedAbsPercent: number[] = new Array(n);
-  const normalizedVolume: number[] = new Array(n);
-  const normalizedAvgVolume: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const absPercentMax = avgAbsPercent[i] + pStdevAbsPercent[i] * cfg.mainScale;
-    const normalizedAvgPercent = avgAbsPercent[i] / absPercentMax;
-    const scaleFactor = (avgVolume[i] * (1 - normalizedAvgPercent)) / (normalizedAvgPercent * pStdevVolume[i]);
-    const maxVolume = avgVolume[i] + pStdevVolume[i] * scaleFactor;
-    normalizedAbsPercent[i] = min(absPercentMax, absPercent[i]) / absPercentMax;
-    normalizedVolume[i] = min(volume[i], maxVolume) / maxVolume;
-    normalizedAvgVolume[i] = avgVolume[i] / maxVolume;
+function firstFilledSma(st: SmaState, source: number[], bar: number, length: number): number {
+  let sum = 0;
+  const s = source[bar]!;
+  if (!st.ready && isNa(st.firstValue) && !isNa(s)) {
+    st.firstValue = s;
+    st.ready = true;
   }
+  if (st.ready) {
+    for (let i = 0; i <= length - 1; i++) {
+      const v = bar - i >= 0 ? source[bar - i]! : NaN;
+      sum += isNa(v) ? st.firstValue : v;
+    }
+  }
+  return sum / length;
+}
 
-  const averageNormalTr = firstFilledSma(normalizedAbsPercent.map((v) => v * 100), cfg.atrLength);
-  const averageNormalVolume = firstFilledSma(normalizedVolume.map((v) => v * 100), cfg.volumeLength);
+type Result = IndicatorResult & { visibility: Record<string, boolean> };
+type Point = { time: number; value: number; color: string };
 
-  const t = (i: number) => bars[i].time;
-  const plots = {
-    plot0: bars.map((b, i) => ({
-      time: t(i), value: finite(normalizedVolume[i] * 100), color: lt(b.open, b.close) ? UP_COLOR : DOWN_COLOR,
-    })),
-    plot1: bars.map((_b, i) => ({ time: t(i), value: finite(normalizedAbsPercent[i] * 100), color: TR_COLOR })),
-    plot2: bars.map((_b, i) => ({ time: t(i), value: finite(normalizedAvgVolume[i] * 100), color: BASELINE_COLOR })),
-    plot3: bars.map((_b, i) => ({ time: t(i), value: finite(averageNormalTr[i]), color: color.blue })),
-    plot4: bars.map((_b, i) => ({ time: t(i), value: finite(averageNormalVolume[i]), color: color.orange })),
-  };
+interface NvtrVars {
+  pAbs: PStdevState;
+  pVol: PStdevState;
+  smaTr: SmaState;
+  smaVol: SmaState;
+}
 
+interface NvtrRun extends BarRunState<NvtrVars> {
+  cumAbs: ReturnType<typeof taStep.cum>;
+  cumVol: ReturnType<typeof taStep.cum>;
+  trPct: number[];
+  volPct: number[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<NormalizedVolumeTrueRangeInputs>): BarStudy<NvtrRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, format: metadata.format },
-    plots,
-    hlines: [{ value: 100, options: { title: '100% Max Line', color: '#787b866e', linestyle: 'dashed' } }],
-    visibility: { showBaseline: cfg.showBaseline, showAtr: cfg.showAtr, showAverageVolume: cfg.showAverageVolume },
+    init() {
+      const plots: Point[][] = Array.from({ length: 5 }, () => []);
+      const s: NvtrRun = {
+        cumAbs: taStep.cum(), cumVol: taStep.cum(), trPct: [], volPct: [], plots, steps: [], lists: [], series: [],
+        vars: {
+          pAbs: { p: NaN, vari: 0, count: -1 }, pVol: { p: NaN, vari: 0, count: -1 },
+          smaTr: { firstValue: NaN, ready: false }, smaVol: { firstValue: NaN, ready: false },
+        },
+      };
+      s.steps = [s.cumAbs, s.cumVol];
+      s.series = [s.trPct, s.volPct, ...plots];
+      return s;
+    },
+    copyVars: (v) => ({ pAbs: { ...v.pAbs }, pVol: { ...v.pVol }, smaTr: { ...v.smaTr }, smaVol: { ...v.smaVol } }),
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const v = s.vars;
+      // true_range_select(tr_style)
+      let start: number;
+      let finish: number;
+      if (cfg.trStyle === 'High/Low') {
+        start = b.low;
+        finish = b.high;
+      } else if (cfg.trStyle === 'Close/Close') {
+        const prev = i > 0 ? bars[i - 1]!.close : NaN;
+        start = isNa(prev) ? b.close : prev;
+        finish = b.close;
+      } else {
+        start = b.open;
+        finish = b.close;
+      }
+      const absPercent = Math.abs(finish - start) / min(finish, start);
+      const volume = b.volume ?? NaN;
+
+      // cum_avg(source) = ta.cum(source) / (bar_index + 1)
+      const avgAbsPercent = s.cumAbs.step(absPercent) / (i + 1);
+      const pStdevAbsPercent = pStdev(v.pAbs, absPercent, avgAbsPercent);
+      const avgVolume = s.cumVol.step(volume) / (i + 1);
+      const pStdevVolume = pStdev(v.pVol, volume, avgVolume);
+
+      const absPercentMax = avgAbsPercent + pStdevAbsPercent * cfg.mainScale;
+      const normalizedAvgPercent = avgAbsPercent / absPercentMax;
+      const scaleFactor = (avgVolume * (1 - normalizedAvgPercent)) / (normalizedAvgPercent * pStdevVolume);
+      const maxVolume = avgVolume + pStdevVolume * scaleFactor;
+      const normalizedAbsPercent = min(absPercentMax, absPercent) / absPercentMax;
+      const normalizedVolume = min(volume, maxVolume) / maxVolume;
+      const normalizedAvgVolume = avgVolume / maxVolume;
+
+      s.trPct[i] = normalizedAbsPercent * 100;
+      s.volPct[i] = normalizedVolume * 100;
+      const averageNormalTr = firstFilledSma(v.smaTr, s.trPct, i, cfg.atrLength);
+      const averageNormalVolume = firstFilledSma(v.smaVol, s.volPct, i, cfg.volumeLength);
+
+      const t = b.time as number;
+      const p = s.plots;
+      p[0]![i] = { time: t, value: finite(normalizedVolume * 100), color: lt(b.open, b.close) ? UP_COLOR : DOWN_COLOR };
+      p[1]![i] = { time: t, value: finite(normalizedAbsPercent * 100), color: TR_COLOR };
+      p[2]![i] = { time: t, value: finite(normalizedAvgVolume * 100), color: BASELINE_COLOR };
+      p[3]![i] = { time: t, value: finite(averageNormalTr), color: color.blue };
+      p[4]![i] = { time: t, value: finite(averageNormalVolume), color: color.orange };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, format: metadata.format },
+        plots: { plot0: p[0]!.slice(), plot1: p[1]!.slice(), plot2: p[2]!.slice(), plot3: p[3]!.slice(), plot4: p[4]!.slice() },
+        hlines: [{ value: 100, options: { title: '100% Max Line', color: '#787b866e', linestyle: 'dashed' } }],
+        visibility: { showBaseline: cfg.showBaseline, showAtr: cfg.showAtr, showAverageVolume: cfg.showAverageVolume },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<NormalizedVolumeTrueRangeInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<NormalizedVolumeTrueRangeInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const NormalizedVolumeTrueRange = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

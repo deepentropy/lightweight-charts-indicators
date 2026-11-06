@@ -12,7 +12,9 @@
  * Original notice: © TheUltimator5
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type IntradayVsOvernightObvType = 'Both Intraday and Overnight' | 'Intraday' | 'Overnight' | 'Aggregate';
 
@@ -70,41 +72,28 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<IntradayVsOvernightObvInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+type Ma = { step(v: number): number; commit(): void };
+
+interface ObvVars {
+  intra: number;
+  over: number;
+  agg: number;
+}
+
+interface ObvRun extends BarRunState<ObvVars> {
+  ma: Ma | null;
+  intraArr: number[];
+  overArr: number[];
+  aggArr: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+}
+
+function study(inputs: Partial<IntradayVsOvernightObvInputs>): BarStudy<ObvRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const intradayOBV: number[] = new Array(n);
-  const overnightOBV: number[] = new Array(n);
-  const aggregateOBV: number[] = new Array(n);
-  // var float intradayOBV = na (and the two others): reset to 0 while intradayOBV is na
-  let intra = NaN;
-  let over = NaN;
-  let agg = NaN;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const volume = b.volume ?? NaN;
-    const overnightVolume = (volume * cfg.overnightVol) / 100;
-    const intradayVolume = volume - overnightVolume;
-    const intradayChange = b.close - b.open;
-    const overnightChange = i > 0 ? b.open - bars[i - 1].close : NaN;
-    if (isNaN(intra)) {
-      intra = 0;
-      over = 0;
-      agg = 0;
-    } else {
-      const intradayDelta = gt(intradayChange, 0) ? intradayVolume : lt(intradayChange, 0) ? -intradayVolume : 0;
-      const overnightDelta = gt(overnightChange, 0) ? overnightVolume : lt(overnightChange, 0) ? -overnightVolume : 0;
-      intra += intradayDelta;
-      over += overnightDelta;
-      agg += intradayDelta + overnightDelta;
-    }
-    intradayOBV[i] = intra;
-    overnightOBV[i] = over;
-    aggregateOBV[i] = agg;
-  }
-
   // tintRGB(baseColor, currentVal, prevVal): blend toward green when rising, toward red when falling
   const w = cfg.blendWeight;
   const tintRGB = (baseColor: string, currentVal: number, prevVal: number): string => {
@@ -134,34 +123,87 @@ export function calculate(bars: Bar[], inputs: Partial<IntradayVsOvernightObvInp
   const showIntra = cfg.plotChoice === 'Intraday' || cfg.plotChoice === 'Both Intraday and Overnight';
   const showOver = cfg.plotChoice === 'Overnight' || cfg.plotChoice === 'Both Intraday and Overnight';
   const showAgg = cfg.plotChoice === 'Aggregate';
-
-  const maSource = cfg.plotChoice === 'Intraday' ? intradayOBV : cfg.plotChoice === 'Overnight' ? overnightOBV : aggregateOBV;
-  let maLine: number[] = new Array(n).fill(NaN);
-  if (cfg.showMA) {
-    const s = Series.fromArray(bars, maSource);
+  const maStep = (): Ma => {
     const len = cfg.maLen;
-    maLine = A(cfg.maType === 'SMA' ? ta.sma(s, len) : cfg.maType === 'EMA' ? ta.ema(s, len)
-      : cfg.maType === 'WMA' ? ta.wma(s, len) : ta.rma(s, len));
-  }
-  const maColor = (i: number) => (!cfg.colorMAByPosition ? color.aqua
-    : lt(maLine[i], maSource[i]) ? color.green : gt(maLine[i], maSource[i]) ? color.red : color.aqua);
-
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: showIntra ? intradayOBV[i] : NaN,
-    color: tintRGB(color.orange, intradayOBV[i], prev(intradayOBV, i)) }));
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: showOver ? overnightOBV[i] : NaN,
-    color: tintRGB(color.blue, overnightOBV[i], prev(overnightOBV, i)) }));
-  const plot2 = bars.map((b, i) => ({ time: b.time, value: showAgg ? aggregateOBV[i] : NaN,
-    color: tintRGB(color.teal, aggregateOBV[i], prev(aggregateOBV, i)) }));
-  const plot3 = bars.map((b, i) => ({ time: b.time, value: cfg.showMA ? maLine[i] : NaN, color: maColor(i) }));
+    switch (cfg.maType) {
+      case 'SMA': return new WindowSma(len);
+      case 'EMA': return taStep.ema(len);
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+      default: return taStep.rma(len);
+    }
+  };
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
+    init() {
+      const ma = cfg.showMA ? maStep() : null;
+      const s: ObvRun = {
+        ma, intraArr: [], overArr: [], aggArr: [], plot0: [], plot1: [], plot2: [], plot3: [],
+        // var float intradayOBV = na (and the two others): reset to 0 while intradayOBV is na
+        steps: ma ? [ma] : [], vars: { intra: NaN, over: NaN, agg: NaN }, lists: [], series: [],
+      };
+      s.series = [s.intraArr, s.overArr, s.aggArr, s.plot0, s.plot1, s.plot2, s.plot3];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const volume = b.volume ?? NaN;
+      const overnightVolume = (volume * cfg.overnightVol) / 100;
+      const intradayVolume = volume - overnightVolume;
+      const intradayChange = b.close - b.open;
+      const overnightChange = i > 0 ? b.open - bars[i - 1].close : NaN;
+      if (isNaN(v.intra)) {
+        v.intra = 0;
+        v.over = 0;
+        v.agg = 0;
+      } else {
+        const intradayDelta = gt(intradayChange, 0) ? intradayVolume : lt(intradayChange, 0) ? -intradayVolume : 0;
+        const overnightDelta = gt(overnightChange, 0) ? overnightVolume : lt(overnightChange, 0) ? -overnightVolume : 0;
+        v.intra += intradayDelta;
+        v.over += overnightDelta;
+        v.agg += intradayDelta + overnightDelta;
+      }
+      const intradayOBV = s.intraArr;
+      const overnightOBV = s.overArr;
+      const aggregateOBV = s.aggArr;
+      intradayOBV[i] = v.intra;
+      overnightOBV[i] = v.over;
+      aggregateOBV[i] = v.agg;
+
+      const maSource = cfg.plotChoice === 'Intraday' ? intradayOBV : cfg.plotChoice === 'Overnight' ? overnightOBV : aggregateOBV;
+      const ma = s.ma ? s.ma.step(maSource[i]) : NaN;
+      const maColor = !cfg.colorMAByPosition ? color.aqua
+        : lt(ma, maSource[i]) ? color.green : gt(ma, maSource[i]) ? color.red : color.aqua;
+
+      s.plot0[i] = { time: b.time, value: showIntra ? intradayOBV[i] : NaN,
+        color: tintRGB(color.orange, intradayOBV[i], prev(intradayOBV, i)) };
+      s.plot1[i] = { time: b.time, value: showOver ? overnightOBV[i] : NaN,
+        color: tintRGB(color.blue, overnightOBV[i], prev(overnightOBV, i)) };
+      s.plot2[i] = { time: b.time, value: showAgg ? aggregateOBV[i] : NaN,
+        color: tintRGB(color.teal, aggregateOBV[i], prev(aggregateOBV, i)) };
+      s.plot3[i] = { time: b.time, value: cfg.showMA ? ma : NaN, color: maColor };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IntradayVsOvernightObvInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<IntradayVsOvernightObvInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const IntradayVsOvernightObv = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

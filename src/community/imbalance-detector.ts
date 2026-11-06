@@ -27,10 +27,11 @@
  * Original notice: © LuxAlgo
  */
 
-import { ta, color, str, barTime, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, str, barTime, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BoxData, LineDrawingData, PineSize, TableCellData, TableData } from '../types';
 import { foregroundColorOf, type ChartContext } from '../chart-context';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type WidthMethod = 'Points' | '%' | 'ATR';
 
@@ -153,228 +154,273 @@ function register<T>(list: T[], obj: T): void {
   if (list.length > MAX_OBJECTS + 5) list.splice(0, list.length - MAX_OBJECTS);
 }
 
-/** imbalance_detection(): one state per call */
-function detector(show: boolean, useWidth: boolean, method: WidthMethod, width: number) {
-  let isWidth = true;
-  let count = 0;
-  return {
-    get count() {
-      return count;
-    },
-    test(top: number, btm: number, condition: boolean, atr: number): boolean {
-      if (useWidth) {
-        const dist = top - btm;
-        isWidth = method === 'Points' ? gt(dist, width) : method === '%' ? gt((dist / btm) * 100, width) : gt(dist, atr * width);
-      }
-      const isTrue = show && condition && isWidth;
-      count += isTrue ? 1 : 0;
-      return isTrue;
-    },
-  };
+/** A box or line drawn by a bar, its right end `t2` bars from bar 0 (the time of a bar after the last one follows the
+ *  bar count: set in result) */
+interface Drawing<T> {
+  data: T;
+  t2: number;
 }
 
-/** bull_filled() / bear_filled(): the count of imbalances whose start was crossed again */
-function fillCounter(bull: boolean) {
-  const levels: number[] = [];
-  let count = 0;
-  return (condition: boolean, level: number, bar: Bar): number => {
+/** Detectors and fill counters, in the order bullVi, bearVi, bullOg, bearOg, bullFvg, bearFvg */
+interface ImbalanceVars {
+  /** imbalance_detection(): isWidth and count of each call */
+  isWidth: boolean[];
+  count: number[];
+  /** bull_filled() / bear_filled(): the levels not crossed yet and the count of the filled ones */
+  levels: number[][];
+  filled: number[];
+  boxes: Drawing<BoxData>[];
+  lines: Drawing<LineDrawingData>[];
+  /** Values of the bar before */
+  prevBullVi: boolean;
+  prevBearVi: boolean;
+  prevBullOg: boolean;
+  prevBearOg: boolean;
+  prevBullGapBtm: number;
+  prevBearGapTop: number;
+}
+
+interface ImbalanceRun extends BarRunState<ImbalanceVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  /** bull_fvg, bear_fvg, bull_og, bear_og, bull_vi, bear_vi per bar */
+  flags: boolean[][];
+  times: number[][];
+}
+
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+const BULL_VI = 0, BEAR_VI = 1, BULL_OG = 2, BEAR_OG = 3, BULL_FVG = 4, BEAR_FVG = 5;
+
+function study(inputs: Partial<ImbalanceDetectorInputs>): BarStudy<ImbalanceRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const settings = [
+    { show: cfg.showVi, useWidth: cfg.viUseWidth, method: cfg.viMethod, width: cfg.viGapWidth },
+    { show: cfg.showVi, useWidth: cfg.viUseWidth, method: cfg.viMethod, width: cfg.viGapWidth },
+    { show: cfg.showOg, useWidth: cfg.ogUseWidth, method: cfg.ogMethod, width: cfg.ogGapWidth },
+    { show: cfg.showOg, useWidth: cfg.ogUseWidth, method: cfg.ogMethod, width: cfg.ogGapWidth },
+    { show: cfg.showFvg, useWidth: cfg.fvgUseWidth, method: cfg.fvgMethod, width: cfg.fvgGapWidth },
+    { show: cfg.showFvg, useWidth: cfg.fvgUseWidth, method: cfg.fvgMethod, width: cfg.fvgGapWidth },
+  ];
+  const bullOgBg = String(color.new(cfg.bullOgCss, 50));
+  const bearOgBg = String(color.new(cfg.bearOgCss, 50));
+  const bullFvgBg = String(color.new(cfg.bullFvgCss, 80));
+  const bearFvgBg = String(color.new(cfg.bearFvgCss, 80));
+  let chartFg = foregroundColorOf(undefined);
+
+  /** imbalance_detection(): one state per call */
+  const test = (v: ImbalanceVars, k: number, top: number, btm: number, condition: boolean, atr: number): boolean => {
+    const { show, useWidth, method, width } = settings[k];
+    if (useWidth) {
+      const dist = top - btm;
+      v.isWidth[k] = method === 'Points' ? gt(dist, width) : method === '%' ? gt((dist / btm) * 100, width) : gt(dist, atr * width);
+    }
+    const isTrue = show && condition && v.isWidth[k];
+    v.count[k] += isTrue ? 1 : 0;
+    return isTrue;
+  };
+  /** bull_filled() / bear_filled(): the count of imbalances whose start was crossed again */
+  const fill = (v: ImbalanceVars, k: number, bull: boolean, condition: boolean, level: number, bar: Bar): void => {
+    const levels = v.levels[k];
     if (condition) levels.unshift(level);
     for (let i = levels.length - 1; i >= 0; i--) {
       if (bull ? gt(levels[i], bar.low) : gt(bar.high, levels[i])) {
         levels.splice(i, 1);
-        count += 1;
+        v.filled[k] += 1;
       }
     }
-    return count;
   };
+
+  return {
+    init(_bars, chart) {
+      // chart.fg_color
+      chartFg = foregroundColorOf(chart);
+      const s: ImbalanceRun = {
+        atr: taStep.atr(200),
+        flags: [[], [], [], [], [], []], times: [[], [], [], [], [], []],
+        steps: [],
+        vars: {
+          isWidth: [true, true, true, true, true, true], count: [0, 0, 0, 0, 0, 0],
+          levels: [[], [], [], [], [], []], filled: [0, 0, 0, 0, 0, 0], boxes: [], lines: [],
+          prevBullVi: false, prevBearVi: false, prevBullOg: false, prevBearOg: false,
+          prevBullGapBtm: NaN, prevBearGapTop: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.atr];
+      s.lists = s.times;
+      s.series = s.flags;
+      return s;
+    },
+    copyVars: (v) => ({
+      ...v,
+      isWidth: v.isWidth.slice(), count: v.count.slice(), levels: v.levels.map((l) => l.slice()), filled: v.filled.slice(),
+      boxes: v.boxes.slice(), lines: v.lines.slice(),
+    }),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const bar = bars[i];
+      const { open, high, low, close } = bar;
+      const atr = s.atr.step(high, low, close);
+      const time = (index: number) => barTime(bars, index);
+      const p1 = i >= 1 ? bars[i - 1] : undefined;
+      const p2 = i >= 2 ? bars[i - 2] : undefined;
+      const open1 = p1 ? p1.open : NaN;
+      const high1 = p1 ? p1.high : NaN;
+      const low1 = p1 ? p1.low : NaN;
+      const close1 = p1 ? p1.close : NaN;
+      const high2 = p2 ? p2.high : NaN;
+      const low2 = p2 ? p2.low : NaN;
+      const boxes = v.boxes;
+      const lines = v.lines;
+
+      // Volume imbalances
+      const bullGapTop = Math.min(close, open);
+      const bullGapBtm = p1 ? Math.max(close1, open1) : NaN;
+      const isBullVi = test(v, BULL_VI, bullGapTop, bullGapBtm,
+        gt(open, close1) && gt(high1, low) && gt(close, close1) && gt(open, open1) && gt(bullGapTop, high1), atr);
+      fill(v, BULL_VI, true, v.prevBullVi, v.prevBullGapBtm, bar);
+
+      const bearGapTop = p1 ? Math.min(close1, open1) : NaN;
+      const bearGapBtm = Math.max(close, open);
+      const isBearVi = test(v, BEAR_VI, bearGapTop, bearGapBtm,
+        gt(close1, open) && gt(high, low1) && gt(close1, close) && gt(open1, open) && gt(low1, bearGapBtm), atr);
+      fill(v, BEAR_VI, false, v.prevBearVi, v.prevBearGapTop, bar);
+
+      if (isBullVi) {
+        register(boxes, { t2: i + cfg.viExtend, data: {
+          time1: time(i - 1), price1: bullGapTop, time2: NaN, price2: bullGapBtm, borderColor: cfg.bullViCss,
+          bgColor: 'transparent', borderStyle: 'dotted',
+        } });
+      }
+      if (isBearVi) {
+        register(boxes, { t2: i + cfg.viExtend, data: {
+          time1: time(i - 1), price1: bearGapTop, time2: NaN, price2: bearGapBtm, borderColor: cfg.bearViCss,
+          bgColor: 'transparent', borderStyle: 'dotted',
+        } });
+      }
+
+      // Opening gaps
+      const isBullOg = test(v, BULL_OG, bullGapTop, bullGapBtm, gt(low, high1), atr);
+      fill(v, BULL_OG, true, isBullOg, bullGapBtm, bar);
+      const isBearOg = test(v, BEAR_OG, bearGapTop, bearGapBtm, gt(low1, high), atr);
+      fill(v, BEAR_OG, false, isBearOg, bearGapTop, bar);
+
+      if (isBullOg) {
+        register(boxes, { t2: i + cfg.ogExtend, data: {
+          time1: time(i - 1), price1: bullGapTop, time2: NaN, price2: bullGapBtm, borderColor: 'transparent',
+          bgColor: bullOgBg, text: 'OG', textColor: chartFg,
+        } });
+      }
+      if (isBearOg) {
+        register(boxes, { t2: i + cfg.ogExtend, data: {
+          time1: time(i - 1), price1: bearGapTop, time2: NaN, price2: bearGapBtm, borderColor: 'transparent',
+          bgColor: bearOgBg, text: 'OG', textColor: chartFg,
+        } });
+      }
+
+      // Fair value gaps
+      const isBullFvg = test(v, BULL_FVG, low, high2, gt(low, high2) && gt(close1, high2) && !(isBullOg || v.prevBullOg), atr);
+      fill(v, BULL_FVG, true, isBullFvg, high2, bar);
+      const isBearFvg = test(v, BEAR_FVG, low2, high, gt(low2, high) && gt(low2, close1) && !(isBearOg || v.prevBearOg), atr);
+      fill(v, BEAR_FVG, false, isBearFvg, low2, bar);
+
+      if (isBullFvg) {
+        const avg = (low + high2) / 2;
+        register(boxes, { t2: i + cfg.fvgExtend, data: { time1: time(i - 2), price1: low, time2: NaN, price2: high2, borderColor: 'transparent', bgColor: bullFvgBg } });
+        register(lines, { t2: i + cfg.fvgExtend, data: { time1: time(i - 2), price1: avg, time2: NaN, price2: avg, color: cfg.bullFvgCss } });
+      }
+      if (isBearFvg) {
+        const avg = (low2 + high) / 2;
+        register(boxes, { t2: i + cfg.fvgExtend, data: { time1: time(i - 2), price1: low2, time2: NaN, price2: high, borderColor: 'transparent', bgColor: bearFvgBg } });
+        register(lines, { t2: i + cfg.fvgExtend, data: { time1: time(i - 2), price1: avg, time2: NaN, price2: avg, color: cfg.bearFvgCss } });
+      }
+
+      [isBullFvg, isBearFvg, isBullOg, isBearOg, isBullVi, isBearVi].forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(bar.time as number);
+      });
+      v.prevBullVi = isBullVi;
+      v.prevBearVi = isBearVi;
+      v.prevBullOg = isBullOg;
+      v.prevBearOg = isBearOg;
+      v.prevBullGapBtm = bullGapBtm;
+      v.prevBearGapTop = bearGapTop;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const v = s.vars;
+      const end = <T extends { time2: number }>(d: Drawing<T>): T => Object.assign({}, d.data, { time2: barTime(bars, d.t2) });
+
+      // Dashboard
+      const tables: TableData[] = [];
+      if (cfg.showDash && n > 0) {
+        const position = cfg.dashLoc === 'Bottom Left' ? 'bottom_left' : cfg.dashLoc === 'Top Right' ? 'top_right' : 'bottom_right';
+        const size: PineSize = cfg.textSize === 'Tiny' ? 'tiny' : cfg.textSize === 'Small' ? 'small' : 'normal';
+        const cells = new Map<string, TableCellData>();
+        const cell = (column: number, row: number, text: string, textColor: string, left = false) => {
+          cells.set(`${column},${row}`, { column, row, text, textColor, textSize: size, ...(left ? { textHAlign: 'left' as const } : {}) });
+        };
+        if (cfg.showFvg) cell(2, 0, '〓 FVG', '#FFFFFF');
+        if (cfg.showOg) cell(3, 0, '◼ OG', '#FFFFFF');
+        if (cfg.showVi) cell(4, 0, '⬚ VI', '#FFFFFF');
+        // table.merge_cells() makes the cells of its range that do not exist yet: empty cells
+        const empty = (column: number, row: number) => {
+          cells.set(`${column},${row}`, { column, row, text: '', textColor: 'transparent', textSize: 'auto' });
+        };
+        empty(0, 0);
+        empty(1, 0);
+        cell(0, 1, 'Bullish', '#089981');
+        cell(1, 1, 'Frequency', '#089981', true);
+        cell(1, 2, 'Filled', '#089981', true);
+        empty(0, 2);
+        cell(0, 3, 'Bearish', '#f23645');
+        cell(1, 3, 'Frequency', '#f23645', true);
+        cell(1, 4, 'Filled', '#f23645', true);
+        empty(0, 4);
+        // set_cells() on the last bar
+        const setCells = (column: number, bull: number, bear: number, bullCss: string, bearCss: string) => {
+          cell(column, 1, str.tostring(v.count[bull]), bullCss, true);
+          cell(column, 2, str.format('{0,number,percent}', v.filled[bull] / v.count[bull]), bullCss, true);
+          cell(column, 3, str.tostring(v.count[bear]), bearCss, true);
+          cell(column, 4, str.format('{0,number,percent}', v.filled[bear] / v.count[bear]), bearCss, true);
+        };
+        if (cfg.showFvg) setCells(2, BULL_FVG, BEAR_FVG, cfg.bullFvgCss, cfg.bearFvgCss);
+        if (cfg.showOg) setCells(3, BULL_OG, BEAR_OG, cfg.bullOgCss, cfg.bearOgCss);
+        if (cfg.showVi) setCells(4, BULL_VI, BEAR_VI, cfg.bullViCss, cfg.bearViCss);
+        tables.push({
+          position, columns: 5, rows: 7, bgColor: '#1e222d', borderColor: '#373a46', borderWidth: 1, frameColor: '#373a46', frameWidth: 1,
+          cells: [...cells.values()],
+          merges: [
+            { startColumn: 0, startRow: 0, endColumn: 1, endRow: 0 },
+            { startColumn: 0, startRow: 1, endColumn: 0, endRow: 2 },
+            { startColumn: 0, startRow: 3, endColumn: 0, endRow: 4 },
+          ],
+        });
+      }
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        boxes: v.boxes.map(end),
+        lines: v.lines.map(end),
+        tables,
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ImbalanceDetectorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(
   bars: Bar[],
   inputs: Partial<ImbalanceDetectorInputs> = {},
   chart?: ChartContext,
-): IndicatorResult & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  // chart.fg_color
-  const chartFg = foregroundColorOf(chart);
-  const atr = ta.atr(bars, 200).toArray().map((v) => v ?? NaN);
-
-  const bullVi = detector(cfg.showVi, cfg.viUseWidth, cfg.viMethod, cfg.viGapWidth);
-  const bearVi = detector(cfg.showVi, cfg.viUseWidth, cfg.viMethod, cfg.viGapWidth);
-  const bullOg = detector(cfg.showOg, cfg.ogUseWidth, cfg.ogMethod, cfg.ogGapWidth);
-  const bearOg = detector(cfg.showOg, cfg.ogUseWidth, cfg.ogMethod, cfg.ogGapWidth);
-  const bullFvg = detector(cfg.showFvg, cfg.fvgUseWidth, cfg.fvgMethod, cfg.fvgGapWidth);
-  const bearFvg = detector(cfg.showFvg, cfg.fvgUseWidth, cfg.fvgMethod, cfg.fvgGapWidth);
-  const bullViFill = fillCounter(true);
-  const bearViFill = fillCounter(false);
-  const bullOgFill = fillCounter(true);
-  const bearOgFill = fillCounter(false);
-  const bullFvgFill = fillCounter(true);
-  const bearFvgFill = fillCounter(false);
-  const filled = { bullVi: 0, bearVi: 0, bullOg: 0, bearOg: 0, bullFvg: 0, bearFvg: 0 };
-
-  const boxes: BoxData[] = [];
-  const lines: LineDrawingData[] = [];
-  const time = (index: number) => barTime(bars, index);
-  const bullOgBg = String(color.new(cfg.bullOgCss, 50));
-  const bearOgBg = String(color.new(cfg.bearOgCss, 50));
-  const bullFvgBg = String(color.new(cfg.bullFvgCss, 80));
-  const bearFvgBg = String(color.new(cfg.bearFvgCss, 80));
-
-  // Values of the bar before
-  let prevBullVi = false;
-  let prevBearVi = false;
-  let prevBullOg = false;
-  let prevBearOg = false;
-  let prevBullGapBtm = NaN;
-  let prevBearGapTop = NaN;
-  // bull_fvg, bear_fvg, bull_og, bear_og, bull_vi, bear_vi per bar
-  const flags: boolean[][] = [[], [], [], [], [], []];
-
-  for (let i = 0; i < n; i++) {
-    const bar = bars[i];
-    const { open, high, low, close } = bar;
-    const p1 = i >= 1 ? bars[i - 1] : undefined;
-    const p2 = i >= 2 ? bars[i - 2] : undefined;
-    const open1 = p1 ? p1.open : NaN;
-    const high1 = p1 ? p1.high : NaN;
-    const low1 = p1 ? p1.low : NaN;
-    const close1 = p1 ? p1.close : NaN;
-    const high2 = p2 ? p2.high : NaN;
-    const low2 = p2 ? p2.low : NaN;
-
-    // Volume imbalances
-    const bullGapTop = Math.min(close, open);
-    const bullGapBtm = p1 ? Math.max(close1, open1) : NaN;
-    const isBullVi = bullVi.test(bullGapTop, bullGapBtm,
-      gt(open, close1) && gt(high1, low) && gt(close, close1) && gt(open, open1) && gt(bullGapTop, high1), atr[i]);
-    filled.bullVi = bullViFill(prevBullVi, prevBullGapBtm, bar);
-
-    const bearGapTop = p1 ? Math.min(close1, open1) : NaN;
-    const bearGapBtm = Math.max(close, open);
-    const isBearVi = bearVi.test(bearGapTop, bearGapBtm,
-      gt(close1, open) && gt(high, low1) && gt(close1, close) && gt(open1, open) && gt(low1, bearGapBtm), atr[i]);
-    filled.bearVi = bearViFill(prevBearVi, prevBearGapTop, bar);
-
-    if (isBullVi) {
-      register(boxes, {
-        time1: time(i - 1), price1: bullGapTop, time2: time(i + cfg.viExtend), price2: bullGapBtm, borderColor: cfg.bullViCss,
-        bgColor: 'transparent', borderStyle: 'dotted',
-      });
-    }
-    if (isBearVi) {
-      register(boxes, {
-        time1: time(i - 1), price1: bearGapTop, time2: time(i + cfg.viExtend), price2: bearGapBtm, borderColor: cfg.bearViCss,
-        bgColor: 'transparent', borderStyle: 'dotted',
-      });
-    }
-
-    // Opening gaps
-    const isBullOg = bullOg.test(bullGapTop, bullGapBtm, gt(low, high1), atr[i]);
-    filled.bullOg = bullOgFill(isBullOg, bullGapBtm, bar);
-    const isBearOg = bearOg.test(bearGapTop, bearGapBtm, gt(low1, high), atr[i]);
-    filled.bearOg = bearOgFill(isBearOg, bearGapTop, bar);
-
-    if (isBullOg) {
-      register(boxes, {
-        time1: time(i - 1), price1: bullGapTop, time2: time(i + cfg.ogExtend), price2: bullGapBtm, borderColor: 'transparent',
-        bgColor: bullOgBg, text: 'OG', textColor: chartFg,
-      });
-    }
-    if (isBearOg) {
-      register(boxes, {
-        time1: time(i - 1), price1: bearGapTop, time2: time(i + cfg.ogExtend), price2: bearGapBtm, borderColor: 'transparent',
-        bgColor: bearOgBg, text: 'OG', textColor: chartFg,
-      });
-    }
-
-    // Fair value gaps
-    const isBullFvg = bullFvg.test(low, high2, gt(low, high2) && gt(close1, high2) && !(isBullOg || prevBullOg), atr[i]);
-    filled.bullFvg = bullFvgFill(isBullFvg, high2, bar);
-    const isBearFvg = bearFvg.test(low2, high, gt(low2, high) && gt(low2, close1) && !(isBearOg || prevBearOg), atr[i]);
-    filled.bearFvg = bearFvgFill(isBearFvg, low2, bar);
-
-    if (isBullFvg) {
-      const avg = (low + high2) / 2;
-      register(boxes, { time1: time(i - 2), price1: low, time2: time(i + cfg.fvgExtend), price2: high2, borderColor: 'transparent', bgColor: bullFvgBg });
-      register(lines, { time1: time(i - 2), price1: avg, time2: time(i + cfg.fvgExtend), price2: avg, color: cfg.bullFvgCss });
-    }
-    if (isBearFvg) {
-      const avg = (low2 + high) / 2;
-      register(boxes, { time1: time(i - 2), price1: low2, time2: time(i + cfg.fvgExtend), price2: high, borderColor: 'transparent', bgColor: bearFvgBg });
-      register(lines, { time1: time(i - 2), price1: avg, time2: time(i + cfg.fvgExtend), price2: avg, color: cfg.bearFvgCss });
-    }
-
-    flags[0].push(isBullFvg);
-    flags[1].push(isBearFvg);
-    flags[2].push(isBullOg);
-    flags[3].push(isBearOg);
-    flags[4].push(isBullVi);
-    flags[5].push(isBearVi);
-    prevBullVi = isBullVi;
-    prevBearVi = isBearVi;
-    prevBullOg = isBullOg;
-    prevBearOg = isBearOg;
-    prevBullGapBtm = bullGapBtm;
-    prevBearGapTop = bearGapTop;
-  }
-
-  // Dashboard
-  const tables: TableData[] = [];
-  if (cfg.showDash && n > 0) {
-    const position = cfg.dashLoc === 'Bottom Left' ? 'bottom_left' : cfg.dashLoc === 'Top Right' ? 'top_right' : 'bottom_right';
-    const size: PineSize = cfg.textSize === 'Tiny' ? 'tiny' : cfg.textSize === 'Small' ? 'small' : 'normal';
-    const cells = new Map<string, TableCellData>();
-    const cell = (column: number, row: number, text: string, textColor: string, left = false) => {
-      cells.set(`${column},${row}`, { column, row, text, textColor, textSize: size, ...(left ? { textHAlign: 'left' as const } : {}) });
-    };
-    if (cfg.showFvg) cell(2, 0, '〓 FVG', '#FFFFFF');
-    if (cfg.showOg) cell(3, 0, '◼ OG', '#FFFFFF');
-    if (cfg.showVi) cell(4, 0, '⬚ VI', '#FFFFFF');
-    // table.merge_cells() makes the cells of its range that do not exist yet: empty cells
-    const empty = (column: number, row: number) => {
-      cells.set(`${column},${row}`, { column, row, text: '', textColor: 'transparent', textSize: 'auto' });
-    };
-    empty(0, 0);
-    empty(1, 0);
-    cell(0, 1, 'Bullish', '#089981');
-    cell(1, 1, 'Frequency', '#089981', true);
-    cell(1, 2, 'Filled', '#089981', true);
-    empty(0, 2);
-    cell(0, 3, 'Bearish', '#f23645');
-    cell(1, 3, 'Frequency', '#f23645', true);
-    cell(1, 4, 'Filled', '#f23645', true);
-    empty(0, 4);
-    // set_cells() on the last bar
-    const setCells = (column: number, bullFilled: number, bullCount: number, bearFilled: number, bearCount: number, bullCss: string, bearCss: string) => {
-      cell(column, 1, str.tostring(bullCount), bullCss, true);
-      cell(column, 2, str.format('{0,number,percent}', bullFilled / bullCount), bullCss, true);
-      cell(column, 3, str.tostring(bearCount), bearCss, true);
-      cell(column, 4, str.format('{0,number,percent}', bearFilled / bearCount), bearCss, true);
-    };
-    if (cfg.showFvg) setCells(2, filled.bullFvg, bullFvg.count, filled.bearFvg, bearFvg.count, cfg.bullFvgCss, cfg.bearFvgCss);
-    if (cfg.showOg) setCells(3, filled.bullOg, bullOg.count, filled.bearOg, bearOg.count, cfg.bullOgCss, cfg.bearOgCss);
-    if (cfg.showVi) setCells(4, filled.bullVi, bullVi.count, filled.bearVi, bearVi.count, cfg.bullViCss, cfg.bearViCss);
-    tables.push({
-      position, columns: 5, rows: 7, bgColor: '#1e222d', borderColor: '#373a46', borderWidth: 1, frameColor: '#373a46', frameWidth: 1,
-      cells: [...cells.values()],
-      merges: [
-        { startColumn: 0, startRow: 0, endColumn: 1, endRow: 0 },
-        { startColumn: 0, startRow: 1, endColumn: 0, endRow: 2 },
-        { startColumn: 0, startRow: 3, endColumn: 0, endRow: 4 },
-      ],
-    });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    boxes,
-    lines,
-    tables,
-    alerts: alertStates(alertConditions, bars, flags),
-  };
+): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 /** The original's alertconditions */
@@ -387,4 +433,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert5', title: 'Bearish VI', message: 'Bearish VI detected' },
 ];
 
-export const ImbalanceDetector = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const ImbalanceDetector = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

@@ -17,9 +17,11 @@
  * Original notice: © Mr_Rakun
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowExtreme, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { MarkerData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
 
 export interface MultiBandTrendLineInputs {
   bandType: 'Bollinger Bands' | 'Keltner Channels' | 'Donchian Channels' | 'Moving Average Envelopes' | 'ATR Bands';
@@ -87,108 +89,164 @@ const nz = (x: number) => (isNaN(x) ? 0 : x);
 const max = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.max(a, b));
 const min = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.min(a, b));
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MultiBandTrendLineInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface MbtlVars {
+  /** var float trendLine = na; var int trend = 0 */
+  tl: number;
+  trend: number;
+  /** dc_upper[1], dc_lower[1] */
+  prevHi: number;
+  prevLo: number;
+}
+
+interface MbtlRun extends BarRunState<MbtlVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  ema: ReturnType<typeof taStep.ema> | null;
+  tr: ReturnType<typeof taStep.tr> | null;
+  rangeEma: ReturnType<typeof taStep.ema> | null;
+  hi: WindowExtreme | null;
+  lo: WindowExtreme | null;
+  sma: WindowSma | null;
+  dev: WindowStdev | null;
+  bandAtr: ReturnType<typeof taStep.atr> | null;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<MultiBandTrendLineInputs>): BarStudy<MbtlRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = getSourceSeries(bars, cfg.source);
-  const atrValue = A(ta.atr(bars, cfg.atrPeriod));
-
-  let upper: number[];
-  let lower: number[];
-  switch (cfg.bandType) {
-    case 'Keltner Channels': {
-      const [, kcUpper, kcLower] = ta.kc(bars, src, cfg.period, cfg.kcMultiplier);
-      upper = A(kcUpper);
-      lower = A(kcLower);
-      break;
-    }
-    case 'Donchian Channels': {
-      // [dc_upper[1], dc_lower[1]]
-      const hi = A(ta.highest(S(bars.map((b) => b.high)), cfg.period));
-      const lo = A(ta.lowest(S(bars.map((b) => b.low)), cfg.period));
-      upper = hi.map((_v, i) => (i > 0 ? hi[i - 1] : NaN));
-      lower = lo.map((_v, i) => (i > 0 ? lo[i - 1] : NaN));
-      break;
-    }
-    case 'Moving Average Envelopes': {
-      const ma = A(ta.sma(src, cfg.period));
-      upper = ma.map((m) => m + (m * cfg.maPercentage) / 100);
-      lower = ma.map((m) => m - (m * cfg.maPercentage) / 100);
-      break;
-    }
-    case 'ATR Bands': {
-      const ma = A(ta.sma(src, cfg.period));
-      const atr = A(ta.atr(bars, cfg.period));
-      upper = ma.map((m, i) => m + atr[i] * cfg.atrMultiplier);
-      lower = ma.map((m, i) => m - atr[i] * cfg.atrMultiplier);
-      break;
-    }
-    default: {
-      const [, bbUpper, bbLower] = ta.bb(src, cfg.period, cfg.bbStd);
-      upper = A(bbUpper);
-      lower = A(bbLower);
-    }
-  }
-
-  const trendLine: number[] = new Array(n);
-  const trendArr: number[] = new Array(n);
-  let tl = NaN; // var float trendLine = na
-  let trend = 0; // var int trend = 0
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const prev = nz(tl); // nz(trendLine[1])
-    // Signal = close > upper ? 1 : close < lower ? -1 : 0
-    const signal = gt(b.close, upper[i]) ? 1 : gt(lower[i], b.close) ? -1 : 0;
-    if (signal === 1) tl = max(cfg.useAtrFilter ? b.low - atrValue[i] : b.low, prev);
-    else if (signal === -1) tl = min(cfg.useAtrFilter ? b.high + atrValue[i] : b.high, prev);
-    else tl = prev;
-    if (gt(tl, prev)) trend = 1;
-    else if (gt(prev, tl)) trend = -1;
-    trendLine[i] = tl;
-    trendArr[i] = trend;
-  }
-
-  const t = (i: number) => bars[i].time;
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
+  const value = barSource(cfg.source);
+  const type = cfg.bandType;
+  const kc = type === 'Keltner Channels';
+  const dc = type === 'Donchian Channels';
+  const env = type === 'Moving Average Envelopes';
+  const atrBands = type === 'ATR Bands';
+  const bb = !kc && !dc && !env && !atrBands;
   const buyCol = String(color.new(color.green, 60));
   const sellCol = String(color.new(color.red, 60));
   const bgUp = String(color.new(color.green, 95));
   const bgDn = String(color.new(color.red, 95));
-  const buyFlags = new Array<boolean>(n).fill(false);
-  const sellFlags = new Array<boolean>(n).fill(false);
-  for (let i = 0; i < n; i++) {
-    buyFlags[i] = i > 0 && trendArr[i - 1] < 0 && trendArr[i] > 0;
-    sellFlags[i] = i > 0 && trendArr[i - 1] > 0 && trendArr[i] < 0;
-    // buy_condition = trend[1] < 0 and trend > 0; sell_condition = trend[1] > 0 and trend < 0
-    if (i > 0 && trendArr[i - 1] < 0 && trendArr[i] > 0) {
-      markers.push({ time: t(i), position: 'belowBar', shape: 'labelUp', color: buyCol, text: 'BUY', textColor: color.teal, size: 'small' });
-    }
-    if (i > 0 && trendArr[i - 1] > 0 && trendArr[i] < 0) {
-      markers.push({ time: t(i), position: 'aboveBar', shape: 'labelDown', color: sellCol, text: 'SELL', textColor: color.red, size: 'small' });
-    }
-    // bgcolor(trend > 0 ? color.new(color.green, 95) : trend < 0 ? color.new(color.red, 95) : na)
-    if (trendArr[i] !== 0) bgColors.push({ time: t(i), color: trendArr[i] > 0 ? bgUp : bgDn });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: upper[i], color: BAND_COL })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: lower[i], color: BAND_COL })),
-      // plot(trendLine, 'Trend Line', color = trend > 0 ? color.green : color.red, linewidth = 2)
-      plot2: bars.map((b, i) => ({ time: b.time, value: trendLine[i], color: trendArr[i] > 0 ? color.green : color.red })),
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const s: MbtlRun = {
+        atr: taStep.atr(cfg.atrPeriod),
+        ema: kc ? taStep.ema(cfg.period) : null,
+        tr: kc ? taStep.tr(false) : null,
+        rangeEma: kc ? taStep.ema(cfg.period) : null,
+        hi: dc ? new WindowExtreme(false, cfg.period) : null,
+        lo: dc ? new WindowExtreme(true, cfg.period) : null,
+        sma: env || atrBands || bb ? new WindowSma(cfg.period) : null,
+        dev: bb ? new WindowStdev(cfg.period) : null,
+        bandAtr: atrBands ? taStep.atr(cfg.period) : null,
+        plot0: [], plot1: [], plot2: [], markers: [], bgColors: [], flags: [[], []], times: [[], []],
+        steps: [], vars: { tl: NaN, trend: 0, prevHi: NaN, prevLo: NaN }, lists: [], series: [],
+      };
+      for (const m of [s.atr, s.ema, s.tr, s.rangeEma, s.hi, s.lo, s.sma, s.dev, s.bandAtr]) if (m) s.steps.push(m);
+      s.lists = [s.markers, s.bgColors, ...s.times];
+      s.series = [s.plot0, s.plot1, s.plot2, ...s.flags];
+      return s;
     },
-    markers,
-    bgColors,
-    // alertcondition(buy_condition, "Buy Alert") / alertcondition(sell_condition, "Sell Alert")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const src = value(b);
+      const atrValue = s.atr.step(b.high, b.low, b.close);
+
+      let upper: number;
+      let lower: number;
+      if (kc) {
+        // ta.kc(src, period, mult): ema(src) +- ema(ta.tr) * mult
+        const middle = s.ema!.step(src);
+        const rangeEma = s.rangeEma!.step(s.tr!.step(b.high, b.low, b.close));
+        upper = middle + rangeEma * cfg.kcMultiplier;
+        lower = middle - rangeEma * cfg.kcMultiplier;
+      } else if (dc) {
+        // [dc_upper[1], dc_lower[1]]
+        upper = i > 0 ? v.prevHi : NaN;
+        lower = i > 0 ? v.prevLo : NaN;
+        v.prevHi = s.hi!.step(b.high);
+        v.prevLo = s.lo!.step(b.low);
+      } else if (env) {
+        const m = s.sma!.step(src);
+        upper = m + (m * cfg.maPercentage) / 100;
+        lower = m - (m * cfg.maPercentage) / 100;
+      } else if (atrBands) {
+        const m = s.sma!.step(src);
+        const atr = s.bandAtr!.step(b.high, b.low, b.close);
+        upper = m + atr * cfg.atrMultiplier;
+        lower = m - atr * cfg.atrMultiplier;
+      } else {
+        // ta.bb(src, period, bbStd)
+        const basis = s.sma!.step(src);
+        const dev = s.dev!.step(src);
+        upper = basis + cfg.bbStd * dev;
+        lower = basis - cfg.bbStd * dev;
+      }
+
+      const prev = nz(v.tl); // nz(trendLine[1])
+      // Signal = close > upper ? 1 : close < lower ? -1 : 0
+      const signal = gt(b.close, upper) ? 1 : gt(lower, b.close) ? -1 : 0;
+      let tl: number;
+      if (signal === 1) tl = max(cfg.useAtrFilter ? b.low - atrValue : b.low, prev);
+      else if (signal === -1) tl = min(cfg.useAtrFilter ? b.high + atrValue : b.high, prev);
+      else tl = prev;
+      const prevTrend = v.trend;
+      if (gt(tl, prev)) v.trend = 1;
+      else if (gt(prev, tl)) v.trend = -1;
+      v.tl = tl;
+      const trend = v.trend;
+
+      const t = b.time;
+      // buy_condition = trend[1] < 0 and trend > 0; sell_condition = trend[1] > 0 and trend < 0
+      const buy = i > 0 && prevTrend < 0 && trend > 0;
+      const sell = i > 0 && prevTrend > 0 && trend < 0;
+      if (buy) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: buyCol, text: 'BUY', textColor: color.teal, size: 'small' });
+      }
+      if (sell) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: sellCol, text: 'SELL', textColor: color.red, size: 'small' });
+      }
+      // bgcolor(trend > 0 ? color.new(color.green, 95) : trend < 0 ? color.new(color.red, 95) : na)
+      if (trend !== 0) s.bgColors.push({ time: t, color: trend > 0 ? bgUp : bgDn });
+      s.flags[0][i] = buy;
+      s.flags[1][i] = sell;
+      if (buy) s.times[0].push(t as number);
+      if (sell) s.times[1].push(t as number);
+
+      s.plot0[i] = { time: t, value: upper, color: BAND_COL };
+      s.plot1[i] = { time: t, value: lower, color: BAND_COL };
+      // plot(trendLine, 'Trend Line', color = trend > 0 ? color.green : color.red, linewidth = 2)
+      s.plot2[i] = { time: t, value: tl, color: trend > 0 ? color.green : color.red };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        // alertcondition(buy_condition, "Buy Alert") / alertcondition(sell_condition, "Sell Alert")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MultiBandTrendLineInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MultiBandTrendLineInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -199,6 +257,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const MultiBandTrendLine = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

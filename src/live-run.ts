@@ -6,7 +6,7 @@
  * that bar only, from the state kept at the end of the last confirmed bar. The result equals a full run on the same
  * bars. Any other change (history loaded or adjusted, fewer bars, other chart fields) runs the study in full.
  */
-import type { Bar } from 'oakscriptjs';
+import { taCore, type Bar } from 'oakscriptjs';
 import type { ChartContext } from './chart-context';
 
 /** One state machine stepped once or more per bar and committed when the bar is final (oakscriptjs `taStep`) */
@@ -321,6 +321,8 @@ export class WindowExtreme implements Committable {
   private readonly len: number;
 
   constructor(private readonly lowest: boolean, length: number) {
+    // the length check of ta.highest / ta.lowest (the same runtime error)
+    (lowest ? taCore.lowest : taCore.highest)([], length);
     this.len = Math.trunc(length);
   }
 
@@ -476,6 +478,8 @@ export class WindowSma extends WindowSum {
   private readonly div: number;
 
   constructor(length: number) {
+    // the length check of ta.sma (the same runtime error)
+    taCore.sma([], length);
     super(length);
     this.div = Math.floor(length);
   }
@@ -492,6 +496,8 @@ export class WindowStdev implements Committable {
   private readonly len: number;
 
   constructor(length: number) {
+    // the length check of ta.stdev (the same runtime error)
+    taCore.stdev([], length);
     this.len = Math.floor(length);
     this.sums = new WindowSum(length);
     this.squares = new WindowSum(length);
@@ -524,6 +530,8 @@ export class WindowVwma implements Committable {
   private readonly len: number;
 
   constructor(length: number) {
+    // the length check of ta.vwma (the same runtime error)
+    taCore.vwma([], length, []);
     this.len = Math.floor(length);
     this.num = new WindowSum(length);
     this.den = new WindowSum(length);
@@ -553,7 +561,8 @@ export class AlmaStep implements Committable {
   private stepped = false;
 
   constructor(length: number, offset = 0.85, sigma = 6, floor = false) {
-    if (!(length > 0)) throw new Error(`alma: length must be greater than 0, ${length} given`);
+    // the length check of ta.alma (the same runtime error)
+    taCore.alma([], length, offset, sigma, floor);
     this.len = length;
     const m = floor ? Math.floor(offset * (length - 1)) : offset * (length - 1);
     const s = length / sigma;

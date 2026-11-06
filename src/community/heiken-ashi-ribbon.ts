@@ -13,8 +13,10 @@
  */
 
 import {
-  ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
+  taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface HeikenAshiRibbonInputs {
   /** Moving average type of the Heikin-Ashi values */
@@ -65,69 +67,103 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<HeikenAshiRibbonInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+type Ma = { step(v: number): number; commit(): void };
+
+interface HaVars {
+  /** var float HAOpen / HAClose of the bar before */
+  haOpen: number;
+  haClose: number;
+}
+
+interface HaRun extends BarRunState<HaVars> {
+  emas: ReturnType<typeof taStep.ema>[];
+  mas: Ma[];
+  plots: Point[][];
+  fillColors: string[];
+}
+
+function study(inputs: Partial<HeikenAshiRibbonInputs>): BarStudy<HaRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = getSourceSeries(bars, cfg.TMSource);
-
-  const emaSource = A(ta.ema(src, 13));
-  const emaSlow = A(ta.ema(src, 55));
-  const emaMed = A(ta.ema(src, 34));
-  const emaFast = A(ta.ema(src, 21));
-
-  // var float HAOpen / HAClose / HAHigh / HALow = 0
-  const haOpen: number[] = new Array(n);
-  const haClose: number[] = new Array(n);
-  const haHigh: number[] = new Array(n);
-  const haLow: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    haOpen[i] = i < 2 ? (b.open + b.close) / 2 : (haOpen[i - 1] + haClose[i - 1]) / 2;
-    haClose[i] = (b.open + b.high + b.low + b.close) / 4;
-    const hi = gt(haOpen[i], haClose[i]) ? haOpen[i] : haClose[i];
-    haHigh[i] = gt(b.high, hi) ? b.high : hi;
-    const lo = lt(haOpen[i], haClose[i]) ? haOpen[i] : haClose[i];
-    haLow[i] = lt(b.low, lo) ? b.low : lo;
-  }
-
-  // HAMAType == "EMA" ? ta.ema(x, HAMAPeriod) : ta.sma(x, HAMAPeriod): the type is an input (same branch on every bar)
-  const ma = (x: number[]) => A(cfg.HAMAType === 'EMA' ? ta.ema(S(x), cfg.HAMAPeriod) : ta.sma(S(x), cfg.HAMAPeriod));
-  const maOpen = ma(haOpen);
-  const maClose = ma(haClose);
-  const maHigh = ma(haHigh);
-  const maLow = ma(haLow);
-
+  const value = barSource(cfg.TMSource);
   const bull = String(color.new(cfg.bullishColor, 0));
   const bear = String(color.new(cfg.bearishColor, 0));
   const neutral = String(color.new(color.gray, 60));
-  const fillColors = bars.map((_b, i) => {
-    const trendGreen = gt(emaSource[i], emaSlow[i]) && gt(emaSource[i], emaMed[i]) && gt(emaSource[i], emaFast[i]);
-    const trendRed = lt(emaSource[i], emaSlow[i]) && lt(emaSource[i], emaMed[i]) && lt(emaSource[i], emaFast[i]);
-    const haGreen = gt(maClose[i], maOpen[i]);
-    const haRed = lt(maClose[i], maOpen[i]);
-    return haGreen && trendGreen ? bull : haRed && trendRed ? bear : neutral;
-  });
-
-  const line = (v: number[], col?: string) => bars.map((b, i) => (col === undefined
-    ? { time: b.time, value: v[i] } : { time: b.time, value: v[i], color: col }));
-
+  // HAMAType == "EMA" ? ta.ema(x, HAMAPeriod) : ta.sma(x, HAMAPeriod): the type is an input (same branch on every bar)
+  const ma = (): Ma => (cfg.HAMAType === 'EMA' ? taStep.ema(cfg.HAMAPeriod) : new WindowSma(cfg.HAMAPeriod));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(maOpen),
-      plot1: line(maClose),
-      plot2: line(maHigh, cfg.borderColor),
-      plot3: line(maLow, cfg.borderColor),
+    fullRunReason: () => (isBarSource(cfg.TMSource) ? null : 'source of another study'),
+    init() {
+      // emaSource, emaSlow, emaMed, emaFast
+      const emas = [13, 55, 34, 21].map((len) => taStep.ema(len));
+      // the averages of HAOpen, HAClose, HAHigh, HALow
+      const mas = [ma(), ma(), ma(), ma()];
+      const s: HaRun = {
+        emas, mas, plots: [[], [], [], []], fillColors: [],
+        steps: [...emas, ...mas], vars: { haOpen: 0, haClose: 0 }, lists: [], series: [],
+      };
+      s.series = [...s.plots, s.fillColors];
+      return s;
     },
-    // fill(MAO, MAC, ...)
-    fills: [{ plot1: 'plot0', plot2: 'plot1', colors: fillColors }],
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const x = value(b);
+      const emaSource = s.emas[0].step(x) ?? NaN;
+      const emaSlow = s.emas[1].step(x) ?? NaN;
+      const emaMed = s.emas[2].step(x) ?? NaN;
+      const emaFast = s.emas[3].step(x) ?? NaN;
+
+      // var float HAOpen / HAClose / HAHigh / HALow = 0
+      const haOpen = i < 2 ? (b.open + b.close) / 2 : (v.haOpen + v.haClose) / 2;
+      const haClose = (b.open + b.high + b.low + b.close) / 4;
+      const hi = gt(haOpen, haClose) ? haOpen : haClose;
+      const haHigh = gt(b.high, hi) ? b.high : hi;
+      const lo = lt(haOpen, haClose) ? haOpen : haClose;
+      const haLow = lt(b.low, lo) ? b.low : lo;
+      v.haOpen = haOpen;
+      v.haClose = haClose;
+
+      const maOpen = s.mas[0].step(haOpen) ?? NaN;
+      const maClose = s.mas[1].step(haClose) ?? NaN;
+      const maHigh = s.mas[2].step(haHigh) ?? NaN;
+      const maLow = s.mas[3].step(haLow) ?? NaN;
+
+      const trendGreen = gt(emaSource, emaSlow) && gt(emaSource, emaMed) && gt(emaSource, emaFast);
+      const trendRed = lt(emaSource, emaSlow) && lt(emaSource, emaMed) && lt(emaSource, emaFast);
+      const haGreen = gt(maClose, maOpen);
+      const haRed = lt(maClose, maOpen);
+      s.fillColors[i] = haGreen && trendGreen ? bull : haRed && trendRed ? bear : neutral;
+
+      const time = b.time;
+      s.plots[0][i] = { time, value: maOpen };
+      s.plots[1][i] = { time, value: maClose };
+      s.plots[2][i] = { time, value: maHigh, color: cfg.borderColor };
+      s.plots[3][i] = { time, value: maLow, color: cfg.borderColor };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice() },
+        // fill(MAO, MAC, ...)
+        fills: [{ plot1: 'plot0', plot2: 'plot1', colors: s.fillColors.slice() }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HeikenAshiRibbonInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<HeikenAshiRibbonInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const HeikenAshiRibbon = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

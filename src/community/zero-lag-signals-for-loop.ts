@@ -15,9 +15,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData, BgColorData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type ZeroLagPreset = 'Default' | 'Fast Response' | 'Smooth Trend';
 export type ZeroLagColorPreset = 'Classic' | 'Aqua' | 'Cosmic' | 'Cyber' | 'Neon' | 'Custom';
@@ -100,10 +102,27 @@ const COLOR_PRESETS: Record<Exclude<ZeroLagColorPreset, 'Custom'>, [string, stri
   Neon: ['#ffff00', '#ff00ff'],
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ZeroLagSignalsForLoopInputs> = {}
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface ZlRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  atr: ReturnType<typeof taStep.atr>;
+  hi: WindowExtreme;
+  zlBasis: number[];
+  trend: number[];
+  hl2: number[];
+  bottomColor: (string | null)[];
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<ZeroLagSignalsForLoopInputs>): BarStudy<ZlRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   let { length, volatilityMult, loopEnd, thresholdUp, thresholdDown } = cfg;
   const { presetConfig, loopStart, colorPreset, paintCandles, showBgLines } = cfg;
@@ -121,100 +140,122 @@ export function calculate(
     thresholdDown = -8;
   }
   const [bullColor, bearColor] = colorPreset === 'Custom' ? [cfg.bullColor, cfg.bearColor] : COLOR_PRESETS[colorPreset];
-  const n = bars.length;
 
   // lag = math.floor((length - 1) / 2); zl_basis = ta.ema(close + (close - close[lag]), length)
   const lag = Math.floor((length - 1) / 2);
-  const zlSrc = bars.map((b, i) => (i >= lag ? b.close + (b.close - bars[i - lag].close) : NaN));
-  const zlBasis = ta.ema(Series.fromArray(bars, zlSrc), length).toArray().map((v) => v ?? NaN);
-  // volatility = ta.highest(ta.atr(length), length * 3) * volatility_mult
-  const atr = ta.atr(bars, length);
-  const volatility = ta.highest(atr, length * 3).toArray().map((v) => (v ?? NaN) * volatilityMult);
-
-  const trend: number[] = new Array(n);
-  const trendChanged: boolean[] = new Array(n);
-  let trendVar = 0;
-  let prevTrend = 0;
-  for (let i = 0; i < n; i++) {
-    // forloop_analysis: sum += basis > basis[i] ? 1 : -1 for i = loop_start to loop_end (na comparison: -1)
-    let score = 0;
-    for (let k = loopStart; k <= loopEnd; k++) {
-      const past = i - k >= 0 ? zlBasis[i - k] : NaN;
-      score += zlBasis[i] > past ? 1 : -1;
-    }
-    const close = bars[i].close;
-    const longSignal = score > thresholdUp && close > zlBasis[i] + volatility[i];
-    const shortSignal = score < thresholdDown && close < zlBasis[i] - volatility[i];
-    if (longSignal) trendVar = 1;
-    else if (shortSignal) trendVar = -1;
-    trend[i] = trendVar;
-    trendChanged[i] = trendVar !== prevTrend;
-    prevTrend = trendVar;
-  }
-
-  // trend_col = trend == 1 ? bull_color : trend == -1 ? bear_color : na
-  const trendCol = (i: number): string | null => (trend[i] === 1 ? bullColor : trend[i] === -1 ? bearColor : null);
-
-  // plot(zl_basis, "Zero Lag Basis", color = trend_col, linewidth = 3)
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: zlBasis[i], color: trendCol(i) ?? 'transparent' }));
-  // plot(hl2, "Price", display = display.none)
-  const hl2 = bars.map((b) => (b.high + b.low) / 2);
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: hl2[i] }));
-
-  // fill(p_basis, p_price, hl2, zl_basis, na, color.new(trend_col, 20)): top_value hl2 (na colour),
-  // bottom_value zl_basis (trend colour, transparency 20). Pine color.new(na, 20) is black with transparency 20
-  // (0xCC000000), so the fill is drawn in black before the first trend.
-  const bottomColor = bars.map((_b, i): string | null => {
-    const c = trendCol(i);
-    return c === null ? '#000000CC' : String(color.new(c, 20));
-  });
-
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // plotshape(trend_changed and trend == 1 ? zl_basis : na, "Bullish Trend", shape.labelup, location.absolute,
-    //   bull_color, text = "𝑳", textcolor = #000000, size = size.small)
-    if (trendChanged[i] && trend[i] === 1 && !isNaN(zlBasis[i])) {
-      markers.push({
-        time: t, position: 'atPriceBottom', price: zlBasis[i], shape: 'labelUp', color: bullColor,
-        text: '𝑳', textColor: '#000000', size: 'small', forceOverlay: true,
-      });
-    }
-    // plotshape(trend_changed and trend == -1 ? zl_basis : na, "Bearish Trend", shape.labeldown, location.absolute,
-    //   bear_color, text = "𝑺", textcolor = #ffffff, size = size.small)
-    if (trendChanged[i] && trend[i] === -1 && !isNaN(zlBasis[i])) {
-      markers.push({
-        time: t, position: 'atPriceTop', price: zlBasis[i], shape: 'labelDown', color: bearColor,
-        text: '𝑺', textColor: '#ffffff', size: 'small', forceOverlay: true,
-      });
-    }
-    // bgcolor(show_bg_lines ? (ta.crossover(trend, 0) ? bull_color : ta.crossunder(trend, 0) ? bear_color : na) : na)
-    if (showBgLines && i > 0) {
-      if (trend[i] > 0 && trend[i - 1] <= 0) bgColors.push({ time: t, color: bullColor });
-      else if (trend[i] < 0 && trend[i - 1] >= 0) bgColors.push({ time: t, color: bearColor });
-    }
-    // barcolor(paint_candles ? trend_col : na)
-    const c = trendCol(i);
-    if (paintCandles && c !== null) barColors.push({ time: t, color: c });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    fills: [
-      {
-        plot1: 'plot0', plot2: 'plot1',
-        gradient: { topValue: hl2, bottomValue: zlBasis, topColor: new Array<string | null>(n).fill(null), bottomColor },
-      },
-    ],
-    markers,
-    barColors,
-    bgColors,
-    // alertcondition(ta.crossover(trend, 0)) / alertcondition(ta.crossunder(trend, 0))
-    alerts: alertStates(alertConditions, bars, [crossedOver(trend, 0), crossedUnder(trend, 0)]),
+    init() {
+      // volatility = ta.highest(ta.atr(length), length * 3) * volatility_mult
+      const ema = taStep.ema(length);
+      const atr = taStep.atr(length);
+      const hi = new WindowExtreme(false, length * 3);
+      const s: ZlRun = {
+        ema, atr, hi, zlBasis: [], trend: [], hl2: [], bottomColor: [], plot0: [], plot1: [], markers: [],
+        barColors: [], bgColors: [], flags: [[], []], times: [[], []],
+        steps: [ema, atr, hi], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.barColors, s.bgColors, ...s.times];
+      s.series = [s.zlBasis, s.trend, s.hl2, s.bottomColor, s.plot0, s.plot1, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const close = b.close;
+      const zlSrc = i >= lag ? close + (close - bars[i - lag].close) : NaN;
+      const basis = s.ema.step(zlSrc) ?? NaN;
+      s.zlBasis[i] = basis;
+      const volatility = (s.hi.step(s.atr.step(b.high, b.low, close)) ?? NaN) * volatilityMult;
+
+      // forloop_analysis: sum += basis > basis[i] ? 1 : -1 for i = loop_start to loop_end (na comparison: -1)
+      let score = 0;
+      for (let k = loopStart; k <= loopEnd; k++) {
+        const past = i - k >= 0 ? s.zlBasis[i - k] : NaN;
+        score += basis > past ? 1 : -1;
+      }
+      const longSignal = score > thresholdUp && close > basis + volatility;
+      const shortSignal = score < thresholdDown && close < basis - volatility;
+      const prevTrend = i > 0 ? s.trend[i - 1] : 0;
+      let trend = prevTrend;
+      if (longSignal) trend = 1;
+      else if (shortSignal) trend = -1;
+      s.trend[i] = trend;
+      const trendChanged = trend !== prevTrend;
+
+      // trend_col = trend == 1 ? bull_color : trend == -1 ? bear_color : na
+      const c = trend === 1 ? bullColor : trend === -1 ? bearColor : null;
+      // plot(zl_basis, "Zero Lag Basis", color = trend_col, linewidth = 3)
+      s.plot0[i] = { time: t, value: basis, color: c ?? 'transparent' };
+      // plot(hl2, "Price", display = display.none)
+      const hl2 = (b.high + b.low) / 2;
+      s.hl2[i] = hl2;
+      s.plot1[i] = { time: t, value: hl2 };
+      // fill(p_basis, p_price, hl2, zl_basis, na, color.new(trend_col, 20)): top_value hl2 (na colour),
+      // bottom_value zl_basis (trend colour, transparency 20). Pine color.new(na, 20) is black with transparency 20
+      // (0xCC000000), so the fill is drawn in black before the first trend.
+      s.bottomColor[i] = c === null ? '#000000CC' : String(color.new(c, 20));
+
+      // plotshape(trend_changed and trend == 1 ? zl_basis : na, "Bullish Trend", shape.labelup, location.absolute,
+      //   bull_color, text = "𝑳", textcolor = #000000, size = size.small)
+      if (trendChanged && trend === 1 && !isNaN(basis)) {
+        s.markers.push({
+          time: t, position: 'atPriceBottom', price: basis, shape: 'labelUp', color: bullColor,
+          text: '𝑳', textColor: '#000000', size: 'small', forceOverlay: true,
+        });
+      }
+      // plotshape(trend_changed and trend == -1 ? zl_basis : na, "Bearish Trend", shape.labeldown, location.absolute,
+      //   bear_color, text = "𝑺", textcolor = #ffffff, size = size.small)
+      if (trendChanged && trend === -1 && !isNaN(basis)) {
+        s.markers.push({
+          time: t, position: 'atPriceTop', price: basis, shape: 'labelDown', color: bearColor,
+          text: '𝑺', textColor: '#ffffff', size: 'small', forceOverlay: true,
+        });
+      }
+      // bgcolor(show_bg_lines ? (ta.crossover(trend, 0) ? bull_color : ta.crossunder(trend, 0) ? bear_color : na) : na)
+      const up = i > 0 && trend > 0 && prevTrend <= 0;
+      const down = i > 0 && trend < 0 && prevTrend >= 0;
+      if (showBgLines && i > 0) {
+        if (up) s.bgColors.push({ time: t, color: bullColor });
+        else if (down) s.bgColors.push({ time: t, color: bearColor });
+      }
+      // barcolor(paint_candles ? trend_col : na)
+      if (paintCandles && c !== null) s.barColors.push({ time: t, color: c });
+      // alertcondition(ta.crossover(trend, 0)) / alertcondition(ta.crossunder(trend, 0))
+      s.flags[0][i] = up;
+      if (up) s.times[0].push(t as number);
+      s.flags[1][i] = down;
+      if (down) s.times[1].push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        fills: [
+          {
+            plot1: 'plot0', plot2: 'plot1',
+            gradient: { topValue: s.hl2.slice(), bottomValue: s.zlBasis.slice(), topColor: new Array<string | null>(n).fill(null), bottomColor: s.bottomColor.slice() },
+          },
+        ],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ZeroLagSignalsForLoopInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<ZeroLagSignalsForLoopInputs> = {}
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** alertcondition() calls of the original ({{exchange}} / {{ticker}} placeholders kept) */
@@ -223,4 +264,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'Zero Lag Signals Short', message: 'Zero Lag Signals Short {{exchange}}:{{ticker}}' },
 ];
 
-export const ZeroLagSignalsForLoop = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const ZeroLagSignalsForLoop = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

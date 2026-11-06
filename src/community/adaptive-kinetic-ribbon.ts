@@ -14,9 +14,14 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import {
+  barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, WindowStdev, WindowVwma,
+  type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 
 export type KineticMaType = 'SMA' | 'EMA' | 'WMA' | 'HMA' | 'VWMA' | 'RMA';
 
@@ -103,14 +108,46 @@ const PRESET_COLORS: Record<string, [string, string, string, string]> = {
   Neon: ['#ffff00', '#808000', '#ff00ff', '#800080'],
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AdaptiveKineticRibbonInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+type Ma = { step(v: number, volume: number): number; commit(): void };
+
+/** One ribbon moving average of the kinetic line stepped bar by bar */
+function maStep(maType: KineticMaType, len: number): Ma {
+  switch (maType) {
+    case 'SMA': { const m = new WindowSma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+    case 'HMA': { const m = taStep.hma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'VWMA': { const m = new WindowVwma(len); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+    case 'RMA': { const m = taStep.rma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    default: { const m = taStep.ema(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+  }
+}
+
+interface RibbonVars {
+  /** var float kinetic_line = na */
+  kinetic: number;
+}
+
+interface RibbonRun extends BarRunState<RibbonVars> {
+  stdev: WindowStdev;
+  fastMa: Ma;
+  slowMa: Ma;
+  src: number[];
+  fast: number[];
+  slow: number[];
+  /** trend_up (1) and acceleration (2) states per bar */
+  states: number[];
+  fastData: Point[];
+  slowData: Point[];
+  css: string[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<AdaptiveKineticRibbonInputs>): BarStudy<RibbonRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
 
   let { length, mult, maType, ribbonFastLength, ribbonSlowLength } = cfg;
   if (cfg.presetConfig === 'Fast Response') {
@@ -120,79 +157,99 @@ export function calculate(
   }
   const [bullAccel, bullDecel, bearAccel, bearDecel] = PRESET_COLORS[cfg.colorPreset]
     ?? [cfg.bullAccel, cfg.bullDecel, cfg.bearAccel, cfg.bearDecel];
-
-  const src = A(getSourceSeries(bars, cfg.src));
-  const diff1 = src.map((v, i) => (i > 0 ? v - src[i - 1] : NaN));
-  const volatility = A(ta.stdev(S(diff1), length)).map((v) => v * mult);
-
-  // var float kinetic_line = na
-  // kinetic_line := na(kinetic_line[1]) ? source : kinetic_line[1] + adaptive_alpha * (source - kinetic_line[1])
-  const kinetic: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const velocity = i - length >= 0 ? src[i] - src[i - length] : NaN;
-    // a plain division: 0 / 0 is na (velocity 0 and volatility 0)
-    const alpha = Math.abs(velocity) / (Math.abs(velocity) + volatility[i]);
-    const prev = i > 0 ? kinetic[i - 1] : NaN;
-    const k = isNaN(prev) ? src[i] : prev + alpha * (src[i] - prev);
-    kinetic[i] = Number.isFinite(k) ? k : NaN;
-  }
-
-  const kin = S(kinetic);
-  const vol = S(bars.map((b) => b.volume ?? NaN));
-  const ma = (len: number): number[] => {
-    switch (maType) {
-      case 'SMA': return A(ta.sma(kin, len));
-      case 'WMA': return A(ta.wma(kin, len));
-      case 'HMA': return A(ta.hma(kin, len));
-      case 'VWMA': return A(ta.vwma(kin, len, vol));
-      case 'RMA': return A(ta.rma(kin, len));
-      default: return A(ta.ema(kin, len));
-    }
-  };
-  const fast = ma(ribbonFastLength);
-  const slow = ma(ribbonSlowLength);
-
-  const ribbonColor = (i: number) => {
-    const trendUp = gt(fast[i], slow[i]);
-    const acceleration = i > 0 && gt(fast[i], fast[i - 1]);
-    return trendUp ? (acceleration ? bullAccel : bullDecel) : !acceleration ? bearAccel : bearDecel;
-  };
-  const css: string[] = new Array(n);
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const rc = ribbonColor(i);
-    css[i] = String(color.new(rc, cfg.cloudTransparency));
-    // barcolor(enableBarColoring ? color.new(ribbonColor, barTransparency) : na)
-    if (cfg.enableBarColoring) barColors.push({ time: bars[i].time, color: String(color.new(rc, cfg.barTransparency)) });
-  }
-
-  // bullCross = ta.crossover(ribbon_fast, ribbon_slow); bearCross = ta.crossunder(ribbon_fast, ribbon_slow)
-  const bullCross = crossedOver(fast, slow);
-  const bearCross = crossedUnder(fast, slow);
-  // states (trend_up = fast > slow, acceleration = fast > fast[1]); trigger = state and not state[1] (false before bar 0)
-  const trendUp = fast.map((f, i) => gt(f, slow[i]));
-  const accel = fast.map((f, i) => i > 0 && gt(f, fast[i - 1]));
-  const trigger = (state: (i: number) => boolean) => bars.map((_b, i) => state(i) && !(i > 0 && state(i - 1)));
-  const bullAccelT = trigger((i) => trendUp[i] && accel[i]);
-  const bullDecelT = trigger((i) => trendUp[i] && !accel[i]);
-  const bearAccelT = trigger((i) => !trendUp[i] && !accel[i]);
-  const bearDecelT = trigger((i) => !trendUp[i] && accel[i]);
-  const or = (a: boolean[], b: boolean[]) => a.map((v, i) => v || b[i]);
+  const value = barSource(cfg.src);
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: fast[i], color: css[i] })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: slow[i], color: css[i] })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: RibbonRun = {
+        stdev: new WindowStdev(length), fastMa: maStep(maType, ribbonFastLength), slowMa: maStep(maType, ribbonSlowLength),
+        src: [], fast: [], slow: [], states: [], fastData: [], slowData: [], css: [], barColors: [],
+        flags: alertConditions.map(() => []), times: alertConditions.map(() => []),
+        steps: [], vars: { kinetic: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.stdev, s.fastMa, s.slowMa];
+      s.lists = [s.barColors, ...s.times];
+      s.series = [s.src, s.fast, s.slow, s.states, s.fastData, s.slowData, s.css, ...s.flags];
+      return s;
     },
-    // fill(p1, p2, color = css, title = 'Ribbon Fill')
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Ribbon Fill' }, colors: css }],
-    barColors,
-    alerts: alertStates(alertConditions, bars, [
-      bullCross, bearCross, or(bullCross, bearCross),
-      bullAccelT, bullDecelT, bearAccelT, bearDecelT, or(bullAccelT, bearAccelT), or(bullDecelT, bearDecelT),
-    ]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const src = s.src;
+      const x = value(b);
+      src[i] = x;
+      const diff1 = i > 0 ? x - src[i - 1] : NaN;
+      const volatility = s.stdev.step(diff1) * mult;
+
+      // var float kinetic_line = na
+      // kinetic_line := na(kinetic_line[1]) ? source : kinetic_line[1] + adaptive_alpha * (source - kinetic_line[1])
+      const velocity = i - length >= 0 ? x - src[i - length] : NaN;
+      // a plain division: 0 / 0 is na (velocity 0 and volatility 0)
+      const alpha = Math.abs(velocity) / (Math.abs(velocity) + volatility);
+      const prev = s.vars.kinetic;
+      const k = isNaN(prev) ? x : prev + alpha * (x - prev);
+      const kinetic = Number.isFinite(k) ? k : NaN;
+      s.vars.kinetic = kinetic;
+
+      const vol = b.volume ?? NaN;
+      const f = s.fastMa.step(kinetic, vol);
+      const sl = s.slowMa.step(kinetic, vol);
+      s.fast[i] = f;
+      s.slow[i] = sl;
+      const pf = i > 0 ? s.fast[i - 1] : NaN;
+      const ps = i > 0 ? s.slow[i - 1] : NaN;
+
+      const trendUp = gt(f, sl);
+      const acceleration = i > 0 && gt(f, pf);
+      const rc = trendUp ? (acceleration ? bullAccel : bullDecel) : !acceleration ? bearAccel : bearDecel;
+      const css = String(color.new(rc, cfg.cloudTransparency));
+      s.css[i] = css;
+      // barcolor(enableBarColoring ? color.new(ribbonColor, barTransparency) : na)
+      if (cfg.enableBarColoring) s.barColors.push({ time: b.time, color: String(color.new(rc, cfg.barTransparency)) });
+      s.fastData[i] = { time: b.time, value: f, color: css };
+      s.slowData[i] = { time: b.time, value: sl, color: css };
+
+      // bullCross = ta.crossover(ribbon_fast, ribbon_slow); bearCross = ta.crossunder(ribbon_fast, ribbon_slow)
+      const bullCross = f > sl && pf <= ps;
+      const bearCross = f < sl && pf >= ps;
+      // states (trend_up = fast > slow, acceleration = fast > fast[1]); trigger = state and not state[1] (false before bar 0)
+      const state = (trendUp ? 1 : 0) | (acceleration ? 2 : 0);
+      s.states[i] = state;
+      const prevState = i > 0 ? s.states[i - 1] : -1;
+      const bullAccelT = state === 3 && prevState !== 3;
+      const bullDecelT = state === 1 && prevState !== 1;
+      const bearAccelT = state === 0 && prevState !== 0;
+      const bearDecelT = state === 2 && prevState !== 2;
+      const flags = [
+        bullCross, bearCross, bullCross || bearCross,
+        bullAccelT, bullDecelT, bearAccelT, bearDecelT, bullAccelT || bearAccelT, bullDecelT || bearDecelT,
+      ];
+      for (let a = 0; a < flags.length; a++) {
+        s.flags[a][i] = flags[a];
+        if (flags[a]) s.times[a].push(b.time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.fastData.slice(), plot1: s.slowData.slice() },
+        // fill(p1, p2, color = css, title = 'Ribbon Fill')
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Ribbon Fill' }, colors: s.css.slice() }],
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdaptiveKineticRibbonInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AdaptiveKineticRibbonInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -210,6 +267,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const AdaptiveKineticRibbon = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

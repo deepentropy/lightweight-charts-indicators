@@ -12,7 +12,9 @@
  * Original notice: © MisinkoMaster
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface KalmanExponentialyWeightedMovingAverageMisinkomasterInputs {
   /** Length */
@@ -55,87 +57,118 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<KalmanExponentialyWeightedMovingAverageMisinkomasterInputs> = {},
-): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface KalmanVars {
+  /** var float xhat = src (first bar), var float P = 1.0 */
+  xhat: number;
+  P: number;
+  /** Line and fill colours (var) */
+  c: string;
+  cT: string;
+}
+
+interface KalmanRun extends BarRunState<KalmanVars> {
+  w1: ReturnType<typeof taStep.wma>;
+  w2: ReturnType<typeof taStep.wma>;
+  up: ReturnType<typeof taStep.crossover>;
+  dn: ReturnType<typeof taStep.crossunder>;
+  wma: number[];
+  plot0: Point[];
+  plot1: Point[];
+  colT: string[];
+}
+
+function study(inputs: Partial<KalmanExponentialyWeightedMovingAverageMisinkomasterInputs>): BarStudy<KalmanRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const len = cfg.n;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = A(getSourceSeries(bars, cfg.src));
+  const value = barSource(cfg.src);
 
   // a = 2 / (n + 1); n1 = math.abs(math.round(n / 2)) (n / 2 is a float in Pine v6, math.round rounds half up)
   const a = 2 / (len + 1);
   const n1 = Math.abs(Math.round(len / 2));
   const Q = cfg.processNoise;
   const R = cfg.measureNoise;
-
-  // var float xhat = src (first bar), var float P = 1.0
-  const xhatArr: number[] = new Array(n);
-  let xhat = n > 0 ? src[0] : NaN;
-  let P = 1.0;
-  for (let i = 0; i < n; i++) {
-    const xhatPrior = xhat;
-    const pPrior = P + Q;
-    const K = pPrior / (pPrior + R);
-    xhat = xhatPrior + K * (src[i] - xhatPrior);
-    P = (1 - K) * pPrior;
-    xhatArr[i] = xhat;
-  }
-
-  // wma = ta.wma(xhat, n1) * 2 - ta.wma(xhat, n)
-  const xs = S(xhatArr);
-  const w1 = A(ta.wma(xs, n1));
-  const w2 = A(ta.wma(xs, len));
-  const wma = w1.map((v, i) => v * 2 - w2[i]);
-  // ewma = wma * a + wma[1] * (1 - a), then ewma := ewma * a + wma[1] * (1 - a) twice
-  const ewma = wma.map((w, i) => {
-    const prev = i > 0 ? wma[i - 1] : NaN;
-    let e = w * a + prev * (1 - a);
-    e = e * a + prev * (1 - a);
-    e = e * a + prev * (1 - a);
-    return e;
-  });
-
-  // L = ta.crossover(wma, ewma); S = ta.crossunder(wma, ewma) (exact comparisons with the last bar where both
-  // values were not na)
-  const L = A(ta.crossover(S(wma), S(ewma)));
-  const Sh = A(ta.crossunder(S(wma), S(ewma)));
-  const col: string[] = new Array(n);
-  const colT: string[] = new Array(n);
-  let c = NONE;
-  let cT = NONE;
-  for (let i = 0; i < n; i++) {
-    const long = L[i] === 1;
-    const short = Sh[i] === 1;
-    if (long && !short) {
-      c = LONG;
-      cT = LONG_FILL;
-    }
-    if (short) {
-      c = SHORT;
-      cT = SHORT_FILL;
-    }
-    col[i] = c;
-    colT[i] = cT;
-  }
-
-  const t = (i: number) => bars[i].time;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((_b, i) => ({ time: t(i), value: wma[i], color: col[i] })),
-      plot1: bars.map((_b, i) => ({ time: t(i), value: ewma[i], color: col[i] })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const w1 = taStep.wma();
+      const w2 = taStep.wma();
+      const up = taStep.crossover();
+      const dn = taStep.crossunder();
+      const s: KalmanRun = {
+        w1, w2, up, dn, wma: [], plot0: [], plot1: [], colT: [],
+        steps: [w1, w2, up, dn], vars: { xhat: NaN, P: 1.0, c: NONE, cT: NONE }, lists: [], series: [],
+      };
+      s.series = [s.wma, s.plot0, s.plot1, s.colT];
+      return s;
     },
-    // fill(w, ew, colT)
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Plots Background' }, colors: colT }],
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const src = value(b);
+      if (i === 0) v.xhat = src;
+      const xhatPrior = v.xhat;
+      const pPrior = v.P + Q;
+      const K = pPrior / (pPrior + R);
+      v.xhat = xhatPrior + K * (src - xhatPrior);
+      v.P = (1 - K) * pPrior;
+      const xhat = v.xhat;
+
+      // wma = ta.wma(xhat, n1) * 2 - ta.wma(xhat, n)
+      const wma = s.w1.step(xhat, n1) * 2 - s.w2.step(xhat, len);
+      s.wma[i] = wma;
+      // ewma = wma * a + wma[1] * (1 - a), then ewma := ewma * a + wma[1] * (1 - a) twice
+      const prev = i > 0 ? s.wma[i - 1]! : NaN;
+      let e = wma * a + prev * (1 - a);
+      e = e * a + prev * (1 - a);
+      e = e * a + prev * (1 - a);
+
+      // L = ta.crossover(wma, ewma); S = ta.crossunder(wma, ewma) (exact comparisons with the last bar where both
+      // values were not na)
+      const long = s.up.step(wma, e);
+      const short = s.dn.step(wma, e);
+      if (long && !short) {
+        v.c = LONG;
+        v.cT = LONG_FILL;
+      }
+      if (short) {
+        v.c = SHORT;
+        v.cT = SHORT_FILL;
+      }
+      s.plot0[i] = { time: b.time, value: wma, color: v.c };
+      s.plot1[i] = { time: b.time, value: e, color: v.c };
+      s.colT[i] = v.cT;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        // fill(w, ew, colT)
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Plots Background' }, colors: s.colT.slice() }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(
+  inputs: Partial<KalmanExponentialyWeightedMovingAverageMisinkomasterInputs> = {},
+  chart: ChartContext = {},
+): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<KalmanExponentialyWeightedMovingAverageMisinkomasterInputs> = {},
+): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const KalmanExponentialyWeightedMovingAverageMisinkomaster = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

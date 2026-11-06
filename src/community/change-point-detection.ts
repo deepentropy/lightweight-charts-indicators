@@ -12,8 +12,10 @@
  * Original notice: © LuxAlgo
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ChangePointDetectionInputs {
   /** Period of the rolling statistics of the log returns */
@@ -65,82 +67,123 @@ const ne = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) >
 
 type Point = { time: number; value: number; color: string };
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface CpdVars {
+  /** var float sPos = 0.0, var float sNeg = 0.0 */
+  sPos: number;
+  sNeg: number;
+  /** var int trend = 0 */
+  trend: number;
+  /** var float regimePrice = na (and its value on the bar before) */
+  regimePrice: number;
+  prevRegimePrice: number;
+}
+
+interface CpdRun extends BarRunState<CpdVars> {
+  mean: WindowSma;
+  std: WindowStdev;
+  vol: WindowStdev;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<ChangePointDetectionInputs>): BarStudy<CpdRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const len = cfg.length;
+  const bullFill = String(color.new(BULL_COLOR, 90));
+  const bearFill = String(color.new(BEAR_COLOR, 90));
+  return {
+    init() {
+      const mean = new WindowSma(len);
+      const std = new WindowStdev(len);
+      const vol = new WindowStdev(len);
+      const s: CpdRun = {
+        mean, std, vol, plot0: [], plot1: [], plot2: [], markers: [], steps: [mean, std, vol],
+        vars: { sPos: 0, sNeg: 0, trend: 0, regimePrice: NaN, prevRegimePrice: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.plot0, s.plot1, s.plot2];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const t = bars[i].time;
+      const close = bars[i].close;
+      // logReturns = math.log(src / nz(src[1], src))
+      const prev = i > 0 ? bars[i - 1].close : NaN;
+      const logReturns = Math.log(close / (i > 0 && !isNaN(prev) ? prev : close));
+      const rollingMean = s.mean.step(logReturns);
+      const rollingStd = s.std.step(logReturns);
+      const priceVol = s.vol.step(close);
+
+      // zScore = (logReturns - rollingMean) / (rollingStd == 0 ? 1.0 : rollingStd)
+      const sd = rollingStd;
+      const div = !isNaN(sd) && Math.abs(sd) <= EPS ? 1.0 : sd;
+      const z = (logReturns - rollingMean) / div;
+      if (!isNaN(z)) {
+        v.sPos = Math.max(0, v.sPos + z - cfg.slack);
+        v.sNeg = Math.min(0, v.sNeg + z + cfg.slack);
+      }
+      const changeUp = gt(v.sPos, cfg.threshold);
+      const changeDn = lt(v.sNeg, -cfg.threshold);
+      // bar_index == lengthInput: bar_index counts from the first bar of the data
+      if (changeUp || changeDn || i === len) {
+        v.trend = changeUp ? 1 : changeDn ? -1 : v.trend;
+        v.regimePrice = close;
+        v.sPos = 0;
+        v.sNeg = 0;
+      }
+
+      const trendColor = v.trend === 1 ? BULL_COLOR : v.trend === -1 ? BEAR_COLOR : color.gray;
+      const isLevelChange = ne(v.regimePrice, v.prevRegimePrice);
+      v.prevRegimePrice = v.regimePrice;
+      const regimePrice = v.regimePrice;
+      s.plot0[i] = { time: t, value: regimePrice, color: isLevelChange ? 'transparent' : trendColor };
+      s.plot1[i] = { time: t, value: regimePrice + v.sPos * priceVol, color: isLevelChange ? 'transparent' : BULL_PRESSURE };
+      s.plot2[i] = { time: t, value: regimePrice + v.sNeg * priceVol, color: isLevelChange ? 'transparent' : BEAR_PRESSURE };
+
+      // plotshape(changeUp, 'Change Up', shape.triangleup, location.belowbar, BULL_COLOR, size = size.tiny)
+      if (changeUp) s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: BULL_COLOR, size: 'tiny' });
+      // plotshape(changeDn, 'Change Down', shape.triangledown, location.abovebar, BEAR_COLOR, size = size.tiny)
+      if (changeDn) s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: BEAR_COLOR, size: 'tiny' });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        fills: [
+          // fill(pRegime, pCusumPos, color.new(BULL_COLOR, 90), 'Bullish CUSUM Fill')
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Bullish CUSUM Fill' },
+            colors: new Array<string>(n).fill(bullFill) },
+          // fill(pRegime, pCusumNeg, color.new(BEAR_COLOR, 90), 'Bearish CUSUM Fill')
+          { plot1: 'plot0', plot2: 'plot2', options: { title: 'Bearish CUSUM Fill' },
+            colors: new Array<string>(n).fill(bearFill) },
+        ],
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ChangePointDetectionInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<ChangePointDetectionInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const len = cfg.length;
-  const close = bars.map((b) => b.close);
-
-  // logReturns = math.log(src / nz(src[1], src))
-  const logReturns = close.map((c, i) => Math.log(c / (i > 0 && !isNaN(close[i - 1]) ? close[i - 1] : c)));
-  const rollingMean = A(ta.sma(S(logReturns), len));
-  const rollingStd = A(ta.stdev(S(logReturns), len));
-  const priceVol = A(ta.stdev(S(close), len));
-
-  const plot0: Point[] = [];
-  const plot1: Point[] = [];
-  const plot2: Point[] = [];
-  const markers: MarkerData[] = [];
-  let sPos = 0; // var float sPos = 0.0
-  let sNeg = 0; // var float sNeg = 0.0
-  let trend = 0; // var int trend = 0
-  let regimePrice = NaN; // var float regimePrice = na
-  let prevRegimePrice = NaN;
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // zScore = (logReturns - rollingMean) / (rollingStd == 0 ? 1.0 : rollingStd)
-    const sd = rollingStd[i];
-    const div = !isNaN(sd) && Math.abs(sd) <= EPS ? 1.0 : sd;
-    const z = (logReturns[i] - rollingMean[i]) / div;
-    if (!isNaN(z)) {
-      sPos = Math.max(0, sPos + z - cfg.slack);
-      sNeg = Math.min(0, sNeg + z + cfg.slack);
-    }
-    const changeUp = gt(sPos, cfg.threshold);
-    const changeDn = lt(sNeg, -cfg.threshold);
-    // bar_index == lengthInput: bar_index counts from the first bar of the data
-    if (changeUp || changeDn || i === len) {
-      trend = changeUp ? 1 : changeDn ? -1 : trend;
-      regimePrice = close[i];
-      sPos = 0;
-      sNeg = 0;
-    }
-
-    const trendColor = trend === 1 ? BULL_COLOR : trend === -1 ? BEAR_COLOR : color.gray;
-    const isLevelChange = ne(regimePrice, prevRegimePrice);
-    prevRegimePrice = regimePrice;
-    plot0.push({ time: t, value: regimePrice, color: isLevelChange ? 'transparent' : trendColor });
-    plot1.push({ time: t, value: regimePrice + sPos * priceVol[i], color: isLevelChange ? 'transparent' : BULL_PRESSURE });
-    plot2.push({ time: t, value: regimePrice + sNeg * priceVol[i], color: isLevelChange ? 'transparent' : BEAR_PRESSURE });
-
-    // plotshape(changeUp, 'Change Up', shape.triangleup, location.belowbar, BULL_COLOR, size = size.tiny)
-    if (changeUp) markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: BULL_COLOR, size: 'tiny' });
-    // plotshape(changeDn, 'Change Down', shape.triangledown, location.abovebar, BEAR_COLOR, size = size.tiny)
-    if (changeDn) markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: BEAR_COLOR, size: 'tiny' });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    fills: [
-      // fill(pRegime, pCusumPos, color.new(BULL_COLOR, 90), 'Bullish CUSUM Fill')
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Bullish CUSUM Fill' },
-        colors: new Array<string>(n).fill(String(color.new(BULL_COLOR, 90))) },
-      // fill(pRegime, pCusumNeg, color.new(BEAR_COLOR, 90), 'Bearish CUSUM Fill')
-      { plot1: 'plot0', plot2: 'plot2', options: { title: 'Bearish CUSUM Fill' },
-        colors: new Array<string>(n).fill(String(color.new(BEAR_COLOR, 90))) },
-    ],
-    markers,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const ChangePointDetection = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

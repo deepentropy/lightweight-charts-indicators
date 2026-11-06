@@ -11,9 +11,11 @@
  */
 
 import {
-  ta, Series, color, getSourceSeries,
+  taStep, color,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface HilegaMilegaRsiEmaWmaInputs {
   /** RSI source */
@@ -72,52 +74,89 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<HilegaMilegaRsiEmaWmaInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface HmRun extends BarRunState<Record<string, never>> {
+  up: ReturnType<typeof taStep.rma>;
+  down: ReturnType<typeof taStep.rma>;
+  wma: ReturnType<typeof taStep.wma>;
+  ema: ReturnType<typeof taStep.ema>;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<HilegaMilegaRsiEmaWmaInputs>): BarStudy<HmRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const mid = cfg.adjustableMiddleLine;
-
-  const src = A(getSourceSeries(bars, cfg.src));
-  // ta.change(src): na on bar 0; math.max / math.min of na is na
-  const change = src.map((v, i) => (i > 0 ? v - src[i - 1] : NaN));
-  const up = A(ta.rma(S(change.map((c) => (isNaN(c) ? NaN : Math.max(c, 0)))), cfg.len));
-  const down = A(ta.rma(S(change.map((c) => (isNaN(c) ? NaN : -Math.min(c, 0)))), cfg.len));
-  // rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
-  const rsi = up.map((u, i) => (eq(down[i], 0) ? 100 : eq(u, 0) ? 0 : 100 - 100 / (1 + u / down[i])));
-  const wma = A(ta.wma(S(rsi), cfg.wmaLength));
-  const ema = A(ta.ema(S(rsi), cfg.emaLength));
-
-  const t = (i: number) => bars[i].time;
-  const plots = {
-    plot0: rsi.map((v, i) => ({ time: t(i), value: v, color: RSI_COLOR })),
-    plot1: wma.map((v, i) => ({ time: t(i), value: v, color: WMA_COLOR })),
-    plot2: ema.map((v, i) => ({ time: t(i), value: v, color: EMA_COLOR })),
-    plot3: bars.map((_b, i) => ({ time: t(i), value: mid, color: DEFAULT_PLOT_COLOR })),
-    // rsi > adjustable_middle_line ? rsi : adjustable_middle_line (na rsi compares false)
-    plot4: rsi.map((v, i) => ({ time: t(i), value: gt(v, mid) ? v : mid, color: OVERSOLD_COLOR })),
-    // rsi > adjustable_middle_line ? adjustable_middle_line : rsi
-    plot5: rsi.map((v, i) => ({ time: t(i), value: gt(v, mid) ? mid : v, color: OVERBOUGHT_COLOR })),
-  };
-
+  const value = barSource(cfg.src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    hlines: [
-      { value: mid, options: { title: 'Adjustable Middle Line', color: color.gray, linestyle: 'dashed' } },
-      { value: 50, options: { title: 'Default Middle Line', color: '#b2b5be', linestyle: 'dashed' } },
-    ],
-    fills: [
-      // fill(obsd, ref, color.new(color.red, 90), title = "Oversold")
-      { plot1: 'plot4', plot2: 'plot3', options: { title: 'Oversold', color: OVERSOLD_COLOR } },
-      // fill(obbt, ref, color.new(color.blue, 90), title = "Overbought")
-      { plot1: 'plot5', plot2: 'plot3', options: { title: 'Overbought', color: OVERBOUGHT_COLOR } },
-    ],
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const up = taStep.rma(cfg.len);
+      const down = taStep.rma(cfg.len);
+      const wma = taStep.wma();
+      const ema = taStep.ema(cfg.emaLength);
+      const s: HmRun = {
+        up, down, wma, ema, plots: [[], [], [], [], [], []],
+        steps: [up, down, wma, ema], vars: {}, lists: [], series: [],
+      };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time;
+      // ta.change(src): na on bar 0; math.max / math.min of na is na
+      const c = i > 0 ? value(bars[i]) - value(bars[i - 1]) : NaN;
+      const u = s.up.step(isNaN(c) ? NaN : Math.max(c, 0));
+      const d = s.down.step(isNaN(c) ? NaN : -Math.min(c, 0));
+      // rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+      const rsi = eq(d, 0) ? 100 : eq(u, 0) ? 0 : 100 - 100 / (1 + u / d);
+      const wma = s.wma.step(rsi, cfg.wmaLength);
+      const ema = s.ema.step(rsi);
+      const p = s.plots;
+      p[0]![i] = { time: t, value: rsi, color: RSI_COLOR };
+      p[1]![i] = { time: t, value: wma, color: WMA_COLOR };
+      p[2]![i] = { time: t, value: ema, color: EMA_COLOR };
+      p[3]![i] = { time: t, value: mid, color: DEFAULT_PLOT_COLOR };
+      // rsi > adjustable_middle_line ? rsi : adjustable_middle_line (na rsi compares false)
+      p[4]![i] = { time: t, value: gt(rsi, mid) ? rsi : mid, color: OVERSOLD_COLOR };
+      // rsi > adjustable_middle_line ? adjustable_middle_line : rsi
+      p[5]![i] = { time: t, value: gt(rsi, mid) ? mid : rsi, color: OVERBOUGHT_COLOR };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0]!.slice(), plot1: p[1]!.slice(), plot2: p[2]!.slice(), plot3: p[3]!.slice(), plot4: p[4]!.slice(),
+          plot5: p[5]!.slice(),
+        },
+        hlines: [
+          { value: mid, options: { title: 'Adjustable Middle Line', color: color.gray, linestyle: 'dashed' } },
+          { value: 50, options: { title: 'Default Middle Line', color: '#b2b5be', linestyle: 'dashed' } },
+        ],
+        fills: [
+          // fill(obsd, ref, color.new(color.red, 90), title = "Oversold")
+          { plot1: 'plot4', plot2: 'plot3', options: { title: 'Oversold', color: OVERSOLD_COLOR } },
+          // fill(obbt, ref, color.new(color.blue, 90), title = "Overbought")
+          { plot1: 'plot5', plot2: 'plot3', options: { title: 'Overbought', color: OVERBOUGHT_COLOR } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HilegaMilegaRsiEmaWmaInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<HilegaMilegaRsiEmaWmaInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const HilegaMilegaRsiEmaWma = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -11,8 +11,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface OaSmesInputs {
   /** Smart money flow period (SMA of the normalized price) */
@@ -94,90 +96,128 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+type Point = { time: number; value: number; color: string };
+
+interface OaSmesRun extends BarRunState<{ prevSmf: number; prevEntry: boolean; prevClose: number }> {
+  ll: WindowExtreme;
+  hh: WindowExtreme;
+  smooth: WindowSma;
+  dbl: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<OaSmesInputs>): BarStudy<OaSmesRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const mWeight = 1.032;
+  return {
+    init() {
+      const s: OaSmesRun = {
+        ll: new WindowExtreme(true, cfg.pricePer),
+        hh: new WindowExtreme(false, cfg.pricePer),
+        smooth: new WindowSma(cfg.flowPeriod),
+        dbl: new WindowSma(3),
+        plot0: [], plot1: [], markers: [],
+        steps: [], vars: { prevSmf: NaN, prevEntry: false, prevClose: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.ll, s.hh, s.smooth, s.dbl];
+      s.lists = [s.markers];
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const v = s.vars;
+      // norm_price = (close - lowest(low, pricePer)) / (highest(high, pricePer) - lowest(low, pricePer)) * 100
+      const ll = s.ll.step(b.low);
+      const hh = s.hh.step(b.high);
+      const range = hh - ll;
+      const norm = range === 0 ? NaN : ((b.close - ll) / range) * 100; // range 0: close = lowest low, Pine 0 / 0 is NaN
+      const smoothNorm = s.smooth.step(norm);
+      const doubleSmooth = s.dbl.step(smoothNorm);
+      const smf = (3 * smoothNorm - 2 * doubleSmooth - 50) * mWeight + 50;
+
+      // ta.crossover(smf, 0) / ta.crossunder(smf, 100): a tie on the previous bar counts
+      // (exact comparisons: ta.crossover / ta.crossunder do not use the 1e-10 tolerance of the operators)
+      const entry = i > 0 && smf > 0 && v.prevSmf <= 0;
+      const exit = i > 0 && smf < 100 && v.prevSmf >= 100;
+      // filtered_entry = entry_signal[1] and close > close[1]
+      const filtered = i > 0 && v.prevEntry && gt(b.close, v.prevClose);
+      v.prevSmf = smf;
+      v.prevEntry = entry;
+      v.prevClose = b.close;
+
+      // id: the plotshape output (shape0..shape5 in declaration order)
+      const circle = (price: number, c: string, size: 'small' | 'normal', id: string) => {
+        if (!isNaN(price)) s.markers.push({ time: t, position: 'atPriceMiddle', price, shape: 'circle', color: c, size, id });
+      };
+      if (entry) {
+        circle(smf, ENTRY_COLOR, 'small', 'shape0');
+        if (cfg.showGlow) circle(smf, ENTRY_GLOW_COLOR, 'normal', 'shape1');
+      }
+      if (filtered) {
+        circle(smf, ENTRY_COLOR_2, 'small', 'shape2');
+        if (cfg.showGlow) circle(smf, ENTRY_GLOW_COLOR_2, 'normal', 'shape3');
+      }
+      if (exit) {
+        circle(smf, EXIT_COLOR, 'small', 'shape4');
+        if (cfg.showGlow) circle(smf, EXIT_GLOW_COLOR, 'normal', 'shape5');
+      }
+      s.plot0[i] = { time: t, value: cfg.showFlow ? smf : NaN, color: FLOW_COLOR };
+      s.plot1[i] = { time: t, value: cfg.showFlow && cfg.showGlow ? smf : NaN, color: FLOW_GLOW_COLOR };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // hline(showZones ? level : na): no line when na; the glow levels also need showGlow
+      const levelOn: Record<string, boolean> = {
+        hline_ob: cfg.showZones,
+        hline_ob_glow: cfg.showZones && cfg.showGlow,
+        hline_ob_upper: cfg.showZones,
+        hline_os: cfg.showZones,
+        hline_os_glow: cfg.showZones && cfg.showGlow,
+        hline_os_lower: cfg.showZones,
+      };
+      const fillColors = (on: boolean, c: string) => new Array<string>(n).fill(on ? c : 'transparent');
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: hlineConfig.filter((h) => levelOn[h.id])
+          .map((h) => ({ value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle } })),
+        fills: [
+          { plot1: 'hline_ob', plot2: 'hline_ob_upper', options: { title: 'Overbought Main Region' },
+            colors: fillColors(cfg.showZones, OB_COLOR) },
+          { plot1: 'hline_ob_glow', plot2: 'hline_ob', options: { title: 'Overbought Glow Region' },
+            colors: fillColors(cfg.showZones && cfg.showGlow, OB_GLOW_COLOR) },
+          { plot1: 'hline_os', plot2: 'hline_os_lower', options: { title: 'Oversold Main Region' },
+            colors: fillColors(cfg.showZones, OS_COLOR) },
+          { plot1: 'hline_os_glow', plot2: 'hline_os', options: { title: 'Oversold Glow Region' },
+            colors: fillColors(cfg.showZones && cfg.showGlow, OS_GLOW_COLOR) },
+        ],
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<OaSmesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<OaSmesInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const mWeight = 1.032;
-
-  // norm_price = (close - lowest(low, pricePer)) / (highest(high, pricePer) - lowest(low, pricePer)) * 100
-  const ll = A(ta.lowest(S(bars.map((b) => b.low)), cfg.pricePer));
-  const hh = A(ta.highest(S(bars.map((b) => b.high)), cfg.pricePer));
-  const norm = bars.map((b, i) => {
-    const range = hh[i] - ll[i];
-    return range === 0 ? NaN : ((b.close - ll[i]) / range) * 100; // range 0: close = lowest low, Pine 0 / 0 is NaN
-  });
-  const smoothNorm = A(ta.sma(S(norm), cfg.flowPeriod));
-  const doubleSmooth = A(ta.sma(S(smoothNorm), 3));
-  const smf = smoothNorm.map((s, i) => (3 * s - 2 * doubleSmooth[i] - 50) * mWeight + 50);
-
-  // ta.crossover(smf, 0) / ta.crossunder(smf, 100): a tie on the previous bar counts
-  // (exact comparisons: ta.crossover / ta.crossunder do not use the 1e-10 tolerance of the operators)
-  const entry = smf.map((v, i) => i > 0 && v > 0 && smf[i - 1] <= 0);
-  const exit = smf.map((v, i) => i > 0 && v < 100 && smf[i - 1] >= 100);
-  // filtered_entry = entry_signal[1] and close > close[1]
-  const filtered = bars.map((b, i) => i > 0 && entry[i - 1] && gt(b.close, bars[i - 1].close));
-
-  const markers: MarkerData[] = [];
-  // id: the plotshape output (shape0..shape5 in declaration order)
-  const circle = (time: number, price: number, c: string, size: 'small' | 'normal', id: string) => {
-    if (!isNaN(price)) markers.push({ time, position: 'atPriceMiddle', price, shape: 'circle', color: c, size, id });
-  };
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    if (entry[i]) {
-      circle(t, smf[i], ENTRY_COLOR, 'small', 'shape0');
-      if (cfg.showGlow) circle(t, smf[i], ENTRY_GLOW_COLOR, 'normal', 'shape1');
-    }
-    if (filtered[i]) {
-      circle(t, smf[i], ENTRY_COLOR_2, 'small', 'shape2');
-      if (cfg.showGlow) circle(t, smf[i], ENTRY_GLOW_COLOR_2, 'normal', 'shape3');
-    }
-    if (exit[i]) {
-      circle(t, smf[i], EXIT_COLOR, 'small', 'shape4');
-      if (cfg.showGlow) circle(t, smf[i], EXIT_GLOW_COLOR, 'normal', 'shape5');
-    }
-  }
-
-  // hline(showZones ? level : na): no line when na; the glow levels also need showGlow
-  const levelOn: Record<string, boolean> = {
-    hline_ob: cfg.showZones,
-    hline_ob_glow: cfg.showZones && cfg.showGlow,
-    hline_ob_upper: cfg.showZones,
-    hline_os: cfg.showZones,
-    hline_os_glow: cfg.showZones && cfg.showGlow,
-    hline_os_lower: cfg.showZones,
-  };
-  const fillColors = (on: boolean, c: string) => new Array<string>(n).fill(on ? c : 'transparent');
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: cfg.showFlow ? smf[i] : NaN, color: FLOW_COLOR })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: cfg.showFlow && cfg.showGlow ? smf[i] : NaN, color: FLOW_GLOW_COLOR })),
-    },
-    hlines: hlineConfig.filter((h) => levelOn[h.id])
-      .map((h) => ({ value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle } })),
-    fills: [
-      { plot1: 'hline_ob', plot2: 'hline_ob_upper', options: { title: 'Overbought Main Region' },
-        colors: fillColors(cfg.showZones, OB_COLOR) },
-      { plot1: 'hline_ob_glow', plot2: 'hline_ob', options: { title: 'Overbought Glow Region' },
-        colors: fillColors(cfg.showZones && cfg.showGlow, OB_GLOW_COLOR) },
-      { plot1: 'hline_os', plot2: 'hline_os_lower', options: { title: 'Oversold Main Region' },
-        colors: fillColors(cfg.showZones, OS_COLOR) },
-      { plot1: 'hline_os_glow', plot2: 'hline_os', options: { title: 'Oversold Glow Region' },
-        colors: fillColors(cfg.showZones && cfg.showGlow, OS_GLOW_COLOR) },
-    ],
-    markers,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const OaSmes = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

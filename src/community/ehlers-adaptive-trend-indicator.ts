@@ -15,9 +15,11 @@
  * Original notice: © AlphaExtract
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EhlersAdaptiveTrendIndicatorInputs {
   src: SourceType;
@@ -79,89 +81,125 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 /** Pine a != b: false when a or b is na */
 const ne = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<EhlersAdaptiveTrendIndicatorInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface EhlersVars {
+  trend: number;
+  prevLevel: number;
+}
+
+interface EhlersRun extends BarRunState<EhlersVars> {
+  vol: WindowStdev;
+  smooth: ReturnType<typeof taStep.ema>;
+  src: number[];
+  plot0: Point[];
+  plot1: Point[];
+  fill: string[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<EhlersAdaptiveTrendIndicatorInputs>): BarStudy<EhlersRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { p1, p2 } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const srcS = getSourceSeries(bars, cfg.src);
-  const src = A(srcS);
-
-  // Ehlers filter: computed from bar_index >= p1 - 1 + p2, na before
-  const basis: number[] = new Array(n).fill(NaN);
+  const value = barSource(cfg.src);
   const coef: number[] = new Array(p1).fill(0.0); // var coefArray = array.new_float(p1, 0.0)
-  for (let b = 0; b < n; b++) {
-    if (b >= p1 - 1 + p2) {
-      let num = 0.0;
-      let sumCoef = 0.0;
-      for (let i = 0; i <= p1 - 1; i++) coef[i] = Math.abs(src[b - i] - src[b - i - p2]);
-      for (let i = 0; i <= p1 - 1; i++) {
-        num += coef[i] * src[b - i];
-        sumCoef += coef[i];
-      }
-      basis[b] = ne(sumCoef, 0) ? num / sumCoef : src[b];
-    }
-  }
-
-  // Volatility and dynamic bands
-  const vol = ta.stdev(srcS, p1);
-  const smoothedVol = A(ta.ema(vol, cfg.smoothingLen));
-  const upperBand = bars.map((_b, i) => basis[i] + smoothedVol[i] * cfg.sensitivity);
-  const lowerBand = bars.map((_b, i) => basis[i] - smoothedVol[i] * cfg.sensitivity);
-
-  // Trend state and reference level
-  const trendArr: number[] = new Array(n);
-  const levelArr: number[] = new Array(n);
-  let trend = 0;
-  let prevLevel = NaN;
-  for (let i = 0; i < n; i++) {
-    const close = bars[i].close;
-    if (isNaN(prevLevel)) {
-      trend = ge(close, basis[i]) ? 1 : -1;
-      prevLevel = basis[i];
-    } else if (trend === 1 && lt(close, lowerBand[i])) {
-      trend = -1;
-      prevLevel = lowerBand[i];
-    } else if (trend === -1 && gt(close, upperBand[i])) {
-      trend = 1;
-      prevLevel = upperBand[i];
-    } else {
-      // math.max / math.min give na when an argument is na
-      prevLevel = trend === 1 ? Math.max(prevLevel, lowerBand[i]) : Math.min(prevLevel, upperBand[i]);
-    }
-    trendArr[i] = trend;
-    levelArr[i] = prevLevel;
-  }
-
   const bullFill = String(color.new(cfg.colorBull, 80));
   const bearFill = String(color.new(cfg.colorBear, 80));
   const bullBar = String(color.new(cfg.colorBull, 50));
   const bearBar = String(color.new(cfg.colorBear, 50));
   const fin = (x: number) => (Number.isFinite(x) ? x : NaN);
-
-  const barColors: BarColorData[] = [];
-  if (cfg.colorBarTrend) {
-    for (let i = 0; i < n; i++) barColors.push({ time: bars[i].time, color: trendArr[i] === 1 ? bullBar : bearBar });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: fin(basis[i]), color: cfg.colorBasis })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: fin(levelArr[i]), color: trendArr[i] === 1 ? cfg.colorBull : cfg.colorBear })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: EhlersRun = {
+        vol: new WindowStdev(p1), smooth: taStep.ema(cfg.smoothingLen),
+        src: [], plot0: [], plot1: [], fill: [], barColors: [],
+        flags: [[], []], times: [[], []],
+        steps: [], vars: { trend: 0, prevLevel: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.vol, s.smooth];
+      s.lists = [...s.times];
+      s.series = [s.src, s.plot0, s.plot1, s.fill, s.barColors, ...s.flags];
+      return s;
     },
-    // fill(pBasis, pTrend, color = trend == 1 ? color.new(colorBull, 80) : color.new(colorBear, 80))
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Plots Background' },
-        colors: trendArr.map((tr) => (tr === 1 ? bullFill : bearFill)) },
-    ],
-    barColors,
-    // buySignal = trend == 1, sellSignal = trend == -1
-    alerts: alertStates(alertConditions, bars, [trendArr.map((tr) => tr === 1), trendArr.map((tr) => tr === -1)]),
+    bar(s, b, bars) {
+      const time = bars[b].time;
+      const src = s.src;
+      src[b] = value(bars[b]);
+
+      // Ehlers filter: computed from bar_index >= p1 - 1 + p2, na before
+      let basis = NaN;
+      if (b >= p1 - 1 + p2) {
+        let num = 0.0;
+        let sumCoef = 0.0;
+        for (let i = 0; i <= p1 - 1; i++) coef[i] = Math.abs(src[b - i] - src[b - i - p2]);
+        for (let i = 0; i <= p1 - 1; i++) {
+          num += coef[i] * src[b - i];
+          sumCoef += coef[i];
+        }
+        basis = ne(sumCoef, 0) ? num / sumCoef : src[b];
+      }
+
+      // Volatility and dynamic bands
+      const smoothedVol = s.smooth.step(s.vol.step(src[b]));
+      const upperBand = basis + smoothedVol * cfg.sensitivity;
+      const lowerBand = basis - smoothedVol * cfg.sensitivity;
+
+      // Trend state and reference level
+      const v = s.vars;
+      const close = bars[b].close;
+      if (isNaN(v.prevLevel)) {
+        v.trend = ge(close, basis) ? 1 : -1;
+        v.prevLevel = basis;
+      } else if (v.trend === 1 && lt(close, lowerBand)) {
+        v.trend = -1;
+        v.prevLevel = lowerBand;
+      } else if (v.trend === -1 && gt(close, upperBand)) {
+        v.trend = 1;
+        v.prevLevel = upperBand;
+      } else {
+        // math.max / math.min give na when an argument is na
+        v.prevLevel = v.trend === 1 ? Math.max(v.prevLevel, lowerBand) : Math.min(v.prevLevel, upperBand);
+      }
+      const trend = v.trend;
+
+      s.plot0[b] = { time, value: fin(basis), color: cfg.colorBasis };
+      s.plot1[b] = { time, value: fin(v.prevLevel), color: trend === 1 ? cfg.colorBull : cfg.colorBear };
+      // fill(pBasis, pTrend, color = trend == 1 ? color.new(colorBull, 80) : color.new(colorBear, 80))
+      s.fill[b] = trend === 1 ? bullFill : bearFill;
+      if (cfg.colorBarTrend) s.barColors[b] = { time, color: trend === 1 ? bullBar : bearBar };
+      // buySignal = trend == 1, sellSignal = trend == -1
+      s.flags[0]![b] = trend === 1;
+      s.flags[1]![b] = trend === -1;
+      if (trend === 1) s.times[0]!.push(time as number);
+      if (trend === -1) s.times[1]!.push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Plots Background' }, colors: s.fill.slice() }],
+        barColors: cfg.colorBarTrend ? s.barColors.slice() : [],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EhlersAdaptiveTrendIndicatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<EhlersAdaptiveTrendIndicatorInputs> = {},
+): IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -172,6 +210,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const EhlersAdaptiveTrendIndicator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

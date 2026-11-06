@@ -12,7 +12,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MesaAdaptiveEhlersFlowInputs {
   /** Fast limit of the adaptive alpha */
@@ -68,87 +70,120 @@ const nz = (x: number) => (isNaN(x) ? 0 : x);
 const min = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.min(a, b));
 const max = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.max(a, b));
 
-export function calculate(bars: Bar[], inputs: Partial<MesaAdaptiveEhlersFlowInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface MesaRun extends BarRunState<Record<string, never>> {
+  mamaEma: ReturnType<typeof taStep.ema>;
+  famaEma: ReturnType<typeof taStep.ema>;
+  price: number[];
+  smooth: number[];
+  detrender: number[];
+  q1: number[];
+  i1: number[];
+  i2: number[];
+  q2: number[];
+  re: number[];
+  im: number[];
+  period: number[];
+  phase: number[];
+  alpha: number[];
+  mama: number[];
+  fama: number[];
+  plot0: Point[];
+  plot1: Point[];
+}
+
+// x[k] of a series (na before the first bar)
+const at = (x: number[], i: number) => (i >= 0 ? x[i]! : NaN);
+const hilbert = (x: number[], i: number, per1: number) =>
+  (0.0962 * x[i]! + 0.5769 * nz(at(x, i - 2)) - 0.5769 * nz(at(x, i - 4)) - 0.0962 * nz(at(x, i - 6)))
+  * (0.075 * nz(per1) + 0.54);
+
+function study(inputs: Partial<MesaAdaptiveEhlersFlowInputs>): BarStudy<MesaRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const { fastLimit, slowLimit } = cfg;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const price = bars.map((b) => (b.high + b.low) / 2);
-  const smooth: number[] = new Array(n);
-  const detrender: number[] = new Array(n);
-  const q1: number[] = new Array(n);
-  const i1: number[] = new Array(n);
-  const i2: number[] = new Array(n);
-  const q2: number[] = new Array(n);
-  const re: number[] = new Array(n);
-  const im: number[] = new Array(n);
-  const period: number[] = new Array(n);
-  const phase: number[] = new Array(n);
-  const alpha: number[] = new Array(n);
-  const mama: number[] = new Array(n);
-  const fama: number[] = new Array(n);
-  // x[k] of a series (na before the first bar)
-  const at = (x: number[], i: number) => (i >= 0 ? x[i] : NaN);
-  const hilbert = (x: number[], i: number, per1: number) =>
-    (0.0962 * x[i] + 0.5769 * nz(at(x, i - 2)) - 0.5769 * nz(at(x, i - 4)) - 0.0962 * nz(at(x, i - 6)))
-    * (0.075 * nz(per1) + 0.54);
-
-  for (let i = 0; i < n; i++) {
-    smooth[i] = (4 * price[i] + 3 * nz(at(price, i - 1)) + 2 * nz(at(price, i - 2)) + nz(at(price, i - 3))) / 10;
-    const per1 = at(period, i - 1);
-    detrender[i] = hilbert(smooth, i, per1);
-    q1[i] = hilbert(detrender, i, per1);
-    i1[i] = nz(at(detrender, i - 3));
-    const ji = hilbert(i1, i, per1);
-    const jq = hilbert(q1, i, per1);
-    // Phasor addition, then smoothing with the previous final values
-    i2[i] = 0.2 * (i1[i] - jq) + 0.8 * nz(at(i2, i - 1));
-    q2[i] = 0.2 * (q1[i] + ji) + 0.8 * nz(at(q2, i - 1));
-    // Homodyne discriminator
-    const i2p = nz(at(i2, i - 1));
-    const q2p = nz(at(q2, i - 1));
-    re[i] = 0.2 * (i2[i] * i2p + q2[i] * q2p) + 0.8 * nz(at(re, i - 1));
-    im[i] = 0.2 * (i2[i] * q2p - q2[i] * i2p) + 0.8 * nz(at(im, i - 1));
-    // var float period: keeps its previous value when not computed
-    let p = per1;
-    // 2 * pi / math.atan(im / re): a plain division (x / 0 is +/-infinity, then math.min / math.max clamp it)
-    if (nonZero(im[i]) && nonZero(re[i])) p = (2 * Math.PI) / Math.atan(im[i] / re[i]);
-    p = max(1.5, min(p, 50));
-    period[i] = 0.2 * p + 0.8 * nz(per1);
-
-    // math.atan(q1 / i1): with i1 = 0 (the first 3 bars, nz(detrender[3])) the result is +/-90 degrees, as
-    // atan(+/-infinity), not na
-    phase[i] = (Math.atan(q1[i] / i1[i]) * 180) / Math.PI;
-    let dp = nz(at(phase, i - 1)) - phase[i];
-    dp = max(1, min(dp, 50));
-    let a = fastLimit / dp; // dp is at least 1 here
-    a = max(slowLimit, min(a, fastLimit));
-    alpha[i] = a;
-    mama[i] = a * price[i] + (1 - a) * nz(at(mama, i - 1));
-    fama[i] = 0.5 * a * mama[i] + (1 - 0.5 * a) * nz(at(fama, i - 1));
-  }
-
-  const mamaSmooth = A(ta.ema(Series.fromArray(bars, mama), cfg.signalSmoothing));
-  const famaSmooth = A(ta.ema(Series.fromArray(bars, fama), cfg.signalSmoothing));
-
-  const colors = bars.map((b, i) => {
-    const bull = gt(mamaSmooth[i], famaSmooth[i]) && gt(b.close, mamaSmooth[i]);
-    const bear = lt(mamaSmooth[i], famaSmooth[i]) && lt(b.close, mamaSmooth[i]);
-    return bull ? BULL : bear ? BEAR : color.gray;
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: mamaSmooth[i], color: colors[i] })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: famaSmooth[i], color: String(color.new(colors[i], 50)) })),
+    init() {
+      const s: MesaRun = {
+        mamaEma: taStep.ema(cfg.signalSmoothing), famaEma: taStep.ema(cfg.signalSmoothing), price: [], smooth: [],
+        detrender: [], q1: [], i1: [], i2: [], q2: [], re: [], im: [], period: [], phase: [], alpha: [], mama: [],
+        fama: [], plot0: [], plot1: [], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.mamaEma, s.famaEma];
+      s.series = [
+        s.price, s.smooth, s.detrender, s.q1, s.i1, s.i2, s.q2, s.re, s.im, s.period, s.phase, s.alpha, s.mama, s.fama,
+        s.plot0, s.plot1,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const { smooth, detrender, q1, i1, i2, q2, re, im, period, phase, alpha, mama, fama } = s;
+      const price = (b.high + b.low) / 2;
+      s.price[i] = price;
+      const prices = s.price;
+      smooth[i] = (4 * price + 3 * nz(at(prices, i - 1)) + 2 * nz(at(prices, i - 2)) + nz(at(prices, i - 3))) / 10;
+      const per1 = at(period, i - 1);
+      detrender[i] = hilbert(smooth, i, per1);
+      q1[i] = hilbert(detrender, i, per1);
+      i1[i] = nz(at(detrender, i - 3));
+      const ji = hilbert(i1, i, per1);
+      const jq = hilbert(q1, i, per1);
+      // Phasor addition, then smoothing with the previous final values
+      i2[i] = 0.2 * (i1[i] - jq) + 0.8 * nz(at(i2, i - 1));
+      q2[i] = 0.2 * (q1[i] + ji) + 0.8 * nz(at(q2, i - 1));
+      // Homodyne discriminator
+      const i2p = nz(at(i2, i - 1));
+      const q2p = nz(at(q2, i - 1));
+      re[i] = 0.2 * (i2[i] * i2p + q2[i] * q2p) + 0.8 * nz(at(re, i - 1));
+      im[i] = 0.2 * (i2[i] * q2p - q2[i] * i2p) + 0.8 * nz(at(im, i - 1));
+      // var float period: keeps its previous value when not computed
+      let p = per1;
+      // 2 * pi / math.atan(im / re): a plain division (x / 0 is +/-infinity, then math.min / math.max clamp it)
+      if (nonZero(im[i]) && nonZero(re[i])) p = (2 * Math.PI) / Math.atan(im[i] / re[i]);
+      p = max(1.5, min(p, 50));
+      period[i] = 0.2 * p + 0.8 * nz(per1);
+
+      // math.atan(q1 / i1): with i1 = 0 (the first 3 bars, nz(detrender[3])) the result is +/-90 degrees, as
+      // atan(+/-infinity), not na
+      phase[i] = (Math.atan(q1[i] / i1[i]) * 180) / Math.PI;
+      let dp = nz(at(phase, i - 1)) - phase[i];
+      dp = max(1, min(dp, 50));
+      let a = fastLimit / dp; // dp is at least 1 here
+      a = max(slowLimit, min(a, fastLimit));
+      alpha[i] = a;
+      mama[i] = a * price + (1 - a) * nz(at(mama, i - 1));
+      fama[i] = 0.5 * a * mama[i] + (1 - 0.5 * a) * nz(at(fama, i - 1));
+
+      const mamaSmooth = s.mamaEma.step(mama[i]!);
+      const famaSmooth = s.famaEma.step(fama[i]!);
+      const bull = gt(mamaSmooth, famaSmooth) && gt(b.close, mamaSmooth);
+      const bear = lt(mamaSmooth, famaSmooth) && lt(b.close, mamaSmooth);
+      const c = bull ? BULL : bear ? BEAR : color.gray;
+      s.plot0[i] = { time: b.time as number, value: mamaSmooth, color: c };
+      s.plot1[i] = { time: b.time as number, value: famaSmooth, color: String(color.new(c, 50)) };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MesaAdaptiveEhlersFlowInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MesaAdaptiveEhlersFlowInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const MesaAdaptiveEhlersFlow = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

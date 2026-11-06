@@ -16,8 +16,10 @@
  * (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/ © alexgrover
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
 
 export interface GabrielsAndeanOscillatorInputs {
   envelopeType: 'Regular' | 'Double Smoothed';
@@ -86,16 +88,32 @@ const nz = (x: number, y = 0) => (Number.isFinite(x) ? x : y);
 const max = (...a: number[]) => (a.some((v) => Number.isNaN(v)) ? NaN : Math.max(...a));
 const min = (...a: number[]) => (a.some((v) => Number.isNaN(v)) ? NaN : Math.min(...a));
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<GabrielsAndeanOscillatorInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface AndeanVars {
+  up1: number; up2: number; dn1: number; dn2: number;
+  up12: number; up22: number; dn12: number; dn22: number;
+  /** bull, bear, the driver and the signal of the bar before (the crosses) */
+  pBull: number; pBear: number; pDriver: number; pSignal: number;
+}
+
+interface AndeanRun extends BarRunState<AndeanVars> {
+  atr: ReturnType<typeof taStep.atr> | null;
+  atrSma: WindowSma | null;
+  emas: ReturnType<typeof taStep.ema>[];
+  signal: ReturnType<typeof taStep.ema>;
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+}
+
+const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+
+function study(inputs: Partial<GabrielsAndeanOscillatorInputs>): BarStudy<AndeanRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { length, length1, length2, signalLength, breakOn, hilow, atrScale } = cfg;
   const regular = cfg.envelopeType === 'Regular';
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
 
   // var alpha = 2 / (length + 1): Pine v6 int / int keeps the fraction
   const alpha = 2 / (length + 1);
@@ -105,110 +123,159 @@ export function calculate(
   const a = regular ? alpha : alpha0;
   const a2 = regular ? alpha2 : alpha22;
 
-  // Raw components: dev of the close / open envelopes (vBull / vBear) and of the high / low envelopes (vBull2 / vBear2)
-  const vBull: number[] = new Array(n);
-  const vBear: number[] = new Array(n);
-  const vBull2: number[] = new Array(n);
-  const vBear2: number[] = new Array(n);
-  // up1[1] ... is na on bar 0 (the var history starts on bar 0), so math.max(...) is na and nz(..., C) gives C
-  let up1 = NaN;
-  let up2 = NaN;
-  let dn1 = NaN;
-  let dn2 = NaN;
-  // up12[1] ... are read through nz(): 0 on bar 0
-  let up12 = NaN;
-  let up22 = NaN;
-  let dn12 = NaN;
-  let dn22 = NaN;
-  for (let i = 0; i < n; i++) {
-    const C = bars[i].close;
-    const O = bars[i].open;
-    const nUp1 = nz(max(C, O, up1 - (up1 - C) * a), C);
-    const nUp2 = nz(max(C * C, O * O, up2 - (up2 - C * C) * a), C * C);
-    const nDn1 = nz(min(C, O, dn1 + (C - dn1) * a), C);
-    const nDn2 = nz(min(C * C, O * O, dn2 + (C * C - dn2) * a), C * C);
-    up1 = nUp1;
-    up2 = nUp2;
-    dn1 = nDn1;
-    dn2 = nDn2;
-
-    const C2 = bars[i].high;
-    const O2 = bars[i].low;
-    const p12 = nz(up12);
-    const p22 = nz(up22);
-    const q12 = nz(dn12);
-    const q22 = nz(dn22);
-    up12 = nz(max(C2, O2, p12 - (p12 - C2) * a2), C2);
-    // "Double Smoothed" up22: nz(math.max(C2 * C2, O2 * O2, nz(up22[1]) - (nz(up22[1]) - C2 * C2))) (no alpha)
-    up22 = regular
-      ? nz(max(C2 * C2, O2 * O2, p22 - (p22 - C2 * C2) * alpha2), C2 * C2)
-      : nz(max(C2 * C2, O2 * O2, p22 - (p22 - C2 * C2)));
-    dn12 = nz(min(C2, O2, q12 + (C2 - q12) * a2), C2);
-    dn22 = nz(min(C2 * C2, O2 * O2, q22 + (C2 * C2 - q22) * a2), C2 * C2);
-
-    vBull[i] = Math.sqrt(dn2 - dn1 * dn1);
-    vBear[i] = Math.sqrt(up2 - up1 * up1);
-    vBull2[i] = Math.sqrt(dn22 - dn12 * dn12);
-    vBear2[i] = Math.sqrt(up22 - up12 * up12);
-  }
-
-  // The envelope type and the ATR switch are inputs: each ternary takes the same branch on every bar
-  let bull: number[];
-  let bear: number[];
-  let bull2: number[];
-  let bear2: number[];
-  if (regular) {
-    const atr = atrScale ? A(ta.atr(bars, length)) : null;
-    const scale = (v: number[]) => v.map((x, i) => (atr ? x / atr[i] : x / 1));
-    bull = scale(vBull);
-    bear = scale(vBear);
-    bull2 = scale(vBull2);
-    bear2 = scale(vBear2);
-  } else {
-    const den = atrScale ? A(ta.sma(ta.atr(bars, length1), length2)) : null;
-    const smooth = (v: number[]) => A(ta.ema(S(v), length2)).map((x, i) => (den ? x / den[i] : x / 1));
-    bull = smooth(vBull);
-    bear = smooth(vBear);
-    bull2 = smooth(vBull2);
-    bear2 = smooth(vBear2);
-  }
-
-  const signal = A(ta.ema(S(bull.map((b, i) => max(b, bear[i]))), signalLength));
-
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const t = (i: number) => bars[i].time;
-  const plots = {
-    plot0: bars.map((_b, i) => ({ time: t(i), value: fin(bull[i]) })),
-    plot1: bars.map((_b, i) => ({ time: t(i), value: fin(bear[i]) })),
-    // color = bull > bull2 ? color.rgb(242, 54, 70, 30) : color.rgb(8, 153, 129, 30)
-    plot2: bars.map((_b, i) => ({
-      time: t(i), value: hilow ? fin(bull2[i]) : NaN, color: gt(bull[i], bull2[i]) ? RED_30 : GREEN_30,
-    })),
-    plot3: bars.map((_b, i) => ({
-      time: t(i), value: hilow ? fin(bear2[i]) : NaN, color: gt(bear[i], bear2[i]) ? RED_30 : GREEN_30,
-    })),
-    plot4: bars.map((_b, i) => ({ time: t(i), value: fin(signal[i]) })),
-    // math.sqrt(bull - bear): na when bear > bull
-    plot5: bars.map((_b, i) => ({ time: t(i), value: breakOn ? fin(Math.sqrt(bull[i] - bear[i])) : NaN })),
-  };
-
-  // Alerts: crosses of bull / bear, of the driver (larger component) and the signal, of bull - bear and 0
-  const bullCrossUp = crossedOver(bull, bear);
-  const bearCrossDn = crossedUnder(bull, bear);
-  const driver = bull.map((b, i) => max(b, bear[i]));
-  const sigUp = crossedOver(driver, signal);
-  const sigDn = crossedUnder(driver, signal);
-  const diff = bull.map((b, i) => b - bear[i]);
-  const breakUp = crossedOver(diff, 0).map((f) => breakOn && f);
-  const breakDn = crossedUnder(diff, 0).map((f) => breakOn && f);
-  const bullConfirm = bullCrossUp.map((f, i) => hilow && f && gt(bull[i], bull2[i]));
-  const bearConfirm = bearCrossDn.map((f, i) => hilow && f && gt(bear[i], bear2[i]));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    alerts: alertStates(alertConditions, bars, [bullCrossUp, bearCrossDn, sigUp, sigDn, breakUp, breakDn, bullConfirm, bearConfirm]),
+    init() {
+      const s: AndeanRun = {
+        atr: atrScale ? taStep.atr(regular ? length : length1) : null,
+        atrSma: atrScale && !regular ? new WindowSma(length2) : null,
+        emas: regular ? [] : [taStep.ema(length2), taStep.ema(length2), taStep.ema(length2), taStep.ema(length2)],
+        signal: taStep.ema(signalLength),
+        plots: Array.from({ length: 6 }, () => []),
+        flags: Array.from({ length: 8 }, () => []),
+        times: Array.from({ length: 8 }, () => []),
+        steps: [],
+        // up1[1] ... is na on bar 0 (the var history starts on bar 0), so math.max(...) is na and nz(..., C) gives C;
+        // up12[1] ... are read through nz(): 0 on bar 0
+        vars: {
+          up1: NaN, up2: NaN, dn1: NaN, dn2: NaN, up12: NaN, up22: NaN, dn12: NaN, dn22: NaN,
+          pBull: NaN, pBear: NaN, pDriver: NaN, pSignal: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [...(s.atr ? [s.atr] : []), ...(s.atrSma ? [s.atrSma] : []), ...s.emas, s.signal];
+      s.lists = [...s.times];
+      s.series = [...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const time = bars[i].time;
+      // Raw components: dev of the close / open envelopes (vBull / vBear) and of the high / low envelopes (vBull2 / vBear2)
+      const C = bars[i].close;
+      const O = bars[i].open;
+      const nUp1 = nz(max(C, O, v.up1 - (v.up1 - C) * a), C);
+      const nUp2 = nz(max(C * C, O * O, v.up2 - (v.up2 - C * C) * a), C * C);
+      const nDn1 = nz(min(C, O, v.dn1 + (C - v.dn1) * a), C);
+      const nDn2 = nz(min(C * C, O * O, v.dn2 + (C * C - v.dn2) * a), C * C);
+      v.up1 = nUp1;
+      v.up2 = nUp2;
+      v.dn1 = nDn1;
+      v.dn2 = nDn2;
+
+      const C2 = bars[i].high;
+      const O2 = bars[i].low;
+      const p12 = nz(v.up12);
+      const p22 = nz(v.up22);
+      const q12 = nz(v.dn12);
+      const q22 = nz(v.dn22);
+      v.up12 = nz(max(C2, O2, p12 - (p12 - C2) * a2), C2);
+      // "Double Smoothed" up22: nz(math.max(C2 * C2, O2 * O2, nz(up22[1]) - (nz(up22[1]) - C2 * C2))) (no alpha)
+      v.up22 = regular
+        ? nz(max(C2 * C2, O2 * O2, p22 - (p22 - C2 * C2) * alpha2), C2 * C2)
+        : nz(max(C2 * C2, O2 * O2, p22 - (p22 - C2 * C2)));
+      v.dn12 = nz(min(C2, O2, q12 + (C2 - q12) * a2), C2);
+      v.dn22 = nz(min(C2 * C2, O2 * O2, q22 + (C2 * C2 - q22) * a2), C2 * C2);
+
+      const vBull = Math.sqrt(v.dn2 - v.dn1 * v.dn1);
+      const vBear = Math.sqrt(v.up2 - v.up1 * v.up1);
+      const vBull2 = Math.sqrt(v.dn22 - v.dn12 * v.dn12);
+      const vBear2 = Math.sqrt(v.up22 - v.up12 * v.up12);
+
+      // The envelope type and the ATR switch are inputs: each ternary takes the same branch on every bar
+      let bull: number;
+      let bear: number;
+      let bull2: number;
+      let bear2: number;
+      if (regular) {
+        if (s.atr) {
+          const atr = s.atr.step(bars[i].high, bars[i].low, C);
+          bull = vBull / atr;
+          bear = vBear / atr;
+          bull2 = vBull2 / atr;
+          bear2 = vBear2 / atr;
+        } else {
+          bull = vBull / 1;
+          bear = vBear / 1;
+          bull2 = vBull2 / 1;
+          bear2 = vBear2 / 1;
+        }
+      } else {
+        const e = s.emas;
+        bull = e[0]!.step(vBull);
+        bear = e[1]!.step(vBear);
+        bull2 = e[2]!.step(vBull2);
+        bear2 = e[3]!.step(vBear2);
+        if (s.atr) {
+          const den = s.atrSma!.step(s.atr.step(bars[i].high, bars[i].low, C));
+          bull /= den;
+          bear /= den;
+          bull2 /= den;
+          bear2 /= den;
+        } else {
+          bull /= 1;
+          bear /= 1;
+          bull2 /= 1;
+          bear2 /= 1;
+        }
+      }
+
+      const driver = max(bull, bear);
+      const signal = s.signal.step(driver);
+
+      const p = s.plots;
+      p[0]![i] = { time, value: fin(bull) };
+      p[1]![i] = { time, value: fin(bear) };
+      // color = bull > bull2 ? color.rgb(242, 54, 70, 30) : color.rgb(8, 153, 129, 30)
+      p[2]![i] = { time, value: hilow ? fin(bull2) : NaN, color: gt(bull, bull2) ? RED_30 : GREEN_30 };
+      p[3]![i] = { time, value: hilow ? fin(bear2) : NaN, color: gt(bear, bear2) ? RED_30 : GREEN_30 };
+      p[4]![i] = { time, value: fin(signal) };
+      // math.sqrt(bull - bear): na when bear > bull
+      p[5]![i] = { time, value: breakOn ? fin(Math.sqrt(bull - bear)) : NaN };
+
+      // Alerts: crosses of bull / bear, of the driver (larger component) and the signal, of bull - bear and 0
+      // (ta.crossover / ta.crossunder: exact comparisons with the values of the bar before, na on bar 0)
+      const diff = bull - bear;
+      const pDiff = v.pBull - v.pBear;
+      const bullCrossUp = bull > bear && v.pBull <= v.pBear;
+      const bearCrossDn = bull < bear && v.pBull >= v.pBear;
+      const fl = s.flags;
+      fl[0]![i] = bullCrossUp;
+      fl[1]![i] = bearCrossDn;
+      fl[2]![i] = driver > signal && v.pDriver <= v.pSignal;
+      fl[3]![i] = driver < signal && v.pDriver >= v.pSignal;
+      fl[4]![i] = breakOn && diff > 0 && pDiff <= 0;
+      fl[5]![i] = breakOn && diff < 0 && pDiff >= 0;
+      fl[6]![i] = hilow && bullCrossUp && gt(bull, bull2);
+      fl[7]![i] = hilow && bearCrossDn && gt(bear, bear2);
+      v.pBull = bull;
+      v.pBear = bear;
+      v.pDriver = driver;
+      v.pSignal = signal;
+      for (let k = 0; k < 8; k++) if (fl[k]![i]) s.times[k]!.push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((pl, k) => { plots[`plot${k}`] = pl.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GabrielsAndeanOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<GabrielsAndeanOscillatorInputs> = {},
+): IndicatorResult & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -257,6 +324,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const GabrielsAndeanOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

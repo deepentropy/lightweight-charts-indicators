@@ -12,9 +12,11 @@
  * Original notice: © ArisCodes
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TenkanCloudSignalsInputs {
   /** Tenkan length */
@@ -103,23 +105,41 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
  * batch 5 (adaptive-ml-trailing-stop): the source history is a ring of len + 1 slots indexed by bar, written only
  * on the bars where the call runs (a slot never written is skipped); the extreme is kept with its bar and replaced
  * by a value that passes it; the window of the last len bars is scanned again when the extreme is len bars old (the
- * oldest bar wins a tie); an na source resets the extreme and returns na; na before bar len - 1.
+ * oldest bar wins a tie); an na source resets the extreme and returns na; na before bar len - 1. Stepped on a bar,
+ * kept when the bar is committed (live runs).
  */
-function pineExtreme(len: number, isLow: boolean) {
-  const ring = len + 1;
-  const slot: number[] = new Array(ring).fill(NaN);
-  let ext = NaN;
-  let extBar = -1;
-  return (bar: number, x: number): number => {
-    slot[bar % ring] = x;
+class PineExtreme {
+  private readonly ring: number;
+  private readonly slot: number[];
+  private ext = NaN;
+  private extBar = -1;
+  private stepped = false;
+  private pBar = 0;
+  private pX = NaN;
+  private pExt = NaN;
+  private pExtBar = -1;
+
+  constructor(private readonly len: number, private readonly isLow: boolean) {
+    this.ring = len + 1;
+    this.slot = new Array(this.ring).fill(NaN);
+  }
+
+  step(bar: number, x: number): number {
+    const { len, isLow, ring, slot } = this;
+    this.stepped = true;
+    this.pBar = bar;
+    this.pX = x;
+    let ext = this.ext;
+    let extBar = this.extBar;
     if (isNaN(x)) {
-      ext = NaN;
+      this.pExt = NaN;
+      this.pExtBar = extBar;
       return NaN;
     }
     if (isNaN(ext) || bar - extBar >= len) {
       ext = NaN;
       for (let k = 0; k < len && bar - k >= 0; k++) {
-        const v = slot[(bar - k) % ring];
+        const v = k === 0 ? x : slot[(bar - k) % ring];
         if (!isNaN(v) && (isNaN(ext) || (isLow ? v <= ext : v >= ext))) {
           ext = v;
           extBar = bar - k;
@@ -129,98 +149,148 @@ function pineExtreme(len: number, isLow: boolean) {
       ext = x;
       extBar = bar;
     }
+    this.pExt = ext;
+    this.pExtBar = extBar;
     return bar < len - 1 ? NaN : ext;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.slot[this.pBar % this.ring] = this.pX;
+    this.ext = this.pExt;
+    this.extBar = this.pExtBar;
+  }
+}
+
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface TenkanVars {
+  /** ta.crossover / ta.crossunder compare with the last bar where both values were not na */
+  prevK: number;
+  prevB: number;
+}
+
+interface TenkanRun extends BarRunState<TenkanVars> {
+  mids: { hh: WindowExtreme; ll: WindowExtreme }[];
+  lowest: PineExtreme;
+  highest: PineExtreme;
+  spanA: number[];
+  spanB: number[];
+  crossUp: boolean[];
+  crossDown: boolean[];
+  plot0: Point[];
+  plot1: Point[];
+  cloud: string[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<TenkanCloudSignalsInputs>): BarStudy<TenkanRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const k = cfg.displace;
+  const c = cfg.confirmBars;
+  return {
+    init() {
+      // donchianMid(len) = (ta.highest(high, len) + ta.lowest(low, len)) / 2: Tenkan, Kijun, Span B
+      const mids = [cfg.tenkanLen, cfg.kijunLen, cfg.spanBLen].map((len) => ({
+        hh: new WindowExtreme(false, len), ll: new WindowExtreme(true, len),
+      }));
+      // Signals
+      const lowest = new PineExtreme(c, true);
+      const highest = new PineExtreme(c, false);
+      const s: TenkanRun = {
+        mids, lowest, highest, spanA: [], spanB: [], crossUp: [], crossDown: [], plot0: [], plot1: [], cloud: [],
+        markers: [],
+        steps: [...mids.flatMap((m) => [m.hh, m.ll]), lowest, highest], vars: { prevK: NaN, prevB: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.spanA, s.spanB, s.crossUp, s.crossDown, s.plot0, s.plot1, s.cloud];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const mid = (m: TenkanRun['mids'][number]) => (m.hh.step(b.high) + m.ll.step(b.low)) / 2.0;
+      const tenkan = mid(s.mids[0]);
+      const kj = mid(s.mids[1]);
+      const spanB = mid(s.mids[2]);
+      const spanA = (tenkan + kj) / 2.0;
+      s.spanA[i] = spanA;
+      s.spanB[i] = spanB;
+      // spanB_asPlottedNow = displace > 0 ? spanB_now[displace] : spanB_now
+      const sb = k > 0 ? (i - k >= 0 ? s.spanB[i - k] : NaN) : spanB;
+
+      const both = !isNaN(kj) && !isNaN(sb);
+      // compared exactly (no 1e-10 tolerance; na compares false)
+      s.crossUp[i] = both && kj > sb && v.prevK <= v.prevB;
+      s.crossDown[i] = both && kj < sb && v.prevK >= v.prevB;
+      if (both) {
+        v.prevK = kj;
+        v.prevB = sb;
+      }
+      const aboveNow = gt(kj, sb);
+      const belowNow = lt(kj, sb);
+      // aboveConfirmed = confirmBars == 1 ? aboveNow : (aboveNow and ta.lowest(kijun - spanB_asPlottedNow, confirmBars) > 0)
+      // the lazy `and` runs ta.lowest / ta.highest only on the bars where aboveNow / belowNow is true
+      const aboveConfirmed = c === 1 ? aboveNow : aboveNow && gt(s.lowest.step(i, kj - sb), 0);
+      const belowConfirmed = c === 1 ? belowNow : belowNow && lt(s.highest.step(i, kj - sb), 0);
+      // buySignal = showSignals and crossUp[confirmBars - 1] and aboveConfirmed
+      const j = i - (c - 1);
+      const buySignal = cfg.showSignals && j >= 0 && s.crossUp[j] && aboveConfirmed;
+      const sellSignal = cfg.showSignals && j >= 0 && s.crossDown[j] && belowConfirmed;
+      const t = b.time;
+      if (buySignal) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'flag', color: String(color.new(color.lime, 0)), text: 'BUY',
+          textColor: color.black, size: 'small' });
+      }
+      if (sellSignal) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'flag', color: String(color.new(color.red, 0)), text: 'SELL',
+          textColor: color.white, size: 'small' });
+      }
+      s.plot0[i] = { time: t, value: cfg.showTenkan ? tenkan : NaN, color: cfg.tenkanCol };
+      s.plot1[i] = { time: t, value: cfg.showKijun ? kj : NaN, color: cfg.kijunCol };
+      // cloudBull = spanA_now >= spanB_now; fill colour of bar i goes with the plot points of bar i
+      s.cloud[i] = cfg.showCloud ? (ge(spanA, spanB) ? cfg.bullFill : cfg.bearFill) : 'transparent';
+    },
+    result(s, bars) {
+      // plot(..., offset = displace): the value of bar i is drawn on bar i + displace (future bars with barTime,
+      // from the last bar: built from the per-bar values on each update)
+      const interval = barInterval(bars);
+      const shifted = (vals: number[], col: string) => bars.map((_b, i) => ({
+        time: barTime(bars, i + k, interval), value: vals[i], color: col,
+      }));
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plot0.slice(),
+          plot1: s.plot1.slice(),
+          plot2: shifted(s.spanA, cfg.spanACol),
+          plot3: shifted(s.spanB, cfg.spanBCol),
+        },
+        fills: [{ plot1: 'plot2', plot2: 'plot3', options: { title: 'Cloud Fill' }, colors: s.cloud.slice() }],
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TenkanCloudSignalsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(
   bars: Bar[],
   inputs: Partial<TenkanCloudSignalsInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const high = Series.fromArray(bars, bars.map((b) => b.high));
-  const low = Series.fromArray(bars, bars.map((b) => b.low));
-  // donchianMid(len) = (ta.highest(high, len) + ta.lowest(low, len)) / 2
-  const donchianMid = (len: number) => {
-    const hh = A(ta.highest(high, len));
-    const ll = A(ta.lowest(low, len));
-    return hh.map((h, i) => (h + ll[i]) / 2.0);
-  };
-  const tenkan = donchianMid(cfg.tenkanLen);
-  const kijun = donchianMid(cfg.kijunLen);
-  const spanA = tenkan.map((t, i) => (t + kijun[i]) / 2.0);
-  const spanB = donchianMid(cfg.spanBLen);
-  const k = cfg.displace;
-  // spanB_asPlottedNow = displace > 0 ? spanB_now[displace] : spanB_now
-  const spanBNow = spanB.map((_v, i) => (k > 0 ? (i - k >= 0 ? spanB[i - k] : NaN) : spanB[i]));
-
-  // Signals
-  const c = cfg.confirmBars;
-  const lowest = pineExtreme(c, true);
-  const highest = pineExtreme(c, false);
-  const crossUp: boolean[] = new Array(n).fill(false);
-  const crossDown: boolean[] = new Array(n).fill(false);
-  const markers: MarkerData[] = [];
-  // ta.crossover / ta.crossunder compare with the last bar where both values were not na
-  let prevK = NaN;
-  let prevB = NaN;
-  for (let i = 0; i < n; i++) {
-    const kj = kijun[i];
-    const sb = spanBNow[i];
-    const both = !isNaN(kj) && !isNaN(sb);
-    // compared exactly (no 1e-10 tolerance; na compares false)
-    crossUp[i] = both && kj > sb && prevK <= prevB;
-    crossDown[i] = both && kj < sb && prevK >= prevB;
-    if (both) {
-      prevK = kj;
-      prevB = sb;
-    }
-    const aboveNow = gt(kj, sb);
-    const belowNow = lt(kj, sb);
-    // aboveConfirmed = confirmBars == 1 ? aboveNow : (aboveNow and ta.lowest(kijun - spanB_asPlottedNow, confirmBars) > 0)
-    // the lazy `and` runs ta.lowest / ta.highest only on the bars where aboveNow / belowNow is true
-    const aboveConfirmed = c === 1 ? aboveNow : aboveNow && gt(lowest(i, kj - sb), 0);
-    const belowConfirmed = c === 1 ? belowNow : belowNow && lt(highest(i, kj - sb), 0);
-    // buySignal = showSignals and crossUp[confirmBars - 1] and aboveConfirmed
-    const j = i - (c - 1);
-    const buySignal = cfg.showSignals && j >= 0 && crossUp[j] && aboveConfirmed;
-    const sellSignal = cfg.showSignals && j >= 0 && crossDown[j] && belowConfirmed;
-    const t = bars[i].time;
-    if (buySignal) {
-      markers.push({ time: t, position: 'belowBar', shape: 'flag', color: String(color.new(color.lime, 0)), text: 'BUY',
-        textColor: color.black, size: 'small' });
-    }
-    if (sellSignal) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'flag', color: String(color.new(color.red, 0)), text: 'SELL',
-        textColor: color.white, size: 'small' });
-    }
-  }
-
-  // plot(..., offset = displace): the value of bar i is drawn on bar i + displace (future bars with barTime)
-  const interval = barInterval(bars);
-  const shifted = (vals: number[], col: string) => bars.map((_b, i) => ({
-    time: barTime(bars, i + k, interval), value: vals[i], color: col,
-  }));
-  // cloudBull = spanA_now >= spanB_now; fill colour of bar i goes with the plot points of bar i
-  const cloud = spanA.map((a, i) => (cfg.showCloud ? (ge(a, spanB[i]) ? cfg.bullFill : cfg.bearFill) : 'transparent'));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: cfg.showTenkan ? tenkan[i] : NaN, color: cfg.tenkanCol })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: cfg.showKijun ? kijun[i] : NaN, color: cfg.kijunCol })),
-      plot2: shifted(spanA, cfg.spanACol),
-      plot3: shifted(spanB, cfg.spanBCol),
-    },
-    fills: [{ plot1: 'plot2', plot2: 'plot3', options: { title: 'Cloud Fill' }, colors: cloud }],
-    markers,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const TenkanCloudSignals = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

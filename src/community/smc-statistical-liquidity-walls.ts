@@ -14,8 +14,10 @@
  * (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/ © PhenLabs
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SmcStatisticalLiquidityWallsInputs {
   /** Range period (SMA / stdev length) */
@@ -90,74 +92,105 @@ function invertedSigmoid(x: number, k: number, x0: number, startA: number, endA:
   return Math.min(Math.max(alpha, 0), 100);
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<SmcStatisticalLiquidityWallsInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface SmcRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  dev: WindowStdev;
+  tr: ReturnType<typeof taStep.tr>;
+  /** basis, u1, u2, u3, l1, l2, l3 */
+  values: number[][];
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<SmcStatisticalLiquidityWallsInputs>): BarStudy<SmcRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const src = getSourceSeries(bars, cfg.src);
-  const basis = A(ta.sma(src, cfg.len));
-  const dev = A(ta.stdev(src, cfg.len));
-  const tr = A(ta.tr(bars, false));
-
-  const zones: number[][] = [[], [], [], [], [], []];
-  for (let i = 0; i < n; i++) {
-    // safe_dev = dev == 0 ? ta.tr : dev
-    const safeDev = eq(dev[i], 0) ? tr[i] : dev[i];
-    zones[0][i] = basis[i] + safeDev;
-    zones[1][i] = basis[i] + safeDev * 2;
-    zones[2][i] = basis[i] + safeDev * 3;
-    zones[3][i] = basis[i] - safeDev;
-    zones[4][i] = basis[i] - safeDev * 2;
-    zones[5][i] = basis[i] - safeDev * 3;
-  }
-  const [u1, u2, u3, l1, l2, l3] = zones;
-
+  const source = barSource(cfg.src);
   // Transparency at 0, 1, 2, 3 deviations
   const a = [0, 1, 2, 3].map((x) => invertedSigmoid(x, cfg.steepness, cfg.midpoint, cfg.centerAlpha, cfg.edgeAlpha));
   const cp = a.map((t) => String(color.new(cfg.colPrem, t)));
   const cd = a.map((t) => String(color.new(cfg.colDisc, t)));
-
-  const t = (i: number) => bars[i].time;
-  const line = (v: number[], c?: string) => bars.map((_b, i) => ({ time: t(i), value: v[i], ...(c ? { color: c } : {}) }));
-  const plots = {
-    plot0: line(basis, cfg.colEq),
-    plot1: line(u1),
-    plot2: line(u2),
-    plot3: line(u3),
-    plot4: line(l1),
-    plot5: line(l2),
-    plot6: line(l3),
-  };
-
-  // fill(p1, p2, top_color, bottom_color) without top_value / bottom_value: the gradient goes from the upper plot
-  // (top_color) to the lower plot (bottom_color); the upper zones are above the basis, the lower zones below it
-  const same = (c: string) => new Array<string>(n).fill(c);
-  const gradient = (top: number[], bottom: number[], topColor: string, bottomColor: string) => ({
-    topValue: top.slice(), bottomValue: bottom.slice(), topColor: same(topColor), bottomColor: same(bottomColor),
-  });
-  const fills = [
-    { plot1: 'plot0', plot2: 'plot1', options: { title: 'Prem Wall 1' }, gradient: gradient(u1, basis, cp[1], cp[0]) },
-    { plot1: 'plot1', plot2: 'plot2', options: { title: 'Prem Wall 2' }, gradient: gradient(u2, u1, cp[2], cp[1]) },
-    { plot1: 'plot2', plot2: 'plot3', options: { title: 'Prem Wall 3' }, gradient: gradient(u3, u2, cp[3], cp[2]) },
-    { plot1: 'plot0', plot2: 'plot4', options: { title: 'Disc Wall 1' }, gradient: gradient(basis, l1, cd[0], cd[1]) },
-    { plot1: 'plot4', plot2: 'plot5', options: { title: 'Disc Wall 2' }, gradient: gradient(l1, l2, cd[1], cd[2]) },
-    { plot1: 'plot5', plot2: 'plot6', options: { title: 'Disc Wall 3' }, gradient: gradient(l2, l3, cd[2], cd[3]) },
-  ];
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    // alertcondition(high >= u2, 'Hit Premium Wall') / alertcondition(low <= l2, 'Hit Discount Wall')
-    alerts: alertStates(alertConditions, bars, [
-      bars.map((b, i) => ge(b.high, u2[i])),
-      bars.map((b, i) => le(b.low, l2[i])),
-    ]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: SmcRun = {
+        sma: new WindowSma(cfg.len), dev: new WindowStdev(cfg.len), tr: taStep.tr(false),
+        values: Array.from({ length: 7 }, () => []), plots: Array.from({ length: 7 }, () => []),
+        flags: [[], []], times: [[], []], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.sma, s.dev, s.tr];
+      s.lists = s.times;
+      s.series = [...s.values, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = source(b);
+      const basis = s.sma.step(v);
+      const dev = s.dev.step(v);
+      const tr = s.tr.step(b.high, b.low, b.close);
+      // safe_dev = dev == 0 ? ta.tr : dev
+      const safeDev = eq(dev, 0) ? tr : dev;
+      const vals = s.values;
+      vals[0][i] = basis;
+      vals[1][i] = basis + safeDev;
+      vals[2][i] = basis + safeDev * 2;
+      vals[3][i] = basis + safeDev * 3;
+      vals[4][i] = basis - safeDev;
+      vals[5][i] = basis - safeDev * 2;
+      vals[6][i] = basis - safeDev * 3;
+      const time = b.time;
+      s.plots[0][i] = { time, value: basis, ...(cfg.colEq ? { color: cfg.colEq } : {}) };
+      for (let k = 1; k < 7; k++) s.plots[k][i] = { time, value: vals[k][i] };
+      // alertcondition(high >= u2, 'Hit Premium Wall') / alertcondition(low <= l2, 'Hit Discount Wall')
+      const prem = ge(b.high, vals[2][i]);
+      const disc = le(b.low, vals[5][i]);
+      s.flags[0][i] = prem;
+      s.flags[1][i] = disc;
+      if (prem) s.times[0].push(time as number);
+      if (disc) s.times[1].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const [basis, u1, u2, u3, l1, l2, l3] = s.values;
+      const p = s.plots;
+      // fill(p1, p2, top_color, bottom_color) without top_value / bottom_value: the gradient goes from the upper plot
+      // (top_color) to the lower plot (bottom_color); the upper zones are above the basis, the lower zones below it
+      const same = (c: string) => new Array<string>(n).fill(c);
+      const gradient = (top: number[], bottom: number[], topColor: string, bottomColor: string) => ({
+        topValue: top.slice(), bottomValue: bottom.slice(), topColor: same(topColor), bottomColor: same(bottomColor),
+      });
+      const fills = [
+        { plot1: 'plot0', plot2: 'plot1', options: { title: 'Prem Wall 1' }, gradient: gradient(u1, basis, cp[1], cp[0]) },
+        { plot1: 'plot1', plot2: 'plot2', options: { title: 'Prem Wall 2' }, gradient: gradient(u2, u1, cp[2], cp[1]) },
+        { plot1: 'plot2', plot2: 'plot3', options: { title: 'Prem Wall 3' }, gradient: gradient(u3, u2, cp[3], cp[2]) },
+        { plot1: 'plot0', plot2: 'plot4', options: { title: 'Disc Wall 1' }, gradient: gradient(basis, l1, cd[0], cd[1]) },
+        { plot1: 'plot4', plot2: 'plot5', options: { title: 'Disc Wall 2' }, gradient: gradient(l1, l2, cd[1], cd[2]) },
+        { plot1: 'plot5', plot2: 'plot6', options: { title: 'Disc Wall 3' }, gradient: gradient(l2, l3, cd[2], cd[3]) },
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(), plot6: p[6].slice(),
+        },
+        fills,
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SmcStatisticalLiquidityWallsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SmcStatisticalLiquidityWallsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -168,6 +201,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const SmcStatisticalLiquidityWalls = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

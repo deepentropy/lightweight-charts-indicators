@@ -8,8 +8,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData, MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 // The Pine script has no inputs
 export interface EmaInflectionZonesKoraxInputs {}
@@ -33,57 +35,84 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] };
+type Point = { time: number; value: number };
+
+interface KoraxRun extends BarRunState<{ prevA: number; prevB: number }> {
+  ema12: ReturnType<typeof taStep.ema>;
+  ema26: ReturnType<typeof taStep.ema>;
+  plot0: Point[];
+  plot1: Point[];
+  bgColors: BgColorData[];
+  markers: MarkerData[];
+}
+
+const bullBg = String(color.new(color.green, 85));
+const bearBg = String(color.new(color.red, 85));
+
+function study(): BarStudy<KoraxRun, Result> {
+  return {
+    init() {
+      const s: KoraxRun = {
+        ema12: taStep.ema(12), ema26: taStep.ema(26), plot0: [], plot1: [], bgColors: [], markers: [],
+        // ta.crossover / ta.crossunder compare exactly, with the last bar where both values were not na
+        steps: [], vars: { prevA: NaN, prevB: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.ema12, s.ema26];
+      s.lists = [s.bgColors, s.markers];
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const time = bars[i].time;
+      const a = s.ema12.step(bars[i].close);
+      const b = s.ema26.step(bars[i].close);
+      const valid = !isNaN(a) && !isNaN(b);
+      const bullCross = valid && !isNaN(v.prevA) && a > b && v.prevA <= v.prevB;
+      const bearCross = valid && !isNaN(v.prevA) && a < b && v.prevA >= v.prevB;
+      if (valid) {
+        v.prevA = a;
+        v.prevB = b;
+      }
+      // bgcolor(bullishArea ? color.new(color.green, 85) : na); bgcolor(bearishArea ? color.new(color.red, 85) : na)
+      if (gt(a, b)) s.bgColors.push({ time, color: bullBg });
+      else if (gt(b, a)) s.bgColors.push({ time, color: bearBg });
+      if (bullCross) {
+        s.markers.push({ time, position: 'belowBar', shape: 'circle', color: color.green, size: 'small' });
+      }
+      if (bearCross) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'circle', color: color.red, size: 'small' });
+      }
+      s.plot0[i] = { time, value: a };
+      s.plot1[i] = { time, value: b };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<EmaInflectionZonesKoraxInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
 export function calculate(
   bars: Bar[],
   _inputs: Partial<EmaInflectionZonesKoraxInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-  const ema12 = A(ta.ema(close, 12));
-  const ema26 = A(ta.ema(close, 26));
-
-  const bullBg = String(color.new(color.green, 85));
-  const bearBg = String(color.new(color.red, 85));
-  const bgColors: BgColorData[] = [];
-  const markers: MarkerData[] = [];
-  // ta.crossover / ta.crossunder compare exactly, with the last bar where both values were not na
-  let prevA = NaN;
-  let prevB = NaN;
-  for (let i = 0; i < n; i++) {
-    const a = ema12[i];
-    const b = ema26[i];
-    const valid = !isNaN(a) && !isNaN(b);
-    const bullCross = valid && !isNaN(prevA) && a > b && prevA <= prevB;
-    const bearCross = valid && !isNaN(prevA) && a < b && prevA >= prevB;
-    if (valid) {
-      prevA = a;
-      prevB = b;
-    }
-    // bgcolor(bullishArea ? color.new(color.green, 85) : na); bgcolor(bearishArea ? color.new(color.red, 85) : na)
-    if (gt(a, b)) bgColors.push({ time: bars[i].time, color: bullBg });
-    else if (gt(b, a)) bgColors.push({ time: bars[i].time, color: bearBg });
-    if (bullCross) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'circle', color: color.green, size: 'small' });
-    }
-    if (bearCross) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'circle', color: color.red, size: 'small' });
-    }
-  }
-
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: ema12[i] }));
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: ema26[i] }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    markers,
-    bgColors,
-  };
+  return fullResult(createRun(_inputs).update(bars));
 }
 
 export const EmaInflectionZonesKorax = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

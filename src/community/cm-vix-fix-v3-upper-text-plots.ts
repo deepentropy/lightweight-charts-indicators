@@ -18,8 +18,10 @@
  * Original notice: Created By ChrisMoody on 3-3-2015 To Go With Lower Indicator...Or Use Seperately
  */
 
-import { ta, color, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CmVixFixV3UpperTextPlotsInputs {
   /** Lookback of the highest close */
@@ -138,69 +140,104 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !Number.isNaN(a) && !Number.isNaN(b) && !(b - a > EPS);
 
+type Point = { time: number; value: number };
+type Result = IndicatorResult & { markers: MarkerData[] };
+
+interface CmRun extends BarRunState<Record<string, never>> {
+  highestClose: WindowExtreme;
+  dev: WindowStdev;
+  mid: WindowSma;
+  wvfHigh: WindowExtreme;
+  wvf: number[];
+  upperBand: number[];
+  rangeHigh: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<CmVixFixV3UpperTextPlotsInputs>): BarStudy<CmRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const highestClose = new WindowExtreme(false, cfg.pd);
+      const dev = new WindowStdev(cfg.bbl);
+      const mid = new WindowSma(cfg.bbl);
+      const wvfHigh = new WindowExtreme(false, cfg.lb);
+      const s: CmRun = {
+        highestClose, dev, mid, wvfHigh, wvf: [], upperBand: [], rangeHigh: [], plot0: [], plot1: [], plot2: [],
+        plot3: [], markers: [], steps: [highestClose, dev, mid, wvfHigh], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.wvf, s.upperBand, s.rangeHigh, s.plot0, s.plot1, s.plot2, s.plot3];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const { wvf, upperBand, rangeHigh } = s;
+      // wvf = ((highest(close, pd) - low) / highest(close, pd)) * 100
+      const hc = s.highestClose.step(b.close);
+      wvf[i] = ((hc - b.low) / hc) * 100;
+      const stdev = s.dev.step(wvf[i]);
+      const midLine = s.mid.step(wvf[i]);
+      upperBand[i] = midLine + cfg.mult * stdev;
+      rangeHigh[i] = s.wvfHigh.step(wvf[i]) * cfg.ph;
+
+      const close = (k: number) => (k >= 0 ? bars[k].close : NaN);
+      // id: the original's plotshape output (shape0..shape3 in declaration order)
+      const mark = (time: number, shapeColor: string, text: string, id: string): void => {
+        s.markers.push({ time, position: 'belowBar', shape: 'arrowUp', color: shapeColor, text, textColor: TEXT_BLUE, id });
+      };
+
+      const p = i > 0 ? bars[i - 1] : undefined;
+      const isTrue = ge(wvf[i], upperBand[i]) || ge(wvf[i], rangeHigh[i]);
+      const wasTrue = i > 0 && (ge(wvf[i - 1], upperBand[i - 1]) || ge(wvf[i - 1], rangeHigh[i - 1]));
+      const below = lt(wvf[i], upperBand[i]) && lt(wvf[i], rangeHigh[i]);
+
+      // Filtered bar criteria
+      const upRange = !!p && gt(b.low, p.low) && gt(b.close, p.high);
+      const upRangeAggr = !!p && gt(b.close, p.close) && gt(b.close, p.open);
+      const filtered = wasTrue && below;
+      const filteredAggr = wasTrue && !below;
+      const strength = gt(b.close, close(i - cfg.str)) && (lt(b.close, close(i - cfg.ltLB)) || lt(b.close, close(i - cfg.mtLB)));
+
+      const alert1 = isTrue;
+      const alert2 = wasTrue && below;
+      const alert3 = upRange && strength && filtered;
+      const alert4 = upRangeAggr && strength && filteredAggr;
+
+      if (cfg.sbcc && alert1) mark(b.time, LIME, 'WVF', 'shape0');
+      if (cfg.sbc && alert2) mark(b.time, AQUA, 'WVF Was True\nNow False', 'shape1');
+      if (cfg.sbcAggr && alert4) mark(b.time, ORANGE, 'Aggressive\nEntry', 'shape2');
+      if (cfg.sbcFilt && alert3) mark(b.time, FUCHSIA, 'Filtered\nEntry', 'shape3');
+
+      s.plot0[i] = { time: b.time, value: cfg.sa1 && alert1 ? 1 : 0 };
+      s.plot1[i] = { time: b.time, value: cfg.sa2 && alert2 ? 1 : 0 };
+      s.plot2[i] = { time: b.time, value: cfg.sa3 && alert3 ? 1 : 0 };
+      s.plot3[i] = { time: b.time, value: cfg.sa4 && alert4 ? 1 : 0 };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CmVixFixV3UpperTextPlotsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<CmVixFixV3UpperTextPlotsInputs> = {},
 ): IndicatorResult & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  // wvf = ((highest(close, pd) - low) / highest(close, pd)) * 100
-  const highestClose = A(ta.highest(new Series(bars, (b) => b.close), cfg.pd));
-  const wvf = bars.map((b, i) => ((highestClose[i] - b.low) / highestClose[i]) * 100);
-  const wvfS = Series.fromArray(bars, wvf);
-  const stdev = A(ta.stdev(wvfS, cfg.bbl));
-  const midLine = A(ta.sma(wvfS, cfg.bbl));
-  const upperBand = midLine.map((m, i) => m + cfg.mult * stdev[i]);
-  const rangeHigh = A(ta.highest(wvfS, cfg.lb)).map((v) => v * cfg.ph);
-
-  const close = (i: number) => (i >= 0 ? bars[i].close : NaN);
-  const plot0: Array<{ time: number; value: number }> = [];
-  const plot1: typeof plot0 = [];
-  const plot2: typeof plot0 = [];
-  const plot3: typeof plot0 = [];
-  const markers: MarkerData[] = [];
-  // id: the original's plotshape output (shape0..shape3 in declaration order)
-  const mark = (time: number, shapeColor: string, text: string, id: string): void => {
-    markers.push({ time, position: 'belowBar', shape: 'arrowUp', color: shapeColor, text, textColor: TEXT_BLUE, id });
-  };
-
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const p = i > 0 ? bars[i - 1] : undefined;
-    const isTrue = ge(wvf[i], upperBand[i]) || ge(wvf[i], rangeHigh[i]);
-    const wasTrue = i > 0 && (ge(wvf[i - 1], upperBand[i - 1]) || ge(wvf[i - 1], rangeHigh[i - 1]));
-    const below = lt(wvf[i], upperBand[i]) && lt(wvf[i], rangeHigh[i]);
-
-    // Filtered bar criteria
-    const upRange = !!p && gt(b.low, p.low) && gt(b.close, p.high);
-    const upRangeAggr = !!p && gt(b.close, p.close) && gt(b.close, p.open);
-    const filtered = wasTrue && below;
-    const filteredAggr = wasTrue && !below;
-    const strength = gt(b.close, close(i - cfg.str)) && (lt(b.close, close(i - cfg.ltLB)) || lt(b.close, close(i - cfg.mtLB)));
-
-    const alert1 = isTrue;
-    const alert2 = wasTrue && below;
-    const alert3 = upRange && strength && filtered;
-    const alert4 = upRangeAggr && strength && filteredAggr;
-
-    if (cfg.sbcc && alert1) mark(b.time, LIME, 'WVF', 'shape0');
-    if (cfg.sbc && alert2) mark(b.time, AQUA, 'WVF Was True\nNow False', 'shape1');
-    if (cfg.sbcAggr && alert4) mark(b.time, ORANGE, 'Aggressive\nEntry', 'shape2');
-    if (cfg.sbcFilt && alert3) mark(b.time, FUCHSIA, 'Filtered\nEntry', 'shape3');
-
-    plot0.push({ time: b.time, value: cfg.sa1 && alert1 ? 1 : 0 });
-    plot1.push({ time: b.time, value: cfg.sa2 && alert2 ? 1 : 0 });
-    plot2.push({ time: b.time, value: cfg.sa3 && alert3 ? 1 : 0 });
-    plot3.push({ time: b.time, value: cfg.sa4 && alert4 ? 1 : 0 });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
-    markers,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
-export const CmVixFixV3UpperTextPlots = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+export const CmVixFixV3UpperTextPlots = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

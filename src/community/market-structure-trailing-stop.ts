@@ -11,8 +11,10 @@
  * Reference: "Market Structure Trailing Stop [LuxAlgo]" by LuxAlgo
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { LineDrawingData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MarketStructureTrailingStopInputs {
   length: number;
@@ -64,134 +66,157 @@ const MAX_LINES = 500;
 // Pine color.new(c, transp) for a hex colour input
 const withTransp = (c: string, transp: number): string => color.from_hex(c, transp) as string;
 
-export function calculate(bars: Bar[], inputs: Partial<MarketStructureTrailingStopInputs> = {}): IndicatorResult & { lines: LineDrawingData[] } {
+type Result = IndicatorResult & { lines: LineDrawingData[] };
+type Point = { time: number; value: number; color?: string };
+
+interface MstsVars {
+  ph_y: number; ph_x: number;
+  pl_y: number; pl_x: number;
+  top: number; btm: number;
+  ph_cross: boolean; pl_cross: boolean;
+  max: number; min: number; ts: number;
+  os: number;
+}
+
+interface MstsRun extends BarRunState<MstsVars> {
+  ph: PivotStep;
+  pl: PivotStep;
+  tsPlot: Point[];
+  closePlot: Point[];
+  fillColors: string[];
+  lines: LineDrawingData[];
+}
+
+function study(inputs: Partial<MarketStructureTrailingStopInputs>): BarStudy<MstsRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const length = cfg.length;
-
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-
-  // Pine: ph = ta.pivothigh(length, length), pl = ta.pivotlow(length, length)
-  const phArr = ta.pivothigh(highSeries, length, length).toArray();
-  const plArr = ta.pivotlow(lowSeries, length, length).toArray();
-
-  // Pine `var` state
-  let ph_y = NaN, ph_x = NaN;
-  let pl_y = NaN, pl_x = NaN;
-  let top = NaN, btm = NaN;
-  let ph_cross = false, pl_cross = false;
-  let max = NaN, min = NaN, ts = NaN;
-  let os = 0;
-
-  const tsArr: number[] = new Array(n).fill(NaN);
-  const msArr: number[] = new Array(n).fill(0);
-  const osArr: number[] = new Array(n).fill(0);
-  const lines: LineDrawingData[] = [];
-
-  for (let i = 0; i < n; i++) {
-    const close = bars[i].close;
-    let ms = 0;
-
-    // Pine `if ph` / `if pl`: na and 0 are false
-    const ph = phArr[i];
-    const pl = plArr[i];
-    if (ph != null && !isNaN(ph) && ph !== 0) {
-      ph_y = ph;
-      ph_x = i - length;
-      ph_cross = false;
-    }
-    if (pl != null && !isNaN(pl) && pl !== 0) {
-      pl_y = pl;
-      pl_x = i - length;
-      pl_cross = false;
-    }
-
-    // Bullish structures (Pine: close > ph_y and not ph_cross; false when ph_y is na)
-    if (close > ph_y && !ph_cross) {
-      ms = cfg.resetOn === 'CHoCH' ? (os === -1 ? 1 : 0) : 1;
-      ph_cross = true;
-      if (cfg.showMS) {
-        lines.push({
-          time1: bars[ph_x].time, price1: ph_y, time2: bars[i].time, price2: ph_y,
-          color: cfg.bullCss, width: 1, style: os === -1 ? 'dashed' : 'dotted',
-        });
-      }
-      os = 1;
-      // Pine: btm := low; for i = 0 to (n - ph_x) - 1: btm := math.min(low[i], btm)
-      btm = bars[i].low;
-      for (let k = 0; k <= i - ph_x - 1; k++) btm = Math.min(bars[i - k].low, btm);
-    }
-
-    // Bearish structures
-    if (close < pl_y && !pl_cross) {
-      ms = cfg.resetOn === 'CHoCH' ? (os === 1 ? -1 : 0) : -1;
-      pl_cross = true;
-      if (cfg.showMS) {
-        lines.push({
-          time1: bars[pl_x].time, price1: pl_y, time2: bars[i].time, price2: pl_y,
-          color: cfg.bearCss, width: 1, style: os === 1 ? 'dashed' : 'dotted',
-        });
-      }
-      os = -1;
-      // Pine: top := high; for i = 0 to (n - pl_x) - 1: top := math.max(high[i], top)
-      top = bars[i].high;
-      for (let k = 0; k <= i - pl_x - 1; k++) top = Math.max(bars[i - k].high, top);
-    }
-
-    // Trailing max/min (Pine math.max / math.min return na when an argument is na)
-    const prevMax = max;
-    const prevMin = min;
-    if (ms === 1) {
-      max = close;
-    } else if (ms === -1) {
-      min = close;
-    } else {
-      max = isNaN(max) ? NaN : Math.max(close, max);
-      min = isNaN(min) ? NaN : Math.min(close, min);
-    }
-
-    // Trailing stop
-    ts = ms === 1 ? btm
-      : ms === -1 ? top
-      : os === 1 ? ts + (max - prevMax) * cfg.incr / 100
-      : ts + (min - prevMin) * cfg.incr / 100;
-
-    tsArr[i] = ts;
-    msArr[i] = ms;
-    osArr[i] = os;
-  }
-
-  // Pine: css = ms ? na : os == 1 ? bullCss : bearCss. A value with an na colour is kept as a
-  // transparent point.
-  const cssArr: (string | null)[] = msArr.map((ms, i) => (ms !== 0 ? null : osArr[i] === 1 ? cfg.bullCss : cfg.bearCss));
-
-  const tsPlot = tsArr.map((v, i) => ({
-    time: bars[i].time,
-    value: v,
-    color: cssArr[i] ?? 'transparent',
-  }));
-
-  // Pine: plot_price = plot(close, editable = false, display = display.none)
-  const closePlot = bars.map((b) => ({ time: b.time, value: b.close }));
-
-  // Pine: css_area = (close - ts) * os < 0 ? retCss : css; fill color color.new(css_area, areaTransp).
-  // When css_area is na, Pine gives color.new(na, areaTransp) as black with that transparency
-  // (0x33000000 for 80), not na.
-  const fillColors = bars.map((b, i) => {
-    const cssArea = (b.close - tsArr[i]) * osArr[i] < 0 ? cfg.retCss : cssArr[i];
-    return withTransp(cssArea ?? '#000000', cfg.areaTransp);
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      ts: tsPlot,
-      closeLine: closePlot,
+    init() {
+      // Pine: ph = ta.pivothigh(length, length), pl = ta.pivotlow(length, length)
+      const s: MstsRun = {
+        ph: new PivotStep(length, length, true),
+        pl: new PivotStep(length, length, false),
+        tsPlot: [], closePlot: [], fillColors: [], lines: [],
+        steps: [],
+        // Pine `var` state
+        vars: {
+          ph_y: NaN, ph_x: NaN, pl_y: NaN, pl_x: NaN, top: NaN, btm: NaN, ph_cross: false, pl_cross: false,
+          max: NaN, min: NaN, ts: NaN, os: 0,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.ph, s.pl];
+      s.lists = [s.lines];
+      s.series = [s.tsPlot, s.closePlot, s.fillColors];
+      return s;
     },
-    fills: [{ plot1: 'closeLine', plot2: 'ts', options: { color: withTransp(cfg.bullCss, cfg.areaTransp) }, colors: fillColors }],
-    lines: lines.slice(-MAX_LINES),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const close = bars[i].close;
+      let ms = 0;
+
+      // Pine `if ph` / `if pl`: na and 0 are false
+      const ph = s.ph.step(i, bars[i].high);
+      const pl = s.pl.step(i, bars[i].low);
+      if (ph != null && !isNaN(ph) && ph !== 0) {
+        v.ph_y = ph;
+        v.ph_x = i - length;
+        v.ph_cross = false;
+      }
+      if (pl != null && !isNaN(pl) && pl !== 0) {
+        v.pl_y = pl;
+        v.pl_x = i - length;
+        v.pl_cross = false;
+      }
+
+      // Bullish structures (Pine: close > ph_y and not ph_cross; false when ph_y is na)
+      if (close > v.ph_y && !v.ph_cross) {
+        ms = cfg.resetOn === 'CHoCH' ? (v.os === -1 ? 1 : 0) : 1;
+        v.ph_cross = true;
+        if (cfg.showMS) {
+          s.lines.push({
+            time1: bars[v.ph_x].time, price1: v.ph_y, time2: bars[i].time, price2: v.ph_y,
+            color: cfg.bullCss, width: 1, style: v.os === -1 ? 'dashed' : 'dotted',
+          });
+        }
+        v.os = 1;
+        // Pine: btm := low; for i = 0 to (n - ph_x) - 1: btm := math.min(low[i], btm)
+        let btm = bars[i].low;
+        for (let k = 0; k <= i - v.ph_x - 1; k++) btm = Math.min(bars[i - k].low, btm);
+        v.btm = btm;
+      }
+
+      // Bearish structures
+      if (close < v.pl_y && !v.pl_cross) {
+        ms = cfg.resetOn === 'CHoCH' ? (v.os === 1 ? -1 : 0) : -1;
+        v.pl_cross = true;
+        if (cfg.showMS) {
+          s.lines.push({
+            time1: bars[v.pl_x].time, price1: v.pl_y, time2: bars[i].time, price2: v.pl_y,
+            color: cfg.bearCss, width: 1, style: v.os === 1 ? 'dashed' : 'dotted',
+          });
+        }
+        v.os = -1;
+        // Pine: top := high; for i = 0 to (n - pl_x) - 1: top := math.max(high[i], top)
+        let top = bars[i].high;
+        for (let k = 0; k <= i - v.pl_x - 1; k++) top = Math.max(bars[i - k].high, top);
+        v.top = top;
+      }
+
+      // Trailing max/min (Pine math.max / math.min return na when an argument is na)
+      const prevMax = v.max;
+      const prevMin = v.min;
+      if (ms === 1) {
+        v.max = close;
+      } else if (ms === -1) {
+        v.min = close;
+      } else {
+        v.max = isNaN(v.max) ? NaN : Math.max(close, v.max);
+        v.min = isNaN(v.min) ? NaN : Math.min(close, v.min);
+      }
+
+      // Trailing stop
+      v.ts = ms === 1 ? v.btm
+        : ms === -1 ? v.top
+        : v.os === 1 ? v.ts + (v.max - prevMax) * cfg.incr / 100
+        : v.ts + (v.min - prevMin) * cfg.incr / 100;
+      const ts = v.ts;
+      const os = v.os;
+
+      // Pine: css = ms ? na : os == 1 ? bullCss : bearCss. A value with an na colour is kept as a
+      // transparent point.
+      const css: string | null = ms !== 0 ? null : os === 1 ? cfg.bullCss : cfg.bearCss;
+      const time = bars[i].time;
+      s.tsPlot[i] = { time, value: ts, color: css ?? 'transparent' };
+      // Pine: plot_price = plot(close, editable = false, display = display.none)
+      s.closePlot[i] = { time, value: close };
+      // Pine: css_area = (close - ts) * os < 0 ? retCss : css; fill color color.new(css_area, areaTransp).
+      // When css_area is na, Pine gives color.new(na, areaTransp) as black with that transparency
+      // (0x33000000 for 80), not na.
+      const cssArea = (close - ts) * os < 0 ? cfg.retCss : css;
+      s.fillColors[i] = withTransp(cssArea ?? '#000000', cfg.areaTransp);
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          ts: s.tsPlot.slice(),
+          closeLine: s.closePlot.slice(),
+        },
+        fills: [{ plot1: 'closeLine', plot2: 'ts', options: { color: withTransp(cfg.bullCss, cfg.areaTransp) }, colors: s.fillColors.slice() }],
+        lines: s.lines.slice(-MAX_LINES),
+      };
+    },
   };
 }
 
-export const MarketStructureTrailingStop = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MarketStructureTrailingStopInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MarketStructureTrailingStopInputs> = {}): IndicatorResult & { lines: LineDrawingData[] } {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MarketStructureTrailingStop = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

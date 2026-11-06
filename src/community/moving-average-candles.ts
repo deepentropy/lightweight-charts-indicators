@@ -11,8 +11,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, math, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, math, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowSum, WindowVwma, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export interface MovingAverageCandlesInputs {
   /** 'SMA' | 'EMA' | 'RMA' | 'WMA' | 'VWMA' | 'HMA' | 'T3' | 'DEMA' | 'TEMA' | 'KAMA' | 'ZLEMA' | 'McGinley' | 'EPMA' */
@@ -51,131 +53,206 @@ const EPS = 1e-10;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const ne = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MovingAverageCandlesInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
+type Result = Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> };
+
+interface MacVars {
+  /** var float kama / var float mg: one per price (open, high, low, close), changed in place */
+  kama: number[];
+  mg: number[];
+}
+
+/** One moving average of one price, stepped bar by bar */
+interface Ma {
+  steps: Committable[];
+  step(s: MacRun, i: number, v: number, vol: number): number;
+}
+
+interface MacRun extends BarRunState<MacVars> {
+  mas: Ma[];
+  /** The values of each price (for src[1] / src[lag]) */
+  src: number[][];
+  candles: PlotCandleData[];
+}
+
+function study(inputs: Partial<MovingAverageCandlesInputs>): BarStudy<MacRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const len = cfg.maLength;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const ema = (a: number[]) => A(ta.ema(S(a), len));
 
-  const dema = (src: number[]): number[] => {
-    const ema1 = ema(src);
-    const ema2 = ema(ema1);
-    return ema1.map((e1, i) => 2 * e1 - ema2[i]);
-  };
-  const tema = (src: number[]): number[] => {
-    const ema1 = ema(src);
-    const ema2 = ema(ema1);
-    const ema3 = ema(ema2);
-    return ema1.map((e1, i) => 3 * (e1 - ema2[i]) + ema3[i]);
-  };
-  const t3 = (src: number[]): number[] => {
-    const xe1 = ema(src);
-    const xe2 = ema(xe1);
-    const xe3 = ema(xe2);
-    const xe4 = ema(xe3);
-    const xe5 = ema(xe4);
-    const xe6 = ema(xe5);
-    const b = 0.7;
-    const c1 = -b * b * b;
-    const c2 = 3 * b * b + 3 * b * b * b;
-    const c3 = -6 * b * b - 3 * b - 3 * b * b * b;
-    const c4 = 1 + 3 * b + b * b * b + 3 * b * b;
-    return xe6.map((v6, i) => c1 * v6 + c2 * xe5[i] + c3 * xe4[i] + c4 * xe3[i]);
-  };
-  const kama = (src: number[]): number[] => {
-    // mom = math.abs(ta.change(src)); volatility = math.sum(math.abs(ta.change(src)), len)
-    const absChange = src.map((v, i) => (i > 0 ? Math.abs(v - src[i - 1]) : NaN));
-    const volatility = A(math.sum(S(absChange), len) as Series);
-    const fastSC = 2 / (2 + 1);
-    const slowSC = 2 / (30 + 1);
-    const out: number[] = new Array(n);
-    let k = NaN; // var float kama (one per call)
-    for (let i = 0; i < n; i++) {
-      const er = ne(volatility[i], 0) ? absChange[i] / volatility[i] : 0;
-      const sc = er * (fastSC - slowSC) + slowSC;
-      const sc2 = sc * sc;
-      k = isNaN(k) ? src[i] : k + sc2 * (src[i] - k);
-      out[i] = k;
-    }
-    return out;
-  };
-  const zlema = (src: number[]): number[] => {
-    // lag = (len - 1) / 2 (fractional in Pine v6), src[int(lag)]
-    const lag = Math.trunc((len - 1) / 2);
-    const x = src.map((v, i) => (i - lag >= 0 ? v + (v - src[i - lag]) : NaN));
-    return ema(x);
-  };
-  const mcg = (src: number[]): number[] => {
-    const out: number[] = new Array(n);
-    let mg = NaN; // var float mg (one per call)
-    for (let i = 0; i < n; i++) {
-      // na(mg): Pine na() is also true for an infinite value
-      mg = !Number.isFinite(mg) ? src[i] : mg + (src[i] - mg) / (len * math.pow(src[i] / mg, 4));
-      out[i] = mg;
-    }
-    return out;
-  };
-  const epma = (src: number[]): number[] => {
-    if (len - 1 <= 0) {
-      throw new Error("Error on bar 0: Invalid value of the 'length' argument (0.0) in the 'sum' function. It must be > 0.");
-    }
-    const alpha = 2 / (len + 1);
-    const src1 = src.map((_, i) => (i > 0 ? src[i - 1] : NaN));
-    const sum = A(math.sum(S(src1), len - 1) as Series);
-    return src.map((v, i) => v * alpha + (sum[i] * (1 - alpha)) / (len - 1));
-  };
-
-  const calcMa = (src: number[]): number[] => {
+  const emaChain = (count: number) => Array.from({ length: count }, () => taStep.ema(len));
+  const makeMa = (p: number): Ma => {
     switch (cfg.maType) {
-      case 'SMA': return A(ta.sma(S(src), len));
-      case 'EMA': return ema(src);
-      case 'RMA': return A(ta.rma(S(src), len));
-      case 'WMA': return A(ta.wma(S(src), len));
-      case 'VWMA': return A(ta.vwma(S(src), len, S(volume)));
-      case 'HMA':
-        if (Math.floor(len / 2) < 1) {
-          throw new Error("Error on bar 0: Invalid value of the 'length' argument (0.0) in the 'wma' function. It must be > 0.");
-        }
-        return A(ta.hma(S(src), len));
-      case 'T3': return t3(src);
-      case 'DEMA': return dema(src);
-      case 'TEMA': return tema(src);
-      case 'KAMA': return kama(src);
-      case 'ZLEMA': return zlema(src);
-      case 'McGinley': return mcg(src);
-      case 'EPMA': return epma(src);
-      default: return A(ta.sma(S(src), len));
+      case 'EMA': {
+        const m = taStep.ema(len);
+        return { steps: [m], step: (_s, _i, v) => m.step(v) };
+      }
+      case 'RMA': {
+        const m = taStep.rma(len);
+        return { steps: [m], step: (_s, _i, v) => m.step(v) };
+      }
+      case 'WMA': {
+        const m = taStep.wma();
+        return { steps: [m], step: (_s, _i, v) => m.step(v, len) };
+      }
+      case 'VWMA': {
+        const m = new WindowVwma(len);
+        return { steps: [m], step: (_s, _i, v, vol) => m.step(v, vol) };
+      }
+      case 'HMA': {
+        const m = taStep.hma(len);
+        return { steps: [m], step: (_s, _i, v) => m.step(v) };
+      }
+      case 'T3': {
+        const [m1, m2, m3, m4, m5, m6] = emaChain(6);
+        const b = 0.7;
+        const c1 = -b * b * b;
+        const c2 = 3 * b * b + 3 * b * b * b;
+        const c3 = -6 * b * b - 3 * b - 3 * b * b * b;
+        const c4 = 1 + 3 * b + b * b * b + 3 * b * b;
+        return {
+          steps: [m1, m2, m3, m4, m5, m6],
+          step: (_s, _i, v) => {
+            const xe1 = m1.step(v);
+            const xe2 = m2.step(xe1);
+            const xe3 = m3.step(xe2);
+            const xe4 = m4.step(xe3);
+            const xe5 = m5.step(xe4);
+            const xe6 = m6.step(xe5);
+            return c1 * xe6 + c2 * xe5 + c3 * xe4 + c4 * xe3;
+          },
+        };
+      }
+      case 'DEMA': {
+        const [m1, m2] = emaChain(2);
+        return {
+          steps: [m1, m2],
+          step: (_s, _i, v) => {
+            const e1 = m1.step(v);
+            const e2 = m2.step(e1);
+            return 2 * e1 - e2;
+          },
+        };
+      }
+      case 'TEMA': {
+        const [m1, m2, m3] = emaChain(3);
+        return {
+          steps: [m1, m2, m3],
+          step: (_s, _i, v) => {
+            const e1 = m1.step(v);
+            const e2 = m2.step(e1);
+            const e3 = m3.step(e2);
+            return 3 * (e1 - e2) + e3;
+          },
+        };
+      }
+      case 'KAMA': {
+        // mom = math.abs(ta.change(src)); volatility = math.sum(math.abs(ta.change(src)), len)
+        const sum = new WindowSum(len);
+        const fastSC = 2 / (2 + 1);
+        const slowSC = 2 / (30 + 1);
+        return {
+          steps: [sum],
+          step: (s, i, v) => {
+            const absChange = i > 0 ? Math.abs(v - s.src[p][i - 1]) : NaN;
+            const volatility = sum.step(absChange);
+            const er = ne(volatility, 0) ? absChange / volatility : 0;
+            const sc = er * (fastSC - slowSC) + slowSC;
+            const sc2 = sc * sc;
+            // var float kama (one per call)
+            const k = s.vars.kama[p];
+            const next = isNaN(k) ? v : k + sc2 * (v - k);
+            s.vars.kama[p] = next;
+            return next;
+          },
+        };
+      }
+      case 'ZLEMA': {
+        // lag = (len - 1) / 2 (fractional in Pine v6), src[int(lag)]
+        const lag = Math.trunc((len - 1) / 2);
+        const m = taStep.ema(len);
+        return {
+          steps: [m],
+          step: (s, i, v) => m.step(i - lag >= 0 ? v + (v - s.src[p][i - lag]) : NaN),
+        };
+      }
+      case 'McGinley':
+        return {
+          steps: [],
+          step: (s, _i, v) => {
+            // var float mg (one per call); na(mg): Pine na() is also true for an infinite value
+            const mg = s.vars.mg[p];
+            const next = !Number.isFinite(mg) ? v : mg + (v - mg) / (len * math.pow(v / mg, 4));
+            s.vars.mg[p] = next;
+            return next;
+          },
+        };
+      case 'EPMA': {
+        const alpha = 2 / (len + 1);
+        const sum = new WindowSum(len - 1);
+        return {
+          steps: [sum],
+          step: (s, i, v) => v * alpha + (sum.step(i > 0 ? s.src[p][i - 1] : NaN) * (1 - alpha)) / (len - 1),
+        };
+      }
+      default: {
+        const m = new WindowSma(len);
+        return { steps: [m], step: (_s, _i, v) => m.step(v) };
+      }
     }
   };
-
-  const open_ = calcMa(bars.map((b) => b.open));
-  const high_ = calcMa(bars.map((b) => b.high));
-  const low_ = calcMa(bars.map((b) => b.low));
-  const close_ = calcMa(bars.map((b) => b.close));
-
-  const candles: PlotCandleData[] = [];
-  for (let i = 0; i < n; i++) {
-    const o = open_[i];
-    const h = high_[i];
-    const l = low_[i];
-    const c = close_[i];
-    // plotcandle draws no candle when a value is na
-    if (!Number.isFinite(o) || !Number.isFinite(h) || !Number.isFinite(l) || !Number.isFinite(c)) continue;
-    const col = ge(c, o) ? color.green : color.red;
-    candles.push({ time: bars[i].time as number, open: o, high: h, low: l, close: c, color: col, wickColor: col, borderColor: col });
-  }
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    plotCandles: { maCandles: candles },
+    init() {
+      if (cfg.maType === 'EPMA' && len - 1 <= 0) {
+        throw new Error("Error on bar 0: Invalid value of the 'length' argument (0.0) in the 'sum' function. It must be > 0.");
+      }
+      if (cfg.maType === 'HMA' && Math.floor(len / 2) < 1) {
+        throw new Error("Error on bar 0: Invalid value of the 'length' argument (0.0) in the 'wma' function. It must be > 0.");
+      }
+      const mas = [0, 1, 2, 3].map(makeMa);
+      const s: MacRun = {
+        mas, src: [[], [], [], []], candles: [],
+        steps: mas.flatMap((m) => m.steps),
+        vars: { kama: [NaN, NaN, NaN, NaN], mg: [NaN, NaN, NaN, NaN] },
+        lists: [], series: [],
+      };
+      s.lists = [s.candles];
+      s.series = s.src;
+      return s;
+    },
+    copyVars: (v) => ({ kama: v.kama.slice(), mg: v.mg.slice() }),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const vol = b.volume ?? NaN;
+      s.src[0][i] = b.open;
+      s.src[1][i] = b.high;
+      s.src[2][i] = b.low;
+      s.src[3][i] = b.close;
+      const o = s.mas[0].step(s, i, b.open, vol);
+      const h = s.mas[1].step(s, i, b.high, vol);
+      const l = s.mas[2].step(s, i, b.low, vol);
+      const c = s.mas[3].step(s, i, b.close, vol);
+      // plotcandle draws no candle when a value is na
+      if (!Number.isFinite(o) || !Number.isFinite(h) || !Number.isFinite(l) || !Number.isFinite(c)) return;
+      const col = ge(c, o) ? color.green : color.red;
+      s.candles.push({ time: b.time as number, open: o, high: h, low: l, close: c, color: col, wickColor: col, borderColor: col });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        plotCandles: { maCandles: s.candles.slice() },
+      };
+    },
   };
 }
 
-export const MovingAverageCandles = { calculate, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MovingAverageCandlesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MovingAverageCandlesInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MovingAverageCandles = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig };

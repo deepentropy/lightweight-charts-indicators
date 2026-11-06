@@ -14,8 +14,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowStdev, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export interface FourierSeriesModelOfTheMarketInputs {
   /** Price series to decompose into harmonic components */
@@ -115,99 +117,231 @@ const TWO_PI = 2.0 * Math.PI;
 const FOUR_PI = 4.0 * Math.PI;
 const MAD_SCALE = 0.6745;
 
-export function calculate(bars: Bar[], inputs: Partial<FourierSeriesModelOfTheMarketInputs> = {}): IndicatorResult & { alerts: AlertConditionState[] } {
+/**
+ * `ta.percentile_nearest_rank(source, length, percentage)` one bar at a time: the sorted window of the oakscriptjs
+ * array function (na values kept where its insertion puts them, the value of `length` bars back removed by bar), the
+ * same doubles. A step reads the window the bar's value would give without changing it; commit changes it.
+ */
+class PercentileNearestRankStep implements Committable {
+  private values: number[] = [];
+  private bars: number[] = [];
+  private count = 0;
+  private pending = NaN;
+  private stepped = false;
+  private readonly len: number;
+  private readonly rank: number;
+
+  constructor(length: number, percentage: number) {
+    this.len = length;
+    this.rank = Math.min(length, Math.max(1, Math.ceil((percentage / 100) * length)));
+  }
+
+  /** Position of `v` in the sorted window (after the values it is not greater than or equal to) */
+  private insertAt(v: number): number {
+    const values = this.values;
+    let k = 0;
+    while (k < values.length && !(values[k]! >= v)) k++;
+    return k;
+  }
+
+  step(v: number): number {
+    this.stepped = true;
+    this.pending = v;
+    const i = this.count;
+    if (i < this.len - 1) return NaN;
+    const k = this.insertAt(v);
+    // the window with v inserted at k, without the value of bar i - length (at `old` once v is inserted)
+    let old = -1;
+    if (i >= this.len) {
+      const at = this.bars.indexOf(i - this.len);
+      old = at < k ? at : at + 1;
+    }
+    const r = this.rank - 1;
+    const idx = old >= 0 && r >= old ? r + 1 : r;
+    return idx === k ? v : idx < k ? this.values[idx]! : this.values[idx - 1]!;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    const i = this.count++;
+    const v = this.pending;
+    const k = this.insertAt(v);
+    this.values.splice(k, 0, v);
+    this.bars.splice(k, 0, i);
+    if (i >= this.len) {
+      const old = this.bars.indexOf(i - this.len);
+      this.values.splice(old, 1);
+      this.bars.splice(old, 1);
+    }
+  }
+}
+
+/** Harmonic states: bandpass coefficients (bandpassCoefficients(bandwidth, period, i)) and filter memory */
+type Harmonic = { value: number; prev1: number; prev2: number; energy: number; coefA: number; coefB: number; coefC: number };
+
+interface FsmmVars {
+  harmonics: Harmonic[];
+  /** Flattened energy ring buffer: index = harmonic * period + ringIndex */
+  energyBuffer: number[];
+  ringIndex: number;
+  /** wave[1], thresholdVal[1] */
+  prevWave: number;
+  prevThreshold: number;
+}
+
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface FsmmRun extends BarRunState<FsmmVars> {
+  source: number[];
+  wave: number[];
+  dev: WindowStdev | null;
+  rank: PercentileNearestRankStep | null;
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<FourierSeriesModelOfTheMarketInputs>): BarStudy<FsmmRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const { period, bandwidth, numHarmonics } = cfg;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const source = A(getSourceSeries(bars, cfg.src));
+  const value = barSource(cfg.src);
   const nz = (v: number) => (isNaN(v) ? 0 : v);
-
-  // Harmonic states: bandpass coefficients (bandpassCoefficients(bandwidth, period, i)) and filter memory
-  type Harmonic = { value: number; prev1: number; prev2: number; energy: number; coefA: number; coefB: number; coefC: number };
-  const harmonics: Harmonic[] = [];
-  for (let i = 0; i <= numHarmonics - 1; i++) {
-    const angularFreq = TWO_PI / (period / (i + 1));
-    const freqCos = Math.cos(angularFreq);
-    const bandwidthCos = Math.cos(bandwidth * angularFreq);
-    const discriminant = 1.0 / (bandwidthCos * bandwidthCos) - 1.0;
-    const damping = 1.0 / bandwidthCos - Math.sqrt(discriminant);
-    harmonics.push({ value: 0, prev1: 0, prev2: 0, energy: 0,
-      coefA: 0.5 * (1.0 - damping), coefB: freqCos * (1.0 + damping), coefC: damping });
-  }
-  // Flattened energy ring buffer: index = harmonic * period + ringIndex
-  const energyBuffer = new Array<number>(numHarmonics * period).fill(0.0);
-  let ringIndex = 0;
-  const rateScale = period / TWO_PI;
-
-  const wave: number[] = new Array(n);
-  for (let k = 0; k < n; k++) {
-    // Debias: 2-bar momentum
-    const input = nz(source[k]) - nz(k >= 2 ? source[k - 2] : NaN);
-    let w = 0.0;
-    let prevEnergy = 0.0;
-    for (let i = 0; i < harmonics.length; i++) {
-      const h = harmonics[i];
-      // computeHarmonic
-      const value = h.coefA * input + h.coefB * h.prev1 - h.coefC * h.prev2;
-      const rate = rateScale * (value - h.prev1);
-      const energy = value * value + rate * rate;
-      h.prev2 = h.prev1;
-      h.prev1 = value;
-      h.value = value;
-      const idx = i * period + ringIndex;
-      const oldEnergy = energyBuffer[idx];
-      energyBuffer[idx] = energy;
-      h.energy += energy - oldEnergy;
-      // Weighted synthesis (a plain division: x / 0 is +-infinity, 0 / 0 NaN, as Pine)
-      if (i === 0) w = h.value;
-      else w += Math.sqrt(h.energy / prevEnergy) * h.value;
-      prevEnergy = h.energy;
-    }
-    ringIndex = (ringIndex + 1) % period;
-    wave[k] = w;
-  }
-
-  // computeQuadrature(wave, period): period / 4pi * (wave - nz(wave[2]))
-  const quadScale = period / FOUR_PI;
-  const roc = wave.map((w, k) => quadScale * (w - nz(k >= 2 ? wave[k - 2] : NaN)));
-
-  // threshold(wave, mode, thresholdPeriod, k, percentile), only when showThreshold (var float thresholdVal = na)
-  let threshold: number[] = new Array(n).fill(NaN);
-  if (cfg.showThreshold) {
-    const waveSeries = Series.fromArray(bars, wave);
-    if (cfg.thresholdMode === 'MAD') {
-      threshold = A(ta.stdev(waveSeries, cfg.thresholdPeriod)).map((s) => cfg.thresholdMultiplier * (MAD_SCALE * s));
-    } else if (cfg.thresholdMode === 'Standard Deviation') {
-      threshold = A(ta.stdev(waveSeries, cfg.thresholdPeriod)).map((s) => cfg.thresholdMultiplier * s);
-    } else {
-      threshold = A(ta.percentile_nearest_rank(Series.fromArray(bars, wave.map((w) => Math.abs(w))),
-        cfg.thresholdPeriod, cfg.thresholdPercentile));
-    }
-  }
-
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+  const rateScale = period / TWO_PI;
+  const quadScale = period / FOUR_PI;
+  const pr = cfg.showThreshold && cfg.thresholdMode !== 'MAD' && cfg.thresholdMode !== 'Standard Deviation';
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: cfg.showWave ? fin(wave[i]) : NaN, color: cfg.colorWave })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: cfg.showRoc ? fin(roc[i]) : NaN, color: cfg.colorRoc })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: cfg.showThreshold ? fin(threshold[i]) : NaN, color: cfg.colorThresholdTop })),
-      plot3: bars.map((b, i) => ({ time: b.time, value: cfg.showThreshold ? fin(-threshold[i]) : NaN, color: cfg.colorThresholdBottom })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const harmonics: Harmonic[] = [];
+      for (let i = 0; i <= numHarmonics - 1; i++) {
+        const angularFreq = TWO_PI / (period / (i + 1));
+        const freqCos = Math.cos(angularFreq);
+        const bandwidthCos = Math.cos(bandwidth * angularFreq);
+        const discriminant = 1.0 / (bandwidthCos * bandwidthCos) - 1.0;
+        const damping = 1.0 / bandwidthCos - Math.sqrt(discriminant);
+        harmonics.push({ value: 0, prev1: 0, prev2: 0, energy: 0,
+          coefA: 0.5 * (1.0 - damping), coefB: freqCos * (1.0 + damping), coefC: damping });
+      }
+      const s: FsmmRun = {
+        source: [], wave: [],
+        dev: cfg.showThreshold && !pr ? new WindowStdev(cfg.thresholdPeriod) : null,
+        rank: pr ? new PercentileNearestRankStep(cfg.thresholdPeriod, cfg.thresholdPercentile) : null,
+        plots: [[], [], [], []], flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [],
+        vars: {
+          harmonics, energyBuffer: new Array<number>(numHarmonics * period).fill(0.0), ringIndex: 0,
+          prevWave: NaN, prevThreshold: NaN,
+        },
+        lists: [], series: [],
+      };
+      if (s.dev) s.steps.push(s.dev);
+      if (s.rank) s.steps.push(s.rank);
+      s.lists = [...s.times];
+      s.series = [s.source, s.wave, ...s.plots, ...s.flags];
+      return s;
     },
-    // hline(showZeroLine ? 0 : na, 'Zero', colorZeroLine, display = showZeroLine ? display.all : display.none)
-    hlines: cfg.showZeroLine
-      ? [{ value: 0, options: { title: 'Zero', color: cfg.colorZeroLine, linestyle: 'dashed' } }]
-      : [],
-    // crossedAboveThreshold = showThreshold and ta.crossover(wave, thresholdVal); crossedBelowThreshold = showThreshold
-    // and ta.crossunder(wave, -thresholdVal); ta.crossover / crossunder(wave, 0)
-    alerts: alertStates(alertConditions, bars, [
-      crossedOver(wave, threshold).map((c) => cfg.showThreshold && c),
-      crossedUnder(wave, threshold.map((v) => -v)).map((c) => cfg.showThreshold && c),
-      crossedOver(wave, 0),
-      crossedUnder(wave, 0),
-    ]),
+    copyVars: (v) => ({
+      ...v,
+      harmonics: v.harmonics.map((h) => ({ ...h })),
+      energyBuffer: v.energyBuffer.slice(),
+    }),
+    bar(s, k, bars) {
+      const b = bars[k];
+      const time = b.time;
+      const v = s.vars;
+      const src = value(b);
+      s.source[k] = src;
+      // Debias: 2-bar momentum
+      const input = nz(src) - nz(k >= 2 ? s.source[k - 2] : NaN);
+      let w = 0.0;
+      let prevEnergy = 0.0;
+      const { harmonics, energyBuffer } = v;
+      for (let i = 0; i < harmonics.length; i++) {
+        const h = harmonics[i];
+        // computeHarmonic
+        const value = h.coefA * input + h.coefB * h.prev1 - h.coefC * h.prev2;
+        const rate = rateScale * (value - h.prev1);
+        const energy = value * value + rate * rate;
+        h.prev2 = h.prev1;
+        h.prev1 = value;
+        h.value = value;
+        const idx = i * period + v.ringIndex;
+        const oldEnergy = energyBuffer[idx];
+        energyBuffer[idx] = energy;
+        h.energy += energy - oldEnergy;
+        // Weighted synthesis (a plain division: x / 0 is +-infinity, 0 / 0 NaN, as Pine)
+        if (i === 0) w = h.value;
+        else w += Math.sqrt(h.energy / prevEnergy) * h.value;
+        prevEnergy = h.energy;
+      }
+      v.ringIndex = (v.ringIndex + 1) % period;
+      s.wave[k] = w;
+
+      // computeQuadrature(wave, period): period / 4pi * (wave - nz(wave[2]))
+      const roc = quadScale * (w - nz(k >= 2 ? s.wave[k - 2] : NaN));
+
+      // threshold(wave, mode, thresholdPeriod, k, percentile), only when showThreshold (var float thresholdVal = na)
+      let threshold = NaN;
+      if (cfg.showThreshold) {
+        if (cfg.thresholdMode === 'MAD') threshold = cfg.thresholdMultiplier * (MAD_SCALE * s.dev!.step(w));
+        else if (cfg.thresholdMode === 'Standard Deviation') threshold = cfg.thresholdMultiplier * s.dev!.step(w);
+        else threshold = s.rank!.step(Math.abs(w));
+      }
+
+      s.plots[0][k] = { time, value: cfg.showWave ? fin(w) : NaN, color: cfg.colorWave };
+      s.plots[1][k] = { time, value: cfg.showRoc ? fin(roc) : NaN, color: cfg.colorRoc };
+      s.plots[2][k] = { time, value: cfg.showThreshold ? fin(threshold) : NaN, color: cfg.colorThresholdTop };
+      s.plots[3][k] = { time, value: cfg.showThreshold ? fin(-threshold) : NaN, color: cfg.colorThresholdBottom };
+
+      // crossedAboveThreshold = showThreshold and ta.crossover(wave, thresholdVal); crossedBelowThreshold = showThreshold
+      // and ta.crossunder(wave, -thresholdVal); ta.crossover / crossunder(wave, 0)
+      const pw = k > 0 ? v.prevWave : NaN;
+      const pt = k > 0 ? v.prevThreshold : NaN;
+      const f0 = cfg.showThreshold && w > threshold && pw <= pt;
+      const f1 = cfg.showThreshold && w < -threshold && pw >= -pt;
+      const f2 = w > 0 && pw <= 0;
+      const f3 = w < 0 && pw >= 0;
+      v.prevWave = w;
+      v.prevThreshold = threshold;
+      s.flags[0][k] = f0;
+      s.flags[1][k] = f1;
+      s.flags[2][k] = f2;
+      s.flags[3][k] = f3;
+      if (f0) s.times[0].push(time as number);
+      if (f1) s.times[1].push(time as number);
+      if (f2) s.times[2].push(time as number);
+      if (f3) s.times[3].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(),
+          plot1: s.plots[1].slice(),
+          plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(),
+        },
+        // hline(showZeroLine ? 0 : na, 'Zero', colorZeroLine, display = showZeroLine ? display.all : display.none)
+        hlines: cfg.showZeroLine
+          ? [{ value: 0, options: { title: 'Zero', color: cfg.colorZeroLine, linestyle: 'dashed' } }]
+          : [],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FourierSeriesModelOfTheMarketInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<FourierSeriesModelOfTheMarketInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -220,6 +354,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const FourierSeriesModelOfTheMarket = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,
