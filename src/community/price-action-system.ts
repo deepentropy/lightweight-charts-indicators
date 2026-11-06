@@ -8,8 +8,10 @@
  * Reference: "Price Action Trading System v0.3" (community)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData, BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 // Pine comparison operators: equal within 1e-10; a comparison with na is false
 const EPS = 1e-10;
@@ -49,122 +51,148 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<PriceActionSystemInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } {
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] };
+type Ema = ReturnType<typeof taStep.ema>;
+
+interface PasRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  emaLo: Ema;
+  emaHi: Ema;
+  emaMe: Ema;
+  cci: ReturnType<typeof taStep.cci>;
+  fastMC: Ema;
+  slowMC: Ema;
+  macdSignal: WindowSma;
+  plots: Point[][];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<PriceActionSystemInputs>): BarStudy<PasRun, Result> {
   const { maLen, atrLen } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const closeSeries = new Series(bars, (b) => b.close);
-  const sma = ta.sma(closeSeries, maLen);
-  const smaArr = sma.toArray();
-
-  // Pine price channel: emaLo = ema(low, 5), emaHi = ema(high, 5), emaMe = ema(hl2, 4)
-  const lowSeries = new Series(bars, (b) => b.low);
-  const highSeries = new Series(bars, (b) => b.high);
-  const hl2Series = new Series(bars, (b) => (b.high + b.low) / 2);
-  const emaLoArr = ta.ema(lowSeries, 5).toArray();
-  const emaHiArr = ta.ema(highSeries, 5).toArray();
-  const emaMeArr = ta.ema(hl2Series, 4).toArray();
-
   const warmup = Math.max(maLen, atrLen);
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-
-  // CCI for bar coloring (Pine uses CCI > 75 = aqua, CCI < -75 = black)
-  const cci = ta.cci(closeSeries, 14).toArray();
-
-  // MACD for background coloring: Pine: bgcolor(OutputSignal>0?red: OutputSignal<0?green:yellow, transp=90)
-  // OutputSignal = signal > macd ? 1 : signal < macd ? -1 : 0
-  const fastMCArr = ta.ema(closeSeries, 12).toArray();
-  const slowMCArr = ta.ema(closeSeries, 17).toArray();
-  const macdArr: number[] = new Array(n);
-  for (let j = 0; j < n; j++) {
-    macdArr[j] = (fastMCArr[j] ?? 0) - (slowMCArr[j] ?? 0);
-  }
-  const macdSignalArr = ta.sma(Series.fromArray(bars, macdArr), 8).toArray();
-
-  for (let i = warmup + 1; i < n; i++) {
-    const curr = bars[i];
-    const prev = bars[i - 1];
-    const close = curr.close;
-    const open = curr.open;
-    const high = curr.high;
-    const low = curr.low;
-    const maVal = smaArr[i] ?? 0;
-
-    const body = Math.abs(close - open);
-    const range = high - low;
-    if (range === 0) continue;
-
-    const upperShadow = high - Math.max(close, open);
-    const lowerShadow = Math.min(close, open) - low;
-
-    const prevBullish = gt(prev.close, prev.open);
-    const prevBearish = lt(prev.close, prev.open);
-    const bullish = gt(close, open);
-    const bearish = lt(close, open);
-
-    const uptrend = gt(close, maVal);
-    const downtrend = lt(close, maVal);
-
-    // Hammer: lower shadow > body*2, upper shadow < body*0.3
-    const isHammer = gt(lowerShadow, body * 2) && lt(upperShadow, body * 0.3) && gt(range, 0);
-    // Shooting star: upper shadow > body*2, lower shadow < body*0.3
-    const isShootingStar = gt(upperShadow, body * 2) && lt(lowerShadow, body * 0.3) && gt(range, 0);
-
-    // Bullish engulfing: prev bearish, curr bullish, curr body engulfs prev body
-    const isBullishEngulfing = prevBearish && bullish &&
-      gt(close, prev.open) && lt(open, prev.close);
-    // Bearish engulfing: prev bullish, curr bearish, curr body engulfs prev body
-    const isBearishEngulfing = prevBullish && bearish &&
-      lt(close, prev.open) && gt(open, prev.close);
-
-    if (uptrend && (isBullishEngulfing || isHammer)) {
-      markers.push({ time: curr.time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
-    } else if (downtrend && (isBearishEngulfing || isShootingStar)) {
-      markers.push({ time: curr.time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
-    }
-
-    // Bar colors: CCI > 75 = aqua (#00BCD4), CCI < -75 = black (#000000)
-    const cciVal = cci[i];
-    if (cciVal != null && !isNaN(cciVal)) {
-      if (gt(cciVal, 75)) {
-        barColors.push({ time: curr.time, color: '#00BCD4' });
-      } else if (lt(cciVal, -75)) {
-        barColors.push({ time: curr.time, color: '#000000' });
-      }
-    }
-
-    // Background: Pine OutputSignal = signal > macd ? 1 (red) : signal < macd ? -1 (green) : 0 (yellow)
-    const macdSig = macdSignalArr[i] ?? 0;
-    const macdVal = macdArr[i];
-    if (macdSig > macdVal) {
-      bgColors.push({ time: curr.time, color: 'rgba(239,83,80,0.1)' });
-    } else if (macdSig < macdVal) {
-      bgColors.push({ time: curr.time, color: 'rgba(38,166,154,0.1)' });
-    } else {
-      bgColors.push({ time: curr.time, color: 'rgba(255,235,59,0.1)' });
-    }
-  }
-
-  const plot0 = smaArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (v == null || i < warmup) ? NaN : v,
-  }));
-
-  const toPlot = (arr: (number | null)[]) =>
-    arr.map((v, i) => ({
-      time: bars[i].time,
-      value: (v == null || i < 5) ? NaN : v,
-    }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': toPlot(emaLoArr), 'plot2': toPlot(emaHiArr), 'plot3': toPlot(emaMeArr), 'plot4': toPlot(slowMCArr) },
-    markers,
-    barColors,
-    bgColors,
+    init() {
+      const s: PasRun = {
+        sma: new WindowSma(maLen),
+        // Pine price channel: emaLo = ema(low, 5), emaHi = ema(high, 5), emaMe = ema(hl2, 4)
+        emaLo: taStep.ema(5), emaHi: taStep.ema(5), emaMe: taStep.ema(4),
+        // CCI for bar coloring (Pine uses CCI > 75 = aqua, CCI < -75 = black)
+        cci: taStep.cci(14),
+        fastMC: taStep.ema(12), slowMC: taStep.ema(17), macdSignal: new WindowSma(8),
+        plots: Array.from({ length: 5 }, () => []), markers: [], barColors: [], bgColors: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.sma, s.emaLo, s.emaHi, s.emaMe, s.cci, s.fastMC, s.slowMC, s.macdSignal];
+      s.lists = [s.markers, s.barColors, s.bgColors];
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const curr = bars[i];
+      const t = curr.time;
+      const maValue = s.sma.step(curr.close);
+      const emaLo = s.emaLo.step(curr.low);
+      const emaHi = s.emaHi.step(curr.high);
+      const emaMe = s.emaMe.step((curr.high + curr.low) / 2);
+      const cciVal = s.cci.step(curr.close);
+      // MACD for background coloring: Pine: bgcolor(OutputSignal>0?red: OutputSignal<0?green:yellow, transp=90)
+      // OutputSignal = signal > macd ? 1 : signal < macd ? -1 : 0
+      const slowMC = s.slowMC.step(curr.close);
+      const macdVal = (s.fastMC.step(curr.close) ?? 0) - (slowMC ?? 0);
+      const macdSignal = s.macdSignal.step(macdVal);
+
+      const p = s.plots;
+      p[0][i] = { time: t, value: (maValue == null || i < warmup) ? NaN : maValue };
+      const toPlot = (v: number) => ({ time: t, value: (v == null || i < 5) ? NaN : v });
+      p[1][i] = toPlot(emaLo);
+      p[2][i] = toPlot(emaHi);
+      p[3][i] = toPlot(emaMe);
+      p[4][i] = toPlot(slowMC);
+
+      if (i < warmup + 1) return;
+      const prev = bars[i - 1];
+      const close = curr.close;
+      const open = curr.open;
+      const high = curr.high;
+      const low = curr.low;
+      const maVal = maValue ?? 0;
+
+      const body = Math.abs(close - open);
+      const range = high - low;
+      if (range === 0) return;
+
+      const upperShadow = high - Math.max(close, open);
+      const lowerShadow = Math.min(close, open) - low;
+
+      const prevBullish = gt(prev.close, prev.open);
+      const prevBearish = lt(prev.close, prev.open);
+      const bullish = gt(close, open);
+      const bearish = lt(close, open);
+
+      const uptrend = gt(close, maVal);
+      const downtrend = lt(close, maVal);
+
+      // Hammer: lower shadow > body*2, upper shadow < body*0.3
+      const isHammer = gt(lowerShadow, body * 2) && lt(upperShadow, body * 0.3) && gt(range, 0);
+      // Shooting star: upper shadow > body*2, lower shadow < body*0.3
+      const isShootingStar = gt(upperShadow, body * 2) && lt(lowerShadow, body * 0.3) && gt(range, 0);
+
+      // Bullish engulfing: prev bearish, curr bullish, curr body engulfs prev body
+      const isBullishEngulfing = prevBearish && bullish &&
+        gt(close, prev.open) && lt(open, prev.close);
+      // Bearish engulfing: prev bullish, curr bearish, curr body engulfs prev body
+      const isBearishEngulfing = prevBullish && bearish &&
+        lt(close, prev.open) && gt(open, prev.close);
+
+      if (uptrend && (isBullishEngulfing || isHammer)) {
+        s.markers.push({ time: curr.time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
+      } else if (downtrend && (isBearishEngulfing || isShootingStar)) {
+        s.markers.push({ time: curr.time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
+      }
+
+      // Bar colors: CCI > 75 = aqua (#00BCD4), CCI < -75 = black (#000000)
+      if (cciVal != null && !isNaN(cciVal)) {
+        if (gt(cciVal, 75)) {
+          s.barColors.push({ time: curr.time, color: '#00BCD4' });
+        } else if (lt(cciVal, -75)) {
+          s.barColors.push({ time: curr.time, color: '#000000' });
+        }
+      }
+
+      // Background: Pine OutputSignal = signal > macd ? 1 (red) : signal < macd ? -1 (green) : 0 (yellow)
+      const macdSig = macdSignal ?? 0;
+      if (macdSig > macdVal) {
+        s.bgColors.push({ time: curr.time, color: 'rgba(239,83,80,0.1)' });
+      } else if (macdSig < macdVal) {
+        s.bgColors.push({ time: curr.time, color: 'rgba(38,166,154,0.1)' });
+      } else {
+        s.bgColors.push({ time: curr.time, color: 'rgba(255,235,59,0.1)' });
+      }
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': p[0].slice(), 'plot1': p[1].slice(), 'plot2': p[2].slice(), 'plot3': p[3].slice(), 'plot4': p[4].slice() },
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
 }
 
-export const PriceActionSystem = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PriceActionSystemInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PriceActionSystemInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const PriceActionSystem = { calculate, createRun, metadata,
+ defaultInputs, inputConfig, plotConfig };

@@ -15,9 +15,11 @@
  * Original notice: © VolumeVigilante
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type AdvancedVolumeDrivenBreakoutSignalsMaType = 'SMA' | 'EMA' | 'WMA' | 'HMA' | 'VWMA';
 
@@ -113,135 +115,198 @@ const VS_MID_DIV = 2.0;
 const INFO_COLOR = '#2962FF';
 const BEAR_COLOR = '#FF5252';
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AdvancedVolumeDrivenBreakoutSignalsInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] }
-  & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const volumeS = S(volume);
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] }
+  & { alerts: AlertConditionState[] };
+type Ma = { step(v: number, volume: number): number; commit(): void };
+type Cross = ReturnType<typeof taStep.crossover>;
 
-  // calculateMa(maType, source, length): every candidate runs on every bar; the switch picks one
-  const calculateMa = (maType: string, source: number[], length: number): number[] => {
-    switch (maType) {
-      case 'SMA': return A(ta.sma(S(source), length));
-      case 'EMA': return A(ta.ema(S(source), length));
-      case 'WMA': return A(ta.wma(S(source), length));
-      case 'HMA': {
-        // ta.wma(2 * ta.wma(source, length / 2) - ta.wma(source, length), math.round(math.sqrt(length))):
-        // length / 2 keeps the fractional quotient (Pine v6); ta.wma uses the integer part of its length
-        const half = A(ta.wma(S(source), length / 2));
-        const full = A(ta.wma(S(source), length));
-        return A(ta.wma(S(half.map((v, i) => 2 * v - full[i])), Math.round(Math.sqrt(length))));
-      }
-      case 'VWMA': return A(ta.vwma(S(source), length, volumeS));
-      default: return new Array(n).fill(NaN);
+/** calculateMa(maType, source, length) stepped bar by bar (only the selected average) */
+function maStep(maType: string, length: number): Ma {
+  switch (maType) {
+    case 'SMA': { const m = new WindowSma(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'EMA': { const m = taStep.ema(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, length), commit: () => m.commit() }; }
+    case 'HMA': {
+      // ta.wma(2 * ta.wma(source, length / 2) - ta.wma(source, length), math.round(math.sqrt(length))):
+      // length / 2 keeps the fractional quotient (Pine v6); ta.wma uses the integer part of its length
+      const half = taStep.wma();
+      const full = taStep.wma();
+      const outer = taStep.wma();
+      const outerLen = Math.round(Math.sqrt(length));
+      return {
+        step: (v) => outer.step(2 * half.step(v, length / 2) - full.step(v, length), outerLen),
+        commit: () => { half.commit(); full.commit(); outer.commit(); },
+      };
     }
-  };
-
-  // Volume split (candle direction)
-  const bullVolume = bars.map((b, i) => (gt(b.close, b.open) ? volume[i] : 0.0));
-  const bearVolume = bars.map((b, i) => (gt(b.open, b.close) ? volume[i] : 0.0));
-
-  // RVOL
-  const avgVolume = cfg.useRvol ? calculateMa(cfg.rvolMaType, volume, cfg.rvolMaPeriod) : new Array(n).fill(NaN);
-  const rvol = volume.map((v, i) => (cfg.useRvol ? v / avgVolume[i] : NaN));
-
-  // Volume spike thresholds
-  const vsMa = calculateMa(cfg.vsMaType, volume, cfg.vsMaPeriod);
-  const vsHighThreshold = vsMa.map((v) => v * cfg.vsThresholdMultiplier);
-  const vsMidThreshold = vsHighThreshold.map((v) => v / VS_MID_DIV);
-
-  // Volume flow baselines
-  const bullMa = calculateMa(cfg.vfMaType, bullVolume, cfg.vfMaPeriod);
-  const bearMa = calculateMa(cfg.vfMaType, bearVolume, cfg.vfMaPeriod);
-
-  // Breakout signals and spike states (ta.crossover compares exactly)
-  const cross = (a: number[], b: number[]) => ta.crossover(S(a), S(b)).toArray().map((v) => !!v);
-  const buyVolumeSignal = cross(bullVolume, bullMa.map((v) => v * cfg.vfBreakoutMultiplier));
-  const sellVolumeSignal = cross(bearVolume, bearMa.map((v) => v * cfg.vfBreakoutMultiplier));
-  const vsSignificant = cross(volume, vsHighThreshold);
-  const vsHigh = cross(volume, vsMidThreshold);
-
-  // CNV
-  const closeArr = bars.map((b) => b.close);
-  const priceChange = A(ta.change(S(closeArr)));
-  const netVolume = priceChange.map((c, i) => (gt(c, 0) ? volume[i] : lt(c, 0) ? -volume[i] : 0.0));
-  let smoothedCnv: number[] = new Array(n).fill(NaN);
-  if (cfg.useCnv) {
-    const cumulativeNetVolume = A(ta.cum(S(netVolume)));
-    const cnvMa = calculateMa(cfg.cnvMaType, cumulativeNetVolume, cfg.cnvMaPeriod);
-    smoothedCnv = cumulativeNetVolume.map((v, i) => v - cnvMa[i]);
+    case 'VWMA': {
+      // ta.sma(source * volume, length) / ta.sma(volume, length), na when the volume average is 0 or na
+      const len = Math.floor(length);
+      const num = new WindowSum(length);
+      const den = new WindowSum(length);
+      return {
+        step: (v, volume) => {
+          const nu = num.step(v * volume) / len;
+          const d = den.step(volume) / len;
+          return d === 0 || isNaN(d) ? NaN : nu / d;
+        },
+        commit: () => { num.commit(); den.commit(); },
+      };
+    }
+    default: return { step: () => NaN, commit: () => {} };
   }
+}
 
+interface VolumeRun extends BarRunState<Record<string, never>> {
+  avgVolume: Ma | null;
+  vsMa: Ma;
+  bullMa: Ma;
+  bearMa: Ma;
+  cnvMa: Ma | null;
+  buyCross: Cross;
+  sellCross: Cross;
+  sigCross: Cross;
+  highCross: Cross;
+  change: ReturnType<typeof taStep.change>;
+  cum: ReturnType<typeof taStep.cum>;
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<AdvancedVolumeDrivenBreakoutSignalsInputs>): BarStudy<VolumeRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const vsHighColor = String(color.rgb(255, 165, 0, 25));
   const vsSignifColor = String(color.rgb(255, 255, 0, 25));
   const cnvBullBg = String(color.new(INFO_COLOR, 85));
   const cnvBearBg = String(color.new(BEAR_COLOR, 85));
-
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  const alertFlags: boolean[][] = [[], [], [], []];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const cnvBullishCondition = cfg.useCnv ? gt(smoothedCnv[i], 0) : true;
-    const cnvBearishCondition = cfg.useCnv ? le(smoothedCnv[i], 0) : true;
-    const rvolOk = !cfg.useRvol || gt(rvol[i], cfg.rvolThreshold);
-    const spikeBlock = vsHigh[i] || vsSignificant[i];
-    const buyVolumeCondition = buyVolumeSignal[i] && rvolOk && cnvBullishCondition && !spikeBlock;
-    const sellVolumeCondition = sellVolumeSignal[i] && rvolOk && cnvBearishCondition && !spikeBlock;
-    const bearishOverextension = spikeBlock && lt(b.close, b.open) && rvolOk && !sellVolumeSignal[i];
-    const bullishOverextension = spikeBlock && gt(b.close, b.open) && rvolOk && !buyVolumeSignal[i];
-    alertFlags[0].push(cfg.enableBuyVolumeAlerts && buyVolumeCondition);
-    alertFlags[1].push(cfg.enableSellVolumeAlerts && sellVolumeCondition);
-    alertFlags[2].push(cfg.enableBullishOverextensionAlerts && bullishOverextension);
-    alertFlags[3].push(cfg.enableBearishOverextensionAlerts && bearishOverextension);
-
-    // barcolor(buyVolumeSignal ? INFO : sellVolumeSignal ? BEAR : vsHigh ? VS_HIGH : vsSignificant ? VS_SIGNIF : na)
-    const bc = buyVolumeSignal[i] ? INFO_COLOR : sellVolumeSignal[i] ? BEAR_COLOR
-      : vsHigh[i] ? vsHighColor : vsSignificant[i] ? vsSignifColor : null;
-    if (bc) barColors.push({ time: b.time, color: bc });
-
-    // bgcolor(showCnvBackground and useCnv ? (cnvBullishCondition ? CNV_BULL_BG : CNV_BEAR_BG) : na)
-    if (cfg.showCnvBackground && cfg.useCnv) {
-      bgColors.push({ time: b.time, color: cnvBullishCondition ? cnvBullBg : cnvBearBg });
-    }
-
-    // plotshape series: a price (low - 0.02, high + 0.02, ...) when the condition holds, else na; the location is
-    // abovebar / belowbar, so the price only decides whether the shape is drawn
-    if (cfg.showBuySellLabels && buyVolumeCondition && !isNaN(b.low - OFFSET_POINTS)) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: INFO_COLOR, text: 'BUY VOL',
-        textColor: color.white, size: 'tiny' });
-    }
-    if (cfg.showBuySellLabels && sellVolumeCondition && !isNaN(b.high + OFFSET_POINTS)) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: BEAR_COLOR, text: 'SELL VOL',
-        textColor: color.white, size: 'tiny' });
-    }
-    // "Bearish Overextension Signal": arrow up below the bar; "Bullish Overextension Signal": arrow down above the bar
-    if (cfg.showOverextensionSignals && bearishOverextension && !isNaN(b.high + OFFSET_POINTS * 4)) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'arrowUp', color: INFO_COLOR, text: 'OVER',
-        textColor: color.white, size: 'tiny' });
-    }
-    if (cfg.showOverextensionSignals && bullishOverextension && !isNaN(b.low - OFFSET_POINTS * 4)) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'arrowDown', color: BEAR_COLOR, text: 'OVER',
-        textColor: color.white, size: 'tiny' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    barColors,
-    bgColors,
-    // 4 alertconditions: buy volume, sell volume, bullish / bearish overextension
-    alerts: alertStates(alertConditions, bars, alertFlags),
+    init() {
+      const s: VolumeRun = {
+        avgVolume: cfg.useRvol ? maStep(cfg.rvolMaType, cfg.rvolMaPeriod) : null,
+        vsMa: maStep(cfg.vsMaType, cfg.vsMaPeriod),
+        bullMa: maStep(cfg.vfMaType, cfg.vfMaPeriod),
+        bearMa: maStep(cfg.vfMaType, cfg.vfMaPeriod),
+        cnvMa: cfg.useCnv ? maStep(cfg.cnvMaType, cfg.cnvMaPeriod) : null,
+        buyCross: taStep.crossover(), sellCross: taStep.crossover(), sigCross: taStep.crossover(),
+        highCross: taStep.crossover(), change: taStep.change(), cum: taStep.cum(),
+        markers: [], barColors: [], bgColors: [], flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [
+        ...(s.avgVolume ? [s.avgVolume] : []), s.vsMa, s.bullMa, s.bearMa, ...(s.cnvMa ? [s.cnvMa, s.change, s.cum] : []),
+        s.buyCross, s.sellCross, s.sigCross, s.highCross,
+      ];
+      s.lists = [s.markers, s.barColors, s.bgColors, ...s.times];
+      s.series = s.flags;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = b.volume ?? NaN;
+      // Volume split (candle direction)
+      const bullVolume = gt(b.close, b.open) ? volume : 0.0;
+      const bearVolume = gt(b.open, b.close) ? volume : 0.0;
+
+      // RVOL
+      const rvol = s.avgVolume ? volume / s.avgVolume.step(volume, volume) : NaN;
+
+      // Volume spike thresholds
+      const vsHighThreshold = s.vsMa.step(volume, volume) * cfg.vsThresholdMultiplier;
+      const vsMidThreshold = vsHighThreshold / VS_MID_DIV;
+
+      // Volume flow baselines
+      const bullMa = s.bullMa.step(bullVolume, volume);
+      const bearMa = s.bearMa.step(bearVolume, volume);
+
+      // Breakout signals and spike states (ta.crossover compares exactly)
+      const buyVolumeSignal = !!s.buyCross.step(bullVolume, bullMa * cfg.vfBreakoutMultiplier);
+      const sellVolumeSignal = !!s.sellCross.step(bearVolume, bearMa * cfg.vfBreakoutMultiplier);
+      const vsSignificant = !!s.sigCross.step(volume, vsHighThreshold);
+      const vsHigh = !!s.highCross.step(volume, vsMidThreshold);
+
+      // CNV
+      let smoothedCnv = NaN;
+      if (s.cnvMa) {
+        const c = s.change.step(b.close);
+        const netVolume = gt(c, 0) ? volume : lt(c, 0) ? -volume : 0.0;
+        const cumulativeNetVolume = s.cum.step(netVolume);
+        smoothedCnv = cumulativeNetVolume - s.cnvMa.step(cumulativeNetVolume, volume);
+      }
+
+      const cnvBullishCondition = cfg.useCnv ? gt(smoothedCnv, 0) : true;
+      const cnvBearishCondition = cfg.useCnv ? le(smoothedCnv, 0) : true;
+      const rvolOk = !cfg.useRvol || gt(rvol, cfg.rvolThreshold);
+      const spikeBlock = vsHigh || vsSignificant;
+      const buyVolumeCondition = buyVolumeSignal && rvolOk && cnvBullishCondition && !spikeBlock;
+      const sellVolumeCondition = sellVolumeSignal && rvolOk && cnvBearishCondition && !spikeBlock;
+      const bearishOverextension = spikeBlock && lt(b.close, b.open) && rvolOk && !sellVolumeSignal;
+      const bullishOverextension = spikeBlock && gt(b.close, b.open) && rvolOk && !buyVolumeSignal;
+      const flags = [
+        cfg.enableBuyVolumeAlerts && buyVolumeCondition,
+        cfg.enableSellVolumeAlerts && sellVolumeCondition,
+        cfg.enableBullishOverextensionAlerts && bullishOverextension,
+        cfg.enableBearishOverextensionAlerts && bearishOverextension,
+      ];
+      for (let k = 0; k < 4; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(b.time as number);
+      }
+
+      // barcolor(buyVolumeSignal ? INFO : sellVolumeSignal ? BEAR : vsHigh ? VS_HIGH : vsSignificant ? VS_SIGNIF : na)
+      const bc = buyVolumeSignal ? INFO_COLOR : sellVolumeSignal ? BEAR_COLOR
+        : vsHigh ? vsHighColor : vsSignificant ? vsSignifColor : null;
+      if (bc) s.barColors.push({ time: b.time, color: bc });
+
+      // bgcolor(showCnvBackground and useCnv ? (cnvBullishCondition ? CNV_BULL_BG : CNV_BEAR_BG) : na)
+      if (cfg.showCnvBackground && cfg.useCnv) {
+        s.bgColors.push({ time: b.time, color: cnvBullishCondition ? cnvBullBg : cnvBearBg });
+      }
+
+      // plotshape series: a price (low - 0.02, high + 0.02, ...) when the condition holds, else na; the location is
+      // abovebar / belowbar, so the price only decides whether the shape is drawn
+      const markers = s.markers;
+      if (cfg.showBuySellLabels && buyVolumeCondition && !isNaN(b.low - OFFSET_POINTS)) {
+        markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: INFO_COLOR, text: 'BUY VOL',
+          textColor: color.white, size: 'tiny' });
+      }
+      if (cfg.showBuySellLabels && sellVolumeCondition && !isNaN(b.high + OFFSET_POINTS)) {
+        markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: BEAR_COLOR, text: 'SELL VOL',
+          textColor: color.white, size: 'tiny' });
+      }
+      // "Bearish Overextension Signal": arrow up below the bar; "Bullish Overextension Signal": arrow down above the bar
+      if (cfg.showOverextensionSignals && bearishOverextension && !isNaN(b.high + OFFSET_POINTS * 4)) {
+        markers.push({ time: b.time, position: 'belowBar', shape: 'arrowUp', color: INFO_COLOR, text: 'OVER',
+          textColor: color.white, size: 'tiny' });
+      }
+      if (cfg.showOverextensionSignals && bullishOverextension && !isNaN(b.low - OFFSET_POINTS * 4)) {
+        markers.push({ time: b.time, position: 'aboveBar', shape: 'arrowDown', color: BEAR_COLOR, text: 'OVER',
+          textColor: color.white, size: 'tiny' });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+        // 4 alertconditions: buy volume, sell volume, bullish / bearish overextension
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdvancedVolumeDrivenBreakoutSignalsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AdvancedVolumeDrivenBreakoutSignalsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -252,4 +317,5 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert3', title: 'Volume Vigilante | AVDBS | Bearish Overextension', message: 'VV AVDBS: Bearish overextension detected on {{ticker}}.' },
 ];
 
-export const AdvancedVolumeDrivenBreakoutSignals = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const AdvancedVolumeDrivenBreakoutSignals = { calculate, createRun, metadata,
+ defaultInputs, inputConfig, plotConfig, alertConditions };

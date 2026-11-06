@@ -14,9 +14,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
 
 export type AdaptiveEntropyTrendPreset = 'Default' | 'Fast Response' | 'Smooth Trend';
 export type AdaptiveEntropyTrendColorPreset = 'Classic' | 'Aqua' | 'Cosmic' | 'Cyber' | 'Neon' | 'Custom';
@@ -91,14 +93,32 @@ const PRESETS: Record<Exclude<AdaptiveEntropyTrendColorPreset, 'Custom'>, [strin
 const gt = (a: number, b: number) => a - b > 1e-10;
 const lt = (a: number, b: number) => b - a > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AdaptiveEntropyTrendInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] };
 
+interface AetVars {
+  /** var float adaptiveEma = na */
+  adaptiveEma: number;
+  /** var int trendDirection = 0 */
+  trendDirection: number;
+}
+
+interface AetRun extends BarRunState<AetVars> {
+  lowest: WindowExtreme;
+  highest: WindowExtreme;
+  atr: ReturnType<typeof taStep.atr>;
+  logReturn: number[];
+  direction: number[];
+  plots: Point[][];
+  outerFill: string[];
+  innerFill: string[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<AdaptiveEntropyTrendInputs>): BarStudy<AetRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   let len = cfg.lookbackLen;
   let fastMult = cfg.fastMultiplier;
   let slowMult = cfg.slowMultiplier;
@@ -114,90 +134,121 @@ export function calculate(
   const [bullColor, bearColor] = cfg.colorPreset === 'Custom' ? [cfg.bullColor, cfg.bearColor] : PRESETS[cfg.colorPreset];
 
   const histBins = 10;
-  // logReturn = math.log(close / close[1])
-  const logReturn = bars.map((b, i) => (i > 0 ? Math.log(b.close / bars[i - 1].close) : NaN));
-  const lrS = Series.fromArray(bars, logReturn);
-  const minReturn = A(ta.lowest(lrS, len));
-  const maxReturn = A(ta.highest(lrS, len));
-  const atr = A(ta.atr(bars, len));
   const maxEntropy = Math.log(histBins) / Math.log(2);
-
-  const outerUpper: number[] = new Array(n);
-  const innerUpper: number[] = new Array(n);
-  const ema: number[] = new Array(n);
-  const innerLower: number[] = new Array(n);
-  const outerLower: number[] = new Array(n);
-  const trendColor: string[] = new Array(n);
-  const direction: number[] = new Array(n);
-  let adaptiveEma = NaN; // var float adaptiveEma = na
-  let trendDirection = 0; // var int trendDirection = 0
-  for (let b = 0; b < n; b++) {
-    const returnRange = maxReturn[b] - minReturn[b];
-    let entropy = 0.0;
-    if (gt(returnRange, 0)) {
-      const binCounts = new Array<number>(histBins).fill(0);
-      for (let i = 0; i < len; i++) {
-        const lr = b - i >= 0 ? logReturn[b - i] : NaN;
-        // binIndex = math.floor((logReturn[i] - minReturn) / returnRange * (histBins - 1)), clamped to 0..histBins - 1
-        const binIndex = Math.min(Math.max(Math.floor(((lr - minReturn[b]) / returnRange) * (histBins - 1)), 0), histBins - 1);
-        if (isNaN(binIndex)) continue;
-        binCounts[binIndex] += 1.0;
-      }
-      for (let i = 0; i < histBins; i++) {
-        const probability = binCounts[i] / len;
-        if (gt(probability, 0)) entropy = entropy - (probability * Math.log(probability)) / Math.log(2);
-      }
-    }
-    const normalizedEntropy = gt(maxEntropy, 0) ? entropy / maxEntropy : 0.5;
-    const adaptiveAlpha = 2.0 / (len * (0.3 + normalizedEntropy * 1.4) + 1.0);
-    const close = bars[b].close;
-    adaptiveEma = isNaN(adaptiveEma) ? close : adaptiveEma + adaptiveAlpha * (close - adaptiveEma);
-    const trendStrength = 1.0 - normalizedEntropy;
-    const fastBandWidth = atr[b] * fastMult * (0.5 + trendStrength);
-    const slowBandWidth = atr[b] * slowMult * (0.5 + trendStrength);
-    ema[b] = adaptiveEma;
-    innerUpper[b] = adaptiveEma + fastBandWidth;
-    innerLower[b] = adaptiveEma - fastBandWidth;
-    outerUpper[b] = adaptiveEma + slowBandWidth;
-    outerLower[b] = adaptiveEma - slowBandWidth;
-
-    if (gt(close, innerUpper[b])) trendDirection = 1;
-    else if (lt(close, innerLower[b])) trendDirection = -1;
-    direction[b] = trendDirection;
-    trendColor[b] = trendDirection === 1 ? bullColor : trendDirection === -1 ? bearColor : NEUTRAL;
-  }
-
-  const t = (i: number) => bars[i].time;
-  const P = (v: number[], transp: number) => bars.map((_b, i) => ({ time: t(i), value: v[i], color: String(color.new(trendColor[i], transp)) }));
   const outerT = cfg.fillTransparency;
   const innerT = Math.min(cfg.fillTransparency + 6, 100);
-  const fillColors = (transp: number) => trendColor.map((c) => String(color.new(c, transp)));
-  // trendTurnedBullish = trendDirection == 1 and trendDirection[1] != 1 (na on the first bar: false), bearish alike
-  const turnedBull = direction.map((d, i) => d === 1 && i > 0 && direction[i - 1] !== 1);
-  const turnedBear = direction.map((d, i) => d === -1 && i > 0 && direction[i - 1] !== -1);
-
+  /** The histogram of one bar (scratch, cleared on each bar) */
+  const binCounts = new Array<number>(histBins).fill(0);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: P(outerUpper, 90),
-      plot1: P(innerUpper, 70),
-      plot2: bars.map((_b, i) => ({ time: t(i), value: ema[i], color: trendColor[i] })),
-      plot3: P(innerLower, 70),
-      plot4: P(outerLower, 90),
+    init() {
+      const s: AetRun = {
+        lowest: new WindowExtreme(true, len), highest: new WindowExtreme(false, len), atr: taStep.atr(len),
+        logReturn: [], direction: [], plots: Array.from({ length: 5 }, () => []), outerFill: [], innerFill: [],
+        barColors: [], flags: [[], [], []], times: [[], [], []],
+        steps: [], vars: { adaptiveEma: NaN, trendDirection: 0 }, lists: [], series: [],
+      };
+      s.steps = [s.lowest, s.highest, s.atr];
+      s.lists = s.times;
+      s.series = [s.logReturn, s.direction, ...s.plots, s.outerFill, s.innerFill, s.barColors, ...s.flags];
+      return s;
     },
-    fills: [
-      // fill(plotOuterUpper, plotInnerUpper, color = color.new(trendColor, outerFillTransparency))
-      { plot1: 'plot0', plot2: 'plot1', colors: fillColors(outerT) },
-      // fill(plotInnerUpper, plotInnerLower, color = color.new(trendColor, innerFillTransparency))
-      { plot1: 'plot1', plot2: 'plot3', colors: fillColors(innerT) },
-      // fill(plotInnerLower, plotOuterLower, color = color.new(trendColor, outerFillTransparency))
-      { plot1: 'plot3', plot2: 'plot4', colors: fillColors(outerT) },
-    ],
-    // barcolor(enableBarcolor ? color.new(trendColor, 20) : na, title = 'Trend Bar Color')
-    barColors: cfg.enableBarcolor ? bars.map((_b, i) => ({ time: t(i), color: String(color.new(trendColor[i], 20)) })) : [],
-    // alertcondition(trendTurnedBullish / trendTurnedBearish / trendChanged, ...)
-    alerts: alertStates(alertConditions, bars, [turnedBull, turnedBear, turnedBull.map((v, i) => v || turnedBear[i])]),
+    bar(s, b, bars) {
+      const bar = bars[b];
+      const time = bar.time as number;
+      const v = s.vars;
+      const logReturn = s.logReturn;
+      // logReturn = math.log(close / close[1])
+      logReturn[b] = b > 0 ? Math.log(bar.close / bars[b - 1].close) : NaN;
+      const minReturn = s.lowest.step(logReturn[b]);
+      const maxReturn = s.highest.step(logReturn[b]);
+      const atr = s.atr.step(bar.high, bar.low, bar.close);
+
+      const returnRange = maxReturn - minReturn;
+      let entropy = 0.0;
+      if (gt(returnRange, 0)) {
+        binCounts.fill(0);
+        for (let i = 0; i < len; i++) {
+          const lr = b - i >= 0 ? logReturn[b - i] : NaN;
+          // binIndex = math.floor((logReturn[i] - minReturn) / returnRange * (histBins - 1)), clamped to 0..histBins - 1
+          const binIndex = Math.min(Math.max(Math.floor(((lr - minReturn) / returnRange) * (histBins - 1)), 0), histBins - 1);
+          if (isNaN(binIndex)) continue;
+          binCounts[binIndex] += 1.0;
+        }
+        for (let i = 0; i < histBins; i++) {
+          const probability = binCounts[i] / len;
+          if (gt(probability, 0)) entropy = entropy - (probability * Math.log(probability)) / Math.log(2);
+        }
+      }
+      const normalizedEntropy = gt(maxEntropy, 0) ? entropy / maxEntropy : 0.5;
+      const adaptiveAlpha = 2.0 / (len * (0.3 + normalizedEntropy * 1.4) + 1.0);
+      const close = bar.close;
+      const ema = isNaN(v.adaptiveEma) ? close : v.adaptiveEma + adaptiveAlpha * (close - v.adaptiveEma);
+      v.adaptiveEma = ema;
+      const trendStrength = 1.0 - normalizedEntropy;
+      const fastBandWidth = atr * fastMult * (0.5 + trendStrength);
+      const slowBandWidth = atr * slowMult * (0.5 + trendStrength);
+      const innerUpper = ema + fastBandWidth;
+      const innerLower = ema - fastBandWidth;
+      const outerUpper = ema + slowBandWidth;
+      const outerLower = ema - slowBandWidth;
+
+      if (gt(close, innerUpper)) v.trendDirection = 1;
+      else if (lt(close, innerLower)) v.trendDirection = -1;
+      const d = v.trendDirection;
+      s.direction[b] = d;
+      const trendColor = d === 1 ? bullColor : d === -1 ? bearColor : NEUTRAL;
+
+      const p = s.plots;
+      const c70 = String(color.new(trendColor, 70));
+      const c90 = String(color.new(trendColor, 90));
+      p[0][b] = { time, value: outerUpper, color: c90 };
+      p[1][b] = { time, value: innerUpper, color: c70 };
+      p[2][b] = { time, value: ema, color: trendColor };
+      p[3][b] = { time, value: innerLower, color: c70 };
+      p[4][b] = { time, value: outerLower, color: c90 };
+      s.outerFill[b] = String(color.new(trendColor, outerT));
+      s.innerFill[b] = String(color.new(trendColor, innerT));
+      // barcolor(enableBarcolor ? color.new(trendColor, 20) : na, title = 'Trend Bar Color')
+      if (cfg.enableBarcolor) s.barColors[b] = { time, color: String(color.new(trendColor, 20)) };
+
+      // trendTurnedBullish = trendDirection == 1 and trendDirection[1] != 1 (na on the first bar: false), bearish alike
+      const turnedBull = d === 1 && b > 0 && s.direction[b - 1] !== 1;
+      const turnedBear = d === -1 && b > 0 && s.direction[b - 1] !== -1;
+      const flags = [turnedBull, turnedBear, turnedBull || turnedBear];
+      for (let k = 0; k < 3; k++) {
+        s.flags[k][b] = flags[k];
+        if (flags[k]) s.times[k].push(time);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice() },
+        fills: [
+          // fill(plotOuterUpper, plotInnerUpper, color = color.new(trendColor, outerFillTransparency))
+          { plot1: 'plot0', plot2: 'plot1', colors: s.outerFill.slice() },
+          // fill(plotInnerUpper, plotInnerLower, color = color.new(trendColor, innerFillTransparency))
+          { plot1: 'plot1', plot2: 'plot3', colors: s.innerFill.slice() },
+          // fill(plotInnerLower, plotOuterLower, color = color.new(trendColor, outerFillTransparency))
+          { plot1: 'plot3', plot2: 'plot4', colors: s.outerFill.slice() },
+        ],
+        barColors: cfg.enableBarcolor ? s.barColors.slice() : [],
+        // alertcondition(trendTurnedBullish / trendTurnedBearish / trendChanged, ...)
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdaptiveEntropyTrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AdaptiveEntropyTrendInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -209,6 +260,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const AdaptiveEntropyTrend = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -1,11 +1,12 @@
 /**
  * The steps of live-run.ts give the doubles of the oakscriptjs functions (Object.is on every bar): PivotStep against
- * taCore.pivothigh / pivotlow, WindowSum / WindowSma / WindowStdev / WindowExtreme against taStep. Series with na,
+ * taCore.pivothigh / pivotlow, AlmaStep against taCore.alma, WindowSum / WindowSma / WindowStdev / WindowExtreme /
+ * WindowVwma against taStep. Series with na,
  * ±Infinity, -0, ties, and a wrong step before the final step of every bar.
  */
 import { describe, expect, it } from 'vitest';
 import { taCore, taStep } from 'oakscriptjs';
-import { PivotStep, WindowExtreme, WindowSma, WindowStdev, WindowSum } from '../../src/live-run';
+import { AlmaStep, PivotStep, WindowExtreme, WindowSma, WindowStdev, WindowSum, WindowVwma } from '../../src/live-run';
 
 function series(n: number, seed: number): number[] {
   let s = seed;
@@ -69,6 +70,41 @@ describe('live-run steps', () => {
         }
         expect(near(a, b)).toBe(true);
       }
+    });
+  }
+
+  for (const [length, offset, sigma, floor] of [[9, 0.85, 6, false], [1, 0.85, 6, false], [21, 0.5, 4, true], [5, 0, 2, false]] as const) {
+    it(`AlmaStep ${length}/${offset}/${sigma}${floor ? ' floor' : ''} equals the array function`, () => {
+      const src = series(1500, 9);
+      const expected = taCore.alma(src, length, offset, sigma, floor) as number[];
+      const a = new AlmaStep(length, offset, sigma, floor);
+      const got = src.map((v) => {
+        a.step(v + 2);
+        const out = a.step(v);
+        a.commit();
+        return out;
+      });
+      expect(near(got, expected)).toBe(true);
+    });
+  }
+
+  for (const length of [1, 5, 20]) {
+    it(`WindowVwma ${length} equals taStep.vwma`, () => {
+      const src = series(2000, 13);
+      const vol = series(2000, 17).map((v) => (Number.isFinite(v) ? Math.abs(v) * 100 : v));
+      const mine = new WindowVwma(length);
+      const lib = taStep.vwma(length);
+      const a: number[] = [];
+      const b: number[] = [];
+      src.forEach((v, i) => {
+        mine.step(v + 1, vol[i]);
+        lib.step(v + 1, vol[i]);
+        a.push(mine.step(v, vol[i]));
+        b.push(lib.step(v, vol[i]));
+        mine.commit();
+        lib.commit();
+      });
+      expect(near(a, b)).toBe(true);
     });
   }
 });

@@ -15,9 +15,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { taCore, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface UniversalLargeOrdersProxyInputs {
   lookback: number;
@@ -97,119 +99,155 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<UniversalLargeOrdersProxyInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+
+interface UloRun extends BarRunState<{ lastBuyBar: number; lastSellBar: number }> {
+  avgBuy: WindowSma;
+  stdBuy: WindowStdev;
+  avgSell: WindowSma;
+  stdSell: WindowStdev;
+  avgVol: WindowSma;
+  avgRange: WindowSma;
+  ema: ReturnType<typeof taStep.ema>;
+  /** ta.sma / ta.stdev of each bar (read one bar later: [1]) */
+  aBuy: number[];
+  sBuy: number[];
+  aSell: number[];
+  sSell: number[];
+  aVol: number[];
+  aRange: number[];
+  plot0: Point[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<UniversalLargeOrdersProxyInputs>): BarStudy<UloRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const lb = cfg.lookback;
-  const na = (v: number | null | undefined) => (v === null || v === undefined ? NaN : v);
-
-  // Core candle stats
-  const rng = bars.map((b) => b.high - b.low);
-  const bodyPct: number[] = new Array(n);
-  const upperWick: number[] = new Array(n);
-  const lowerWick: number[] = new Array(n);
-  const closePos: number[] = new Array(n);
-  const buyPressure: number[] = new Array(n);
-  const sellPressure: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const r = rng[i];
-    const zero = eq(r, 0.0);
-    const body = Math.abs(b.close - b.open);
-    bodyPct[i] = zero ? 0.0 : body / r;
-    upperWick[i] = zero ? 0.0 : (b.high - Math.max(b.open, b.close)) / r;
-    lowerWick[i] = zero ? 0.0 : (Math.min(b.open, b.close) - b.low) / r;
-    closePos[i] = zero ? 0.5 : (b.close - b.low) / r;
-    const rangeBoost = zero ? 0.0 : 1.0 + bodyPct[i];
-    const vol = b.volume ?? NaN;
-    buyPressure[i] = zero ? 0.0 : vol * closePos[i] * rangeBoost;
-    sellPressure[i] = zero ? 0.0 : vol * (1.0 - closePos[i]) * rangeBoost;
-  }
-
-  // ta.*(x, lookback)[1]
-  const prev = (a: Array<number | null>) => a.map((_v, i) => (i > 0 ? na(a[i - 1]) : NaN));
-  const avgBuy = prev(taCore.sma(buyPressure, lb));
-  const stdBuy = prev(taCore.stdev(buyPressure, lb));
-  const avgSell = prev(taCore.sma(sellPressure, lb));
-  const stdSell = prev(taCore.stdev(sellPressure, lb));
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const avgVol = prev(taCore.sma(volume, lb));
-  const avgRange = prev(taCore.sma(rng, lb));
-  const ema = taCore.ema(bars.map((b) => b.close), cfg.emaLen).map(na);
-
-  const markers: MarkerData[] = [];
-  const plot0 = [];
   const emaColor = String(color.new(color.yellow, 0));
-  let lastBuyBar = NaN;
-  let lastSellBar = NaN;
-  const flags: boolean[][] = [[], [], [], []];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    // A plain division: x / 0 is +-infinity (0 / 0 NaN); stdBuy == 0.0 is the Pine guard
-    const buyZ = eq(stdBuy[i], 0.0) ? 0.0 : (buyPressure[i] - avgBuy[i]) / stdBuy[i];
-    const sellZ = eq(stdSell[i], 0.0) ? 0.0 : (sellPressure[i] - avgSell[i]) / stdSell[i];
-    const highVol = gt(volume[i], avgVol[i] * cfg.volMult);
-    const wideRange = gt(rng[i], avgRange[i] * cfg.rangeMult);
-    const closeNearHigh = ge(closePos[i], cfg.extremePct);
-    const closeNearLow = le(closePos[i], 1.0 - cfg.extremePct);
-    const goodBullShape = gt(b.close, b.open) && ge(bodyPct[i], cfg.bodyMin) && closeNearHigh
-      && le(upperWick[i], cfg.wickMax);
-    const goodBearShape = lt(b.close, b.open) && ge(bodyPct[i], cfg.bodyMin) && closeNearLow
-      && le(lowerWick[i], cfg.wickMax);
-    const bullTrendOk = !cfg.useTrend || gt(b.close, ema[i]);
-    const bearTrendOk = !cfg.useTrend || lt(b.close, ema[i]);
-
-    const buyBase = cfg.showBuys && highVol && wideRange && goodBullShape && bullTrendOk;
-    const sellBase = cfg.showSells && highVol && wideRange && goodBearShape && bearTrendOk;
-    const rawBuy1 = buyBase && gt(buyZ, cfg.sigma);
-    const rawBuy2 = buyBase && gt(buyZ, cfg.sigma + 1.0);
-    const rawBuy3 = buyBase && gt(buyZ, cfg.sigma + 2.0);
-    const rawSell1 = sellBase && gt(sellZ, cfg.sigma);
-    const rawSell2 = sellBase && gt(sellZ, cfg.sigma + 1.0);
-    const rawSell3 = sellBase && gt(sellZ, cfg.sigma + 2.0);
-
-    // Cooldown filter (integer bar counts)
-    const buyCooldownOk = isNaN(lastBuyBar) || i - lastBuyBar > cfg.cooldownBars;
-    const sellCooldownOk = isNaN(lastSellBar) || i - lastSellBar > cfg.cooldownBars;
-    const buy1 = rawBuy1 && buyCooldownOk;
-    const buy2 = rawBuy2 && buyCooldownOk;
-    const buy3 = rawBuy3 && buyCooldownOk;
-    const sell1 = rawSell1 && sellCooldownOk;
-    const sell2 = rawSell2 && sellCooldownOk;
-    const sell3 = rawSell3 && sellCooldownOk;
-    if (buy1 || buy2 || buy3) lastBuyBar = i;
-    if (sell1 || sell2 || sell3) lastSellBar = i;
-    flags[0].push(buy1);
-    flags[1].push(sell1);
-    flags[2].push(buy3);
-    flags[3].push(sell3);
-
-    // math.avg(low, close) / math.avg(high, close); plotshape(..., shape.circle, location.absolute)
-    const buyPos = (b.low + b.close) / 2;
-    const sellPos = (b.high + b.close) / 2;
-    const circle = (price: number, c: string, size: 'small' | 'normal' | 'large', id: string) => {
-      if (!isNaN(price)) markers.push({ time: b.time, position: 'atPriceMiddle', price, shape: 'circle', color: c, size, id });
-    };
-    if (buy1 && !buy2) circle(buyPos, cfg.buyColor, 'small', 'shape0');
-    if (buy2 && !buy3) circle(buyPos, cfg.buyColor, 'normal', 'shape1');
-    if (buy3) circle(buyPos, cfg.buyColor, 'large', 'shape2');
-    if (sell1 && !sell2) circle(sellPos, cfg.sellColor, 'small', 'shape3');
-    if (sell2 && !sell3) circle(sellPos, cfg.sellColor, 'normal', 'shape4');
-    if (sell3) circle(sellPos, cfg.sellColor, 'large', 'shape5');
-
-    plot0.push({ time: b.time, value: cfg.showEMA ? ema[i] : NaN, color: emaColor });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    markers,
-    // alertcondition(buy1) / (sell1) / (buy3) / (sell3)
-    alerts: alertStates(alertConditions, bars, flags),
+    init() {
+      const s: UloRun = {
+        avgBuy: new WindowSma(lb), stdBuy: new WindowStdev(lb), avgSell: new WindowSma(lb), stdSell: new WindowStdev(lb),
+        avgVol: new WindowSma(lb), avgRange: new WindowSma(lb), ema: taStep.ema(cfg.emaLen),
+        aBuy: [], sBuy: [], aSell: [], sSell: [], aVol: [], aRange: [], plot0: [], markers: [],
+        flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [], vars: { lastBuyBar: NaN, lastSellBar: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.avgBuy, s.stdBuy, s.avgSell, s.stdSell, s.avgVol, s.avgRange, s.ema];
+      s.lists = [...s.times, s.markers];
+      s.series = [s.aBuy, s.sBuy, s.aSell, s.sSell, s.aVol, s.aRange, s.plot0, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      // Core candle stats
+      const r = b.high - b.low;
+      const zero = eq(r, 0.0);
+      const body = Math.abs(b.close - b.open);
+      const bodyPct = zero ? 0.0 : body / r;
+      const upperWick = zero ? 0.0 : (b.high - Math.max(b.open, b.close)) / r;
+      const lowerWick = zero ? 0.0 : (Math.min(b.open, b.close) - b.low) / r;
+      const closePos = zero ? 0.5 : (b.close - b.low) / r;
+      const rangeBoost = zero ? 0.0 : 1.0 + bodyPct;
+      const volume = b.volume ?? NaN;
+      const buyPressure = zero ? 0.0 : volume * closePos * rangeBoost;
+      const sellPressure = zero ? 0.0 : volume * (1.0 - closePos) * rangeBoost;
+
+      // ta.*(x, lookback)[1]
+      s.aBuy[i] = s.avgBuy.step(buyPressure);
+      s.sBuy[i] = s.stdBuy.step(buyPressure);
+      s.aSell[i] = s.avgSell.step(sellPressure);
+      s.sSell[i] = s.stdSell.step(sellPressure);
+      s.aVol[i] = s.avgVol.step(volume);
+      s.aRange[i] = s.avgRange.step(r);
+      const avgBuy = i > 0 ? s.aBuy[i - 1] : NaN;
+      const stdBuy = i > 0 ? s.sBuy[i - 1] : NaN;
+      const avgSell = i > 0 ? s.aSell[i - 1] : NaN;
+      const stdSell = i > 0 ? s.sSell[i - 1] : NaN;
+      const avgVol = i > 0 ? s.aVol[i - 1] : NaN;
+      const avgRange = i > 0 ? s.aRange[i - 1] : NaN;
+      const ema = s.ema.step(b.close);
+
+      // A plain division: x / 0 is +-infinity (0 / 0 NaN); stdBuy == 0.0 is the Pine guard
+      const buyZ = eq(stdBuy, 0.0) ? 0.0 : (buyPressure - avgBuy) / stdBuy;
+      const sellZ = eq(stdSell, 0.0) ? 0.0 : (sellPressure - avgSell) / stdSell;
+      const highVol = gt(volume, avgVol * cfg.volMult);
+      const wideRange = gt(r, avgRange * cfg.rangeMult);
+      const closeNearHigh = ge(closePos, cfg.extremePct);
+      const closeNearLow = le(closePos, 1.0 - cfg.extremePct);
+      const goodBullShape = gt(b.close, b.open) && ge(bodyPct, cfg.bodyMin) && closeNearHigh
+        && le(upperWick, cfg.wickMax);
+      const goodBearShape = lt(b.close, b.open) && ge(bodyPct, cfg.bodyMin) && closeNearLow
+        && le(lowerWick, cfg.wickMax);
+      const bullTrendOk = !cfg.useTrend || gt(b.close, ema);
+      const bearTrendOk = !cfg.useTrend || lt(b.close, ema);
+
+      const buyBase = cfg.showBuys && highVol && wideRange && goodBullShape && bullTrendOk;
+      const sellBase = cfg.showSells && highVol && wideRange && goodBearShape && bearTrendOk;
+      const rawBuy1 = buyBase && gt(buyZ, cfg.sigma);
+      const rawBuy2 = buyBase && gt(buyZ, cfg.sigma + 1.0);
+      const rawBuy3 = buyBase && gt(buyZ, cfg.sigma + 2.0);
+      const rawSell1 = sellBase && gt(sellZ, cfg.sigma);
+      const rawSell2 = sellBase && gt(sellZ, cfg.sigma + 1.0);
+      const rawSell3 = sellBase && gt(sellZ, cfg.sigma + 2.0);
+
+      // Cooldown filter (integer bar counts)
+      const buyCooldownOk = isNaN(v.lastBuyBar) || i - v.lastBuyBar > cfg.cooldownBars;
+      const sellCooldownOk = isNaN(v.lastSellBar) || i - v.lastSellBar > cfg.cooldownBars;
+      const buy1 = rawBuy1 && buyCooldownOk;
+      const buy2 = rawBuy2 && buyCooldownOk;
+      const buy3 = rawBuy3 && buyCooldownOk;
+      const sell1 = rawSell1 && sellCooldownOk;
+      const sell2 = rawSell2 && sellCooldownOk;
+      const sell3 = rawSell3 && sellCooldownOk;
+      if (buy1 || buy2 || buy3) v.lastBuyBar = i;
+      if (sell1 || sell2 || sell3) v.lastSellBar = i;
+      // alertcondition(buy1) / (sell1) / (buy3) / (sell3)
+      const f = s.flags;
+      f[0][i] = buy1;
+      f[1][i] = sell1;
+      f[2][i] = buy3;
+      f[3][i] = sell3;
+      for (let k = 0; k < 4; k++) if (f[k][i]) s.times[k].push(b.time as number);
+
+      // math.avg(low, close) / math.avg(high, close); plotshape(..., shape.circle, location.absolute)
+      const buyPos = (b.low + b.close) / 2;
+      const sellPos = (b.high + b.close) / 2;
+      const circle = (price: number, c: string, size: 'small' | 'normal' | 'large', id: string) => {
+        if (!isNaN(price)) s.markers.push({ time: b.time, position: 'atPriceMiddle', price, shape: 'circle', color: c, size, id });
+      };
+      if (buy1 && !buy2) circle(buyPos, cfg.buyColor, 'small', 'shape0');
+      if (buy2 && !buy3) circle(buyPos, cfg.buyColor, 'normal', 'shape1');
+      if (buy3) circle(buyPos, cfg.buyColor, 'large', 'shape2');
+      if (sell1 && !sell2) circle(sellPos, cfg.sellColor, 'small', 'shape3');
+      if (sell2 && !sell3) circle(sellPos, cfg.sellColor, 'normal', 'shape4');
+      if (sell3) circle(sellPos, cfg.sellColor, 'large', 'shape5');
+
+      s.plot0[i] = { time: b.time, value: cfg.showEMA ? ema : NaN, color: emaColor };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<UniversalLargeOrdersProxyInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<UniversalLargeOrdersProxyInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -222,6 +260,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const UniversalLargeOrdersProxy = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

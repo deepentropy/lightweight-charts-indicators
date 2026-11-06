@@ -23,10 +23,11 @@
  * Original notice: © LonesomeTheBlue
  */
 
-import { ta, Series, color, timeframe, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, timeframe, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import { periodStarts, chartTimeframe } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
 import type { LineDrawingData } from '../types';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SupportResistanceMtfInputs {
   src: 'High/Low' | 'Close/Open';
@@ -97,43 +98,57 @@ function autoTimeframe(period: string): string {
   }
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<SupportResistanceMtfInputs> = {},
-  chart?: ChartContext,
-): Omit<IndicatorResult, 'lines'> & { lines: LineDrawingData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const prd = Math.trunc(cfg.prd);
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'lines'> & { lines: LineDrawingData[] };
 
-  // timeframe.period: "D" / "W" / "M" without the multiplier 1
+/** timeframe.period of the chart ("D" / "W" / "M" without the multiplier 1) and the higher timeframe */
+function timeframes(bars: Bar[], chart: ChartContext | undefined, mode: SupportResistanceMtfInputs['timeframeU']) {
   const period = chartTimeframe(bars, chart).replace(/^1(?=[DWM]$)/, '');
-  const tf = cfg.timeframeU === 'Auto' ? autoTimeframe(period) : cfg.timeframeU;
-  if (!timeframe.info(tf).period) throw new RangeError(`Unsupported timeframe "${tf}"`);
+  return mode === 'Auto' ? autoTimeframe(period) : mode;
+}
 
+/** Bars on Saturdays or Sundays (periodStarts reads it from the whole bar set) */
+function hasWeekend(bars: Bar[]): boolean {
+  const ms = bars.length > 0 && bars[0].time >= 1e12;
+  return bars.some((b) => {
+    const wd = new Date(ms ? b.time : b.time * 1000).getUTCDay();
+    return wd === 0 || wd === 6;
+  });
+}
+
+interface SrRun extends BarRunState<Record<string, never>> {
+  tf: string;
+  chart: ChartContext;
+  /** time(Timeframe) of the bars of the current update (calculated once per update) */
+  starts: number[];
+  startsOf: Bar[] | null;
+  /** ta.highestbars(srch, prd) == 0 / ta.lowestbars(srcl, prd) == 0: the current value is the extreme of the window */
+  hiMax: WindowExtreme;
+  loMin: WindowExtreme;
+  hc: number[];
+  lc: number[];
+  htfh: number[];
+  htfl: number[];
+  hh: number[];
+  ll: number[];
+  newbar: boolean[];
+  plots: Point[][];
+  resFill: string[];
+  supFill: string[];
+}
+
+function study(inputs: Partial<SupportResistanceMtfInputs>): BarStudy<SrRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const prd = Math.trunc(cfg.prd);
   const highLow = cfg.src === 'High/Low';
-  const srch = bars.map((b) => (highLow ? b.high : Math.max(b.close, b.open)));
-  const srcl = bars.map((b) => (highLow ? b.low : Math.min(b.close, b.open)));
-  const hbars = A(ta.highestbars(Series.fromArray(bars, srch), prd));
-  const lbars = A(ta.lowestbars(Series.fromArray(bars, srcl), prd));
-
-  // newbar = change(time(Timeframe)) != 0: na on the first bar
-  const starts = periodStarts(bars, tf, chart);
-
-  const hc: number[] = new Array(n);
-  const lc: number[] = new Array(n);
-  const htfh: number[] = new Array(n);
-  const htfl: number[] = new Array(n);
-  const hh: number[] = new Array(n);
-  const ll: number[] = new Array(n);
-  const newbar: boolean[] = new Array(n);
+  const resFill = String(color.new(cfg.resistanceCol, cfg.transp));
+  const supFill = String(color.new(cfg.supportCol, cfg.transp));
 
   /**
    * highestbar() / lowestbar() of the original: counts the period starts back from bar i for which the running
    * value of the bar before the start is below (above) the current value; true when `len` values are reached.
    */
-  const extreme = (i: number, values: number[], len: number, breaks: (now: number, before: number) => boolean) => {
+  const extreme = (newbar: boolean[], i: number, values: number[], len: number, breaks: (now: number, before: number) => boolean) => {
     let count = 1;
     if (len > 1) {
       for (let x = 0; x <= 4000; x++) {
@@ -149,68 +164,119 @@ export function calculate(
     return count >= len;
   };
 
-  for (let i = 0; i < n; i++) {
-    hc[i] = hbars[i] === 0 ? srch[i] : i > 0 ? hc[i - 1] : NaN;
-    lc[i] = lbars[i] === 0 ? srcl[i] : i > 0 ? lc[i - 1] : NaN;
-
-    newbar[i] = i > 0 && starts[i] !== starts[i - 1];
-    if (newbar[i]) {
-      htfh[i] = srch[i];
-      htfl[i] = srcl[i];
-    } else {
-      // max() / min() with an na value give na: the levels start on the first new period
-      const ph = i > 0 ? htfh[i - 1] : NaN;
-      const pl = i > 0 ? htfl[i - 1] : NaN;
-      htfh[i] = isNaN(ph) ? NaN : Math.max(ph, srch[i]);
-      htfl[i] = isNaN(pl) ? NaN : Math.min(pl, srcl[i]);
-    }
-
-    const hbar = extreme(i, htfh, prd, le);
-    const lbar = extreme(i, htfl, prd, ge);
-    hh[i] = hbar ? htfh[i] : i > 0 ? hh[i - 1] : 0;
-    ll[i] = lbar ? htfl[i] : i > 0 ? ll[i - 1] : 0;
-  }
-
   const same = (v: number[], i: number) => i > 0 && eq(v[i], v[i - 1]);
-  const plotOf = (v: number[], css: string) => bars.map((b, i) => ({
-    time: b.time, value: v[i], color: same(v, i) ? css : 'transparent',
-  }));
-  const resFill = String(color.new(cfg.resistanceCol, cfg.transp));
-  const supFill = String(color.new(cfg.supportCol, cfg.transp));
-
-  const lines: LineDrawingData[] = [];
-  if (cfg.extendLines && n > 1) {
-    // The four lines are deleted and drawn again on every bar: those of the last bar remain
-    const last = n - 1;
-    const level = (price: number, css: string) => {
-      if (!isNaN(price)) {
-        lines.push({ time1: bars[last].time, price1: price, time2: bars[last - 1].time, price2: price, color: css, extend: 'left' });
-      }
-    };
-    level(lc[last], cfg.supportCol);
-    level(ll[last], cfg.supportCol);
-    level(hc[last], cfg.resistanceCol);
-    level(hh[last], cfg.resistanceCol);
-  }
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: plotOf(hc, cfg.resistanceCol),
-      plot1: plotOf(lc, cfg.supportCol),
-      plot2: plotOf(hh, cfg.resistanceCol),
-      plot3: plotOf(ll, cfg.supportCol),
+    // the higher timeframe from the bar gaps; the periods of symbols with weekend bars start on UTC days
+    key: (bars, chart) => `${timeframes(bars, chart, cfg.timeframeU)}|${hasWeekend(bars)}`,
+    init(bars, chart) {
+      const tf = timeframes(bars, chart, cfg.timeframeU);
+      if (!timeframe.info(tf).period) throw new RangeError(`Unsupported timeframe "${tf}"`);
+      const s: SrRun = {
+        tf, chart, starts: [], startsOf: null,
+        hiMax: new WindowExtreme(false, prd), loMin: new WindowExtreme(true, prd),
+        hc: [], lc: [], htfh: [], htfl: [], hh: [], ll: [], newbar: [],
+        plots: [[], [], [], []], resFill: [], supFill: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.hiMax, s.loMin];
+      s.series = [s.hc, s.lc, s.htfh, s.htfl, s.hh, s.ll, s.newbar, ...s.plots, s.resFill, s.supFill];
+      return s;
     },
-    fills: [
-      { plot1: 'plot2', plot2: 'plot0', colors: bars.map((_b, i) => (same(hc, i) && same(hh, i) ? resFill : 'transparent')) },
-      { plot1: 'plot3', plot2: 'plot1', colors: bars.map((_b, i) => (same(lc, i) && same(ll, i) ? supFill : 'transparent')) },
-    ],
-    lines,
+    bar(s, i, bars) {
+      // newbar = change(time(Timeframe)) != 0: na on the first bar
+      if (s.startsOf !== bars) {
+        s.starts = periodStarts(bars, s.tf, s.chart);
+        s.startsOf = bars;
+      }
+      const b = bars[i];
+      const srch = highLow ? b.high : Math.max(b.close, b.open);
+      const srcl = highLow ? b.low : Math.min(b.close, b.open);
+      const hbar0 = Number.isFinite(srch) && s.hiMax.step(srch) === srch;
+      const lbar0 = Number.isFinite(srcl) && s.loMin.step(srcl) === srcl;
+      const { hc, lc, htfh, htfl, hh, ll, newbar } = s;
+      hc[i] = hbar0 ? srch : i > 0 ? hc[i - 1] : NaN;
+      lc[i] = lbar0 ? srcl : i > 0 ? lc[i - 1] : NaN;
+
+      newbar[i] = i > 0 && s.starts[i] !== s.starts[i - 1];
+      if (newbar[i]) {
+        htfh[i] = srch;
+        htfl[i] = srcl;
+      } else {
+        // max() / min() with an na value give na: the levels start on the first new period
+        const ph = i > 0 ? htfh[i - 1] : NaN;
+        const pl = i > 0 ? htfl[i - 1] : NaN;
+        htfh[i] = isNaN(ph) ? NaN : Math.max(ph, srch);
+        htfl[i] = isNaN(pl) ? NaN : Math.min(pl, srcl);
+      }
+
+      const hbar = extreme(newbar, i, htfh, prd, le);
+      const lbar = extreme(newbar, i, htfl, prd, ge);
+      hh[i] = hbar ? htfh[i] : i > 0 ? hh[i - 1] : 0;
+      ll[i] = lbar ? htfl[i] : i > 0 ? ll[i - 1] : 0;
+
+      const t = b.time;
+      const sameHc = same(hc, i);
+      const sameLc = same(lc, i);
+      const sameHh = same(hh, i);
+      const sameLl = same(ll, i);
+      s.plots[0][i] = { time: t, value: hc[i], color: sameHc ? cfg.resistanceCol : 'transparent' };
+      s.plots[1][i] = { time: t, value: lc[i], color: sameLc ? cfg.supportCol : 'transparent' };
+      s.plots[2][i] = { time: t, value: hh[i], color: sameHh ? cfg.resistanceCol : 'transparent' };
+      s.plots[3][i] = { time: t, value: ll[i], color: sameLl ? cfg.supportCol : 'transparent' };
+      s.resFill[i] = sameHc && sameHh ? resFill : 'transparent';
+      s.supFill[i] = sameLc && sameLl ? supFill : 'transparent';
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const lines: LineDrawingData[] = [];
+      if (cfg.extendLines && n > 1) {
+        // The four lines are deleted and drawn again on every bar: those of the last bar remain
+        const last = n - 1;
+        const level = (price: number, css: string) => {
+          if (!isNaN(price)) {
+            lines.push({ time1: bars[last].time, price1: price, time2: bars[last - 1].time, price2: price, color: css, extend: 'left' });
+          }
+        };
+        level(s.lc[last], cfg.supportCol);
+        level(s.ll[last], cfg.supportCol);
+        level(s.hc[last], cfg.resistanceCol);
+        level(s.hh[last], cfg.resistanceCol);
+      }
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(),
+          plot1: s.plots[1].slice(),
+          plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(),
+        },
+        fills: [
+          { plot1: 'plot2', plot2: 'plot0', colors: s.resFill.slice() },
+          { plot1: 'plot3', plot2: 'plot1', colors: s.supFill.slice() },
+        ],
+        lines,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SupportResistanceMtfInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<SupportResistanceMtfInputs> = {},
+  chart?: ChartContext,
+): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 export const SupportResistanceMtf = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

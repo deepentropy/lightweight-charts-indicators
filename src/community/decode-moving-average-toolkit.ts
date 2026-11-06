@@ -13,11 +13,13 @@
  */
 
 import {
-  ta, Series, getSourceSeries, color,
+  taStep, color,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type DecodeMaName = 'EMA 1' | 'EMA 2' | 'EMA 3' | 'EMA 4' | 'EMA 5' | 'SMA 1' | 'SMA 2' | 'SMA 3' | 'SMA 4' | 'SMA 5';
 
@@ -136,106 +138,152 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DecodeMovingAverageToolkitInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = getSourceSeries(bars, cfg.src);
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
 
+interface DecodeVars {
+  /** Per alert: the fast / slow MA of the last call of its ta.crossover (changed in place, copied by copyVars) */
+  prevF: number[];
+  prevS: number[];
+}
+
+interface DecodeRun extends BarRunState<DecodeVars> {
+  emas: ReturnType<typeof taStep.ema>[];
+  smas: WindowSma[];
+  plots: Point[][];
+  fills: string[][];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<DecodeMovingAverageToolkitInputs>): BarStudy<DecodeRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
   // out1..out5 = ta.ema(src, len1..len5); out6..out10 = ta.sma(src, len6..len10)
   const emaLens = [cfg.len1, cfg.len2, cfg.len3, cfg.len4, cfg.len5];
   const smaLens = [cfg.len6, cfg.len7, cfg.len8, cfg.len9, cfg.len10];
-  const emas = emaLens.map((len) => A(ta.ema(src, len)));
-  const smas = smaLens.map((len) => A(ta.sma(src, len)));
-  const maByName: Record<string, number[]> = {};
-  MA_NAMES.forEach((name, j) => { maByName[name] = j < 5 ? emas[j] : smas[j - 5]; });
-  const naSeries: number[] = new Array(n).fill(NaN);
-  // getMAFromString: switch on the name, na for another string
-  const getMA = (name: string) => maByName[name] ?? naSeries;
-
-  const plots: Record<string, { time: number; value: number; color: string }[]> = {};
-  for (let k = 0; k < 5; k++) {
-    plots[`plot${k}`] = bars.map((b, i) => ({ time: b.time, value: emas[k][i], color: EMA_COLORS[k] }));
-  }
-  for (let k = 0; k < 5; k++) {
-    plots[`plot${k + 5}`] = bars.map((b, i) => ({ time: b.time, value: smas[k][i], color: SMA_COLORS[k] }));
-  }
-
-  // Ribbon k: fill(plot_emaK, plot_smaK, color = not na(outK) and not na(outK+5) and outK > outK+5 ?
-  //   color.new(color.green, 90) : color.new(color.red, 90), display = showRibbonK ? display.all : display.none)
   const green90 = String(color.new(color.green, 90));
   const red90 = String(color.new(color.red, 90));
   const ribbonShown = [cfg.showRibbon1, cfg.showRibbon2, cfg.showRibbon3, cfg.showRibbon4, cfg.showRibbon5];
-  const fills = [0, 1, 2, 3, 4].map((k) => ({
-    plot1: `plot${k}`, plot2: `plot${k + 5}`, options: { title: `Ribbon EMA${k + 1}/SMA${k + 1}` },
-    colors: bars.map((_b, i) => {
-      if (!ribbonShown[k]) return 'transparent';
-      const e = emas[k][i];
-      const s = smas[k][i];
-      return !isNaN(e) && !isNaN(s) && gt(e, s) ? green90 : red90;
-    }),
+  const c = cfg as unknown as Record<string, unknown>;
+  // getMAFromString: switch on the name, na for another string (index -1)
+  const alerts = [1, 2, 3, 4, 5].map((k) => ({
+    k,
+    enable: c[`alert${k}Enable`] as boolean,
+    fast: MA_NAMES.indexOf(c[`alert${k}Fast`] as DecodeMaName),
+    slow: MA_NAMES.indexOf(c[`alert${k}Slow`] as DecodeMaName),
+    show: c[`alert${k}ShowSymbol`] as boolean,
   }));
-
-  // Alerts: bull = not na(fast) and not na(slow) and ta.crossover(fast, slow) (bear: ta.crossunder), only when the
-  // alert is enabled. ta.crossover runs (lazy `and`) on the bars where both MAs are not na; it compares exactly and
-  // its previous values are those of the previous call.
-  const alerts = [1, 2, 3, 4, 5].map((k) => {
-    const c = cfg as unknown as Record<string, unknown>;
-    return {
-      k,
-      enable: c[`alert${k}Enable`] as boolean,
-      fast: getMA(c[`alert${k}Fast`] as string),
-      slow: getMA(c[`alert${k}Slow`] as string),
-      show: c[`alert${k}ShowSymbol`] as boolean,
-    };
-  });
-  const markers: MarkerData[] = [];
   const bullColor = String(color.new(color.green, 0));
   const bearColor = String(color.new(color.red, 0));
-  // alertcondition(alertK_bullish_trigger) / alertcondition(alertK_bearish_trigger), in this order for k = 1..5
-  const flags: boolean[][] = [];
-  for (const a of alerts) {
-    const bullFlags = new Array<boolean>(n).fill(false);
-    const bearFlags = new Array<boolean>(n).fill(false);
-    flags.push(bullFlags, bearFlags);
-    let prevF = NaN;
-    let prevS = NaN;
-    for (let i = 0; i < n; i++) {
-      const f = a.fast[i];
-      const s = a.slow[i];
-      if (isNaN(f) || isNaN(s)) continue;
-      const bull = f > s && prevF <= prevS;
-      const bear = f < s && prevF >= prevS;
-      prevF = f;
-      prevS = s;
-      if (!a.enable) continue;
-      bullFlags[i] = bull;
-      bearFlags[i] = bear;
-      if (!a.show) continue;
-      // plotshape(bull and show, location.belowbar, color.new(color.green, 0), shape.triangleup, size.small, text = "Ak ▲")
-      if (bull) {
-        markers.push({ id: `shape${2 * (a.k - 1)}`, time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: bullColor, size: 'small',
-          text: `A${a.k} ▲`, textColor: color.blue });
-      }
-      // plotshape(bear and show, location.abovebar, color.new(color.red, 0), shape.triangledown, size.small, text = "Ak ▼")
-      if (bear) {
-        markers.push({ id: `shape${2 * (a.k - 1) + 1}`, time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: bearColor, size: 'small',
-          text: `A${a.k} ▼`, textColor: color.blue });
-      }
-    }
-  }
-  markers.sort((x, y) => x.time - y.time);
-
+  /** The ten MAs of the bar (scratch) */
+  const ma: number[] = new Array(10).fill(NaN);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    markers,
-    alerts: alertStates(alertConditions, bars, flags),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const emas = emaLens.map((len) => taStep.ema(len));
+      const smas = smaLens.map((len) => new WindowSma(len));
+      const s: DecodeRun = {
+        emas, smas, plots: Array.from({ length: 10 }, () => []), fills: Array.from({ length: 5 }, () => []),
+        flags: Array.from({ length: 10 }, () => []), times: Array.from({ length: 10 }, () => []), markers: [],
+        steps: [...emas, ...smas], vars: { prevF: new Array(5).fill(NaN), prevS: new Array(5).fill(NaN) },
+        lists: [], series: [],
+      };
+      s.lists = [...s.times, s.markers];
+      s.series = [...s.plots, ...s.fills, ...s.flags];
+      return s;
+    },
+    copyVars: (v) => ({ prevF: v.prevF.slice(), prevS: v.prevS.slice() }),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const x = value(b);
+      for (let k = 0; k < 5; k++) {
+        ma[k] = s.emas[k].step(x);
+        ma[k + 5] = s.smas[k].step(x);
+      }
+      for (let k = 0; k < 5; k++) {
+        s.plots[k][i] = { time, value: ma[k], color: EMA_COLORS[k] };
+        s.plots[k + 5][i] = { time, value: ma[k + 5], color: SMA_COLORS[k] };
+      }
+
+      // Ribbon k: fill(plot_emaK, plot_smaK, color = not na(outK) and not na(outK+5) and outK > outK+5 ?
+      //   color.new(color.green, 90) : color.new(color.red, 90), display = showRibbonK ? display.all : display.none)
+      for (let k = 0; k < 5; k++) {
+        const e = ma[k];
+        const sm = ma[k + 5];
+        s.fills[k][i] = !ribbonShown[k] ? 'transparent' : !isNaN(e) && !isNaN(sm) && gt(e, sm) ? green90 : red90;
+      }
+
+      // Alerts: bull = not na(fast) and not na(slow) and ta.crossover(fast, slow) (bear: ta.crossunder), only when the
+      // alert is enabled. ta.crossover runs (lazy `and`) on the bars where both MAs are not na; it compares exactly and
+      // its previous values are those of the previous call.
+      // alertcondition(alertK_bullish_trigger) / alertcondition(alertK_bearish_trigger), in this order for k = 1..5
+      const v = s.vars;
+      for (let j = 0; j < 5; j++) {
+        const a = alerts[j];
+        let bull = false;
+        let bear = false;
+        const f = a.fast >= 0 ? ma[a.fast] : NaN;
+        const sl = a.slow >= 0 ? ma[a.slow] : NaN;
+        if (!isNaN(f) && !isNaN(sl)) {
+          const prevF = v.prevF[j];
+          const prevS = v.prevS[j];
+          const up = f > sl && prevF <= prevS;
+          const dn = f < sl && prevF >= prevS;
+          v.prevF[j] = f;
+          v.prevS[j] = sl;
+          if (a.enable) {
+            bull = up;
+            bear = dn;
+            if (a.show) {
+              // plotshape(bull and show, location.belowbar, color.new(color.green, 0), shape.triangleup, size.small, text = "Ak ▲")
+              if (bull) {
+                s.markers.push({ id: `shape${2 * (a.k - 1)}`, time, position: 'belowBar', shape: 'triangleUp', color: bullColor, size: 'small',
+                  text: `A${a.k} ▲`, textColor: color.blue });
+              }
+              // plotshape(bear and show, location.abovebar, color.new(color.red, 0), shape.triangledown, size.small, text = "Ak ▼")
+              if (bear) {
+                s.markers.push({ id: `shape${2 * (a.k - 1) + 1}`, time, position: 'aboveBar', shape: 'triangleDown', color: bearColor, size: 'small',
+                  text: `A${a.k} ▼`, textColor: color.blue });
+              }
+            }
+          }
+        }
+        s.flags[2 * j][i] = bull;
+        s.flags[2 * j + 1][i] = bear;
+        if (bull) s.times[2 * j].push(time as number);
+        if (bear) s.times[2 * j + 1].push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      for (let k = 0; k < 10; k++) plots[`plot${k}`] = s.plots[k].slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: [0, 1, 2, 3, 4].map((k) => ({
+          plot1: `plot${k}`, plot2: `plot${k + 5}`, options: { title: `Ribbon EMA${k + 1}/SMA${k + 1}` }, colors: s.fills[k].slice(),
+        })),
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DecodeMovingAverageToolkitInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<DecodeMovingAverageToolkitInputs> = {},
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -246,6 +294,7 @@ export const alertConditions: AlertConditionDecl[] = [1, 2, 3, 4, 5].flatMap((k)
 
 export const DecodeMovingAverageToolkit = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

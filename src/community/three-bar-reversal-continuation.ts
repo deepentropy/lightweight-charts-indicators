@@ -17,7 +17,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { MarkerData, AlertCall } from '../types';
 
 export interface ThreeBarReversalContinuationInputs {
@@ -76,108 +78,140 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ThreeBarReversalContinuationInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alertCalls: AlertCall[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alertCalls: AlertCall[] };
+
+interface ThreeBarRun extends BarRunState<Record<string, never>> {
+  avgRange: WindowSma;
+  avgVolume: WindowSma;
+  avgRngVol: WindowSma;
+  lowest: WindowExtreme;
+  highest: WindowExtreme;
+  strength: number[];
+  isLowest: boolean[];
+  isHighest: boolean[];
+  markers: MarkerData[];
+  alertCalls: AlertCall[];
+}
+
+function study(inputs: Partial<ThreeBarReversalContinuationInputs>): BarStudy<ThreeBarRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { length, coeff, detectLevel, symbolUp, symbolDown, showCont, showStrength, plotColor } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const high = bars.map((b) => b.high);
-  const low = bars.map((b) => b.low);
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const barRange = bars.map((b) => b.high - b.low);
-  const barColor = bars.map((b) => gt(b.open, b.close)); // open > close
-  const rngVol = barRange.map((r, i) => r * volume[i]);
-  const avgRange = A(ta.sma(Series.fromArray(bars, barRange), length));
-  const avgVolume = A(ta.sma(Series.fromArray(bars, volume), length));
-  const avgRngVol = A(ta.sma(Series.fromArray(bars, rngVol), length));
-  const lowest = A(ta.lowest(Series.fromArray(bars, low), length));
-  const highest = A(ta.highest(Series.fromArray(bars, high), length));
-
-  const strength: number[] = new Array(n);
-  const isLowest: boolean[] = new Array(n);
-  const isHighest: boolean[] = new Array(n);
-  const markers: MarkerData[] = [];
-  const alertCalls: AlertCall[] = [];
   const white = color.white;
   const yellow = color.yellow;
   const lime = color.lime;
-
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time;
-    const condRange = gt(barRange[i], coeff * avgRange[i]) ? 1 : 0;
-    const condVol = gt(volume[i], coeff * avgVolume[i]) ? 1 : 0;
-    const condRngVol = gt(rngVol[i], coeff * avgRngVol[i]) ? 1 : 0;
-    strength[i] = condRange + condVol + condRngVol;
-
-    // plotchar(strength == k and showStrength, char = ".", location = location.bottom, size = size.tiny)
-    // `id`: the plotchar output (char0 to char4 in declaration order)
-    const dot = (c: string, id: string) =>
-      markers.push({ time: t, position: 'bottom', shape: 'circle', color: 'transparent', text: '.', textColor: c, size: 'tiny', id });
-    if (strength[i] === 1 && showStrength) dot(white, 'char0');
-    if (strength[i] === 2 && showStrength) dot(yellow, 'char1');
-    if (strength[i] === 3 && showStrength) dot(lime, 'char2');
-
-    // strength[k] / barRange[1] / volume[1] before the first bar are na (comparisons false); bool history is false
-    const s1 = i >= 1 ? strength[i - 1] : NaN;
-    const s2 = i >= 2 ? strength[i - 2] : NaN;
-    const s3 = i >= 3 ? strength[i - 3] : NaN;
-    const bc2 = i >= 2 ? barColor[i - 2] : false;
-    const bc3 = i >= 3 ? barColor[i - 3] : false;
-    const range1 = i >= 1 ? barRange[i - 1] : NaN;
-    const vol1 = i >= 1 ? volume[i - 1] : NaN;
-    const high1 = i >= 1 ? high[i - 1] : NaN;
-    const low1 = i >= 1 ? low[i - 1] : NaN;
-    const validPattern = !(s3 >= detectLevel && bc3 === bc2)
-      && s2 >= detectLevel && s1 === 0
-      && (gt(barRange[i], range1) || gt(volume[i], vol1));
-
-    const hl2 = (b.high + b.low) / 2;
-    let bullCond = gt(b.close, b.open) && gt(b.high, high1) && gt(b.close, hl2) && validPattern;
-    let bearCond = lt(b.close, b.open) && lt(b.low, low1) && lt(b.close, hl2) && validPattern;
-
-    isLowest[i] = eq(lowest[i], b.low);
-    const lo1 = i >= 1 ? isLowest[i - 1] : false;
-    const lo2 = i >= 2 ? isLowest[i - 2] : false;
-    if (!(isLowest[i] || lo1 || lo2) && !showCont) bullCond = false;
-
-    isHighest[i] = eq(highest[i], b.high);
-    const hi1 = i >= 1 ? isHighest[i - 1] : false;
-    const hi2 = i >= 2 ? isHighest[i - 2] : false;
-    if (!(isHighest[i] || hi1 || hi2) && !showCont) bearCond = false;
-
-    // plotchar(bullCond, char = symbolUp, location = location.belowbar, color = plotColor, size = size.tiny)
-    if (bullCond) {
-      markers.push({ time: t, position: 'belowBar', shape: 'circle', color: 'transparent', text: symbolUp,
-        textColor: plotColor, size: 'tiny', id: 'char3' });
-    }
-    // plotchar(bearCond, char = symbolDown, location = location.abovebar, color = plotColor, size = size.tiny)
-    if (bearCond) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: 'transparent', text: symbolDown,
-        textColor: plotColor, size: 'tiny', id: 'char4' });
-    }
-
-    // reqConfirm = volume > avgVolume and barRange > avgRange; alert() on bullCond, else on bearCond
-    const reqConfirm = gt(volume[i], avgVolume[i]) && gt(barRange[i], avgRange[i]);
-    const freq = reqConfirm ? 'once_per_bar' : 'once_per_bar_close';
-    if (bullCond) alertCalls.push({ time: t, message: 'Bullish R/C Detected', freq });
-    else if (bearCond) alertCalls.push({ time: t, message: 'Bearish R/C Detected', freq });
-  }
-
+  const barColor = (b: Bar) => gt(b.open, b.close); // open > close
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    alertCalls,
+    init() {
+      const avgRange = new WindowSma(length);
+      const avgVolume = new WindowSma(length);
+      const avgRngVol = new WindowSma(length);
+      const lowest = new WindowExtreme(true, length);
+      const highest = new WindowExtreme(false, length);
+      const s: ThreeBarRun = {
+        avgRange, avgVolume, avgRngVol, lowest, highest, strength: [], isLowest: [], isHighest: [], markers: [],
+        alertCalls: [],
+        steps: [avgRange, avgVolume, avgRngVol, lowest, highest], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.alertCalls];
+      s.series = [s.strength, s.isLowest, s.isHighest];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const volume = b.volume ?? NaN;
+      const barRange = b.high - b.low;
+      const rngVol = barRange * volume;
+      const avgRange = s.avgRange.step(barRange);
+      const avgVolume = s.avgVolume.step(volume);
+      const avgRngVol = s.avgRngVol.step(rngVol);
+      const lowest = s.lowest.step(b.low);
+      const highest = s.highest.step(b.high);
+
+      const condRange = gt(barRange, coeff * avgRange) ? 1 : 0;
+      const condVol = gt(volume, coeff * avgVolume) ? 1 : 0;
+      const condRngVol = gt(rngVol, coeff * avgRngVol) ? 1 : 0;
+      const strength = condRange + condVol + condRngVol;
+      s.strength[i] = strength;
+
+      // plotchar(strength == k and showStrength, char = ".", location = location.bottom, size = size.tiny)
+      // `id`: the plotchar output (char0 to char4 in declaration order)
+      if (showStrength && strength >= 1 && strength <= 3) {
+        const c = strength === 1 ? white : strength === 2 ? yellow : lime;
+        s.markers.push({ time: t, position: 'bottom', shape: 'circle', color: 'transparent', text: '.', textColor: c, size: 'tiny',
+          id: `char${strength - 1}` });
+      }
+
+      // strength[k] / barRange[1] / volume[1] before the first bar are na (comparisons false); bool history is false
+      const b1 = i >= 1 ? bars[i - 1] : undefined;
+      const s1 = i >= 1 ? s.strength[i - 1] : NaN;
+      const s2 = i >= 2 ? s.strength[i - 2] : NaN;
+      const s3 = i >= 3 ? s.strength[i - 3] : NaN;
+      const bc2 = i >= 2 ? barColor(bars[i - 2]) : false;
+      const bc3 = i >= 3 ? barColor(bars[i - 3]) : false;
+      const range1 = b1 ? b1.high - b1.low : NaN;
+      const vol1 = b1 ? b1.volume ?? NaN : NaN;
+      const high1 = b1 ? b1.high : NaN;
+      const low1 = b1 ? b1.low : NaN;
+      const validPattern = !(s3 >= detectLevel && bc3 === bc2)
+        && s2 >= detectLevel && s1 === 0
+        && (gt(barRange, range1) || gt(volume, vol1));
+
+      const hl2 = (b.high + b.low) / 2;
+      let bullCond = gt(b.close, b.open) && gt(b.high, high1) && gt(b.close, hl2) && validPattern;
+      let bearCond = lt(b.close, b.open) && lt(b.low, low1) && lt(b.close, hl2) && validPattern;
+
+      const isLowest = eq(lowest, b.low);
+      s.isLowest[i] = isLowest;
+      const lo1 = i >= 1 ? s.isLowest[i - 1] : false;
+      const lo2 = i >= 2 ? s.isLowest[i - 2] : false;
+      if (!(isLowest || lo1 || lo2) && !showCont) bullCond = false;
+
+      const isHighest = eq(highest, b.high);
+      s.isHighest[i] = isHighest;
+      const hi1 = i >= 1 ? s.isHighest[i - 1] : false;
+      const hi2 = i >= 2 ? s.isHighest[i - 2] : false;
+      if (!(isHighest || hi1 || hi2) && !showCont) bearCond = false;
+
+      // plotchar(bullCond, char = symbolUp, location = location.belowbar, color = plotColor, size = size.tiny)
+      if (bullCond) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'circle', color: 'transparent', text: symbolUp,
+          textColor: plotColor, size: 'tiny', id: 'char3' });
+      }
+      // plotchar(bearCond, char = symbolDown, location = location.abovebar, color = plotColor, size = size.tiny)
+      if (bearCond) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: 'transparent', text: symbolDown,
+          textColor: plotColor, size: 'tiny', id: 'char4' });
+      }
+
+      // reqConfirm = volume > avgVolume and barRange > avgRange; alert() on bullCond, else on bearCond
+      const reqConfirm = gt(volume, avgVolume) && gt(barRange, avgRange);
+      const freq = reqConfirm ? 'once_per_bar' : 'once_per_bar_close';
+      if (bullCond) s.alertCalls.push({ time: t, message: 'Bullish R/C Detected', freq });
+      else if (bearCond) s.alertCalls.push({ time: t, message: 'Bearish R/C Detected', freq });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ThreeBarReversalContinuationInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ThreeBarReversalContinuationInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const hasAlertFunction = true;
 
 export const ThreeBarReversalContinuation = {
-  calculate, metadata, defaultInputs, inputConfig, plotConfig, hasAlertFunction,
+  calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hasAlertFunction,
 };

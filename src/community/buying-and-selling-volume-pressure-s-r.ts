@@ -14,8 +14,10 @@
  * Original notice: © DinoTradez
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BuyingAndSellingVolumePressureSRInputs {
   /** SMA / standard deviation length of the mid line */
@@ -60,97 +62,148 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <= EPS;
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+type Point = { time: number; value: number };
+
+interface PressureVars {
+  /** ta.cum of the buying / selling volume */
+  sb: number;
+  ss: number;
+  /** var float trendState = 0 */
+  trendState: number;
+  /** trendState[1] (na on bar 0) */
+  prevTrend: number;
+}
+
+interface PressureRun extends BarRunState<PressureVars> {
+  sma: WindowSma;
+  dev: WindowStdev;
+  cumBuy: number[];
+  cumSell: number[];
+  cBuy: number[];
+  cSell: number[];
+  support: number[];
+  resistance: number[];
+  mid: number[];
+  plots: Point[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<BuyingAndSellingVolumePressureSRInputs>): BarStudy<PressureRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { length, devMultiplier, lookback } = cfg;
+  const nz = (x: number) => (Number.isFinite(x) ? x : 0);
+  const textColor = color.blue; // Pine plotshape default text colour
+  return {
+    init() {
+      const s: PressureRun = {
+        sma: new WindowSma(length), dev: new WindowStdev(length), cumBuy: [], cumSell: [], cBuy: [], cSell: [],
+        support: [], resistance: [], mid: [], plots: [[], [], [], [], []], markers: [],
+        steps: [], vars: { sb: 0, ss: 0, trendState: 0, prevTrend: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.sma, s.dev];
+      s.lists = [s.markers];
+      s.series = [s.cumBuy, s.cumSell, s.cBuy, s.cSell, s.support, s.resistance, s.mid, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const vol = b.volume ?? NaN;
+      const denominator = b.high - b.low;
+      // denominator != 0 (Pine ==: within 1e-10)
+      const nonZero = !isNaN(denominator) && Math.abs(denominator) > EPS;
+      const buying = nonZero ? (vol * (b.close - b.low)) / denominator : 0.0;
+      const selling = nonZero ? (vol * (b.high - b.close)) / denominator : 0.0;
+      // ta.cum skips na values (keeps the previous sum)
+      if (!isNaN(buying)) v.sb += buying;
+      if (!isNaN(selling)) v.ss += selling;
+      s.cumBuy[i] = v.sb;
+      s.cumSell[i] = v.ss;
+      const cBuy = nz(i - lookback >= 0 ? v.sb - s.cumBuy[i - lookback] : NaN);
+      const cSell = nz(i - lookback >= 0 ? v.ss - s.cumSell[i - lookback] : NaN);
+      s.cBuy[i] = cBuy;
+      s.cSell[i] = cSell;
+
+      const bullishCross = i > 0 && le(s.cBuy[i - 1], s.cSell[i - 1]) && gt(cBuy, cSell);
+      const bearishCross = i > 0 && ge(s.cBuy[i - 1], s.cSell[i - 1]) && lt(cBuy, cSell);
+      const prevTrend = v.prevTrend;
+      let trendState: number;
+      if (bullishCross) trendState = 1;
+      else if (bearishCross) trendState = -1;
+      else trendState = prevTrend; // trendState := trendState[1]
+      v.trendState = trendState;
+
+      const prevSupport = i > 0 ? s.support[i - 1] : NaN;
+      let support: number;
+      if (bullishCross) support = b.low;
+      else if (eq(trendState, 1) && eq(prevTrend, 1)) support = isNaN(prevSupport) ? b.low : Math.min(prevSupport, b.low);
+      else if (isNaN(prevSupport)) support = b.low;
+      else support = prevSupport;
+      s.support[i] = support;
+
+      const prevResistance = i > 0 ? s.resistance[i - 1] : NaN;
+      let resistance: number;
+      if (bearishCross) resistance = b.high;
+      else if (eq(trendState, -1) && eq(prevTrend, -1)) resistance = isNaN(prevResistance) ? b.high : Math.max(prevResistance, b.high);
+      else if (isNaN(prevResistance)) resistance = b.high;
+      else resistance = prevResistance;
+      s.resistance[i] = resistance;
+
+      v.prevTrend = trendState;
+
+      const rawMid = (support + resistance) / 2.0;
+      const mid = s.sma.step(rawMid);
+      const sd = s.dev.step(rawMid);
+      s.mid[i] = mid;
+      const upper = mid + devMultiplier * sd;
+      const lower = mid - devMultiplier * sd;
+
+      const t = b.time;
+      const f = (x: number) => (Number.isFinite(x) ? x : NaN);
+      s.plots[0][i] = { time: t, value: f(support) };
+      s.plots[1][i] = { time: t, value: f(resistance) };
+      s.plots[2][i] = { time: t, value: f(mid) };
+      s.plots[3][i] = { time: t, value: f(upper) };
+      s.plots[4][i] = { time: t, value: f(lower) };
+
+      if (i >= 1) {
+        const c = b.close;
+        const c1 = bars[i - 1].close;
+        if (le(c1, s.mid[i - 1]) && gt(c, mid)) {
+          s.markers.push({ time: t, position: 'belowBar', shape: 'arrowUp', color: color.green, size: 'tiny', text: 'Buy', textColor });
+        }
+        if (ge(c1, s.mid[i - 1]) && lt(c, mid)) {
+          s.markers.push({ time: t, position: 'aboveBar', shape: 'arrowDown', color: color.red, size: 'tiny', text: 'Sell', textColor });
+        }
+      }
+    },
+    result(s) {
+      const [plot0, plot1, plot2, plot3, plot4] = s.plots.map((p) => p.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0, plot1, plot2, plot3, plot4 },
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BuyingAndSellingVolumePressureSRInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<BuyingAndSellingVolumePressureSRInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const { length, devMultiplier, lookback } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  // ta.cum of the buying / selling volume
-  const cumBuy: number[] = new Array(n);
-  const cumSell: number[] = new Array(n);
-  let sb = 0;
-  let ss = 0;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const vol = b.volume ?? NaN;
-    const denominator = b.high - b.low;
-    // denominator != 0 (Pine ==: within 1e-10)
-    const nonZero = !isNaN(denominator) && Math.abs(denominator) > EPS;
-    const buying = nonZero ? (vol * (b.close - b.low)) / denominator : 0.0;
-    const selling = nonZero ? (vol * (b.high - b.close)) / denominator : 0.0;
-    // ta.cum skips na values (keeps the previous sum)
-    if (!isNaN(buying)) sb += buying;
-    if (!isNaN(selling)) ss += selling;
-    cumBuy[i] = sb;
-    cumSell[i] = ss;
-  }
-  const nz = (x: number) => (Number.isFinite(x) ? x : 0);
-  const cBuy = cumBuy.map((v, i) => nz(i - lookback >= 0 ? v - cumBuy[i - lookback] : NaN));
-  const cSell = cumSell.map((v, i) => nz(i - lookback >= 0 ? v - cumSell[i - lookback] : NaN));
-
-  const support: number[] = new Array(n);
-  const resistance: number[] = new Array(n);
-  let trendState = 0; // var float trendState = 0
-  let prevTrend = NaN; // trendState[1] (na on bar 0)
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const bullishCross = i > 0 && le(cBuy[i - 1], cSell[i - 1]) && gt(cBuy[i], cSell[i]);
-    const bearishCross = i > 0 && ge(cBuy[i - 1], cSell[i - 1]) && lt(cBuy[i], cSell[i]);
-    if (bullishCross) trendState = 1;
-    else if (bearishCross) trendState = -1;
-    else trendState = prevTrend; // trendState := trendState[1]
-
-    const prevSupport = i > 0 ? support[i - 1] : NaN;
-    if (bullishCross) support[i] = b.low;
-    else if (eq(trendState, 1) && eq(prevTrend, 1)) support[i] = isNaN(prevSupport) ? b.low : Math.min(prevSupport, b.low);
-    else if (isNaN(prevSupport)) support[i] = b.low;
-    else support[i] = prevSupport;
-
-    const prevResistance = i > 0 ? resistance[i - 1] : NaN;
-    if (bearishCross) resistance[i] = b.high;
-    else if (eq(trendState, -1) && eq(prevTrend, -1)) resistance[i] = isNaN(prevResistance) ? b.high : Math.max(prevResistance, b.high);
-    else if (isNaN(prevResistance)) resistance[i] = b.high;
-    else resistance[i] = prevResistance;
-
-    prevTrend = trendState;
-  }
-
-  const rawMid = support.map((s, i) => (s + resistance[i]) / 2.0);
-  const rawMidSeries = Series.fromArray(bars, rawMid);
-  const mid = A(ta.sma(rawMidSeries, length));
-  const sd = A(ta.stdev(rawMidSeries, length));
-  const upper = mid.map((m, i) => m + devMultiplier * sd[i]);
-  const lower = mid.map((m, i) => m - devMultiplier * sd[i]);
-
-  const t = (i: number) => bars[i].time;
-  const plot = (v: number[]) => v.map((x, i) => ({ time: t(i), value: Number.isFinite(x) ? x : NaN }));
-
-  const markers: MarkerData[] = [];
-  const textColor = color.blue; // Pine plotshape default text colour
-  for (let i = 1; i < n; i++) {
-    const c = bars[i].close;
-    const c1 = bars[i - 1].close;
-    if (le(c1, mid[i - 1]) && gt(c, mid[i])) {
-      markers.push({ time: t(i), position: 'belowBar', shape: 'arrowUp', color: color.green, size: 'tiny', text: 'Buy', textColor });
-    }
-    if (ge(c1, mid[i - 1]) && lt(c, mid[i])) {
-      markers.push({ time: t(i), position: 'aboveBar', shape: 'arrowDown', color: color.red, size: 'tiny', text: 'Sell', textColor });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: plot(support), plot1: plot(resistance), plot2: plot(mid), plot3: plot(upper), plot4: plot(lower) },
-    markers,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const BuyingAndSellingVolumePressureSR = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

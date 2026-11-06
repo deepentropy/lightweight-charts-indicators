@@ -12,8 +12,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, str, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, str, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { AlertCall, MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -90,78 +92,126 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AdvancedDualHullCrossSuiteInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alertCalls: AlertCall[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const zip = (f: (...v: number[]) => number, ...xs: number[][]) => xs[0].map((_v, i) => f(...xs.map((x) => x[i])));
+type Ma = { step(v: number): number; commit(): void };
+
+/** ta.wma(src, length) with a constant length */
+function wmaStep(length: number): Ma {
+  const m = taStep.wma();
+  return { step: (v) => m.step(v, length), commit: () => m.commit() };
+}
+
+/** One Hull line: the inner averages and the outer one, stepped bar by bar */
+function hullStep(mode: string, length: number): { step(v: number): number; steps: Committable[] } {
   // Pine v6: int / int keeps the fractional quotient; ta.wma / ta.ema truncate the length
-  const wma = (x: number[], len: number) => A(ta.wma(S(x), len));
-  const ema = (x: number[], len: number) => A(ta.ema(S(x), len));
-
-  const hma = (x: number[], length: number) =>
-    wma(zip((a, b) => 2 * a - b, wma(x, length / 2), wma(x, length)), Math.round(Math.sqrt(length)));
-  const ehma = (x: number[], length: number) =>
-    ema(zip((a, b) => 2 * a - b, ema(x, length / 2), ema(x, length)), Math.round(Math.sqrt(length)));
-  const thma = (x: number[], length: number) =>
-    wma(zip((a, b, c) => a * 3 - b - c, wma(x, length / 3), wma(x, length / 2), wma(x, length)), length);
-  const getHull = (mode: string, x: number[], len: number): number[] => {
-    switch (mode) {
-      case 'Hma': return hma(x, len);
-      case 'Ehma': return ehma(x, len);
-      case 'Thma': return thma(x, len / 2);
-      default: return new Array(n).fill(NaN);
+  switch (mode) {
+    case 'Hma': {
+      const a = wmaStep(length / 2), b = wmaStep(length), c = wmaStep(Math.round(Math.sqrt(length)));
+      return { step: (v) => { const x = a.step(v); const y = b.step(v); return c.step(2 * x - y); }, steps: [a, b, c] };
     }
-  };
-
-  const mhull1 = getHull(cfg.mode1, A(getSourceSeries(bars, cfg.src1)), cfg.len1);
-  const mhull2 = getHull(cfg.mode2, A(getSourceSeries(bars, cfg.src2)), cfg.len2);
-  const buy = A(ta.crossover(S(mhull2), S(mhull1)));
-  const sell = A(ta.crossunder(S(mhull2), S(mhull1)));
-
-  const val = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const rising = (x: number[], i: number) => i > 0 && gt(x[i], x[i - 1]);
-  const plot0 = bars.map((b, i) => ({
-    time: b.time, value: cfg.vis1 ? val(mhull1[i]) : NaN, color: rising(mhull1, i) ? cfg.colorUp1 : cfg.colorDown1,
-  }));
-  const plot1 = bars.map((b, i) => ({
-    time: b.time, value: cfg.vis2 ? val(mhull2[i]) : NaN, color: rising(mhull2, i) ? cfg.colorUp2 : cfg.colorDown2,
-  }));
-
-  // plotshape(buySignal ? mhull2 : na, "Buy", shape.labelup, location.absolute, color.green, 0, "BUY", color.white,
-  // size = size.small); plotshape(sellSignal ? mhull2 : na, "Sell", shape.labeldown, ...)
-  const markers: MarkerData[] = [];
-  const alertCalls: AlertCall[] = [];
-  for (let i = 0; i < n; i++) {
-    // if buySignal: alert("Bullish Cross at " + str.tostring(mhull2), alert.freq_once_per_bar_close); sell alike
-    if (buy[i]) alertCalls.push({ time: bars[i].time, message: 'Bullish Cross at ' + str.tostring(mhull2[i]), freq: 'once_per_bar_close' });
-    if (sell[i]) alertCalls.push({ time: bars[i].time, message: 'Bearish Cross at ' + str.tostring(mhull2[i]), freq: 'once_per_bar_close' });
-    const price = val(mhull2[i]);
-    if (Number.isNaN(price)) continue;
-    if (buy[i]) {
-      markers.push({ time: bars[i].time, position: 'atPriceBottom', price, shape: 'labelUp', color: color.green,
-        text: 'BUY', textColor: color.white, size: 'small' });
+    case 'Ehma': {
+      const a = taStep.ema(length / 2), b = taStep.ema(length), c = taStep.ema(Math.round(Math.sqrt(length)));
+      return { step: (v) => { const x = a.step(v); const y = b.step(v); return c.step(2 * x - y); }, steps: [a, b, c] };
     }
-    if (sell[i]) {
-      markers.push({ time: bars[i].time, position: 'atPriceTop', price, shape: 'labelDown', color: color.red,
-        text: 'SELL', textColor: color.white, size: 'small' });
+    case 'Thma': {
+      const l = length / 2;
+      const a = wmaStep(l / 3), b = wmaStep(l / 2), c = wmaStep(l), d = wmaStep(l);
+      return {
+        step: (v) => { const x = a.step(v); const y = b.step(v); const z = c.step(v); return d.step(x * 3 - y - z); },
+        steps: [a, b, c, d],
+      };
     }
+    default: return { step: () => NaN, steps: [] };
   }
+}
 
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alertCalls: AlertCall[] };
+
+interface HullRun extends BarRunState<Record<string, never>> {
+  hull1: ReturnType<typeof hullStep>;
+  hull2: ReturnType<typeof hullStep>;
+  buy: ReturnType<typeof taStep.crossover>;
+  sell: ReturnType<typeof taStep.crossunder>;
+  m1: number[];
+  m2: number[];
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+  alertCalls: AlertCall[];
+}
+
+function study(inputs: Partial<AdvancedDualHullCrossSuiteInputs>): BarStudy<HullRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value1 = barSource(cfg.src1);
+  const value2 = barSource(cfg.src2);
+  const val = (v: number) => (Number.isFinite(v) ? v : NaN);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    markers,
-    alertCalls,
+    fullRunReason: () => (isBarSource(cfg.src1) && isBarSource(cfg.src2) ? null : 'source of another study'),
+    init() {
+      const hull1 = hullStep(cfg.mode1, cfg.len1);
+      const hull2 = hullStep(cfg.mode2, cfg.len2);
+      const buy = taStep.crossover();
+      const sell = taStep.crossunder();
+      const s: HullRun = {
+        hull1, hull2, buy, sell, m1: [], m2: [], plot0: [], plot1: [], markers: [], alertCalls: [],
+        steps: [...hull1.steps, ...hull2.steps, buy, sell], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.alertCalls];
+      s.series = [s.m1, s.m2, s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const h1 = s.hull1.step(value1(b));
+      const h2 = s.hull2.step(value2(b));
+      s.m1[i] = h1;
+      s.m2[i] = h2;
+      const isBuy = s.buy.step(h2, h1);
+      const isSell = s.sell.step(h2, h1);
+      const up1 = i > 0 && gt(h1, s.m1[i - 1]);
+      const up2 = i > 0 && gt(h2, s.m2[i - 1]);
+      s.plot0[i] = { time: b.time, value: cfg.vis1 ? val(h1) : NaN, color: up1 ? cfg.colorUp1 : cfg.colorDown1 };
+      s.plot1[i] = { time: b.time, value: cfg.vis2 ? val(h2) : NaN, color: up2 ? cfg.colorUp2 : cfg.colorDown2 };
+
+      // plotshape(buySignal ? mhull2 : na, "Buy", shape.labelup, location.absolute, color.green, 0, "BUY", color.white,
+      // size = size.small); plotshape(sellSignal ? mhull2 : na, "Sell", shape.labeldown, ...)
+      // if buySignal: alert("Bullish Cross at " + str.tostring(mhull2), alert.freq_once_per_bar_close); sell alike
+      if (isBuy) s.alertCalls.push({ time: b.time, message: 'Bullish Cross at ' + str.tostring(h2), freq: 'once_per_bar_close' });
+      if (isSell) s.alertCalls.push({ time: b.time, message: 'Bearish Cross at ' + str.tostring(h2), freq: 'once_per_bar_close' });
+      const price = val(h2);
+      if (Number.isNaN(price)) return;
+      if (isBuy) {
+        s.markers.push({ time: b.time, position: 'atPriceBottom', price, shape: 'labelUp', color: color.green,
+          text: 'BUY', textColor: color.white, size: 'small' });
+      }
+      if (isSell) {
+        s.markers.push({ time: b.time, position: 'atPriceTop', price, shape: 'labelDown', color: color.red,
+          text: 'SELL', textColor: color.white, size: 'small' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdvancedDualHullCrossSuiteInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AdvancedDualHullCrossSuiteInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AdvancedDualHullCrossSuite = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

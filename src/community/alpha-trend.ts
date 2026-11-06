@@ -13,9 +13,11 @@
  * Reference: "AlphaTrend" by KivancOzbilgic
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AlphaTrendInputs {
   coeff: number;
@@ -49,109 +51,171 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AlphaTrendInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface AlphaVars {
+  /** Bars of the last buySignalk / sellSignalk (-1: none yet) */
+  lastBuy: number;
+  lastSell: number;
+}
+
+interface AlphaRun extends BarRunState<AlphaVars> {
+  tr: ReturnType<typeof taStep.tr>;
+  atr: WindowSma;
+  filter: { step(b: Bar): number; commit(): void };
+  AT: number[];
+  buy: boolean[];
+  sell: boolean[];
+  O1: number[];
+  O2: number[];
+  priceCross: boolean[];
+  candleOver: boolean[];
+  candleUnder: boolean[];
+  plot0: Point[];
+  plot1: Point[];
+  fillColors: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<AlphaTrendInputs>): BarStudy<AlphaRun, Result> {
   const { coeff, period, useRSI, showSignals } = { ...defaultInputs, ...inputs };
-
-  const close = new Series(bars, (b) => b.close);
-  const high = new Series(bars, (b) => b.high);
-  const low = new Series(bars, (b) => b.low);
-  const hlc3 = new Series(bars, (b) => (b.high + b.low + b.close) / 3);
-
-  // ATR = SMA of TR (PineScript uses ta.sma(ta.tr, AP) here)
-  const trSeries = ta.tr(bars);
-  const atrArr = ta.sma(trSeries, period).toArray();
-
-  // Momentum filter
-  const filterArr = useRSI
-    ? ta.rsi(close, period).toArray()
-    : ta.mfi(hlc3, period, new Series(bars, (b) => b.volume!)).toArray();
-
-  const lowArr = low.toArray();
-  const highArr = high.toArray();
-
-  // Alerts on the original's AlphaTrend series: AlphaTrend := (filter >= 50) ? (upT < nz(AlphaTrend[1]) ?
-  // nz(AlphaTrend[1]) : upT) : (downT > nz(AlphaTrend[1]) ? nz(AlphaTrend[1]) : downT), na while the ATR is na
-  const AT: number[] = new Array(bars.length);
-  for (let i = 0; i < bars.length; i++) {
-    const atr = atrArr[i] ?? NaN;
-    const upT = (lowArr[i] ?? NaN) - atr * coeff;
-    const downT = (highArr[i] ?? NaN) + atr * coeff;
-    const prev = i > 0 && !Number.isNaN(AT[i - 1]) ? AT[i - 1] : 0;
-    AT[i] = (filterArr[i] ?? NaN) >= 50 ? (upT < prev ? prev : upT) : (downT > prev ? prev : downT);
-  }
-  const shift = <T,>(a: T[], k: number, na: T): T[] => a.map((_v, i) => (i >= k ? a[i - k] : na));
-  const AT2 = shift(AT, 2, NaN);
-  const closes = bars.map((b) => b.close), lows = bars.map((b) => b.low), highs = bars.map((b) => b.high);
-  // ta.barssince(cond): bars since cond was last true, na (NaN) before the first time
-  const barssince = (c: boolean[]) => {
-    let last = -1;
-    return c.map((f, i) => {
-      if (f) last = i;
-      return last < 0 ? NaN : i - last;
-    });
-  };
-  const buySignalk = crossedOver(AT, AT2);
-  const sellSignalk = crossedUnder(AT, AT2);
-  const buy1 = shift(buySignalk, 1, false), sell1 = shift(sellSignalk, 1, false);
-  const K1 = barssince(buySignalk), K2 = barssince(sellSignalk);
-  const O1 = barssince(buy1), O2 = barssince(sell1);
-  const O1p = shift(O1, 1, NaN), O2p = shift(O2, 1, NaN);
-  const crossOverClose = crossedOver(closes, AT), crossUnderClose = crossedUnder(closes, AT);
-  const priceCross = crossOverClose.map((f, i) => f || crossUnderClose[i]);
-  const candleOver = crossedOver(lows, AT);
-  const candleUnder = crossedUnder(highs, AT);
-  const flags: boolean[][] = [
-    // buySignalk and O1 > K2 / sellSignalk and O2 > K1
-    buySignalk.map((f, i) => f && O1[i] > K2[i]),
-    sellSignalk.map((f, i) => f && O2[i] > K1[i]),
-    // buySignalk[1] and O1[1] > K2 / sellSignalk[1] and O2[1] > K1
-    buy1.map((f, i) => f && O1p[i] > K2[i]),
-    sell1.map((f, i) => f && O2p[i] > K1[i]),
-    // ta.cross(close, AlphaTrend), ta.crossover(low, AlphaTrend), ta.crossunder(high, AlphaTrend)
-    priceCross,
-    candleOver,
-    candleUnder,
-    // the same on close[1] / low[1] / high[1] against AlphaTrend[1]: the crosses of the bar before
-    shift(priceCross, 1, false),
-    shift(candleOver, 1, false),
-    shift(candleUnder, 1, false),
-  ];
-
-  // k1 = plot(AlphaTrend), k2 = plot(AlphaTrend[2]): from the first ATR value; nz(AlphaTrend[1]) = 0 there, so the
-  // line starts at 0 while the filter is below 50
-  const plot0 = AT.map((v, i) => ({ time: bars[i].time, value: v }));
-  const plot1 = AT2.map((v, i) => ({ time: bars[i].time, value: v }));
-  const fillColors = AT.map((v, i) => {
-    if (Number.isNaN(v) || Number.isNaN(AT2[i])) return 'transparent';
-    return v > AT2[i] ? 'rgba(38,166,154,0.25)' : 'rgba(239,83,80,0.25)';
-  });
-
-  // plotshape(buySignalk and showsignalsk and O1 > K2 ? AlphaTrend[2] * 0.9999 : na, 'BUY', location.absolute,
-  //   shape.labelup, size.tiny, color #0022FC, textcolor white); SELL: AlphaTrend[2] * 1.0001, color.maroon
-  const markers: MarkerData[] = [];
-  if (showSignals) {
-    for (let i = 0; i < bars.length; i++) {
-      if (flags[0][i] && !Number.isNaN(AT2[i])) {
-        markers.push({ id: 'shape0', time: bars[i].time as number, position: 'atPriceBottom', price: AT2[i] * 0.9999,
-          shape: 'labelUp', color: '#0022FC', text: 'BUY', textColor: '#FFFFFF', size: 'tiny' });
-      }
-      if (flags[1][i] && !Number.isNaN(AT2[i])) {
-        markers.push({ id: 'shape1', time: bars[i].time as number, position: 'atPriceTop', price: AT2[i] * 1.0001,
-          shape: 'labelDown', color: '#880E4F', text: 'SELL', textColor: '#FFFFFF', size: 'tiny' });
-      }
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: '#2962FF' }, colors: fillColors }],
-    markers,
-    alerts: alertStates(alertConditions, bars, flags),
+    init() {
+      const tr = taStep.tr();
+      const atr = new WindowSma(period);
+      let filter: AlphaRun['filter'];
+      if (useRSI) {
+        const m = taStep.rsi(period);
+        filter = { step: (b) => m.step(b.close), commit: () => m.commit() };
+      } else {
+        const m = taStep.mfi(period);
+        filter = { step: (b) => m.step((b.high + b.low + b.close) / 3, b.volume!), commit: () => m.commit() };
+      }
+      const s: AlphaRun = {
+        tr, atr, filter, AT: [], buy: [], sell: [], O1: [], O2: [], priceCross: [], candleOver: [], candleUnder: [],
+        plot0: [], plot1: [], fillColors: [], markers: [],
+        flags: Array.from({ length: 10 }, () => []), times: Array.from({ length: 10 }, () => []),
+        steps: [tr, atr, filter],
+        vars: { lastBuy: -1, lastSell: -1 },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [
+        s.AT, s.buy, s.sell, s.O1, s.O2, s.priceCross, s.candleOver, s.candleUnder, s.plot0, s.plot1, s.fillColors,
+        ...s.flags,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const time = b.time as number;
+      const AT = s.AT;
+      // ATR = SMA of TR (PineScript uses ta.sma(ta.tr, AP) here)
+      const atr = s.atr.step(s.tr.step(b.high, b.low, b.close));
+      // Momentum filter: ta.rsi(close, AP), or ta.mfi(hlc3, AP)
+      const filter = s.filter.step(b);
+
+      // Alerts on the original's AlphaTrend series: AlphaTrend := (filter >= 50) ? (upT < nz(AlphaTrend[1]) ?
+      // nz(AlphaTrend[1]) : upT) : (downT > nz(AlphaTrend[1]) ? nz(AlphaTrend[1]) : downT), na while the ATR is na
+      const upT = b.low - atr * coeff;
+      const downT = b.high + atr * coeff;
+      const prev = i > 0 && !Number.isNaN(AT[i - 1]) ? AT[i - 1] : 0;
+      const at = filter >= 50 ? (upT < prev ? prev : upT) : (downT > prev ? prev : downT);
+      AT[i] = at;
+      const at2 = i >= 2 ? AT[i - 2] : NaN;
+      const pAt = i > 0 ? AT[i - 1] : NaN;
+      const pAt2 = i >= 3 ? AT[i - 3] : NaN;
+      // buySignalk = ta.crossover(AlphaTrend, AlphaTrend[2]), sellSignalk = ta.crossunder(AlphaTrend, AlphaTrend[2])
+      const buy = at > at2 && pAt <= pAt2;
+      const sell = at < at2 && pAt >= pAt2;
+      s.buy[i] = buy;
+      s.sell[i] = sell;
+      // K1 = ta.barssince(buySignalk), K2 = ta.barssince(sellSignalk), O1 = ta.barssince(buySignalk[1]),
+      // O2 = ta.barssince(sellSignalk[1]): na before the first time
+      const K1 = buy ? 0 : v.lastBuy < 0 ? NaN : i - v.lastBuy;
+      const K2 = sell ? 0 : v.lastSell < 0 ? NaN : i - v.lastSell;
+      const O1 = v.lastBuy < 0 ? NaN : i - v.lastBuy - 1;
+      const O2 = v.lastSell < 0 ? NaN : i - v.lastSell - 1;
+      s.O1[i] = O1;
+      s.O2[i] = O2;
+      if (buy) v.lastBuy = i;
+      if (sell) v.lastSell = i;
+      const buy1 = i > 0 && s.buy[i - 1];
+      const sell1 = i > 0 && s.sell[i - 1];
+      const O1p = i > 0 ? s.O1[i - 1] : NaN;
+      const O2p = i > 0 ? s.O2[i - 1] : NaN;
+      // ta.cross(close, AlphaTrend), ta.crossover(low, AlphaTrend), ta.crossunder(high, AlphaTrend)
+      const p = i > 0 ? bars[i - 1] : null;
+      const pc = p ? p.close : NaN;
+      const pl = p ? p.low : NaN;
+      const ph = p ? p.high : NaN;
+      const priceCross = (b.close > at && pc <= pAt) || (b.close < at && pc >= pAt);
+      const candleOver = b.low > at && pl <= pAt;
+      const candleUnder = b.high < at && ph >= pAt;
+      s.priceCross[i] = priceCross;
+      s.candleOver[i] = candleOver;
+      s.candleUnder[i] = candleUnder;
+      const f = s.flags;
+      // buySignalk and O1 > K2 / sellSignalk and O2 > K1
+      f[0][i] = buy && O1 > K2;
+      f[1][i] = sell && O2 > K1;
+      // buySignalk[1] and O1[1] > K2 / sellSignalk[1] and O2[1] > K1
+      f[2][i] = buy1 && O1p > K2;
+      f[3][i] = sell1 && O2p > K1;
+      f[4][i] = priceCross;
+      f[5][i] = candleOver;
+      f[6][i] = candleUnder;
+      // the same on close[1] / low[1] / high[1] against AlphaTrend[1]: the crosses of the bar before
+      f[7][i] = i > 0 && s.priceCross[i - 1];
+      f[8][i] = i > 0 && s.candleOver[i - 1];
+      f[9][i] = i > 0 && s.candleUnder[i - 1];
+      for (let k = 0; k < 10; k++) if (f[k][i]) s.times[k].push(time);
+
+      // k1 = plot(AlphaTrend), k2 = plot(AlphaTrend[2]): from the first ATR value; nz(AlphaTrend[1]) = 0 there, so the
+      // line starts at 0 while the filter is below 50
+      s.plot0[i] = { time: b.time, value: at };
+      s.plot1[i] = { time: b.time, value: at2 };
+      s.fillColors[i] = Number.isNaN(at) || Number.isNaN(at2)
+        ? 'transparent'
+        : at > at2 ? 'rgba(38,166,154,0.25)' : 'rgba(239,83,80,0.25)';
+
+      // plotshape(buySignalk and showsignalsk and O1 > K2 ? AlphaTrend[2] * 0.9999 : na, 'BUY', location.absolute,
+      //   shape.labelup, size.tiny, color #0022FC, textcolor white); SELL: AlphaTrend[2] * 1.0001, color.maroon
+      if (showSignals) {
+        if (f[0][i] && !Number.isNaN(at2)) {
+          s.markers.push({ id: 'shape0', time, position: 'atPriceBottom', price: at2 * 0.9999,
+            shape: 'labelUp', color: '#0022FC', text: 'BUY', textColor: '#FFFFFF', size: 'tiny' });
+        }
+        if (f[1][i] && !Number.isNaN(at2)) {
+          s.markers.push({ id: 'shape1', time, position: 'atPriceTop', price: at2 * 1.0001,
+            shape: 'labelDown', color: '#880E4F', text: 'SELL', textColor: '#FFFFFF', size: 'tiny' });
+        }
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice() },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: '#2962FF' }, colors: s.fillColors.slice() }],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AlphaTrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AlphaTrendInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -168,4 +232,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert9', title: 'Candle CrossUnder Alarm After Bar Close', message: 'LAST BAR is BELOW ALPHATREND!' },
 ];
 
-export const AlphaTrend = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const AlphaTrend = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

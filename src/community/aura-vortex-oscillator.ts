@@ -12,8 +12,10 @@
  * Original notice: © Pineify
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AuraVortexOscillatorInputs {
   /** Length of the SMA / stdev of the z-score */
@@ -86,77 +88,111 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AuraVortexOscillatorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] };
+
+interface VortexRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  sd: WindowStdev;
+  ema: ReturnType<typeof taStep.ema>;
+  mesh: ReturnType<typeof taStep.ema>[];
+  crossUp: ReturnType<typeof taStep.crossover>;
+  crossDown: ReturnType<typeof taStep.crossunder>;
+  plots: Point[][];
+  fillColors: string[];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<AuraVortexOscillatorInputs>): BarStudy<VortexRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
-
-  // vortex_calc(close, len, preGain): z = (src - sma) / stdev (a plain division); atan(z * intensity) * 63.66
-  const ma = A(ta.sma(close, cfg.len));
-  const sd = A(ta.stdev(close, cfg.len));
-  const mainSignal = bars.map((b, i) => Math.atan(((b.close - ma[i]) / sd[i]) * cfg.preGain) * 63.66);
-  const smoothed = A(ta.ema(S(mainSignal), cfg.smooth));
-
-  // plot_aura(index) = ta.ema(mainSignal, smooth + index * 2), for index 1, 2, 4, 6, 8
-  const mesh = [1, 2, 4, 6, 8].map((k) => (cfg.meshEnabled
-    ? A(ta.ema(S(mainSignal), cfg.smooth + k * 2)) : new Array<number>(n).fill(NaN)));
   const meshCol = String(color.new(cfg.bullColor, 95));
   const bullFill = String(color.new(cfg.bullColor, 75));
   const bearFill = String(color.new(cfg.bearColor, 75));
-
-  const plots: Record<string, { time: number; value: number; color?: string }[]> = {};
-  mesh.forEach((m, k) => {
-    plots[`plot${k}`] = bars.map((b, i) => ({ time: b.time, value: m[i], color: meshCol }));
-  });
-  plots.plot5 = bars.map((b, i) => ({ time: b.time, value: smoothed[i], color: gt(smoothed[i], 0) ? cfg.bullColor : cfg.bearColor }));
-  plots.plot6 = bars.map((b, i) => ({ time: b.time, value: smoothed[i], color: GLOW_COL }));
-
-  // crossUp = ta.crossover(smoothed, 0); crossDown = ta.crossunder(smoothed, 0) (exact comparisons)
-  const crossUp = A(ta.crossover(S(smoothed), 0));
-  const crossDown = A(ta.crossunder(S(smoothed), 0));
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
   const bullBg = String(color.new(cfg.bullColor, 95));
   const bearBg = String(color.new(cfg.bearColor, 95));
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // plotshape(crossUp ? 0 : na, shape.circle, location.absolute, size = size.tiny)
-    if (crossUp[i] === 1) {
-      markers.push({ id: 'shape0', time: t, position: 'atPriceMiddle', price: 0, shape: 'circle', color: cfg.bullColor, size: 'tiny' });
-    }
-    if (crossDown[i] === 1) {
-      markers.push({ id: 'shape1', time: t, position: 'atPriceMiddle', price: 0, shape: 'circle', color: cfg.bearColor, size: 'tiny' });
-    }
-    if (gt(smoothed[i], 50)) bgColors.push({ time: t, color: bullBg });
-    else if (lt(smoothed[i], -50)) bgColors.push({ time: t, color: bearBg });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    hlines: [
-      { value: 0, options: { title: 'Equilibrium', color: String(color.new(cfg.neutColor, 50)), linestyle: 'dashed' } },
-      { value: 50, options: { title: 'Upper Boundary', color: String(color.new(cfg.bullColor, 80)), linestyle: 'dashed' } },
-      { value: -50, options: { title: 'Lower Boundary', color: String(color.new(cfg.bearColor, 80)), linestyle: 'dashed' } },
-    ],
-    // fill(m1, m5, color = smoothed > 0 ? color.new(bullColor, 75) : color.new(bearColor, 75))
-    fills: [{
-      plot1: 'plot0', plot2: 'plot4', options: { title: 'Vortex Aura Fill' },
-      colors: smoothed.map((v) => (gt(v, 0) ? bullFill : bearFill)),
-    }],
-    markers,
-    bgColors,
+    init() {
+      const s: VortexRun = {
+        sma: new WindowSma(cfg.len), sd: new WindowStdev(cfg.len), ema: taStep.ema(cfg.smooth),
+        // plot_aura(index) = ta.ema(mainSignal, smooth + index * 2), for index 1, 2, 4, 6, 8
+        mesh: cfg.meshEnabled ? [1, 2, 4, 6, 8].map((k) => taStep.ema(cfg.smooth + k * 2)) : [],
+        crossUp: taStep.crossover(), crossDown: taStep.crossunder(), plots: Array.from({ length: 7 }, () => []),
+        fillColors: [], markers: [], bgColors: [], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.sma, s.sd, s.ema, ...s.mesh, s.crossUp, s.crossDown];
+      s.lists = [s.markers, s.bgColors];
+      s.series = [...s.plots, s.fillColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      // vortex_calc(close, len, preGain): z = (src - sma) / stdev (a plain division); atan(z * intensity) * 63.66
+      const ma = s.sma.step(b.close);
+      const sd = s.sd.step(b.close);
+      const mainSignal = Math.atan(((b.close - ma) / sd) * cfg.preGain) * 63.66;
+      const smoothed = s.ema.step(mainSignal);
+      const p = s.plots;
+      for (let k = 0; k < 5; k++) {
+        p[k][i] = { time: t, value: cfg.meshEnabled ? s.mesh[k].step(mainSignal) : NaN, color: meshCol };
+      }
+      p[5][i] = { time: t, value: smoothed, color: gt(smoothed, 0) ? cfg.bullColor : cfg.bearColor };
+      p[6][i] = { time: t, value: smoothed, color: GLOW_COL };
+      // fill(m1, m5, color = smoothed > 0 ? color.new(bullColor, 75) : color.new(bearColor, 75))
+      s.fillColors[i] = gt(smoothed, 0) ? bullFill : bearFill;
+
+      // crossUp = ta.crossover(smoothed, 0); crossDown = ta.crossunder(smoothed, 0) (exact comparisons)
+      const crossUp = s.crossUp.step(smoothed, 0);
+      const crossDown = s.crossDown.step(smoothed, 0);
+      // plotshape(crossUp ? 0 : na, shape.circle, location.absolute, size = size.tiny)
+      if (crossUp) {
+        s.markers.push({ id: 'shape0', time: t, position: 'atPriceMiddle', price: 0, shape: 'circle', color: cfg.bullColor, size: 'tiny' });
+      }
+      if (crossDown) {
+        s.markers.push({ id: 'shape1', time: t, position: 'atPriceMiddle', price: 0, shape: 'circle', color: cfg.bearColor, size: 'tiny' });
+      }
+      if (gt(smoothed, 50)) s.bgColors.push({ time: t, color: bullBg });
+      else if (lt(smoothed, -50)) s.bgColors.push({ time: t, color: bearBg });
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(), plot6: p[6].slice(),
+        },
+        hlines: [
+          { value: 0, options: { title: 'Equilibrium', color: String(color.new(cfg.neutColor, 50)), linestyle: 'dashed' } },
+          { value: 50, options: { title: 'Upper Boundary', color: String(color.new(cfg.bullColor, 80)), linestyle: 'dashed' } },
+          { value: -50, options: { title: 'Lower Boundary', color: String(color.new(cfg.bearColor, 80)), linestyle: 'dashed' } },
+        ],
+        fills: [{
+          plot1: 'plot0', plot2: 'plot4', options: { title: 'Vortex Aura Fill' },
+          colors: s.fillColors.slice(),
+        }],
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AuraVortexOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AuraVortexOscillatorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AuraVortexOscillator = {
   calculate,
+  createRun,
   metadata,
+
   defaultInputs,
   inputConfig,
   plotConfig,

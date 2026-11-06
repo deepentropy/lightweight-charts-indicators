@@ -14,10 +14,12 @@
  * Original notice: © Uptrick
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
-import { barInterval, barTime } from '../bar-time';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { barTime } from '../bar-time';
 
 export interface UptrickTrendAnalysisInputs {
   /** Fast EMA period of the MACD */
@@ -86,152 +88,198 @@ const lt = (a: number, b: number) => b - a > EPS;
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<UptrickTrendAnalysisInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface UptrickVars {
+  /** ta.valuewhen(found, x, 1) histories: the last two values (older first) */
+  plMacd: readonly number[];
+  plLow: readonly number[];
+  phMacd: readonly number[];
+  phHigh: readonly number[];
+  /** Calls of the ta.barssince in _inRange (Pine `and` is lazy) */
+  plCalls: number;
+  phCalls: number;
+  /** ta.barssince(bullCond) / ta.barssince(bearCond) */
+  sinceBull: number;
+  sinceBear: number;
+}
+
+interface UptrickRun extends BarRunState<UptrickVars> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  sig: ReturnType<typeof taStep.ema>;
+  pl: PivotStep;
+  ph: PivotStep;
+  macd: number[];
+  plFound: boolean[];
+  phFound: boolean[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  plot4: Point[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+/** ta.valuewhen history: the value added on a bar where the condition is true */
+const pushed = (h: readonly number[], v: number): readonly number[] => (h.length < 2 ? [...h, v] : [h[1]!, v]);
+/** occurrence 1 of the history (na before two values) */
+const second = (h: readonly number[]): number => (h.length === 2 ? h[0]! : NaN);
+
+function study(inputs: Partial<UptrickTrendAnalysisInputs>): BarStudy<UptrickRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const lookbackRight = 5;
   const lookbackLeft = 5;
   const rangeUpper = 60;
   const rangeLower = 5;
   const fadeSteps = 1000;
-
-  const close = S(bars.map((b) => b.close));
-  const fastMA = A(ta.ema(close, cfg.fastInput));
-  const slowMA = A(ta.ema(close, cfg.slowInput));
-  const macd = fastMA.map((v, i) => v - slowMA[i]);
-  const signal = A(ta.ema(S(macd), cfg.signalInput));
-
-  // Divergences (the `if calculateDivergence` block runs on every bar or on none)
-  const plFound: boolean[] = new Array(n).fill(false);
-  const phFound: boolean[] = new Array(n).fill(false);
-  const bullCond: boolean[] = new Array(n).fill(false);
-  const bearCond: boolean[] = new Array(n).fill(false);
-  const macdLbr = (i: number) => (i - lookbackRight >= 0 ? macd[i - lookbackRight] : NaN);
-  if (cfg.calculateDivergence) {
-    const pivotLow = A(ta.pivotlow(S(macd), lookbackLeft, lookbackRight));
-    const pivotHigh = A(ta.pivothigh(S(macd), lookbackLeft, lookbackRight));
-    // ta.valuewhen(found, x, 1): x on the found bar before the latest one (the latest can be the current bar)
-    const plMacd: number[] = [];
-    const plLow: number[] = [];
-    const phMacd: number[] = [];
-    const phHigh: number[] = [];
-    // Pine `and` is lazy: the ta.barssince inside _inRange(...) only runs on the bars where the left side
-    // (macdLBR > ta.valuewhen(...)) is true, so it counts those calls. One state per call site.
-    let plCalls = NaN;
-    let phCalls = NaN;
-    for (let i = 0; i < n; i++) {
-      const m = macdLbr(i);
-      const lowLbr = i - lookbackRight >= 0 ? bars[i - lookbackRight].low : NaN;
-      const highLbr = i - lookbackRight >= 0 ? bars[i - lookbackRight].high : NaN;
-
-      // Regular bullish
-      plFound[i] = !isNaN(pivotLow[i]);
-      if (plFound[i]) {
-        plMacd.push(m);
-        plLow.push(lowLbr);
-      }
-      const vwPlMacd = plMacd.length >= 2 ? plMacd[plMacd.length - 2] : NaN;
-      const vwPlLow = plLow.length >= 2 ? plLow[plLow.length - 2] : NaN;
-      let macdHL = false;
-      if (gt(m, vwPlMacd)) {
-        // _inRange(plFound[1]): ta.barssince(plFound[1])
-        if (i > 0 && plFound[i - 1]) plCalls = 0;
-        else if (!isNaN(plCalls)) plCalls++;
-        macdHL = rangeLower <= plCalls && plCalls <= rangeUpper;
-      }
-      const priceLL = lt(lowLbr, vwPlLow);
-      bullCond[i] = priceLL && macdHL && plFound[i];
-
-      // Regular bearish
-      phFound[i] = !isNaN(pivotHigh[i]);
-      if (phFound[i]) {
-        phMacd.push(m);
-        phHigh.push(highLbr);
-      }
-      const vwPhMacd = phMacd.length >= 2 ? phMacd[phMacd.length - 2] : NaN;
-      const vwPhHigh = phHigh.length >= 2 ? phHigh[phHigh.length - 2] : NaN;
-      let macdLH = false;
-      if (lt(m, vwPhMacd)) {
-        if (i > 0 && phFound[i - 1]) phCalls = 0;
-        else if (!isNaN(phCalls)) phCalls++;
-        macdLH = rangeLower <= phCalls && phCalls <= rangeUpper;
-      }
-      const priceHH = gt(highLbr, vwPhHigh);
-      bearCond[i] = priceHH && macdLH && phFound[i];
-    }
-  }
-
-  const interval = barInterval(bars);
-  const plot0: Point[] = [];
-  const plot1: Point[] = [];
-  const plot2: Point[] = [];
-  const plot3: Point[] = [];
-  const plot4: Point[] = [];
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
   const shadowBull = String(color.new(SHADOW_BULL, cfg.shadowTransparency));
   const shadowBear = String(color.new(SHADOW_BEAR, cfg.shadowTransparency));
-  // ta.barssince(bullCond) / ta.barssince(bearCond), on every bar
-  let sinceBull = NaN;
-  let sinceBear = NaN;
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const m = macdLbr(i);
-    if (i - lookbackRight >= 0) {
-      // plot(plFound ? macdLBR : na, offset = -lookbackRight, color = bullCond ? bullish_color : na)
-      const tb = barTime(bars, i - lookbackRight, interval);
-      plot0.push({ time: tb, value: plFound[i] ? m : NaN, color: bullCond[i] ? BULLISH : 'transparent' });
-      plot1.push({ time: tb, value: phFound[i] ? m : NaN, color: bearCond[i] ? BEARISH : 'transparent' });
-      if (!isNaN(m)) {
-        // plotshape(bullCond ? macdLBR : na, offset = -lookbackRight, text = ' Bull ', shape.labelup, ...)
-        if (bullCond[i]) {
-          markers.push({ time: tb, position: 'atPriceBottom', price: m, shape: 'labelUp', color: BULLISH, text: ' Bull ', textColor: color.white });
-          markers.push({ time: tb, position: 'belowBar', shape: 'labelUp', color: BULLISH, text: ' Bull ', textColor: color.white, forceOverlay: true });
+  return {
+    init() {
+      const s: UptrickRun = {
+        fast: taStep.ema(cfg.fastInput), slow: taStep.ema(cfg.slowInput), sig: taStep.ema(cfg.signalInput),
+        pl: new PivotStep(lookbackLeft, lookbackRight, false), ph: new PivotStep(lookbackLeft, lookbackRight, true),
+        macd: [], plFound: [], phFound: [], plot0: [], plot1: [], plot2: [], plot3: [], plot4: [], markers: [],
+        barColors: [], flags: [[], []], times: [[], []],
+        steps: [],
+        vars: { plMacd: [], plLow: [], phMacd: [], phHigh: [], plCalls: NaN, phCalls: NaN, sinceBull: NaN, sinceBear: NaN },
+        lists: [], series: [],
+      };
+      s.steps = [s.fast, s.slow, s.sig, ...(cfg.calculateDivergence ? [s.pl, s.ph] : [])];
+      // plot0 / plot1 have one point per bar from bar lookbackRight on (drawn lookbackRight bars back)
+      s.lists = [s.plot0, s.plot1, s.markers, s.barColors, ...s.times];
+      s.series = [s.macd, s.plFound, s.phFound, s.plot2, s.plot3, s.plot4, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time as number;
+      const v = s.vars;
+      const fastMA = s.fast.step(b.close);
+      const slowMA = s.slow.step(b.close);
+      const macd = fastMA - slowMA;
+      s.macd[i] = macd;
+      const signal = s.sig.step(macd);
+      const m = i - lookbackRight >= 0 ? s.macd[i - lookbackRight] : NaN;
+
+      // Divergences (the `if calculateDivergence` block runs on every bar or on none)
+      let plFound = false;
+      let phFound = false;
+      let bullCond = false;
+      let bearCond = false;
+      if (cfg.calculateDivergence) {
+        const lowLbr = i - lookbackRight >= 0 ? bars[i - lookbackRight].low : NaN;
+        const highLbr = i - lookbackRight >= 0 ? bars[i - lookbackRight].high : NaN;
+
+        // Regular bullish
+        plFound = !isNaN(s.pl.step(i, macd));
+        if (plFound) {
+          v.plMacd = pushed(v.plMacd, m);
+          v.plLow = pushed(v.plLow, lowLbr);
         }
-        if (bearCond[i]) {
-          markers.push({ time: tb, position: 'atPriceTop', price: m, shape: 'labelDown', color: BEARISH, text: ' Bear ', textColor: color.white });
-          markers.push({ time: tb, position: 'aboveBar', shape: 'labelDown', color: BEARISH, text: ' Bear ', textColor: color.white, forceOverlay: true });
+        let macdHL = false;
+        // Pine `and` is lazy: the ta.barssince inside _inRange(...) only runs on the bars where the left side
+        // (macdLBR > ta.valuewhen(...)) is true, so it counts those calls. One state per call site.
+        if (gt(m, second(v.plMacd))) {
+          // _inRange(plFound[1]): ta.barssince(plFound[1])
+          if (i > 0 && s.plFound[i - 1]) v.plCalls = 0;
+          else if (!isNaN(v.plCalls)) v.plCalls++;
+          macdHL = rangeLower <= v.plCalls && v.plCalls <= rangeUpper;
+        }
+        const priceLL = lt(lowLbr, second(v.plLow));
+        bullCond = priceLL && macdHL && plFound;
+
+        // Regular bearish
+        phFound = !isNaN(s.ph.step(i, macd));
+        if (phFound) {
+          v.phMacd = pushed(v.phMacd, m);
+          v.phHigh = pushed(v.phHigh, highLbr);
+        }
+        let macdLH = false;
+        if (lt(m, second(v.phMacd))) {
+          if (i > 0 && s.phFound[i - 1]) v.phCalls = 0;
+          else if (!isNaN(v.phCalls)) v.phCalls++;
+          macdLH = rangeLower <= v.phCalls && v.phCalls <= rangeUpper;
+        }
+        const priceHH = gt(highLbr, second(v.phHigh));
+        bearCond = priceHH && macdLH && phFound;
+      }
+      s.plFound[i] = plFound;
+      s.phFound[i] = phFound;
+
+      if (i - lookbackRight >= 0) {
+        // plot(plFound ? macdLBR : na, offset = -lookbackRight, color = bullCond ? bullish_color : na)
+        const tb = barTime(bars, i - lookbackRight);
+        s.plot0.push({ time: tb, value: plFound ? m : NaN, color: bullCond ? BULLISH : 'transparent' });
+        s.plot1.push({ time: tb, value: phFound ? m : NaN, color: bearCond ? BEARISH : 'transparent' });
+        if (!isNaN(m)) {
+          // plotshape(bullCond ? macdLBR : na, offset = -lookbackRight, text = ' Bull ', shape.labelup, ...)
+          if (bullCond) {
+            s.markers.push({ time: tb, position: 'atPriceBottom', price: m, shape: 'labelUp', color: BULLISH, text: ' Bull ', textColor: color.white });
+            s.markers.push({ time: tb, position: 'belowBar', shape: 'labelUp', color: BULLISH, text: ' Bull ', textColor: color.white, forceOverlay: true });
+          }
+          if (bearCond) {
+            s.markers.push({ time: tb, position: 'atPriceTop', price: m, shape: 'labelDown', color: BEARISH, text: ' Bear ', textColor: color.white });
+            s.markers.push({ time: tb, position: 'aboveBar', shape: 'labelDown', color: BEARISH, text: ' Bear ', textColor: color.white, forceOverlay: true });
+          }
         }
       }
-    }
 
-    const up = gt(macd[i], signal[i]);
-    plot2.push({ time: t, value: macd[i], color: up ? BULLISH : BEARISH });
-    plot3.push({ time: t, value: signal[i], color: color.orange });
-    plot4.push({ time: t, value: macd[i], color: up ? shadowBull : shadowBear });
+      const up = gt(macd, signal);
+      s.plot2[i] = { time: t, value: macd, color: up ? BULLISH : BEARISH };
+      s.plot3[i] = { time: t, value: signal, color: color.orange };
+      s.plot4[i] = { time: t, value: macd, color: up ? shadowBull : shadowBear };
 
-    // Bar colour of the most recent divergence, fading over fade_steps bars
-    sinceBull = bullCond[i] ? 0 : isNaN(sinceBull) ? NaN : sinceBull + 1;
-    sinceBear = bearCond[i] ? 0 : isNaN(sinceBear) ? NaN : sinceBear + 1;
-    let c: string | null = null;
-    if (!isNaN(sinceBull) && (isNaN(sinceBear) || sinceBull < sinceBear) && sinceBull < fadeSteps) {
-      const intensity = (fadeSteps - sinceBull) / fadeSteps;
-      c = String(color.new(BULLISH, 100 - Math.trunc(intensity * 100)));
-    } else if (!isNaN(sinceBear) && (isNaN(sinceBull) || sinceBear < sinceBull) && sinceBear < fadeSteps) {
-      const intensity = (fadeSteps - sinceBear) / fadeSteps;
-      c = String(color.new(BEARISH, 100 - Math.trunc(intensity * 100)));
-    }
-    if (c !== null) barColors.push({ time: t, color: c });
-  }
+      // Bar colour of the most recent divergence, fading over fade_steps bars
+      const sinceBull = bullCond ? 0 : isNaN(v.sinceBull) ? NaN : v.sinceBull + 1;
+      const sinceBear = bearCond ? 0 : isNaN(v.sinceBear) ? NaN : v.sinceBear + 1;
+      v.sinceBull = sinceBull;
+      v.sinceBear = sinceBear;
+      let c: string | null = null;
+      if (!isNaN(sinceBull) && (isNaN(sinceBear) || sinceBull < sinceBear) && sinceBull < fadeSteps) {
+        const intensity = (fadeSteps - sinceBull) / fadeSteps;
+        c = String(color.new(BULLISH, 100 - Math.trunc(intensity * 100)));
+      } else if (!isNaN(sinceBear) && (isNaN(sinceBull) || sinceBear < sinceBull) && sinceBear < fadeSteps) {
+        const intensity = (fadeSteps - sinceBear) / fadeSteps;
+        c = String(color.new(BEARISH, 100 - Math.trunc(intensity * 100)));
+      }
+      if (c !== null) s.barColors.push({ time: t, color: c });
 
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3, plot4 },
-    hlines: [
-      { value: -1, options: { title: 'Oversold', color: BEARISH, linestyle: 'solid', linewidth: 1 } },
-      { value: 1, options: { title: 'Overbought', color: BULLISH, linestyle: 'solid', linewidth: 1 } },
-      { value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dotted', linewidth: 1 } },
-    ],
-    markers,
-    barColors,
-    // alertcondition(bullCond) / alertcondition(bearCond)
-    alerts: alertStates(alertConditions, bars, [bullCond, bearCond]),
+      // alertcondition(bullCond) / alertcondition(bearCond)
+      s.flags[0][i] = bullCond;
+      s.flags[1][i] = bearCond;
+      if (bullCond) s.times[0].push(t);
+      if (bearCond) s.times[1].push(t);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice(), plot4: s.plot4.slice() },
+        hlines: [
+          { value: -1, options: { title: 'Oversold', color: BEARISH, linestyle: 'solid', linewidth: 1 } },
+          { value: 1, options: { title: 'Overbought', color: BULLISH, linestyle: 'solid', linewidth: 1 } },
+          { value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dotted', linewidth: 1 } },
+        ],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<UptrickTrendAnalysisInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<UptrickTrendAnalysisInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -248,6 +296,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const UptrickTrendAnalysis = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

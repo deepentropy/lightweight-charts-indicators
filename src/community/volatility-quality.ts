@@ -12,8 +12,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolatilityQualityInputs {
   vqiLen: number;
@@ -80,92 +82,126 @@ const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<VolatilityQualityInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> };
+
+interface VqRun extends BarRunState<Record<string, never>> {
+  tr: ReturnType<typeof taStep.tr>;
+  emaRaw: ReturnType<typeof taStep.ema>;
+  emaSmooth: ReturnType<typeof taStep.ema>;
+  dev: WindowStdev;
+  hi: WindowExtreme;
+  lo: WindowExtreme;
+  plots: Point[][];
+  markers: MarkerData[];
+  candles: PlotCandleData[];
+}
+
+function study(inputs: Partial<VolatilityQualityInputs>): BarStudy<VqRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const normalizeVQI = true;
-
-  // barRange = ta.tr(false); direction = close > open ? 1 : close < open ? -1 : 0
-  const barRange = A(ta.tr(bars, false));
-  const weightedVol = bars.map((b, i) => barRange[i] * (gt(b.close, b.open) ? 1 : gt(b.open, b.close) ? -1 : 0));
-  const vqiRaw = A(ta.ema(S(weightedVol), cfg.vqiLen));
-  const vqiSmoothed = A(ta.ema(S(vqiRaw), cfg.vqiSmoothingLen));
-  const vqiStdev = A(ta.stdev(S(vqiSmoothed), cfg.vqiLen));
-  // `if normalizeVQI` is always true: ta.highest / ta.lowest run on every bar
-  const vqiHighest = A(ta.highest(S(vqiSmoothed), cfg.normalizationLength));
-  const vqiLowest = A(ta.lowest(S(vqiSmoothed), cfg.normalizationLength));
-
-  const norm = new Array<number>(n);
-  const bands = [1, 2, 3, 4, 5, 6].map(() => new Array<number>(n));
   const mults = [cfg.stdevMultiplier1, cfg.stdevMultiplier2, cfg.stdevMultiplier3];
-  for (let i = 0; i < n; i++) {
-    const sm = vqiSmoothed[i];
-    const raw = [
-      sm + vqiStdev[i] * mults[0], sm + vqiStdev[i] * mults[1], sm + vqiStdev[i] * mults[2],
-      sm - vqiStdev[i] * mults[0], sm - vqiStdev[i] * mults[1], sm - vqiStdev[i] * mults[2],
-    ];
-    const range = vqiHighest[i] - vqiLowest[i];
-    // if vqiRange > 0: ((x - vqiLowest) / vqiRange - 0.5) * 200
-    const doNorm = normalizeVQI && gt(range, 0);
-    const f = (x: number) => (doNorm ? ((x - vqiLowest[i]) / range - 0.5) * 200 : x);
-    norm[i] = f(sm);
-    for (let k = 0; k < 6; k++) bands[k][i] = f(raw[k]);
-  }
-
+  const cols = [U1, U2, U3, L1, L2, L3];
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const line = (arr: number[], col: string) => bars.map((b, i) => ({ time: b.time, value: fin(arr[i]), color: col }));
-
-  const markers: MarkerData[] = [];
-  const candles: PlotCandleData[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    if (cfg.showCandles) {
-      // candle_col = vqiPositive ? color.lime : color.red (vqiNormalized >= 0)
-      const c = ge(norm[i], 0) ? color.lime : color.red;
-      candles.push({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: c, wickColor: c,
-        borderColor: c, forceOverlay: true });
-    }
-    // plotchar(overboughtSignal ? high : na, '⌄', location.abovebar, color.red, size.tiny, force_overlay = true)
-    if (normalizeVQI && ge(bands[2][i], 200)) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'circle', color: 'transparent', text: '⌄',
-        textColor: color.red, size: 'tiny', forceOverlay: true });
-    }
-    // plotchar(oversoldSignal ? low : na, '⌃', location.belowbar, color.lime, size.tiny, force_overlay = true)
-    if (normalizeVQI && le(bands[5][i], -200)) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'circle', color: 'transparent', text: '⌃',
-        textColor: color.lime, size: 'tiny', forceOverlay: true });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(vqiNormalized, color = vqiNormalized >= 0 ? color.lime : color.rgb(255, 0, 0), linewidth = 2)
-      plot0: bars.map((b, i) => ({ time: b.time, value: fin(norm[i]), color: ge(norm[i], 0) ? UP_COL : DOWN_COL })),
-      plot1: line(bands[0], U1),
-      plot2: line(bands[1], U2),
-      plot3: line(bands[2], U3),
-      plot4: line(bands[3], L1),
-      plot5: line(bands[4], L2),
-      plot6: line(bands[5], L3),
+    init() {
+      const tr = taStep.tr(false);
+      const emaRaw = taStep.ema(cfg.vqiLen);
+      const emaSmooth = taStep.ema(cfg.vqiSmoothingLen);
+      const dev = new WindowStdev(cfg.vqiLen);
+      const hi = new WindowExtreme(false, cfg.normalizationLength);
+      const lo = new WindowExtreme(true, cfg.normalizationLength);
+      const s: VqRun = {
+        tr, emaRaw, emaSmooth, dev, hi, lo, plots: [[], [], [], [], [], [], []], markers: [], candles: [],
+        steps: [tr, emaRaw, emaSmooth, dev, hi, lo], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.candles];
+      s.series = s.plots;
+      return s;
     },
-    hlines: [
-      { value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dashed' } },
-      { value: 100, options: { title: '+100', color: String(color.new(color.white, 70)), linestyle: 'dotted' } },
-      { value: -100, options: { title: '-100', color: String(color.new(color.white, 70)), linestyle: 'dotted' } },
-    ],
-    markers,
-    plotCandles: { vqiCandles: candles },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // barRange = ta.tr(false); direction = close > open ? 1 : close < open ? -1 : 0
+      const barRange = s.tr.step(b.high, b.low, b.close);
+      const weightedVol = barRange * (gt(b.close, b.open) ? 1 : gt(b.open, b.close) ? -1 : 0);
+      const sm = s.emaSmooth.step(s.emaRaw.step(weightedVol));
+      const sd = s.dev.step(sm);
+      // `if normalizeVQI` is always true: ta.highest / ta.lowest run on every bar
+      const hiV = s.hi.step(sm);
+      const loV = s.lo.step(sm);
+      const range = hiV - loV;
+      // if vqiRange > 0: ((x - vqiLowest) / vqiRange - 0.5) * 200
+      const doNorm = normalizeVQI && gt(range, 0);
+      const f = (x: number) => (doNorm ? ((x - loV) / range - 0.5) * 200 : x);
+      const norm = f(sm);
+      const p = s.plots;
+      // plot(vqiNormalized, color = vqiNormalized >= 0 ? color.lime : color.rgb(255, 0, 0), linewidth = 2)
+      p[0][i] = { time, value: fin(norm), color: ge(norm, 0) ? UP_COL : DOWN_COL };
+      let up3 = NaN;
+      let lo3 = NaN;
+      for (let k = 0; k < 6; k++) {
+        const raw = k < 3 ? sm + sd * mults[k] : sm - sd * mults[k - 3];
+        const v = f(raw);
+        if (k === 2) up3 = v;
+        if (k === 5) lo3 = v;
+        p[k + 1][i] = { time, value: fin(v), color: cols[k] };
+      }
+
+      if (cfg.showCandles) {
+        // candle_col = vqiPositive ? color.lime : color.red (vqiNormalized >= 0)
+        const c = ge(norm, 0) ? color.lime : color.red;
+        s.candles.push({ time, open: b.open, high: b.high, low: b.low, close: b.close, color: c, wickColor: c,
+          borderColor: c, forceOverlay: true });
+      }
+      // plotchar(overboughtSignal ? high : na, '⌄', location.abovebar, color.red, size.tiny, force_overlay = true)
+      if (normalizeVQI && ge(up3, 200)) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'circle', color: 'transparent', text: '⌄',
+          textColor: color.red, size: 'tiny', forceOverlay: true });
+      }
+      // plotchar(oversoldSignal ? low : na, '⌃', location.belowbar, color.lime, size.tiny, force_overlay = true)
+      if (normalizeVQI && le(lo3, -200)) {
+        s.markers.push({ time, position: 'belowBar', shape: 'circle', color: 'transparent', text: '⌃',
+          textColor: color.lime, size: 'tiny', forceOverlay: true });
+      }
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(),
+          plot1: p[1].slice(),
+          plot2: p[2].slice(),
+          plot3: p[3].slice(),
+          plot4: p[4].slice(),
+          plot5: p[5].slice(),
+          plot6: p[6].slice(),
+        },
+        hlines: [
+          { value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dashed' } },
+          { value: 100, options: { title: '+100', color: String(color.new(color.white, 70)), linestyle: 'dotted' } },
+          { value: -100, options: { title: '-100', color: String(color.new(color.white, 70)), linestyle: 'dotted' } },
+        ],
+        markers: s.markers.slice(),
+        plotCandles: { vqiCandles: s.candles.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolatilityQualityInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolatilityQualityInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const VolatilityQuality = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

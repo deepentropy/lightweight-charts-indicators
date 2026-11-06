@@ -6,8 +6,10 @@
  * Reference: "CM_Stochastic POP Method 1" by ChrisMoody
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface StochPOP1Inputs {
   kLen: number;
@@ -44,54 +46,74 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<StochPOP1Inputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
+type Point = { time: number; value: number; color?: string };
+
+interface StochPop1Run extends BarRunState<Record<string, never>> {
+  stoch: ReturnType<typeof taStep.stoch>;
+  sma: WindowSma;
+  plots: Point[][];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<StochPOP1Inputs>): BarStudy<StochPop1Run, Result> {
   const { kLen, kSmooth, ul, ll } = { ...defaultInputs, ...inputs };
-
-  const closeSeries = new Series(bars, (b) => b.close);
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-
-  const rawK = ta.stoch(closeSeries, highSeries, lowSeries, kLen);
-  const k = ta.sma(rawK, kSmooth);
-  const kArr = k.toArray();
   const warmup = kLen + kSmooth;
-
-  // Stochastic line with per-bar color: green >= ul, red <= ll, blue otherwise
-  const plot0 = kArr.map((v, i) => {
-    if (v == null || i < warmup) return { time: bars[i].time, value: NaN };
-    const color = v >= ul ? '#00E676' : v <= ll ? '#FF0000' : '#2962FF';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  // Zone boundary plots
-  const upperLine = bars.map(b => ({ time: b.time, value: ul }));
-  const line100 = bars.map(b => ({ time: b.time, value: 100 }));
-  const lowerLine = bars.map(b => ({ time: b.time, value: ll }));
-  const line0 = bars.map(b => ({ time: b.time, value: 0 }));
-
-  // Barcolor: green when k >= ul (Long), red when k <= ll (Short), blue otherwise (NoTrade)
-  const barColors: BarColorData[] = [];
-  for (let i = warmup; i < bars.length; i++) {
-    const v = kArr[i] ?? 0;
-    if (v >= ul) {
-      barColors.push({ time: bars[i].time, color: '#00E676' });
-    } else if (v <= ll) {
-      barColors.push({ time: bars[i].time, color: '#FF0000' });
-    } else {
-      barColors.push({ time: bars[i].time, color: '#2962FF' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'upperLine': upperLine, 'line100': line100, 'lowerLine': lowerLine, 'line0': line0 },
-    fills: [
-      { plot1: 'upperLine', plot2: 'line100', options: { color: 'rgba(0,230,118,0.1)' } },
-      { plot1: 'upperLine', plot2: 'lowerLine', options: { color: 'rgba(41,98,255,0.1)' } },
-      { plot1: 'lowerLine', plot2: 'line0', options: { color: 'rgba(255,0,0,0.1)' } },
-    ],
-    barColors,
+    init() {
+      const s: StochPop1Run = {
+        stoch: taStep.stoch(kLen), sma: new WindowSma(kSmooth), plots: [[], [], [], [], []], barColors: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.stoch, s.sma];
+      s.lists = [s.barColors];
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const rawK = s.stoch.step(b.close, b.high, b.low);
+      const v = s.sma.step(rawK);
+      const p = s.plots;
+      // Stochastic line with per-bar color: green >= ul, red <= ll, blue otherwise
+      if (i < warmup) p[0][i] = { time, value: NaN };
+      else p[0][i] = { time, value: v, color: v >= ul ? '#00E676' : v <= ll ? '#FF0000' : '#2962FF' };
+      // Zone boundary plots
+      p[1][i] = { time, value: ul };
+      p[2][i] = { time, value: 100 };
+      p[3][i] = { time, value: ll };
+      p[4][i] = { time, value: 0 };
+      // Barcolor: green when k >= ul (Long), red when k <= ll (Short), blue otherwise (NoTrade)
+      if (i >= warmup) {
+        if (v >= ul) s.barColors.push({ time, color: '#00E676' });
+        else if (v <= ll) s.barColors.push({ time, color: '#FF0000' });
+        else s.barColors.push({ time, color: '#2962FF' });
+      }
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': p[0].slice(), 'upperLine': p[1].slice(), 'line100': p[2].slice(), 'lowerLine': p[3].slice(), 'line0': p[4].slice() },
+        fills: [
+          { plot1: 'upperLine', plot2: 'line100', options: { color: 'rgba(0,230,118,0.1)' } },
+          { plot1: 'upperLine', plot2: 'lowerLine', options: { color: 'rgba(41,98,255,0.1)' } },
+          { plot1: 'lowerLine', plot2: 'line0', options: { color: 'rgba(255,0,0,0.1)' } },
+        ],
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const StochPOP1 = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<StochPOP1Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<StochPOP1Inputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const StochPOP1 = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

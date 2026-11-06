@@ -11,7 +11,9 @@
  * Original notice: © Astral Vision
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { BgColorData, PlotCandleData } from '../types';
 
 export interface RollingSharpeRatioOscillatorAstralVisionInputs {
@@ -91,34 +93,33 @@ const THEMES: Record<string, [string, string]> = {
 };
 
 type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { bgColors: BgColorData[]; plotCandles: Record<string, PlotCandleData[]> };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RollingSharpeRatioOscillatorAstralVisionInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[]; plotCandles: Record<string, PlotCandleData[]> } {
+interface SharpeRun extends BarRunState<Record<string, never>> {
+  mean: WindowSma;
+  dev: WindowStdev;
+  smooth: ReturnType<typeof taStep.ema>;
+  obEma: ReturnType<typeof taStep.ema>;
+  osEma: ReturnType<typeof taStep.ema>;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  plot4: Point[];
+  fillOs: string[];
+  fillOb: string[];
+  candles: PlotCandleData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<RollingSharpeRatioOscillatorAstralVisionInputs>): BarStudy<SharpeRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const { len, smoothLen, threshOs, threshOb } = cfg;
 
   // Theme colours (Hermes is the last `else` of the Pine ternary chain)
   const [themePos, themeNeg] = THEMES[cfg.theme] ?? THEMES.Hermes;
   const posCol = cfg.useCustom ? cfg.customPos : themePos;
   const negCol = cfg.useCustom ? cfg.customNeg : themeNeg;
-
-  const excess = bars.map((b, i) => (i > 0 ? Math.log(b.close / bars[i - 1].close) : NaN));
-  const meanExcess = A(ta.sma(S(excess), len));
-  const stdevExcess = A(ta.stdev(S(excess), len));
-  // sharpe = stdev_excess > 0 ? mean / stdev * sqrt(365) : na
-  const sharpe = meanExcess.map((m, i) => (gt(stdevExcess[i], 0) ? (m / stdevExcess[i]) * Math.sqrt(365) : NaN));
-  const sharpeSmooth = A(ta.ema(S(sharpe), smoothLen));
-
-  // price levels: close[len] * exp(thresh * stdev / sqrt(365) * len), smoothed by an EMA
-  const level = (th: number) => bars.map((_b, i) => (i - len >= 0
-    ? bars[i - len].close * Math.exp(((th * stdevExcess[i]) / Math.sqrt(365)) * len) : NaN));
-  const priceOb = A(ta.ema(S(level(threshOb)), smoothLen));
-  const priceOs = A(ta.ema(S(level(threshOs)), smoothLen));
 
   const NA = 'transparent';
   const posLine = String(color.new(posCol, 40));
@@ -128,61 +129,95 @@ export function calculate(
   const posBg = String(color.new(posCol, 50));
   const negBg = String(color.new(negCol, 50));
 
-  const definite: string[] = new Array(n);
-  const fillOs: string[] = new Array(n);
-  const fillOb: string[] = new Array(n);
-  const bgColors: BgColorData[] = [];
-  const candles: PlotCandleData[] = [];
-  for (let i = 0; i < n; i++) {
-    const ss = sharpeSmooth[i];
-    const above = gt(ss, threshOb);
-    const below = lt(ss, threshOs);
-    // grad = color.from_gradient(sharpe_smooth, -2, 2, neg_col, pos_col) (na value: na colour)
-    const grad = String(color.from_gradient(ss, -2, 2, negCol, posCol));
-    const col = above ? posCol : below ? negCol : color.black;
-    definite[i] = cfg.useGrad ? grad : col;
-    // fill(sharpeplot, h2, sharpe_smooth < thresh_os ? color.new(neg_col, 80) : na)
-    fillOs[i] = below ? negFill : NA;
-    // fill(sharpeplot, h1, sharpe_smooth > thresh_ob ? color.new(pos_col, 80) : na)
-    fillOb[i] = above ? posFill : NA;
-    // two bgcolor calls (force_overlay): the second one is drawn on top; they never hold on the same bar
-    if (below) bgColors.push({ id: 'bgcolor0', time: bars[i].time, color: negBg, forceOverlay: true });
-    if (above) bgColors.push({ id: 'bgcolor1', time: bars[i].time, color: posBg, forceOverlay: true });
-    // plotcandle(open, high, low, close, color = definitecol, wickcolor = definitecol, bordercolor = definitecol, force_overlay = true)
-    const b = bars[i];
-    candles.push({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
-      color: definite[i], wickColor: definite[i], borderColor: definite[i], forceOverlay: true });
-  }
-
-  const P = (f: (b: Bar, i: number) => Point): Point[] => bars.map(f);
   return {
-    metadata: {
-      title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay,
-      precision: metadata.precision, format: metadata.format,
+    init() {
+      const mean = new WindowSma(len);
+      const dev = new WindowStdev(len);
+      const smooth = taStep.ema(smoothLen);
+      const obEma = taStep.ema(smoothLen);
+      const osEma = taStep.ema(smoothLen);
+      const s: SharpeRun = {
+        mean, dev, smooth, obEma, osEma, plot0: [], plot1: [], plot2: [], plot3: [], plot4: [], fillOs: [], fillOb: [],
+        candles: [], bgColors: [],
+        steps: [mean, dev, smooth, obEma, osEma], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.bgColors];
+      s.series = [s.plot0, s.plot1, s.plot2, s.plot3, s.plot4, s.fillOs, s.fillOb, s.candles];
+      return s;
     },
-    plots: {
+    bar(s, i, bars) {
+      const b = bars[i];
+      const excess = i > 0 ? Math.log(b.close / bars[i - 1].close) : NaN;
+      const meanExcess = s.mean.step(excess);
+      const stdevExcess = s.dev.step(excess);
+      // sharpe = stdev_excess > 0 ? mean / stdev * sqrt(365) : na
+      const sharpe = gt(stdevExcess, 0) ? (meanExcess / stdevExcess) * Math.sqrt(365) : NaN;
+      const ss = s.smooth.step(sharpe);
+
+      // price levels: close[len] * exp(thresh * stdev / sqrt(365) * len), smoothed by an EMA
+      const level = (th: number) => (i - len >= 0
+        ? bars[i - len].close * Math.exp(((th * stdevExcess) / Math.sqrt(365)) * len) : NaN);
+      const priceOb = s.obEma.step(level(threshOb));
+      const priceOs = s.osEma.step(level(threshOs));
+
+      const above = gt(ss, threshOb);
+      const below = lt(ss, threshOs);
+      // grad = color.from_gradient(sharpe_smooth, -2, 2, neg_col, pos_col) (na value: na colour)
+      const grad = String(color.from_gradient(ss, -2, 2, negCol, posCol));
+      const col = above ? posCol : below ? negCol : color.black;
+      const definite = cfg.useGrad ? grad : col;
+      // fill(sharpeplot, h2, sharpe_smooth < thresh_os ? color.new(neg_col, 80) : na)
+      s.fillOs[i] = below ? negFill : NA;
+      // fill(sharpeplot, h1, sharpe_smooth > thresh_ob ? color.new(pos_col, 80) : na)
+      s.fillOb[i] = above ? posFill : NA;
+      // two bgcolor calls (force_overlay): the second one is drawn on top; they never hold on the same bar
+      if (below) s.bgColors.push({ id: 'bgcolor0', time: b.time, color: negBg, forceOverlay: true });
+      if (above) s.bgColors.push({ id: 'bgcolor1', time: b.time, color: posBg, forceOverlay: true });
+      // plotcandle(open, high, low, close, color = definitecol, wickcolor = definitecol, bordercolor = definitecol, force_overlay = true)
+      s.candles[i] = { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
+        color: definite, wickColor: definite, borderColor: definite, forceOverlay: true };
+
       // h1 = plot(thresh_ob, color = color.new(pos_col, 40), linewidth = 1)
-      plot0: P((b) => ({ time: b.time, value: threshOb, color: posLine })),
+      s.plot0[i] = { time: b.time, value: threshOb, color: posLine };
       // h2 = plot(thresh_os, color = color.new(neg_col, 40), linewidth = 1)
-      plot1: P((b) => ({ time: b.time, value: threshOs, color: negLine })),
+      s.plot1[i] = { time: b.time, value: threshOs, color: negLine };
       // sharpeplot = plot(sharpe_smooth, color = definitecol, linewidth = 2)
-      plot2: P((b, i) => ({ time: b.time, value: sharpeSmooth[i], color: definite[i] })),
+      s.plot2[i] = { time: b.time, value: ss, color: definite };
       // plot(ta.ema(price_ob, smooth_len), color = color.new(pos_col, 40), linewidth = 1, force_overlay = true)
-      plot3: P((b, i) => ({ time: b.time, value: priceOb[i], color: posLine })),
+      s.plot3[i] = { time: b.time, value: priceOb, color: posLine };
       // plot(ta.ema(price_os, smooth_len), color = color.new(neg_col, 40), linewidth = 1, force_overlay = true)
-      plot4: P((b, i) => ({ time: b.time, value: priceOs[i], color: negLine })),
+      s.plot4[i] = { time: b.time, value: priceOs, color: negLine };
     },
-    fills: [
-      { plot1: 'plot2', plot2: 'plot1', colors: fillOs },
-      { plot1: 'plot2', plot2: 'plot0', colors: fillOb },
-    ],
-    bgColors,
-    plotCandles: { sharpeCandles: candles },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay,
+          precision: metadata.precision, format: metadata.format,
+        },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice(), plot4: s.plot4.slice() },
+        fills: [
+          { plot1: 'plot2', plot2: 'plot1', colors: s.fillOs.slice() },
+          { plot1: 'plot2', plot2: 'plot0', colors: s.fillOb.slice() },
+        ],
+        bgColors: s.bgColors.slice(),
+        plotCandles: { sharpeCandles: s.candles.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RollingSharpeRatioOscillatorAstralVisionInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RollingSharpeRatioOscillatorAstralVisionInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RollingSharpeRatioOscillatorAstralVision = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

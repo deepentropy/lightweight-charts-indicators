@@ -13,8 +13,12 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { AlertCall, BarColorData, MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import {
+  barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -96,91 +100,130 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-/**
- * One ta.crossover / ta.crossunder call site: compared with the last bar where the call ran with both values not na
- * (a tie there counts). A call on the right side of a lazy `or` only runs (and keeps its history) when it is reached.
- * Exact comparisons: ta.crossover / ta.crossunder do not use the 1e-10 tolerance of the operators.
- */
-function crossSite(over: boolean) {
-  let pa = NaN;
-  let pb = NaN;
-  return (a: number, b: number): boolean => {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; alertCalls: AlertCall[] };
+type Ma = { step(v: number): number; commit(): void };
+
+interface AndromedaVars {
+  /**
+   * The four ta.crossunder / ta.crossover call sites (low / ma1, low / ma2, high / ma1, high / ma2): the values of the
+   * last bar where the call ran with both values not na, as [a, b] pairs (changed in place, copied by copyVars)
+   */
+  cross: number[];
+}
+
+interface AndromedaRun extends BarRunState<AndromedaVars> {
+  ma1: Ma;
+  ma2: Ma;
+  macd: ReturnType<typeof taStep.macd>;
+  rsi: ReturnType<typeof taStep.rsi>;
+  ma2Arr: number[];
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  alertCalls: AlertCall[];
+}
+
+function study(inputs: Partial<AndromedaTrendSyncInputs>): BarStudy<AndromedaRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const rsiValue = barSource(cfg.rsiSource);
+  // ma(src, len, type) => type == "EMA" ? ta.ema(src, len) : ta.sma(src, len) (the type is fixed for the run)
+  const ma = (len: number, type: string): Ma => {
+    if (type === 'EMA') return taStep.ema(len);
+    return new WindowSma(len);
+  };
+  /**
+   * One ta.crossover / ta.crossunder call site (pair k of `cross`): compared with the last bar where the call ran with
+   * both values not na (a tie there counts). A call on the right side of a lazy `or` only runs (and keeps its history)
+   * when it is reached. Exact comparisons: ta.crossover / ta.crossunder do not use the 1e-10 tolerance of the operators.
+   */
+  const crossSite = (cross: number[], k: number, over: boolean, a: number, b: number): boolean => {
+    const pa = cross[2 * k];
+    const pb = cross[2 * k + 1];
     const r = over ? a > b && pa <= pb : a < b && pa >= pb;
     if (!isNaN(a) && !isNaN(b)) {
-      pa = a;
-      pb = b;
+      cross[2 * k] = a;
+      cross[2 * k + 1] = b;
     }
     return r;
   };
+  return {
+    fullRunReason: () => (isBarSource(cfg.rsiSource) ? null : 'source of another study'),
+    init() {
+      const s: AndromedaRun = {
+        ma1: ma(cfg.emaLength1, cfg.maType1), ma2: ma(cfg.emaLength2, cfg.maType2),
+        macd: taStep.macd(cfg.fastLength, cfg.slowLength, cfg.signalLength), rsi: taStep.rsi(cfg.rsiLength),
+        ma2Arr: [], plot0: [], plot1: [], markers: [], barColors: [], alertCalls: [],
+        steps: [], vars: { cross: new Array(8).fill(NaN) }, lists: [], series: [],
+      };
+      s.steps = [s.ma1, s.ma2, s.macd, s.rsi];
+      s.lists = [s.markers, s.barColors, s.alertCalls];
+      s.series = [s.ma2Arr, s.plot0, s.plot1];
+      return s;
+    },
+    copyVars: (v) => ({ cross: v.cross.slice() }),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const cross = s.vars.cross;
+      const ma1 = s.ma1.step(b.close);
+      const ma2 = s.ma2.step(b.close);
+      s.ma2Arr[i] = ma2;
+      const macdHist = s.macd.step(b.close)[2];
+      const rsi = s.rsi.step(rsiValue(b));
+
+      const slope = i > 0 ? ma2 - s.ma2Arr[i - 1] : NaN; // ma2_slope = ma2 - ma2[1]
+      const trendBuy = gt(macdHist, 0) && gt(ma1, ma2) && gt(slope, 0);
+      const trendSell = lt(macdHist, 0) && lt(ma1, ma2) && lt(slope, 0);
+      // ta.crossunder(low, ma1) or ta.crossunder(low, ma2): lazy `or`, the second call runs only when the first is false
+      const crossUnder = crossSite(cross, 0, false, b.low, ma1) || crossSite(cross, 1, false, b.low, ma2);
+      const crossOver = crossSite(cross, 2, true, b.high, ma1) || crossSite(cross, 3, true, b.high, ma2);
+      const buySignal = trendBuy && crossUnder;
+      const sellSignal = trendSell && crossOver;
+      // if buy_signal: alert("ALERTA DE COMPRA", alert.freq_once_per_bar) / if sell_signal: alert("ALERTA DE VENDA", ...)
+      if (buySignal) s.alertCalls.push({ time: b.time, message: 'ALERTA DE COMPRA', freq: 'once_per_bar' });
+      if (sellSignal) s.alertCalls.push({ time: b.time, message: 'ALERTA DE VENDA', freq: 'once_per_bar' });
+
+      const maColor = trendBuy ? color.blue : trendSell ? color.red : color.gray;
+      s.plot0[i] = { time: b.time, value: ma1, color: maColor };
+      s.plot1[i] = { time: b.time, value: ma2, color: maColor };
+
+      // final_bar_color = not na(rsi_color) ? rsi_color : (trend_buy ? color.blue : trend_sell ? color.red : na)
+      const rsiColor = gt(rsi, cfg.rsiOverbought) ? cfg.rsiOverColor : lt(rsi, cfg.rsiOversold) ? cfg.rsiUnderColor : null;
+      const barColor = rsiColor ?? (trendBuy ? color.blue : trendSell ? color.red : null);
+      if (barColor !== null) s.barColors.push({ time: b.time, color: barColor });
+
+      // plotshape(buy_signal, "Buy Signal", shape.triangleup, location.belowbar, color.green, size = size.small)
+      if (buySignal) s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'small' });
+      // plotshape(sell_signal, "Sell Signal", shape.triangledown, location.abovebar, color.red, size = size.small)
+      if (sellSignal) s.markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'small' });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
+  };
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AndromedaTrendSyncInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; alertCalls: AlertCall[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-  // ma(src, len, type) => type == "EMA" ? ta.ema(src, len) : ta.sma(src, len) (the type is fixed for the run)
-  const ma = (len: number, type: string) => A(type === 'EMA' ? ta.ema(close, len) : ta.sma(close, len));
-  const ma1 = ma(cfg.emaLength1, cfg.maType1);
-  const ma2 = ma(cfg.emaLength2, cfg.maType2);
-  const [, , macdHistS] = ta.macd(close, cfg.fastLength, cfg.slowLength, cfg.signalLength);
-  const macdHist = A(macdHistS);
-  const rsi = A(ta.rsi(getSourceSeries(bars, cfg.rsiSource), cfg.rsiLength));
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AndromedaTrendSyncInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
 
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const alertCalls: AlertCall[] = [];
-  const cuMa1 = crossSite(false);
-  const cuMa2 = crossSite(false);
-  const coMa1 = crossSite(true);
-  const coMa2 = crossSite(true);
-
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const slope = i > 0 ? ma2[i] - ma2[i - 1] : NaN; // ma2_slope = ma2 - ma2[1]
-    const trendBuy = gt(macdHist[i], 0) && gt(ma1[i], ma2[i]) && gt(slope, 0);
-    const trendSell = lt(macdHist[i], 0) && lt(ma1[i], ma2[i]) && lt(slope, 0);
-    // ta.crossunder(low, ma1) or ta.crossunder(low, ma2): lazy `or`, the second call runs only when the first is false
-    const crossUnder = cuMa1(b.low, ma1[i]) || cuMa2(b.low, ma2[i]);
-    const crossOver = coMa1(b.high, ma1[i]) || coMa2(b.high, ma2[i]);
-    const buySignal = trendBuy && crossUnder;
-    const sellSignal = trendSell && crossOver;
-    // if buy_signal: alert("ALERTA DE COMPRA", alert.freq_once_per_bar) / if sell_signal: alert("ALERTA DE VENDA", ...)
-    if (buySignal) alertCalls.push({ time: b.time, message: 'ALERTA DE COMPRA', freq: 'once_per_bar' });
-    if (sellSignal) alertCalls.push({ time: b.time, message: 'ALERTA DE VENDA', freq: 'once_per_bar' });
-
-    const maColor = trendBuy ? color.blue : trendSell ? color.red : color.gray;
-    plot0.push({ time: b.time, value: ma1[i], color: maColor });
-    plot1.push({ time: b.time, value: ma2[i], color: maColor });
-
-    // final_bar_color = not na(rsi_color) ? rsi_color : (trend_buy ? color.blue : trend_sell ? color.red : na)
-    const rsiColor = gt(rsi[i], cfg.rsiOverbought) ? cfg.rsiOverColor : lt(rsi[i], cfg.rsiOversold) ? cfg.rsiUnderColor : null;
-    const barColor = rsiColor ?? (trendBuy ? color.blue : trendSell ? color.red : null);
-    if (barColor !== null) barColors.push({ time: b.time, color: barColor });
-
-    // plotshape(buy_signal, "Buy Signal", shape.triangleup, location.belowbar, color.green, size = size.small)
-    if (buySignal) markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'small' });
-    // plotshape(sell_signal, "Sell Signal", shape.triangledown, location.abovebar, color.red, size = size.small)
-    if (sellSignal) markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'small' });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    markers,
-    barColors,
-    alertCalls,
-  };
+export function calculate(bars: Bar[], inputs: Partial<AndromedaTrendSyncInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AndromedaTrendSync = {
   calculate,
+  createRun,
   metadata,
+
   defaultInputs,
   inputConfig,
   plotConfig,

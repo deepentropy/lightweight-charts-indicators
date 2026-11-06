@@ -5,7 +5,9 @@
  * More sensitive than standard RSI.
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface StochRSIInputs {
   /** K smoothing period */
@@ -57,53 +59,74 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<StochRSIInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface StochRSIRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  stoch: ReturnType<typeof taStep.stoch>;
+  k: WindowSma;
+  d: WindowSma;
+  kData: Point[];
+  dData: Point[];
+}
+
+function study(inputs: Partial<StochRSIInputs>): BarStudy<StochRSIRun, IndicatorResult> {
   const { smoothK, smoothD, lengthRSI, lengthStoch, src } = { ...defaultInputs, ...inputs };
-
-  const source = getSourceSeries(bars, src);
-
-  // Calculate RSI
-  const rsiSeries = ta.rsi(source, lengthRSI);
-
-  // Apply Stochastic to RSI: stoch(rsi, rsi, rsi, lengthStoch)
-  // stoch = 100 * (src - lowest(low, len)) / (highest(high, len) - lowest(low, len))
-  // Here src = high = low = rsi
-  const stochRsi = ta.stoch(rsiSeries, rsiSeries, rsiSeries, lengthStoch);
-
-  // K = SMA(stoch, smoothK)
-  const kSeries = ta.sma(stochRsi, smoothK);
-
-  // D = SMA(K, smoothD)
-  const dSeries = ta.sma(kSeries, smoothD);
-
-  const kArr = kSeries.toArray();
-  const dArr = dSeries.toArray();
-
-  const kData = kArr.map((value: number | null, i: number) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const dData = dArr.map((value: number | null, i: number) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
+  const value = barSource(src);
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const s: StochRSIRun = {
+        rsi: taStep.rsi(lengthRSI), stoch: taStep.stoch(lengthStoch), k: new WindowSma(smoothK), d: new WindowSma(smoothD),
+        kData: [], dData: [], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.rsi, s.stoch, s.k, s.d];
+      s.series = [s.kData, s.dData];
+      return s;
     },
-    plots: {
-      'plot0': kData,
-      'plot1': dData,
+    bar(s, i, bars) {
+      const b = bars[i];
+      // Calculate RSI
+      const rsi = s.rsi.step(value(b));
+      // Apply Stochastic to RSI: stoch(rsi, rsi, rsi, lengthStoch)
+      // stoch = 100 * (src - lowest(low, len)) / (highest(high, len) - lowest(low, len))
+      // Here src = high = low = rsi
+      const stochRsi = s.stoch.step(rsi, rsi, rsi);
+      // K = SMA(stoch, smoothK)
+      const k = s.k.step(stochRsi);
+      // D = SMA(K, smoothD)
+      const d = s.d.step(k);
+      s.kData[i] = { time: b.time, value: k };
+      s.dData[i] = { time: b.time, value: d };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.kData.slice(),
+          'plot1': s.dData.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<StochRSIInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<StochRSIInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const StochRSI = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

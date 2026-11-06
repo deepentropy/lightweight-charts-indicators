@@ -11,8 +11,10 @@
  * Original notice: © Kahael
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type MaType = 'SMA' | 'EMA' | 'WMA' | 'VWMA' | 'HMA';
 
@@ -71,75 +73,115 @@ export const metadata = {
 /** Pine a > b: a - b > 1e-10 (false with na) */
 const gt = (a: number, b: number) => a - b > 1e-10;
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] };
+type Ma = { step(v: number, volume: number): number; commit(): void };
+
+/** switch maType: only the selected branch runs (the input is constant, so on every bar) */
+function maStep(len: number, type: MaType): Ma {
+  switch (type) {
+    case 'EMA': { const m = taStep.ema(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+    case 'VWMA': return new WindowVwma(len);
+    case 'HMA': { const m = taStep.hma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    default: { const m = new WindowSma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+  }
+}
+
+interface RsiEmaVars {
+  /** var float signalHigh = na */
+  signalHigh: number;
+  /** var bool isSignalActive = false */
+  isSignalActive: boolean;
+}
+
+interface RsiEmaRun extends BarRunState<RsiEmaVars> {
+  upper: WindowExtreme;
+  lower: WindowExtreme;
+  rsi: ReturnType<typeof taStep.rsi>;
+  rsiMa: Ma;
+  priceMa: Ma;
+  cross: ReturnType<typeof taStep.crossover>;
+  plots: { time: number; value: number; color: string }[][];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<RsiEmaCrossingWithDonchianStopLossInputs>): BarStudy<RsiEmaRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const s: RsiEmaRun = {
+        upper: new WindowExtreme(false, cfg.lenDonchian), lower: new WindowExtreme(true, cfg.lenDonchian),
+        rsi: taStep.rsi(cfg.lenRSI), rsiMa: maStep(cfg.lenSMARSI, cfg.maTypeRSI), priceMa: maStep(cfg.lenMAPrice, cfg.maTypePrice),
+        cross: taStep.crossover(), plots: [[], [], [], [], []], markers: [], bgColors: [],
+        steps: [], vars: { signalHigh: NaN, isSignalActive: false }, lists: [], series: [],
+      };
+      s.steps = [s.upper, s.lower, s.rsi, s.rsiMa, s.priceMa, s.cross];
+      s.lists = [s.markers, s.bgColors];
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const volume = b.volume ?? NaN;
+      const upperBand = s.upper.step(b.high);
+      const lowerBand = s.lower.step(b.low);
+      const basisBand = (upperBand + lowerBand) / 2;
+
+      const rsiValue = s.rsi.step(b.close);
+      const smaRSI = s.rsiMa.step(rsiValue, volume);
+      const priceMA = s.priceMa.step(b.close, volume);
+      // ta.crossover(rsiValue, smaRSI): exact comparisons (oakscriptjs)
+      const cross = s.cross.step(rsiValue, smaRSI);
+
+      const crossUp = cross && gt(b.close, priceMA);
+      if (crossUp) {
+        v.signalHigh = b.high;
+        v.isSignalActive = true;
+      }
+      const entryCondition = v.isSignalActive && gt(b.close, v.signalHigh);
+      if (entryCondition) v.isSignalActive = false;
+      // bgcolor(crossUp ? color.new(color.yellow, 80) : na, title = "Signalkerze")
+      if (crossUp) s.bgColors.push({ time: b.time, color: SIGNAL_BG });
+      // plotshape(entryCondition, style = shape.labelup, location = location.belowbar, color = color.green, title = "Einstieg")
+      if (entryCondition) s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.green });
+
+      const t = b.time;
+      s.plots[0][i] = { time: t, value: upperBand, color: color.blue };
+      s.plots[1][i] = { time: t, value: lowerBand, color: color.red };
+      s.plots[2][i] = { time: t, value: basisBand, color: color.green };
+      s.plots[3][i] = { time: t, value: priceMA, color: color.orange };
+      // stopLoss = lowerBand
+      s.plots[4][i] = { time: t, value: lowerBand, color: STOP_COL };
+    },
+    result(s) {
+      const [plot0, plot1, plot2, plot3, plot4] = s.plots.map((p) => p.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0, plot1, plot2, plot3, plot4 },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RsiEmaCrossingWithDonchianStopLossInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<RsiEmaCrossingWithDonchianStopLossInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
-  const volume = S(bars.map((b) => b.volume ?? NaN));
-
-  // switch maType: only the selected branch runs (the input is constant, so on every bar)
-  const ma = (src: Series, len: number, type: MaType): number[] => {
-    switch (type) {
-      case 'EMA': return A(ta.ema(src, len));
-      case 'WMA': return A(ta.wma(src, len));
-      case 'VWMA': return A(ta.vwma(src, len, volume));
-      case 'HMA': return A(ta.hma(src, len));
-      default: return A(ta.sma(src, len));
-    }
-  };
-
-  const upperBand = A(ta.highest(S(bars.map((b) => b.high)), cfg.lenDonchian));
-  const lowerBand = A(ta.lowest(S(bars.map((b) => b.low)), cfg.lenDonchian));
-  const basisBand = upperBand.map((u, i) => (u + lowerBand[i]) / 2);
-
-  const rsiValue = ta.rsi(close, cfg.lenRSI);
-  const smaRSI = ma(rsiValue, cfg.lenSMARSI, cfg.maTypeRSI);
-  const priceMA = ma(close, cfg.lenMAPrice, cfg.maTypePrice);
-  // ta.crossover(rsiValue, smaRSI): exact comparisons (oakscriptjs)
-  const cross = A(ta.crossover(rsiValue, S(smaRSI)));
-
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  let signalHigh = NaN; // var float signalHigh = na
-  let isSignalActive = false; // var bool isSignalActive = false
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const crossUp = cross[i] === 1 && gt(b.close, priceMA[i]);
-    if (crossUp) {
-      signalHigh = b.high;
-      isSignalActive = true;
-    }
-    const entryCondition = isSignalActive && gt(b.close, signalHigh);
-    if (entryCondition) isSignalActive = false;
-    // bgcolor(crossUp ? color.new(color.yellow, 80) : na, title = "Signalkerze")
-    if (crossUp) bgColors.push({ time: b.time, color: SIGNAL_BG });
-    // plotshape(entryCondition, style = shape.labelup, location = location.belowbar, color = color.green, title = "Einstieg")
-    if (entryCondition) markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.green });
-  }
-
-  const P = (vals: number[], c: string) => bars.map((b, i) => ({ time: b.time, value: vals[i], color: c }));
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: P(upperBand, color.blue),
-      plot1: P(lowerBand, color.red),
-      plot2: P(basisBand, color.green),
-      plot3: P(priceMA, color.orange),
-      // stopLoss = lowerBand
-      plot4: P(lowerBand, STOP_COL),
-    },
-    markers,
-    bgColors,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RsiEmaCrossingWithDonchianStopLoss = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

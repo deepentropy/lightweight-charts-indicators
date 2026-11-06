@@ -13,11 +13,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
-import {
-  alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState,
-} from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type MaType = 'SMA' | 'EMA' | 'WMA' | 'VWMA' | 'HMA';
 
@@ -90,64 +90,105 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CvdRupwardInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Result = IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+type Ma = { step(v: number, volume: number): number; commit(): void };
+
+interface CvdRun extends BarRunState<Record<string, never>> {
+  cum: ReturnType<typeof taStep.cum>;
+  mas: Ma[];
+  cvd: number[];
+  ma: number[][];
+  plots: Point[][];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<CvdRupwardInputs>): BarStudy<CvdRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const volume = bars.map((b) => b.volume ?? NaN);
-
-  // volume_delta = volume * (close > open ? 1 : 0) - volume * (close < open ? 1 : 0)
-  const volumeDelta = bars.map((b, i) => volume[i] * (gt(b.close, b.open) ? 1 : 0) - volume[i] * (gt(b.open, b.close) ? 1 : 0));
-  const cvd = A(ta.cum(S(volumeDelta)));
-  const cvdSeries = S(cvd);
-
   // get_ma(src, ma_type, len): only the selected ta.* call runs (ma_type is an input)
-  const getMa = (type: MaType, len: number): number[] => {
+  const getMa = (type: MaType, len: number): Ma => {
     switch (type) {
-      case 'SMA': return A(ta.sma(cvdSeries, len));
-      case 'EMA': return A(ta.ema(cvdSeries, len));
-      case 'WMA': return A(ta.wma(cvdSeries, len));
-      case 'VWMA': return A(ta.vwma(cvdSeries, len, S(volume)));
+      case 'SMA': return new WindowSma(len);
+      case 'EMA': return taStep.ema(len);
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+      case 'VWMA': return new WindowVwma(len);
       case 'HMA':
         // ta.hma(x, 1) calls ta.wma(x, 0): a Pine runtime error
         if (Math.floor(len / 2) < 1) throw new Error("Error on bar 0: Invalid value of the 'length' argument (0.0) in the 'wma' function. It must be > 0.");
-        return A(ta.hma(cvdSeries, len));
-      default: return new Array(bars.length).fill(NaN);
+        return taStep.hma(len);
+      default: return { step: () => NaN, commit: () => {} };
     }
   };
-  const maA = getMa(cfg.maTypeA, cfg.maLengthA);
-  const maB = getMa(cfg.maTypeB, cfg.maLengthB);
-  const maC = getMa(cfg.maTypeC, cfg.maLengthC);
-
   const bgPositive = String(color.new(cfg.colorPositive, 90));
   const bgNegative = String(color.new(cfg.colorNegative, 90));
-  const line = (v: number[], c: string) => bars.map((bar, i) => ({
-    time: bar.time, value: cfg.showMovingAvg ? v[i] : NaN, color: c,
-  }));
-
+  const colors = [cfg.colorA, cfg.colorB, cfg.colorC];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(cvd, color = cvd >= 0 ? input_color_positive : input_color_negative, linewidth = 2)
-      plot0: bars.map((bar, i) => ({
-        time: bar.time, value: cvd[i], color: ge(cvd[i], 0) ? cfg.colorPositive : cfg.colorNegative,
-      })),
-      plot1: line(maA, cfg.colorA),
-      plot2: line(maB, cfg.colorB),
-      plot3: line(maC, cfg.colorC),
+    init() {
+      const mas = [getMa(cfg.maTypeA, cfg.maLengthA), getMa(cfg.maTypeB, cfg.maLengthB), getMa(cfg.maTypeC, cfg.maLengthC)];
+      const s: CvdRun = {
+        cum: taStep.cum(), mas, cvd: [], ma: [[], [], []], plots: [[], [], [], []], bgColors: [],
+        flags: [[], [], [], [], []], times: [[], [], [], [], []], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.cum, ...mas];
+      s.lists = s.times;
+      s.series = [s.cvd, ...s.ma, ...s.plots, s.bgColors, ...s.flags];
+      return s;
     },
-    // bgcolor(cvd > 0 ? color.new(input_color_positive, 90) : color.new(input_color_negative, 90))
-    bgColors: bars.map((bar, i) => ({ time: bar.time, color: gt(cvd[i], 0) ? bgPositive : bgNegative })),
-    // long_signal / short_signal = ta.crossover / ta.crossunder(cvd, ma_A); ma_cross_up / ma_cross_down with ma_B;
-    // math.abs(volume_delta) >= input_alert_threshold
-    alerts: alertStates(alertConditions, bars, [
-      crossedOver(cvd, maA), crossedUnder(cvd, maA), crossedOver(cvd, maB), crossedUnder(cvd, maB),
-      volumeDelta.map((d) => ge(Math.abs(d), cfg.alertThreshold)),
-    ]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const volume = b.volume ?? NaN;
+      // volume_delta = volume * (close > open ? 1 : 0) - volume * (close < open ? 1 : 0)
+      const volumeDelta = volume * (gt(b.close, b.open) ? 1 : 0) - volume * (gt(b.open, b.close) ? 1 : 0);
+      const cvd = s.cum.step(volumeDelta);
+      s.cvd[i] = cvd;
+      // plot(cvd, color = cvd >= 0 ? input_color_positive : input_color_negative, linewidth = 2)
+      s.plots[0][i] = { time, value: cvd, color: ge(cvd, 0) ? cfg.colorPositive : cfg.colorNegative };
+      for (let k = 0; k < 3; k++) {
+        const m = s.mas[k].step(cvd, volume);
+        s.ma[k][i] = m;
+        s.plots[k + 1][i] = { time, value: cfg.showMovingAvg ? m : NaN, color: colors[k] };
+      }
+      // bgcolor(cvd > 0 ? color.new(input_color_positive, 90) : color.new(input_color_negative, 90))
+      s.bgColors[i] = { time, color: gt(cvd, 0) ? bgPositive : bgNegative };
+
+      // long_signal / short_signal = ta.crossover / ta.crossunder(cvd, ma_A); ma_cross_up / ma_cross_down with ma_B;
+      // math.abs(volume_delta) >= input_alert_threshold
+      const pc = i > 0 ? s.cvd[i - 1] : NaN;
+      const a = s.ma[0][i];
+      const pa = i > 0 ? s.ma[0][i - 1] : NaN;
+      const m2 = s.ma[1][i];
+      const pb = i > 0 ? s.ma[1][i - 1] : NaN;
+      const f = s.flags;
+      f[0][i] = cvd > a && pc <= pa;
+      f[1][i] = cvd < a && pc >= pa;
+      f[2][i] = cvd > m2 && pc <= pb;
+      f[3][i] = cvd < m2 && pc >= pb;
+      f[4][i] = ge(Math.abs(volumeDelta), cfg.alertThreshold);
+      for (let k = 0; k < 5; k++) if (f[k][i]) s.times[k].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice() },
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CvdRupwardInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CvdRupwardInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -161,6 +202,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const CvdRupward = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

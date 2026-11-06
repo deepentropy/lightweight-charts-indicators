@@ -15,6 +15,8 @@
  */
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface FunctionSavitzkyGolayFilterWith7VectorsV0Inputs {
   /** Distance (bars) between the points of the scaling filter */
@@ -61,57 +63,95 @@ const poly = (h: (k: number) => number, w: number) => {
   return (a + b + c + d + e + f - 2.0 * h(0)) / 21.0;
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<FunctionSavitzkyGolayFilterWith7VectorsV0Inputs> = {},
-): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface SavitzkyGolayRun extends BarRunState<Record<string, never>> {
+  close: number[];
+  scaling: number[];
+  duopass: number[];
+  lastArg: number[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<FunctionSavitzkyGolayFilterWith7VectorsV0Inputs>): BarStudy<SavitzkyGolayRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const w = cfg.window;
   const passes = cfg.multipass;
-  const close = bars.map((b) => b.close);
-
-  // f_savitzky_golay_filter_w_7_vectors(x) over a whole series
-  const regularOf = (x: number[]) => x.map((_v, i) => poly((k) => at(x, i, k), 1));
-
-  const regular = regularOf(close);
-  const scaling = close.map((_v, i) => poly((k) => at(close, i, k), w));
-  const duopass = regularOf(scaling);
-  const tripass = regularOf(regularOf(scaling));
-
-  // multipass: for _i = 0 to passes: r += (f_scaling(close[_i], window) - r) / 2. The in-loop call site keeps the
-  // argument of its last call on each earlier bar (close[passes] of that bar) as its history.
-  const lastArg: number[] = new Array(n);
-  const multipass: number[] = new Array(n);
-  // A negative multipass counts down (for i = a to b with a > b) and reads close[-1]: a Pine runtime error
-  if (passes < 0) throw new Error('Invalid history offset: multipass must not be negative');
-  for (let i = 0; i < n; i++) {
-    let r = close[i];
-    for (let j = 0; j <= passes; j++) {
-      const arg = at(close, i, j);
-      const f = poly((k) => (k === 0 ? arg : at(lastArg, i, k)), w);
-      r += (f - r) / 2.0;
-      lastArg[i] = arg;
-    }
-    multipass[i] = r;
-  }
-
-  const t = (i: number) => bars[i].time;
-  const P = (x: number[], c: string) => x.map((v, i) => ({ time: t(i), value: Number.isFinite(v) ? v : NaN, color: c }));
+  const colors = [color.blue, color.red, color.maroon, color.navy, color.black];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: P(regular, color.blue),
-      plot1: P(scaling, color.red),
-      plot2: P(duopass, color.maroon),
-      plot3: P(tripass, color.navy),
-      plot4: P(multipass, color.black),
+    // a negative window reads the next bars
+    fullRunReason: () => (w < 0 ? 'negative window reads the next bars' : null),
+    init(bars) {
+      // A negative multipass counts down (for i = a to b with a > b) and reads close[-1]: a Pine runtime error
+      if (passes < 0) throw new Error('Invalid history offset: multipass must not be negative');
+      const s: SavitzkyGolayRun = {
+        close: [], scaling: [], duopass: [], lastArg: [], plots: colors.map(() => []),
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.close, s.scaling, s.duopass, s.lastArg, ...s.plots];
+      // a negative window reads the closes of the next bars (every update is a full run)
+      if (w < 0) for (let j = 0; j < bars.length; j++) s.close[j] = bars[j].close;
+      return s;
+    },
+    bar(s, i, bars) {
+      const { close, scaling, duopass, lastArg } = s;
+      close[i] = bars[i].close;
+      // f_savitzky_golay_filter_w_7_vectors(x) of a series kept as an array
+      const regular = poly((k) => at(close, i, k), 1);
+      scaling[i] = poly((k) => at(close, i, k), w);
+      duopass[i] = poly((k) => at(scaling, i, k), 1);
+      const tripass = poly((k) => at(duopass, i, k), 1);
+
+      // multipass: for _i = 0 to passes: r += (f_scaling(close[_i], window) - r) / 2. The in-loop call site keeps the
+      // argument of its last call on each earlier bar (close[passes] of that bar) as its history.
+      let r = close[i];
+      for (let j = 0; j <= passes; j++) {
+        const arg = at(close, i, j);
+        const f = poly((k) => (k === 0 ? arg : at(lastArg, i, k)), w);
+        r += (f - r) / 2.0;
+        lastArg[i] = arg;
+      }
+
+      const time = bars[i].time;
+      const values = [regular, scaling[i], duopass[i], tripass, r];
+      for (let p = 0; p < 5; p++) {
+        const v = values[p];
+        s.plots[p][i] = { time, value: Number.isFinite(v) ? v : NaN, color: colors[p] };
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(),
+          plot1: s.plots[1].slice(),
+          plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(),
+          plot4: s.plots[4].slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(
+  inputs: Partial<FunctionSavitzkyGolayFilterWith7VectorsV0Inputs> = {},
+  chart: ChartContext = {},
+): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<FunctionSavitzkyGolayFilterWith7VectorsV0Inputs> = {},
+): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const FunctionSavitzkyGolayFilterWith7VectorsV0 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -14,10 +14,12 @@
  */
 
 import {
-  ta, math, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar,
+  color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar,
 } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, WindowStdev, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -121,83 +123,125 @@ const div = (x: number, y: number) => (y === 0 ? NaN : x / y);
 /** Pine na() / plots treat +-infinity as na */
 const finite = (v: number) => (Number.isFinite(v) ? v : NaN);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<QuantVwapSystem38Inputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface QuantRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  dev: WindowStdev;
+  bwMean: WindowSma;
+  bwDev: WindowStdev;
+  bwAvg: WindowSma;
+  sqSum: WindowSum;
+  priceZ: number[];
+  isValid: boolean[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  markers: MarkerData[];
+  fired: boolean[];
+  times: number[];
+}
+
+function study(inputs: Partial<QuantVwapSystem38Inputs>): BarStudy<QuantRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const close = bars.map((b) => b.close);
-  const vwapCurr = A(ta.sma(S(close), cfg.len));
-  const stdev = A(ta.stdev(S(close), cfg.len));
-  // z-scores: a non-zero value / 0 stays +-infinity (the colour and squeeze comparisons use it), 0 / 0 is na
-  const priceZ = close.map((c, i) => (c - vwapCurr[i]) / stdev[i]);
-
-  const rawBw = stdev.map((s, i) => div(s * 4, vwapCurr[i]));
-  const bwMean = A(ta.sma(S(rawBw), cfg.lookback));
-  const bwStdev = A(ta.stdev(S(rawBw), cfg.lookback));
-  const bwRatioAvg = A(ta.sma(S(rawBw), 20));
-
-  const isSqueeze = bars.map((_b, i) => {
-    const bwZ = (rawBw[i] - bwMean[i]) / bwStdev[i];
-    const sqQuant = lt(bwZ, cfg.zThresh);
-    const sqClassic = lt(rawBw[i], bwRatioAvg[i] * cfg.ratioThresh);
-    const sqHybrid = sqClassic || lt(bwZ, -1.0);
-    if (cfg.squeezeMethod === 'Quant Z-Score (Swing)') return sqQuant;
-    if (cfg.squeezeMethod === 'Classic Ratio (Scalping)') return sqClassic;
-    return sqHybrid;
-  });
-  // int(math.sum(is_squeeze ? 1 : 0, min_squeeze)) >= min_squeeze: na (false) on the first min_squeeze - 1 bars
-  const sqCount = A(math.sum(S(isSqueeze.map((s) => (s ? 1 : 0))), cfg.minSqueeze) as Series).map((v) => Math.trunc(v));
-  const isValid = sqCount.map((c) => ge(c, cfg.minSqueeze));
-
-  const finalColor = (i: number) => {
-    const up = i > 0 && gt(priceZ[i], priceZ[i - 1]);
-    const positive = gt(priceZ[i], 0);
-    return positive ? (up ? cfg.bullStrong : cfg.bullWeak) : up ? cfg.bearWeak : cfg.bearStrong;
-  };
-
-  const markers: MarkerData[] = [];
-  // squeeze_fired = is_valid_squeeze[1] and not is_valid_squeeze (false on bar 0)
-  const fired = isValid.map((v, i) => i > 0 && isValid[i - 1] && !v);
-  for (let i = 1; i < n; i++) {
-    // plotshape(squeeze_fired ? 0 : na, "Squeeze Fired", shape.diamond, location.absolute, color.white, size.tiny)
-    if (isValid[i - 1] && !isValid[i]) {
-      markers.push({ time: bars[i].time, position: 'atPriceMiddle', price: 0, shape: 'diamond', color: color.white,
-        size: 'tiny' });
-    }
-  }
-
   const bearZone = String(color.new(cfg.bearStrong, 85));
   const bullZone = String(color.new(cfg.bullStrong, 85));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b) => ({ time: b.time, value: 0, color: cfg.zeroColor })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: finite(priceZ[i]), color: finalColor(i) })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: isValid[i] ? 0 : NaN, color: cfg.squeezeColor })),
+    init() {
+      const sma = new WindowSma(cfg.len);
+      const dev = new WindowStdev(cfg.len);
+      const bwMean = new WindowSma(cfg.lookback);
+      const bwDev = new WindowStdev(cfg.lookback);
+      const bwAvg = new WindowSma(20);
+      const sqSum = new WindowSum(cfg.minSqueeze);
+      const s: QuantRun = {
+        sma, dev, bwMean, bwDev, bwAvg, sqSum, priceZ: [], isValid: [], plot0: [], plot1: [], plot2: [], markers: [],
+        fired: [], times: [],
+        steps: [sma, dev, bwMean, bwDev, bwAvg, sqSum], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.times];
+      s.series = [s.priceZ, s.isValid, s.plot0, s.plot1, s.plot2, s.fired];
+      return s;
     },
-    hlines: [
-      { value: 2, options: { title: 'Top Zone Start', color: ZONE_LINE, linestyle: 'dashed' } },
-      { value: 3, options: { title: 'Top Zone End', color: ZONE_LINE, linestyle: 'dashed' } },
-      { value: -2, options: { title: 'Bot Zone Start', color: ZONE_LINE, linestyle: 'dashed' } },
-      { value: -3, options: { title: 'Bot Zone End', color: ZONE_LINE, linestyle: 'dashed' } },
-    ],
-    fills: [
-      { plot1: 'hline_h2', plot2: 'hline_h3', options: { title: 'Bear Zone' }, colors: new Array<string>(n).fill(bearZone) },
-      { plot1: 'hline_l2', plot2: 'hline_l3', options: { title: 'Bull Zone' }, colors: new Array<string>(n).fill(bullZone) },
-    ],
-    markers,
-    // alertcondition(squeeze_fired, "Squeeze Fired")
-    alerts: alertStates(alertConditions, bars, [fired]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = b.close;
+      const vwapCurr = s.sma.step(close);
+      const stdev = s.dev.step(close);
+      // z-scores: a non-zero value / 0 stays +-infinity (the colour and squeeze comparisons use it), 0 / 0 is na
+      const priceZ = (close - vwapCurr) / stdev;
+      s.priceZ[i] = priceZ;
+
+      const rawBw = div(stdev * 4, vwapCurr);
+      const bwMean = s.bwMean.step(rawBw);
+      const bwStdev = s.bwDev.step(rawBw);
+      const bwRatioAvg = s.bwAvg.step(rawBw);
+
+      const bwZ = (rawBw - bwMean) / bwStdev;
+      const sqQuant = lt(bwZ, cfg.zThresh);
+      const sqClassic = lt(rawBw, bwRatioAvg * cfg.ratioThresh);
+      const sqHybrid = sqClassic || lt(bwZ, -1.0);
+      const isSqueeze = cfg.squeezeMethod === 'Quant Z-Score (Swing)' ? sqQuant
+        : cfg.squeezeMethod === 'Classic Ratio (Scalping)' ? sqClassic : sqHybrid;
+      // int(math.sum(is_squeeze ? 1 : 0, min_squeeze)) >= min_squeeze: na (false) on the first min_squeeze - 1 bars
+      const sqCount = Math.trunc(s.sqSum.step(isSqueeze ? 1 : 0));
+      const isValid = ge(sqCount, cfg.minSqueeze);
+      s.isValid[i] = isValid;
+
+      const up = i > 0 && gt(priceZ, s.priceZ[i - 1]);
+      const positive = gt(priceZ, 0);
+      const finalColor = positive ? (up ? cfg.bullStrong : cfg.bullWeak) : up ? cfg.bearWeak : cfg.bearStrong;
+
+      // squeeze_fired = is_valid_squeeze[1] and not is_valid_squeeze (false on bar 0)
+      const fired = i > 0 && s.isValid[i - 1] && !isValid;
+      s.fired[i] = fired;
+      if (fired) {
+        // plotshape(squeeze_fired ? 0 : na, "Squeeze Fired", shape.diamond, location.absolute, color.white, size.tiny)
+        s.markers.push({ time: b.time, position: 'atPriceMiddle', price: 0, shape: 'diamond', color: color.white,
+          size: 'tiny' });
+        s.times.push(b.time as number);
+      }
+
+      s.plot0[i] = { time: b.time, value: 0, color: cfg.zeroColor };
+      s.plot1[i] = { time: b.time, value: finite(priceZ), color: finalColor };
+      s.plot2[i] = { time: b.time, value: isValid ? 0 : NaN, color: cfg.squeezeColor };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        hlines: [
+          { value: 2, options: { title: 'Top Zone Start', color: ZONE_LINE, linestyle: 'dashed' } },
+          { value: 3, options: { title: 'Top Zone End', color: ZONE_LINE, linestyle: 'dashed' } },
+          { value: -2, options: { title: 'Bot Zone Start', color: ZONE_LINE, linestyle: 'dashed' } },
+          { value: -3, options: { title: 'Bot Zone End', color: ZONE_LINE, linestyle: 'dashed' } },
+        ],
+        fills: [
+          { plot1: 'hline_h2', plot2: 'hline_h3', options: { title: 'Bear Zone' }, colors: new Array<string>(n).fill(bearZone) },
+          { plot1: 'hline_l2', plot2: 'hline_l3', options: { title: 'Bull Zone' }, colors: new Array<string>(n).fill(bullZone) },
+        ],
+        markers: s.markers.slice(),
+        // alertcondition(squeeze_fired, "Squeeze Fired")
+        alerts: liveAlertStates(alertConditions, [s.times], [n > 0 && s.fired[n - 1]]),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<QuantVwapSystem38Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<QuantVwapSystem38Inputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const QuantVwapSystem38 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

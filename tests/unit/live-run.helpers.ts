@@ -83,14 +83,15 @@ export function liveRunSuite(shard: number, shards: number): void {
         const all = makeBars(HISTORY + LIVE, INTRADAY.has(entry.id) ? 900 : 86400) as unknown as Bar[];
         const run = entry.createRun!(inputs);
         const calc = (b: Bar[]) => entry.calculate(b, inputs);
-        // a study that runs in full with these inputs (its fullRunReason) gives the same results, from = 0
-        const resumable = run.fullRunReason === null;
+        // a study that runs in full with these inputs (its fullRunReason, known after the first update when it reads
+        // the bars) gives the same results, from = 0
+        const resumable = () => run.fullRunReason === null;
         // the first bars one by one, then many new bars at once
         let prev = 0;
         for (const k of [...Array.from({ length: EARLY }, (_v, j) => j + 1), HISTORY]) {
           const from = check(run, calc, all.slice(0, k), k);
           // resumed from the forming bar of the previous update, or a full run
-          if (from !== undefined && resumable) expect([0, Math.max(0, prev - 1)]).toContain(from);
+          if (from !== undefined && resumable()) expect([0, Math.max(0, prev - 1)]).toContain(from);
           prev = k;
         }
         // the forming bars: three prices each, then the next bar
@@ -99,7 +100,7 @@ export function liveRunSuite(shard: number, shards: number): void {
             const from = check(run, calc, [...all.slice(0, k), tick], k);
             // a new price of the forming bar resumes; a new bar resumes too, or runs in full when the study's key
             // follows the bar count (e.g. a window of the last bars)
-            if (from === undefined || !resumable) return;
+            if (from === undefined || !resumable()) return;
             if (t > 0) expect(from).toBe(k);
             else expect([0, k - 1]).toContain(from);
           });
@@ -109,7 +110,7 @@ export function liveRunSuite(shard: number, shards: number): void {
         edited[5] = { ...edited[5], close: edited[5].close * 1.01 };
         const from = check(run, calc, edited, -1);
         if (from !== undefined) expect(from).toBe(0);
-        if (resumable) {
+        if (resumable()) {
           // fewer bars: a full run
           const fewer = check(run, calc, edited.slice(0, 50), -2);
           if (fewer !== undefined) expect(fewer).toBe(0);

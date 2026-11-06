@@ -25,12 +25,13 @@
  */
 
 import {
-  ta, Series, color, timeframe, resample, mapToChart,
+  ta, taStep, Series, color, timeframe, resample, mapToChart,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar,
 } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
 import { periodStarts, chartTimeframe, securityBars } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CmStochasticMtfInputs {
   len: number;
@@ -170,75 +171,158 @@ function stochastic(bars: Bar[], tf: string, len: number, smoothK: number, smoot
   return { k: toChart(A(k)), d: toChart(A(d)) };
 }
 
-export function calculate(bars: Bar[], inputs: Partial<CmStochasticMtfInputs> = {}, chart?: ChartContext): IndicatorResult {
+/** k = sma(stoch(close, high, low, len), smoothK), d = sma(k, smoothD) on the chart timeframe, bar by bar */
+class StochSteps {
+  private readonly stoch: ReturnType<typeof taStep.stoch>;
+  private readonly smaK: WindowSma;
+  private readonly smaD: WindowSma;
+  k = NaN;
+  d = NaN;
+
+  constructor(len: number, smoothK: number, smoothD: number) {
+    this.stoch = taStep.stoch(len);
+    this.smaK = new WindowSma(smoothK);
+    this.smaD = new WindowSma(smoothD);
+  }
+
+  step(b: Bar): void {
+    this.k = this.smaK.step(this.stoch.step(b.close, b.high, b.low));
+    this.d = this.smaD.step(this.k);
+  }
+
+  commit(): void {
+    this.stoch.commit();
+    this.smaK.commit();
+    this.smaD.commit();
+  }
+}
+
+type Point = { time: number; value: number };
+
+interface StochRun extends BarRunState<Record<string, never>> {
+  /** The chart timeframe stochastics (null: on another timeframe, from `pre`) */
+  main: StochSteps | null;
+  sec: StochSteps | null;
+  pre: { k: number[]; d: number[] } | null;
+  pre2: { k: number[]; d: number[] } | null;
+  outK: number[];
+  outD: number[];
+  plots: Point[][];
+  bgColors: BgColorData[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<CmStochasticMtfInputs>): BarStudy<StochRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const { upLine, lowLine } = cfg;
-
-  // res = useCurrentRes ? period : resCustom; res2 = useCurrentRes2 ? period : resCustom2
-  const { k: outK, d: outD } = stochastic(bars, cfg.useCurrentRes ? '' : cfg.resCustom, cfg.len, cfg.smoothK, cfg.smoothD, chart);
-  // The second stochastic is only drawn when ssStoch is on: it is not computed otherwise
-  const second = cfg.ssStoch
-    ? stochastic(bars, cfg.useCurrentRes2 ? '' : cfg.resCustom2, cfg.len2, cfg.smoothK2, cfg.smoothD2, chart)
-    : null;
-
+  const secondOn = cfg.ssStoch;
   const red70 = String(color.new(RED_HEX, 70));
   const lime70 = String(color.new(LIME_HEX, 70));
   const red40 = String(color.new(RED_HEX, 40));
   const lime40 = String(color.new(LIME_HEX, 40));
-
-  const point = (i: number, value: number) => ({ time: bars[i].time, value });
-  const plots: Record<string, Array<{ time: number; value: number }>> = {
-    plot0: [], plot1: [], plot2: [], plot3: [], plot4: [], plot5: [], plot6: [],
-  };
-  const bgColors: BgColorData[] = [];
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    const k1 = i > 0 ? outK[i - 1] : NaN;
-    const d1 = i > 0 ? outD[i - 1] : NaN;
-    const aboveLine = gt(outK[i], upLine);
-    const belowLine = lt(outK[i], lowLine);
-    const crossUp = lt(k1, d1) && lt(k1, lowLine) && gt(outK[i], outD[i]);
-    const crossDn = gt(k1, d1) && gt(k1, upLine) && lt(outK[i], outD[i]);
-    const crossUpAll = lt(k1, d1) && gt(outK[i], outD[i]);
-    const crossDownAll = gt(k1, d1) && lt(outK[i], outD[i]);
-
-    // Six bgcolor calls, in the order of the original (a later call is drawn over an earlier one)
-    if (cfg.sbh && aboveLine) bgColors.push({ id: 'bgcolor0', time, color: red70 });
-    if (cfg.sbh && belowLine) bgColors.push({ id: 'bgcolor1', time, color: lime70 });
-    if (cfg.sch && crossUp) bgColors.push({ id: 'bgcolor2', time, color: lime40 });
-    if (cfg.sch && crossDn) bgColors.push({ id: 'bgcolor3', time, color: red40 });
-    if (cfg.sac && crossUpAll) bgColors.push({ id: 'bgcolor4', time, color: lime40 });
-    if (cfg.sac && crossDownAll) bgColors.push({ id: 'bgcolor5', time, color: red40 });
-
-    plots.plot0.push(point(i, outK[i]));
-    plots.plot1.push(point(i, outD[i]));
-    // plot(ssStoch and outK2 ? outK2 : na): a value of 0 or na is not drawn
-    plots.plot2.push(point(i, second && truthy(second.k[i]) ? second.k[i] : NaN));
-    plots.plot3.push(point(i, second && truthy(second.d[i]) ? second.d[i] : NaN));
-    plots.plot4.push(point(i, upLine));
-    plots.plot5.push(point(i, lowLine));
-    plots.plot6.push(point(i, cfg.sml ? 50 : NaN));
-
-    // plotchar 'B' at the bottom / 'S' at the top (transp = 0)
-    const letter = (id: string, on: boolean, text: string, position: 'bottom' | 'top', textColor: string) => {
-      if (on) markers.push({ id, time, position, shape: 'circle', color: 'transparent', text, textColor });
-    };
-    letter('char0', cfg.sl && crossUp, 'B', 'bottom', LIME_HEX);
-    letter('char1', cfg.sl && crossDn, 'S', 'top', RED_HEX);
-    letter('char2', cfg.sacl && crossUpAll, 'B', 'bottom', LIME_HEX);
-    letter('char3', cfg.sacl && crossDownAll, 'S', 'top', RED_HEX);
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    // fill(p1, p2, color = silver, transp = 70)
-    fills: [{ plot1: 'plot4', plot2: 'plot5', options: { color: String(color.new('#C0C0C0', 70)) } }],
-    bgColors,
-    markers,
+    // another timeframe: every chart bar of a period shows the value at its end (earlier bars change)
+    fullRunReason: () => (!cfg.useCurrentRes || (secondOn && !cfg.useCurrentRes2) ? 'other timeframe' : null),
+    init(bars, chart) {
+      // res = useCurrentRes ? period : resCustom; res2 = useCurrentRes2 ? period : resCustom2
+      const pre = cfg.useCurrentRes ? null : stochastic(bars, cfg.resCustom, cfg.len, cfg.smoothK, cfg.smoothD, chart);
+      // The second stochastic is only drawn when ssStoch is on: it is not computed otherwise
+      const pre2 = secondOn && !cfg.useCurrentRes2
+        ? stochastic(bars, cfg.resCustom2, cfg.len2, cfg.smoothK2, cfg.smoothD2, chart)
+        : null;
+      const main = pre ? null : new StochSteps(cfg.len, cfg.smoothK, cfg.smoothD);
+      const sec = secondOn && !pre2 ? new StochSteps(cfg.len2, cfg.smoothK2, cfg.smoothD2) : null;
+      const s: StochRun = {
+        main, sec, pre, pre2, outK: [], outD: [], plots: [[], [], [], [], [], [], []], bgColors: [], markers: [],
+        steps: [...(main ? [main] : []), ...(sec ? [sec] : [])], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.bgColors, s.markers];
+      s.series = [s.outK, s.outD, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      let k: number;
+      let d: number;
+      if (s.main) {
+        s.main.step(bars[i]);
+        k = s.main.k;
+        d = s.main.d;
+      } else {
+        k = s.pre!.k[i];
+        d = s.pre!.d[i];
+      }
+      s.outK[i] = k;
+      s.outD[i] = d;
+      let k2 = NaN;
+      let d2 = NaN;
+      if (s.sec) {
+        s.sec.step(bars[i]);
+        k2 = s.sec.k;
+        d2 = s.sec.d;
+      } else if (s.pre2) {
+        k2 = s.pre2.k[i];
+        d2 = s.pre2.d[i];
+      }
+      const k1 = i > 0 ? s.outK[i - 1] : NaN;
+      const d1 = i > 0 ? s.outD[i - 1] : NaN;
+      const aboveLine = gt(k, upLine);
+      const belowLine = lt(k, lowLine);
+      const crossUp = lt(k1, d1) && lt(k1, lowLine) && gt(k, d);
+      const crossDn = gt(k1, d1) && gt(k1, upLine) && lt(k, d);
+      const crossUpAll = lt(k1, d1) && gt(k, d);
+      const crossDownAll = gt(k1, d1) && lt(k, d);
+
+      // Six bgcolor calls, in the order of the original (a later call is drawn over an earlier one)
+      const bg = s.bgColors;
+      if (cfg.sbh && aboveLine) bg.push({ id: 'bgcolor0', time, color: red70 });
+      if (cfg.sbh && belowLine) bg.push({ id: 'bgcolor1', time, color: lime70 });
+      if (cfg.sch && crossUp) bg.push({ id: 'bgcolor2', time, color: lime40 });
+      if (cfg.sch && crossDn) bg.push({ id: 'bgcolor3', time, color: red40 });
+      if (cfg.sac && crossUpAll) bg.push({ id: 'bgcolor4', time, color: lime40 });
+      if (cfg.sac && crossDownAll) bg.push({ id: 'bgcolor5', time, color: red40 });
+
+      const p = s.plots;
+      p[0][i] = { time, value: k };
+      p[1][i] = { time, value: d };
+      // plot(ssStoch and outK2 ? outK2 : na): a value of 0 or na is not drawn
+      p[2][i] = { time, value: secondOn && truthy(k2) ? k2 : NaN };
+      p[3][i] = { time, value: secondOn && truthy(d2) ? d2 : NaN };
+      p[4][i] = { time, value: upLine };
+      p[5][i] = { time, value: lowLine };
+      p[6][i] = { time, value: cfg.sml ? 50 : NaN };
+
+      // plotchar 'B' at the bottom / 'S' at the top (transp = 0)
+      const m = s.markers;
+      if (cfg.sl && crossUp) m.push({ id: 'char0', time, position: 'bottom', shape: 'circle', color: 'transparent', text: 'B', textColor: LIME_HEX });
+      if (cfg.sl && crossDn) m.push({ id: 'char1', time, position: 'top', shape: 'circle', color: 'transparent', text: 'S', textColor: RED_HEX });
+      if (cfg.sacl && crossUpAll) m.push({ id: 'char2', time, position: 'bottom', shape: 'circle', color: 'transparent', text: 'B', textColor: LIME_HEX });
+      if (cfg.sacl && crossDownAll) m.push({ id: 'char3', time, position: 'top', shape: 'circle', color: 'transparent', text: 'S', textColor: RED_HEX });
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(), plot6: p[6].slice(),
+        },
+        // fill(p1, p2, color = silver, transp = 70)
+        fills: [{ plot1: 'plot4', plot2: 'plot5', options: { color: String(color.new('#C0C0C0', 70)) } }],
+        bgColors: s.bgColors.slice(),
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const CmStochasticMtf = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CmStochasticMtfInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CmStochasticMtfInputs> = {}, chart?: ChartContext): IndicatorResult {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const CmStochasticMtf = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

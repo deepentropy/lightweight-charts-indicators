@@ -19,6 +19,7 @@ import { array, time as pineTime, periodClose, type SessionContext, type Indicat
 import type { MarkerData, BgColorData, OutputDecl, OutputValues } from '../types';
 import type { ChartContext } from '../chart-context';
 import { chartTimeframe, hasCalendar } from '../anchor-period';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MoonPhasesInputs {
   waxingMoonColor: string;
@@ -122,10 +123,10 @@ function getUNIXTimeFromJD(julianDay: number, timezone: string): number {
 }
 
 /**
- * Close time of every bar in ms (Pine time_close), from the exchange calendar of the chart context (time zone and
- * session of the symbol). Null without them.
+ * The session context of the close times (Pine time_close) from the exchange calendar of the chart context (time zone
+ * and session of the symbol). Null without them.
  */
-function closeTimes(bars: Bar[], chart?: ChartContext): number[] | null {
+function closeContext(bars: Bar[], chart?: ChartContext): { tf: string; context: SessionContext } | null {
   if (!chart || !hasCalendar(chart)) return null;
   if (bars.length === 0 || typeof bars[0].time !== 'number') return null;
   const tf = chartTimeframe(bars, chart);
@@ -134,7 +135,7 @@ function closeTimes(bars: Bar[], chart?: ChartContext): number[] | null {
     timeframe: tf, timezone: chart.timezone, session: chart.session, regularSession: chart.regularSession,
     timeUnit: bars[0].time >= 1e12 ? 'ms' : 's',
   };
-  return bars.map((b) => periodClose(b.time, tf, context));
+  return { tf, context };
 }
 
 function hexToRgba(hex: string, alpha: number): string {
@@ -144,123 +145,159 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<MoonPhasesInputs> = {}, chart?: ChartContext): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[]; outputValues: OutputValues } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[]; outputValues: OutputValues };
+
+interface MoonVars {
+  prevTimeLastMoonPhase: number;
+  prevMoonPhaseAdjusted: number;
+  moonPhaseAdjusted: number;
+}
+
+interface MoonRun extends BarRunState<MoonVars> {
+  calendar: { tf: string; context: SessionContext } | null;
+  timezone: string;
+  markers: MarkerData[];
+  newMoon: { time: number; value: number }[];
+  fullMoon: { time: number; value: number }[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<MoonPhasesInputs>): BarStudy<MoonRun, Result> {
   const { waxingMoonColor, waningMoonColor } = { ...defaultInputs, ...inputs };
-  const markers: MarkerData[] = [];
-  const newMoon: { time: number; value: number }[] = [];
-  const fullMoon: { time: number; value: number }[] = [];
-  const bgColors: BgColorData[] = [];
-  // getLastNewMoon(time_close) in the exchange time zone with the chart context; else the open time in UTC
-  const closes = closeTimes(bars, chart);
-  const timezone = closes && chart?.timezone !== undefined ? chart.timezone : 'Etc/UTC';
-
-  let prevTimeLastMoonPhase = NaN;
-  let prevMoonPhaseAdjusted = NaN;
-  let moonPhaseAdjusted = NaN;
-
-  for (let i = 0; i < bars.length; i++) {
-    const bar = bars[i];
-    const barTimeMs = closes ? closes[i] : barTimeToMs(bar.time);
-    const { year: _year } = getYearMonthDay(barTimeMs, timezone);
-    const doy = dayofyear(barTimeMs, timezone);
-
-    let k = (doy / 364.25 + _year - 1900) * 12.3685;
-    let moonPhase: number;
-
-    if ((k % 1.0) < 0.5) {
-      k = Math.floor(k);
-      moonPhase = 1;
-    } else {
-      k = Math.floor(k) + 0.5;
-      moonPhase = -1;
-    }
-
-    const t = k / 1236.85;
-    const anomalySun = toRadians(359.2242 + 29.10535608 * k - 0.0000333 * t * t - 0.00000347 * t * t * t);
-    const anomalyMoon = toRadians(306.0253 + 385.81691806 * k + 0.0107306 * t * t + 0.00001236 * t * t * t);
-    const fArg = toRadians(21.2964 + 390.67050646 * k - 0.0016528 * t * t - 0.00000239 * t * t * t);
-
-    const dev = (0.1734 - 0.000393 * t) * Math.sin(anomalySun)
-      + 0.0021 * Math.sin(2 * anomalySun)
-      - 0.4068 * Math.sin(anomalyMoon)
-      + 0.0161 * Math.sin(2 * anomalyMoon)
-      - 0.0004 * Math.sin(3 * anomalyMoon)
-      + 0.0104 * Math.sin(2 * fArg)
-      - 0.0051 * Math.sin(anomalySun + anomalyMoon)
-      - 0.0074 * Math.sin(anomalySun - anomalyMoon)
-      + 0.0004 * Math.sin(2 * fArg + anomalySun)
-      - 0.0004 * Math.sin(2 * fArg - anomalySun)
-      - 0.0006 * Math.sin(2 * fArg + anomalyMoon)
-      + 0.0010 * Math.sin(2 * fArg - anomalyMoon)
-      + 0.0005 * Math.sin(anomalySun + 2 * anomalyMoon);
-
-    const julianDate = 2415020.75933 + 29.53058868 * k + 0.0001178 * t * t
-      - 0.000000155 * t * t * t
-      + 0.00033 * Math.sin(toRadians(166.56) + toRadians(132.87) * t - toRadians(0.009173) * t * t)
-      + dev;
-
-    let timeLastMoonPhase = getUNIXTimeFromJD(julianDate, timezone);
-
-    if (timeLastMoonPhase >= barTimeMs) {
-      timeLastMoonPhase = isNaN(prevTimeLastMoonPhase) ? timeLastMoonPhase : prevTimeLastMoonPhase;
-    }
-
-    const isChangeTime = !isNaN(prevTimeLastMoonPhase) && (timeLastMoonPhase !== prevTimeLastMoonPhase);
-
-    if (i === 0 || isChangeTime) {
-      moonPhaseAdjusted = moonPhase;
-    }
-
-    // Detect phase transition
-    let moonType: number;
-    if (i === 0 || isNaN(prevMoonPhaseAdjusted)) {
-      moonType = NaN;
-    } else if (moonPhaseAdjusted !== prevMoonPhaseAdjusted) {
-      moonType = moonPhase;
-    } else {
-      moonType = NaN;
-    }
-
-    // The two shape conditions: 1 or 0 on every bar
-    newMoon.push({ time: bar.time as number, value: moonType === 1 ? 1 : 0 });
-    fullMoon.push({ time: bar.time as number, value: moonType === -1 ? 1 : 0 });
-
-    // plotshape markers for new/full moons
-    if (moonType === 1) {
-      markers.push({
-        time: bar.time as number,
-        position: 'aboveBar',
-        shape: 'circle',
-        color: hexToRgba(waxingMoonColor, 0.5),
-        id: 'newMoon',
-      });
-    } else if (moonType === -1) {
-      markers.push({
-        time: bar.time as number,
-        position: 'belowBar',
-        shape: 'circle',
-        color: hexToRgba(waningMoonColor, 0.5),
-        id: 'fullMoon',
-      });
-    }
-
-    // bgcolor based on current moon phase (95% transparency = 5% opacity)
-    const bgColor = moonPhaseAdjusted === 1
-      ? hexToRgba(waxingMoonColor, 0.05)
-      : hexToRgba(waningMoonColor, 0.05);
-    bgColors.push({ time: bar.time as number, color: bgColor });
-
-    prevTimeLastMoonPhase = timeLastMoonPhase;
-    prevMoonPhaseAdjusted = moonPhaseAdjusted;
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    bgColors,
-    outputValues: { newMoon, fullMoon },
+    // with the exchange calendar the close times follow the chart timeframe (from the bar gaps) and the time unit
+    key: (bars, chart) => (hasCalendar(chart)
+      ? `${chartTimeframe(bars, chart)}|${bars.length > 0 && typeof bars[0].time}|${bars.length > 0 && bars[0].time >= 1e12}`
+      : ''),
+    init(bars, chart) {
+      // getLastNewMoon(time_close) in the exchange time zone with the chart context; else the open time in UTC
+      const calendar = closeContext(bars, chart);
+      const s: MoonRun = {
+        calendar, timezone: calendar && chart?.timezone !== undefined ? chart.timezone : 'Etc/UTC',
+        markers: [], newMoon: [], fullMoon: [], bgColors: [],
+        steps: [], vars: { prevTimeLastMoonPhase: NaN, prevMoonPhaseAdjusted: NaN, moonPhaseAdjusted: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.newMoon, s.fullMoon, s.bgColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const timezone = s.timezone;
+      const bar = bars[i];
+      const barTimeMs = s.calendar ? periodClose(bar.time, s.calendar.tf, s.calendar.context) : barTimeToMs(bar.time);
+      const { year: _year } = getYearMonthDay(barTimeMs, timezone);
+      const doy = dayofyear(barTimeMs, timezone);
+
+      let k = (doy / 364.25 + _year - 1900) * 12.3685;
+      let moonPhase: number;
+
+      if ((k % 1.0) < 0.5) {
+        k = Math.floor(k);
+        moonPhase = 1;
+      } else {
+        k = Math.floor(k) + 0.5;
+        moonPhase = -1;
+      }
+
+      const t = k / 1236.85;
+      const anomalySun = toRadians(359.2242 + 29.10535608 * k - 0.0000333 * t * t - 0.00000347 * t * t * t);
+      const anomalyMoon = toRadians(306.0253 + 385.81691806 * k + 0.0107306 * t * t + 0.00001236 * t * t * t);
+      const fArg = toRadians(21.2964 + 390.67050646 * k - 0.0016528 * t * t - 0.00000239 * t * t * t);
+
+      const dev = (0.1734 - 0.000393 * t) * Math.sin(anomalySun)
+        + 0.0021 * Math.sin(2 * anomalySun)
+        - 0.4068 * Math.sin(anomalyMoon)
+        + 0.0161 * Math.sin(2 * anomalyMoon)
+        - 0.0004 * Math.sin(3 * anomalyMoon)
+        + 0.0104 * Math.sin(2 * fArg)
+        - 0.0051 * Math.sin(anomalySun + anomalyMoon)
+        - 0.0074 * Math.sin(anomalySun - anomalyMoon)
+        + 0.0004 * Math.sin(2 * fArg + anomalySun)
+        - 0.0004 * Math.sin(2 * fArg - anomalySun)
+        - 0.0006 * Math.sin(2 * fArg + anomalyMoon)
+        + 0.0010 * Math.sin(2 * fArg - anomalyMoon)
+        + 0.0005 * Math.sin(anomalySun + 2 * anomalyMoon);
+
+      const julianDate = 2415020.75933 + 29.53058868 * k + 0.0001178 * t * t
+        - 0.000000155 * t * t * t
+        + 0.00033 * Math.sin(toRadians(166.56) + toRadians(132.87) * t - toRadians(0.009173) * t * t)
+        + dev;
+
+      let timeLastMoonPhase = getUNIXTimeFromJD(julianDate, timezone);
+
+      if (timeLastMoonPhase >= barTimeMs) {
+        timeLastMoonPhase = isNaN(v.prevTimeLastMoonPhase) ? timeLastMoonPhase : v.prevTimeLastMoonPhase;
+      }
+
+      const isChangeTime = !isNaN(v.prevTimeLastMoonPhase) && (timeLastMoonPhase !== v.prevTimeLastMoonPhase);
+
+      if (i === 0 || isChangeTime) {
+        v.moonPhaseAdjusted = moonPhase;
+      }
+
+      // Detect phase transition
+      let moonType: number;
+      if (i === 0 || isNaN(v.prevMoonPhaseAdjusted)) {
+        moonType = NaN;
+      } else if (v.moonPhaseAdjusted !== v.prevMoonPhaseAdjusted) {
+        moonType = moonPhase;
+      } else {
+        moonType = NaN;
+      }
+
+      // The two shape conditions: 1 or 0 on every bar
+      s.newMoon[i] = { time: bar.time as number, value: moonType === 1 ? 1 : 0 };
+      s.fullMoon[i] = { time: bar.time as number, value: moonType === -1 ? 1 : 0 };
+
+      // plotshape markers for new/full moons
+      if (moonType === 1) {
+        s.markers.push({
+          time: bar.time as number,
+          position: 'aboveBar',
+          shape: 'circle',
+          color: hexToRgba(waxingMoonColor, 0.5),
+          id: 'newMoon',
+        });
+      } else if (moonType === -1) {
+        s.markers.push({
+          time: bar.time as number,
+          position: 'belowBar',
+          shape: 'circle',
+          color: hexToRgba(waningMoonColor, 0.5),
+          id: 'fullMoon',
+        });
+      }
+
+      // bgcolor based on current moon phase (95% transparency = 5% opacity)
+      const bgColor = v.moonPhaseAdjusted === 1
+        ? hexToRgba(waxingMoonColor, 0.05)
+        : hexToRgba(waningMoonColor, 0.05);
+      s.bgColors[i] = { time: bar.time as number, color: bgColor };
+
+      v.prevTimeLastMoonPhase = timeLastMoonPhase;
+      v.prevMoonPhaseAdjusted = v.moonPhaseAdjusted;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        outputValues: { newMoon: s.newMoon.slice(), fullMoon: s.fullMoon.slice() },
+      };
+    },
   };
 }
 
-export const MoonPhases = { calculate, metadata, defaultInputs, inputConfig, plotConfig, outputs };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MoonPhasesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MoonPhasesInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const MoonPhases = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, outputs };

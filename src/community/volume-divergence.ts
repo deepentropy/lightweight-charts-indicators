@@ -7,8 +7,10 @@
  * Reference: "Volume Divergence by MM" by baymucuk
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeDivergenceInputs {
   vl1: number;
@@ -84,124 +86,155 @@ export const metadata = {
  *     sum += x[i] * weight * factor
  *   sum / norm
  */
-function pineWma(xArr: number[], bars: Bar[], period: number): number[] {
-  const n = xArr.length;
-  const out: number[] = new Array(n).fill(NaN);
-
-  for (let i = period - 1; i < n; i++) {
-    let norm = 0;
-    let sum = 0;
-    for (let j = 0; j < period; j++) {
-      const weight = (period - j) * period;
-      norm += weight;
-      const factor = bars[i - j].close < bars[i - j].open ? -1 : 1;
-      sum += xArr[i - j] * weight * factor;
-    }
-    out[i] = norm === 0 ? 0 : sum / norm;
+function pineWmaAt(xArr: number[], bars: Bar[], period: number, i: number): number {
+  if (i < period - 1) return NaN;
+  let norm = 0;
+  let sum = 0;
+  for (let j = 0; j < period; j++) {
+    const weight = (period - j) * period;
+    norm += weight;
+    const factor = bars[i - j].close < bars[i - j].open ? -1 : 1;
+    sum += xArr[i - j] * weight * factor;
   }
-
-  return out;
+  return norm === 0 ? 0 : sum / norm;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<VolumeDivergenceInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface VdVars {
+  plBars: number;
+  phBars: number;
+  lastPlVol: number;
+  lastPlLow: number;
+  lastPhVol: number;
+  lastPhHigh: number;
+}
+
+interface VdRun extends BarRunState<VdVars> {
+  pl: PivotStep;
+  ph: PivotStep;
+  /** The volume, then the chain of custom WMAs (the last one is the plotted vol) */
+  chain: number[][];
+  plFound: boolean[];
+  phFound: boolean[];
+  /** vol, regBull, hidBull, regBear, hidBear */
+  plots: PlotPoint[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<VolumeDivergenceInputs>): BarStudy<VdRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const lbR = cfg.pivotLookbackRight;
   const lbL = cfg.pivotLookbackLeft;
-
   // Chain of custom WMAs
-  const volArr = bars.map(b => b.volume ?? 0);
   const vl3 = cfg.vl1 + cfg.vl2;
   const vl4 = cfg.vl2 + vl3;
   const vl5 = vl3 + vl4;
-
-  const w1 = pineWma(volArr, bars, cfg.vl1);
-  const w2 = pineWma(w1, bars, cfg.vl2);
-  const w3 = pineWma(w2, bars, vl3);
-  const w4 = pineWma(w3, bars, vl4);
-  const vol = pineWma(w4, bars, vl5);
-
-  // Pivot detection on vol: plFound / phFound are true on the confirmation bar, lbR bars after the pivot bar
-  const volSeries = Series.fromArray(bars, vol);
-  const plArr = ta.pivotlow(volSeries, lbL, lbR).toArray();
-  const phArr = ta.pivothigh(volSeries, lbL, lbR).toArray();
-  const plFound = plArr.map((v) => v != null && !Number.isNaN(v));
-  const phFound = phArr.map((v) => v != null && !Number.isNaN(v));
-
-  // Pine plots every pivot (value vol[lbR], offset=-lbR) and hides it with noneColor when there is no divergence.
-  const na = (i: number): PlotPoint => ({ time: bars[i].time, value: NaN });
-  const regBullPlot = bars.map((_, i) => na(i));
-  const hidBullPlot = bars.map((_, i) => na(i));
-  const regBearPlot = bars.map((_, i) => na(i));
-  const hidBearPlot = bars.map((_, i) => na(i));
-
-  const markers: MarkerData[] = [];
-
-  // Pine: _inRange(cond) => bars = barssince(cond == true); rangeLower <= bars and bars <= rangeUpper,
-  // called with plFound[1] / phFound[1]. Pine v4 `and` evaluates both sides, so barssince runs on every bar.
-  let plBars = NaN;
-  let phBars = NaN;
-  // Pine: valuewhen(plFound, vol[lbR], 1) and valuewhen(plFound, low[lbR], 1): on a pivot bar, the previous pivot
-  let lastPlVol = NaN, lastPlLow = NaN;
-  let lastPhVol = NaN, lastPhHigh = NaN;
-
-  for (let i = 0; i < n; i++) {
-    if (i > 0 && plFound[i - 1]) plBars = 0;
-    else if (!Number.isNaN(plBars)) plBars++;
-    if (i > 0 && phFound[i - 1]) phBars = 0;
-    else if (!Number.isNaN(phBars)) phBars++;
-    const plInRange = cfg.minLookbackRange <= plBars && plBars <= cfg.maxLookbackRange;
-    const phInRange = cfg.minLookbackRange <= phBars && phBars <= cfg.maxLookbackRange;
-
-    if (plFound[i]) {
-      const p = i - lbR;
-      const curVol = vol[p];
-      const curLow = bars[p].low;
-      // Regular Bullish: vol higher low, price lower low
-      const bullCond = cfg.plotBull && curLow < lastPlLow && curVol > lastPlVol && plInRange;
-      // Hidden Bullish: vol lower low, price higher low
-      const hiddenBullCond = cfg.plotHiddenBull && curLow > lastPlLow && curVol < lastPlVol && plInRange;
-      regBullPlot[p] = { time: bars[p].time, value: curVol, color: bullCond ? BULL_COLOR : NONE_COLOR };
-      hidBullPlot[p] = { time: bars[p].time, value: curVol, color: hiddenBullCond ? HIDDEN_BULL_COLOR : NONE_COLOR };
-      if (bullCond) markers.push({ time: bars[p].time, position: 'atPriceBottom', price: curVol, shape: 'labelUp', color: BULL_COLOR, text: ' Bull ', textColor: TEXT_COLOR, id: 'shape0' });
-      if (hiddenBullCond) markers.push({ time: bars[p].time, position: 'atPriceBottom', price: curVol, shape: 'labelUp', color: BULL_COLOR, text: ' H Bull ', textColor: TEXT_COLOR, id: 'shape1' });
-      lastPlVol = curVol;
-      lastPlLow = curLow;
-    }
-
-    if (phFound[i]) {
-      const p = i - lbR;
-      const curVol = vol[p];
-      const curHigh = bars[p].high;
-      // Regular Bearish: vol lower high, price higher high
-      const bearCond = cfg.plotBear && curHigh > lastPhHigh && curVol < lastPhVol && phInRange;
-      // Hidden Bearish: vol higher high, price lower high
-      const hiddenBearCond = cfg.plotHiddenBear && curHigh < lastPhHigh && curVol > lastPhVol && phInRange;
-      regBearPlot[p] = { time: bars[p].time, value: curVol, color: bearCond ? BEAR_COLOR : NONE_COLOR };
-      hidBearPlot[p] = { time: bars[p].time, value: curVol, color: hiddenBearCond ? HIDDEN_BEAR_COLOR : NONE_COLOR };
-      if (bearCond) markers.push({ time: bars[p].time, position: 'atPriceTop', price: curVol, shape: 'labelDown', color: BEAR_COLOR, text: ' Bear ', textColor: TEXT_COLOR, id: 'shape2' });
-      if (hiddenBearCond) markers.push({ time: bars[p].time, position: 'atPriceTop', price: curVol, shape: 'labelDown', color: BEAR_COLOR, text: ' H Bear ', textColor: TEXT_COLOR, id: 'shape3' });
-      lastPhVol = curVol;
-      lastPhHigh = curHigh;
-    }
-  }
-
-  // Volume plot colored green/red based on sign
-  const volPlot = vol.map((v, i) => ({
-    time: bars[i].time,
-    value: v,
-    // Pine: vol_color = vol > 0 ? color.green : color.red
-    color: v > 0 ? BULL_COLOR : BEAR_COLOR,
-  }));
-
+  const periods = [cfg.vl1, cfg.vl2, vl3, vl4, vl5];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { vol: volPlot, regBull: regBullPlot, hidBull: hidBullPlot, regBear: regBearPlot, hidBear: hidBearPlot },
-    hlines: [
-      { value: 0, options: { color: '#B2B5BE', linestyle: 'solid' as const, title: 'Baseline' } },
-    ],
-    markers,
+    init() {
+      const pl = new PivotStep(lbL, lbR, false);
+      const ph = new PivotStep(lbL, lbR, true);
+      const s: VdRun = {
+        pl, ph, chain: [[], [], [], [], [], []], plFound: [], phFound: [], plots: [[], [], [], [], []], markers: [], steps: [pl, ph],
+        vars: { plBars: NaN, phBars: NaN, lastPlVol: NaN, lastPlLow: NaN, lastPhVol: NaN, lastPhHigh: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [...s.chain, s.plFound, s.phFound, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const c = s.chain;
+      c[0][i] = b.volume ?? 0;
+      for (let k = 0; k < 5; k++) c[k + 1][i] = pineWmaAt(c[k], bars, periods[k], i);
+      const vol = c[5];
+      const v = vol[i];
+      const p = s.plots;
+      // Volume plot colored green/red based on sign
+      // Pine: vol_color = vol > 0 ? color.green : color.red
+      p[0][i] = { time: b.time, value: v, color: v > 0 ? BULL_COLOR : BEAR_COLOR };
+
+      // Pivot detection on vol: plFound / phFound are true on the confirmation bar, lbR bars after the pivot bar
+      const plFound = !Number.isNaN(s.pl.step(i, v));
+      const phFound = !Number.isNaN(s.ph.step(i, v));
+      s.plFound[i] = plFound;
+      s.phFound[i] = phFound;
+      const vr = s.vars;
+
+      // Pine plots every pivot (value vol[lbR], offset=-lbR) and hides it with noneColor when there is no divergence:
+      // bar i sets its own points to na, and the points of bar i - lbR (their only other writer) on every run
+      for (let k = 1; k <= 4; k++) p[k][i] = { time: b.time, value: NaN };
+      const q = i - lbR;
+      if (q >= 0 && q < i) {
+        const na = { time: bars[q].time, value: NaN };
+        for (let k = 1; k <= 4; k++) p[k][q] = na;
+      }
+
+      // Pine: _inRange(cond) => bars = barssince(cond == true); rangeLower <= bars and bars <= rangeUpper,
+      // called with plFound[1] / phFound[1]. Pine v4 `and` evaluates both sides, so barssince runs on every bar.
+      if (i > 0 && s.plFound[i - 1]) vr.plBars = 0;
+      else if (!Number.isNaN(vr.plBars)) vr.plBars++;
+      if (i > 0 && s.phFound[i - 1]) vr.phBars = 0;
+      else if (!Number.isNaN(vr.phBars)) vr.phBars++;
+      const plInRange = cfg.minLookbackRange <= vr.plBars && vr.plBars <= cfg.maxLookbackRange;
+      const phInRange = cfg.minLookbackRange <= vr.phBars && vr.phBars <= cfg.maxLookbackRange;
+
+      // Pine: valuewhen(plFound, vol[lbR], 1) and valuewhen(plFound, low[lbR], 1): on a pivot bar, the previous pivot
+      if (plFound) {
+        const curVol = vol[q];
+        const curLow = bars[q].low;
+        const t = bars[q].time;
+        // Regular Bullish: vol higher low, price lower low
+        const bullCond = cfg.plotBull && curLow < vr.lastPlLow && curVol > vr.lastPlVol && plInRange;
+        // Hidden Bullish: vol lower low, price higher low
+        const hiddenBullCond = cfg.plotHiddenBull && curLow > vr.lastPlLow && curVol < vr.lastPlVol && plInRange;
+        p[1][q] = { time: t, value: curVol, color: bullCond ? BULL_COLOR : NONE_COLOR };
+        p[2][q] = { time: t, value: curVol, color: hiddenBullCond ? HIDDEN_BULL_COLOR : NONE_COLOR };
+        if (bullCond) s.markers.push({ time: t, position: 'atPriceBottom', price: curVol, shape: 'labelUp', color: BULL_COLOR, text: ' Bull ', textColor: TEXT_COLOR, id: 'shape0' });
+        if (hiddenBullCond) s.markers.push({ time: t, position: 'atPriceBottom', price: curVol, shape: 'labelUp', color: BULL_COLOR, text: ' H Bull ', textColor: TEXT_COLOR, id: 'shape1' });
+        vr.lastPlVol = curVol;
+        vr.lastPlLow = curLow;
+      }
+
+      if (phFound) {
+        const curVol = vol[q];
+        const curHigh = bars[q].high;
+        const t = bars[q].time;
+        // Regular Bearish: vol lower high, price higher high
+        const bearCond = cfg.plotBear && curHigh > vr.lastPhHigh && curVol < vr.lastPhVol && phInRange;
+        // Hidden Bearish: vol higher high, price lower high
+        const hiddenBearCond = cfg.plotHiddenBear && curHigh < vr.lastPhHigh && curVol > vr.lastPhVol && phInRange;
+        p[3][q] = { time: t, value: curVol, color: bearCond ? BEAR_COLOR : NONE_COLOR };
+        p[4][q] = { time: t, value: curVol, color: hiddenBearCond ? HIDDEN_BEAR_COLOR : NONE_COLOR };
+        if (bearCond) s.markers.push({ time: t, position: 'atPriceTop', price: curVol, shape: 'labelDown', color: BEAR_COLOR, text: ' Bear ', textColor: TEXT_COLOR, id: 'shape2' });
+        if (hiddenBearCond) s.markers.push({ time: t, position: 'atPriceTop', price: curVol, shape: 'labelDown', color: BEAR_COLOR, text: ' H Bear ', textColor: TEXT_COLOR, id: 'shape3' });
+        vr.lastPhVol = curVol;
+        vr.lastPhHigh = curHigh;
+      }
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { vol: p[0].slice(), regBull: p[1].slice(), hidBull: p[2].slice(), regBear: p[3].slice(), hidBear: p[4].slice() },
+        hlines: [
+          { value: 0, options: { color: '#B2B5BE', linestyle: 'solid' as const, title: 'Baseline' } },
+        ],
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const VolumeDivergence = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeDivergenceInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolumeDivergenceInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const VolumeDivergence = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

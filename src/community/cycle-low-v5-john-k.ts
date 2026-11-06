@@ -15,9 +15,14 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import {
+  barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowExtreme, WindowSma,
+  type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 
 export interface CycleLowRsiStochRsiInputs {
   src: SourceType;
@@ -103,81 +108,124 @@ const lt = (a: number, b: number) => b - a > EPS;
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CycleLowRsiStochRsiInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface CycleVars {
+  /** ta.barssince(rsiCrossUp) / ta.barssince(stCrossUp) */
+  barsRsi: number;
+  barsSt: number;
+  /** var float anchor_price_detected = na */
+  anchorPriceDetected: number;
+}
+
+interface CycleRun extends BarRunState<CycleVars> {
+  rsiStep: ReturnType<typeof taStep.rsi>;
+  ll: WindowExtreme;
+  hh: WindowExtreme;
+  kSma: WindowSma;
+  dSma: WindowSma;
+  rsiCross: ReturnType<typeof taStep.crossover>;
+  stCross: ReturnType<typeof taStep.crossover>;
+  rsi: number[];
+  k: number[];
+  d: number[];
+  plot0: Point[];
+  markers: MarkerData[];
+  flags: boolean[];
+  times: number[];
+}
+
+function study(inputs: Partial<CycleLowRsiStochRsiInputs>): BarStudy<CycleRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // RSI and StochRSI
-  const rsiS = ta.rsi(getSourceSeries(bars, cfg.src), cfg.lenRsi);
-  const rsi = A(rsiS);
-  const ll = A(ta.lowest(rsiS, cfg.lenStoch));
-  const hh = A(ta.highest(rsiS, cfg.lenStoch));
-  // stoch_raw = (hh == ll) ? 50 : (rsi - ll) / (hh - ll) * 100
-  const stochRaw = rsi.map((r, i) => (eq(hh[i], ll[i]) ? 50 : ((r - ll[i]) / (hh[i] - ll[i])) * 100));
-  const kS = ta.sma(S(stochRaw), cfg.stochK);
-  const k = A(kS);
-  const dS = ta.sma(kS, cfg.stochD);
-  const d = A(dS);
-
-  // Events: ta.crossover compares exactly; ta.barssince of each
-  const rsiCrossUp = A(ta.crossover(rsiS, cfg.rsiOs)).map((v) => v === 1);
-  const stCrossUp = A(ta.crossover(kS, dS)).map((v) => v === 1);
-
-  const markers: MarkerData[] = [];
-  const plot0: { time: number; value: number; color: string }[] = [];
-  let barsRsi = NaN;
-  let barsSt = NaN;
-  let anchorPriceDetected = NaN; // var float anchor_price_detected = na
-  const cycleLowFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    if (rsiCrossUp[i]) barsRsi = 0;
-    else if (!isNaN(barsRsi)) barsRsi++;
-    if (stCrossUp[i]) barsSt = 0;
-    else if (!isNaN(barsSt)) barsSt++;
-    const nzRsi = isNaN(barsRsi) ? 1e6 : barsRsi;
-    const nzSt = isNaN(barsSt) ? 1e6 : barsSt;
-    const crossOk = cfg.oneBarTolerance ? nzRsi <= 1 && nzSt <= 1 : nzRsi === 0 && nzSt === 0;
-
-    // rsi_prev_os = rsi[1] < rsi_os; st_prev_os = math.min(k[1], d[1]) < stoch_os (na compares false)
-    const rsiPrevOs = i > 0 && lt(rsi[i - 1], cfg.rsiOs);
-    const stPrevOs = i > 0 && lt(Math.min(k[i - 1], d[i - 1]), cfg.stochOs);
-    const prevOk = cfg.requirePrevOS ? rsiPrevOs || stPrevOs : true;
-    const strictOk = rsiPrevOs && stPrevOs;
-    const score = (rsiCrossUp[i] ? 1 : 0) + (stCrossUp[i] ? 1 : 0) + (rsiPrevOs ? 1 : 0) + (stPrevOs ? 1 : 0);
-    const oscOk = crossOk && (cfg.strictMode ? strictOk : prevOk) && score >= cfg.scoreThreshold;
-
-    // if (time == anchor_time): anchor_price_detected := close (bar open time in Unix ms)
-    if (b.time * 1000 === cfg.anchorTime) anchorPriceDetected = b.close;
-    const finalAnchorPrice = cfg.useManualAnchorPrice ? cfg.anchorPriceManual : anchorPriceDetected;
-    let projLevel = NaN;
-    if (cfg.useAnchor && !isNaN(finalAnchorPrice)) projLevel = finalAnchorPrice * cfg.anchorMult;
-    // near_anchor: not na(proj_level) and proj_level != 0 and |close - proj| / |proj| <= anchor_tol
-    const nearAnchor = cfg.useAnchor
-      ? !isNaN(projLevel) && !eq(projLevel, 0) && le(Math.abs(b.close - projLevel) / Math.abs(projLevel), cfg.anchorTol)
-      : true;
-
-    const cycleLow = oscOk && nearAnchor;
-    cycleLowFlags.push(cycleLow);
-    // plotshape(plot_labels and cycleLow, shape.triangleup, size.small, color.lime, location.belowbar, text = "CL")
-    if (cfg.plotLabels && cycleLow) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.lime, size: 'small', text: 'CL', textColor: '#2962FF' });
-    }
-    plot0.push({ time: b.time, value: cfg.useAnchor && !isNaN(projLevel) ? projLevel : NaN, color: color.gray });
-  }
-
+  const value = barSource(cfg.src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    markers,
-    // alertcondition(cycleLow, "Cycle Low", "Cycle Low on {{ticker}} {{interval}}")
-    alerts: alertStates(alertConditions, bars, [cycleLowFlags]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: CycleRun = {
+        rsiStep: taStep.rsi(cfg.lenRsi), ll: new WindowExtreme(true, cfg.lenStoch), hh: new WindowExtreme(false, cfg.lenStoch),
+        kSma: new WindowSma(cfg.stochK), dSma: new WindowSma(cfg.stochD), rsiCross: taStep.crossover(),
+        stCross: taStep.crossover(), rsi: [], k: [], d: [], plot0: [], markers: [], flags: [], times: [],
+        steps: [], vars: { barsRsi: NaN, barsSt: NaN, anchorPriceDetected: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.rsiStep, s.ll, s.hh, s.kSma, s.dSma, s.rsiCross, s.stCross];
+      s.lists = [s.markers, s.times];
+      s.series = [s.rsi, s.k, s.d, s.plot0, s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      // RSI and StochRSI
+      const r = s.rsiStep.step(value(b));
+      s.rsi[i] = r;
+      const ll = s.ll.step(r);
+      const hh = s.hh.step(r);
+      // stoch_raw = (hh == ll) ? 50 : (rsi - ll) / (hh - ll) * 100
+      const stochRaw = eq(hh, ll) ? 50 : ((r - ll) / (hh - ll)) * 100;
+      const k = s.kSma.step(stochRaw);
+      const d = s.dSma.step(k);
+      s.k[i] = k;
+      s.d[i] = d;
+
+      // Events: ta.crossover compares exactly; ta.barssince of each
+      const rsiCrossUp = s.rsiCross.step(r, cfg.rsiOs);
+      const stCrossUp = s.stCross.step(k, d);
+      if (rsiCrossUp) v.barsRsi = 0;
+      else if (!isNaN(v.barsRsi)) v.barsRsi++;
+      if (stCrossUp) v.barsSt = 0;
+      else if (!isNaN(v.barsSt)) v.barsSt++;
+      const nzRsi = isNaN(v.barsRsi) ? 1e6 : v.barsRsi;
+      const nzSt = isNaN(v.barsSt) ? 1e6 : v.barsSt;
+      const crossOk = cfg.oneBarTolerance ? nzRsi <= 1 && nzSt <= 1 : nzRsi === 0 && nzSt === 0;
+
+      // rsi_prev_os = rsi[1] < rsi_os; st_prev_os = math.min(k[1], d[1]) < stoch_os (na compares false)
+      const rsiPrevOs = i > 0 && lt(s.rsi[i - 1], cfg.rsiOs);
+      const stPrevOs = i > 0 && lt(Math.min(s.k[i - 1], s.d[i - 1]), cfg.stochOs);
+      const prevOk = cfg.requirePrevOS ? rsiPrevOs || stPrevOs : true;
+      const strictOk = rsiPrevOs && stPrevOs;
+      const score = (rsiCrossUp ? 1 : 0) + (stCrossUp ? 1 : 0) + (rsiPrevOs ? 1 : 0) + (stPrevOs ? 1 : 0);
+      const oscOk = crossOk && (cfg.strictMode ? strictOk : prevOk) && score >= cfg.scoreThreshold;
+
+      // if (time == anchor_time): anchor_price_detected := close (bar open time in Unix ms)
+      if (b.time * 1000 === cfg.anchorTime) v.anchorPriceDetected = b.close;
+      const finalAnchorPrice = cfg.useManualAnchorPrice ? cfg.anchorPriceManual : v.anchorPriceDetected;
+      let projLevel = NaN;
+      if (cfg.useAnchor && !isNaN(finalAnchorPrice)) projLevel = finalAnchorPrice * cfg.anchorMult;
+      // near_anchor: not na(proj_level) and proj_level != 0 and |close - proj| / |proj| <= anchor_tol
+      const nearAnchor = cfg.useAnchor
+        ? !isNaN(projLevel) && !eq(projLevel, 0) && le(Math.abs(b.close - projLevel) / Math.abs(projLevel), cfg.anchorTol)
+        : true;
+
+      const cycleLow = oscOk && nearAnchor;
+      s.flags[i] = cycleLow;
+      if (cycleLow) s.times.push(b.time as number);
+      // plotshape(plot_labels and cycleLow, shape.triangleup, size.small, color.lime, location.belowbar, text = "CL")
+      if (cfg.plotLabels && cycleLow) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.lime, size: 'small', text: 'CL', textColor: '#2962FF' });
+      }
+      s.plot0[i] = { time: b.time, value: cfg.useAnchor && !isNaN(projLevel) ? projLevel : NaN, color: color.gray };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        markers: s.markers.slice(),
+        // alertcondition(cycleLow, "Cycle Low", "Cycle Low on {{ticker}} {{interval}}")
+        alerts: liveAlertStates(alertConditions, [s.times], [n > 0 && s.flags[n - 1]]),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CycleLowRsiStochRsiInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CycleLowRsiStochRsiInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -187,7 +235,9 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const CycleLowRsiStochRsi = {
   calculate,
+  createRun,
   metadata,
+
   defaultInputs,
   inputConfig,
   plotConfig,

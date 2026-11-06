@@ -14,8 +14,10 @@
  * Original notice: © SeerQuant
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { AlmaStep, barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type TripleMaForLoopMaType = 'SMA' | 'EMA' | 'SMMA' | 'WMA' | 'VWMA' | 'LSMA' | 'HMA' | 'ALMA';
 export type TripleMaForLoopColorScheme = 'Default' | 'Modern' | 'Cool' | 'Alternate' | 'Bright';
@@ -92,111 +94,216 @@ export const metadata = {
 const gt = (a: number, b: number) => a - b > 1e-10;
 const lt = (a: number, b: number) => b - a > 1e-10;
 
+/** One moving average of the TMA stepped bar by bar */
+interface MaStep {
+  step(value: number, volume: number): number;
+  commit(): void;
+}
+
+/** ma(source, length, type) */
+function maStep(maType: TripleMaForLoopMaType, length: number): MaStep {
+  switch (maType) {
+    case 'SMA': {
+      const m = new WindowSma(length);
+      return { step: (v) => m.step(v), commit: () => m.commit() };
+    }
+    case 'SMMA': {
+      const m = taStep.rma(length);
+      return { step: (v) => m.step(v), commit: () => m.commit() };
+    }
+    case 'WMA': {
+      const m = taStep.wma();
+      return { step: (v) => m.step(v, length), commit: () => m.commit() };
+    }
+    case 'VWMA': return new WindowVwma(length);
+    case 'LSMA': {
+      const m = taStep.linreg(length, 0);
+      return { step: (v) => m.step(v), commit: () => m.commit() };
+    }
+    case 'HMA': {
+      // ta.wma(2 * ta.wma(src, length / 2) - ta.wma(src, length), math.floor(math.sqrt(length)))
+      const w1 = taStep.wma();
+      const w2 = taStep.wma();
+      const w3 = taStep.wma();
+      const half = Math.floor(length / 2);
+      const root = Math.floor(Math.sqrt(length));
+      return {
+        step: (v) => {
+          const a = w1.step(v, half);
+          const b = w2.step(v, length);
+          return w3.step(2 * a - b, root);
+        },
+        commit: () => { w1.commit(); w2.commit(); w3.commit(); },
+      };
+    }
+    case 'ALMA': {
+      const m = new AlmaStep(length, 0.85, 6);
+      return { step: (v) => m.step(v), commit: () => m.commit() };
+    }
+    case 'EMA':
+    default: {
+      const m = taStep.ema(length);
+      return { step: (v) => m.step(v), commit: () => m.commit() };
+    }
+  }
+}
+
+/** tma = 3 * (ma1 - ma2) + ma3 with ma2 = ma(ma1), ma3 = ma(ma2) */
+function tmaStep(maType: TripleMaForLoopMaType, length: number): MaStep {
+  const m1 = maStep(maType, length);
+  const m2 = maStep(maType, length);
+  const m3 = maStep(maType, length);
+  return {
+    step: (v, vol) => {
+      const a = m1.step(v, vol);
+      const b = m2.step(a, vol);
+      const c = m3.step(b, vol);
+      return 3 * (a - b) + c;
+    },
+    commit: () => { m1.commit(); m2.commit(); m3.commit(); },
+  };
+}
+
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
+
+interface TripleMaVars {
+  /** var color col = na */
+  c: string | null;
+  /** var int prevTrendState = 0 */
+  prevTrendState: number;
+}
+
+interface TripleMaRun extends BarRunState<TripleMaVars> {
+  tmaStep: MaStep;
+  smaStep: WindowSma;
+  tma: number[];
+  sma: number[];
+  plots: Point[][];
+  fill: string[];
+  bar: (BarColorData | null)[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<TripleMaForLoopInputs>): BarStudy<TripleMaRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const [bull, bear] = SCHEMES[cfg.colScheme] ?? SCHEMES.Default;
+  const value = barSource(cfg.src);
+  const upCol = String(color.new(bull, 50));
+  const downCol = String(color.new(bear, 50));
+  const step = cfg.sl <= cfg.el ? 1 : -1;
+  // a negative loop index reads the TMA of the next bars
+  const future = Math.min(cfg.sl, cfg.el) < 0;
+  return {
+    fullRunReason: () => (!isBarSource(cfg.src) ? 'source of another study' : future ? 'negative loop index reads the next bars' : null),
+    init(bars) {
+      const tma = tmaStep(cfg.maType, cfg.maLen);
+      const smaStep = new WindowSma(14);
+      const s: TripleMaRun = {
+        tmaStep: tma, smaStep, tma: [], sma: [], plots: [[], [], [], [], []], fill: [], bar: [], markers: [],
+        steps: [tma, smaStep], vars: { c: null, prevTrendState: 0 }, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.tma, s.sma, ...s.plots, s.fill, s.bar];
+      if (future) {
+        // the TMA of every bar before the first one is calculated (every update is a full run)
+        const all = tmaStep(cfg.maType, cfg.maLen);
+        for (let j = 0; j < bars.length; j++) {
+          s.tma[j] = all.step(value(bars[j]), bars[j].volume ?? NaN);
+          all.commit();
+        }
+      }
+      return s;
+    },
+    copyVars: (v) => ({ ...v }),
+    bar(s, b, bars) {
+      const bar = bars[b];
+      const n = bars.length;
+      const src = value(bar);
+      const tma = s.tma;
+      tma[b] = s.tmaStep.step(src, bar.volume ?? NaN);
+      const sma = s.smaStep.step(bar.close);
+      s.sma[b] = sma;
+      const v = s.vars;
+
+      // fl(s, e, val): sum of (src > val[i] ? 1 : -1) for i = s to e (val[i] before bar 0 is na: -1)
+      let sum = 0;
+      for (let i = cfg.sl; step > 0 ? i <= cfg.el : i >= cfg.el; i += step) {
+        const past = b - i >= 0 && b - i < n ? tma[b - i] : NaN;
+        sum += gt(src, past) ? 1 : -1;
+      }
+
+      if (gt(sum, cfg.thrUp)) v.c = bull;
+      if (lt(sum, cfg.thrDown)) v.c = bear;
+      const c = v.c;
+
+      const current = gt(sum, cfg.thrUp) ? 1 : lt(sum, cfg.thrDown) ? -1 : 0;
+      const bullishTransition = v.prevTrendState !== 1 && current === 1;
+      const bearishTransition = v.prevTrendState !== -1 && current === -1;
+      if (bullishTransition || bearishTransition) v.prevTrendState = current;
+
+      const t = bar.time;
+      // plotshape(bullishTransition ? sma - sma * 0.075 : na, shape.labelup, location.absolute, color = bull,
+      //   text = "▲", textcolor = #000000, size.small, force_overlay = true)
+      const lo = sma - sma * 0.075;
+      if (bullishTransition && !isNaN(lo)) {
+        s.markers.push({ time: t, position: 'atPriceBottom', price: lo, shape: 'labelUp', color: bull, text: '▲',
+          textColor: '#000000', size: 'small', forceOverlay: true });
+      }
+      // plotshape(bearishTransition ? sma + sma * 0.075 : na, shape.labeldown, ..., color = bear, text = "▼")
+      const hi = sma + sma * 0.075;
+      if (bearishTransition && !isNaN(hi)) {
+        s.markers.push({ time: t, position: 'atPriceTop', price: hi, shape: 'labelDown', color: bear, text: '▼',
+          textColor: '#000000', size: 'small', forceOverlay: true });
+      }
+
+      const lineCol = c ?? 'transparent';
+      // plot(fl, color = col, linewidth = 3, title = "FL Histogram")
+      s.plots[0][b] = { time: t, value: sum, color: lineCol };
+      s.plots[1][b] = { time: t, value: cfg.thrUp, color: upCol };
+      s.plots[2][b] = { time: t, value: cfg.thrDown, color: downCol };
+      // a = plot(sma, color = col, linewidth = 2, force_overlay = true)
+      s.plots[3][b] = { time: t, value: sma, color: lineCol };
+      // b = plot(sma[2], color = col, linewidth = 2, force_overlay = true)
+      s.plots[4][b] = { time: t, value: b >= 2 ? s.sma[b - 2] : NaN, color: lineCol };
+      // fill(a, b, color.new(col, 70)): color.new(na, 70) is black with transparency 70
+      s.fill[b] = String(color.new(c as string, 70));
+      // barcolor(paint ? col : na): no bar colour while col is na
+      s.bar[b] = c === null ? null : { time: t, color: c };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(),
+          plot1: s.plots[1].slice(),
+          plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(),
+          plot4: s.plots[4].slice(),
+        },
+        fills: [{ plot1: 'plot3', plot2: 'plot4', colors: s.fill.slice() }],
+        markers: s.markers.slice(),
+        barColors: cfg.paint ? s.bar.filter((x): x is BarColorData => x !== null) : [],
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TripleMaForLoopInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<TripleMaForLoopInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const [bull, bear] = SCHEMES[cfg.colScheme] ?? SCHEMES.Default;
-  const volume = S(bars.map((b) => b.volume ?? NaN));
-
-  // ma(source, length, type)
-  const ma = (source: number[], length: number): number[] => {
-    const s = S(source);
-    switch (cfg.maType) {
-      case 'SMA': return A(ta.sma(s, length));
-      case 'SMMA': return A(ta.rma(s, length));
-      case 'WMA': return A(ta.wma(s, length));
-      case 'VWMA': return A(ta.vwma(s, length, volume));
-      case 'LSMA': return A(ta.linreg(s, length, 0));
-      case 'HMA': {
-        const wma1 = A(ta.wma(s, Math.floor(length / 2)));
-        const wma2 = A(ta.wma(s, length));
-        return A(ta.wma(S(wma1.map((v, i) => 2 * v - wma2[i])), Math.floor(Math.sqrt(length))));
-      }
-      case 'ALMA': return A(ta.alma(s, length, 0.85, 6));
-      case 'EMA':
-      default: return A(ta.ema(s, length));
-    }
-  };
-
-  const src = A(getSourceSeries(bars, cfg.src));
-  const ma1 = ma(src, cfg.maLen);
-  const ma2 = ma(ma1, cfg.maLen);
-  const ma3 = ma(ma2, cfg.maLen);
-  const tma = ma1.map((v, i) => 3 * (v - ma2[i]) + ma3[i]);
-  const sma = A(ta.sma(S(bars.map((b) => b.close)), 14));
-
-  const fl: number[] = new Array(n);
-  const col: (string | null)[] = new Array(n);
-  const markers: MarkerData[] = [];
-  let c: string | null = null; // var color col = na
-  let prevTrendState = 0; // var int prevTrendState = 0
-  for (let b = 0; b < n; b++) {
-    // fl(s, e, val): sum of (src > val[i] ? 1 : -1) for i = s to e (val[i] before bar 0 is na: -1)
-    let sum = 0;
-    const step = cfg.sl <= cfg.el ? 1 : -1;
-    for (let i = cfg.sl; step > 0 ? i <= cfg.el : i >= cfg.el; i += step) {
-      const past = b - i >= 0 && b - i < n ? tma[b - i] : NaN;
-      sum += gt(src[b], past) ? 1 : -1;
-    }
-    fl[b] = sum;
-
-    if (gt(sum, cfg.thrUp)) c = bull;
-    if (lt(sum, cfg.thrDown)) c = bear;
-    col[b] = c;
-
-    const current = gt(sum, cfg.thrUp) ? 1 : lt(sum, cfg.thrDown) ? -1 : 0;
-    const bullishTransition = prevTrendState !== 1 && current === 1;
-    const bearishTransition = prevTrendState !== -1 && current === -1;
-    if (bullishTransition || bearishTransition) prevTrendState = current;
-
-    const t = bars[b].time;
-    // plotshape(bullishTransition ? sma - sma * 0.075 : na, shape.labelup, location.absolute, color = bull,
-    //   text = "▲", textcolor = #000000, size.small, force_overlay = true)
-    const lo = sma[b] - sma[b] * 0.075;
-    if (bullishTransition && !isNaN(lo)) {
-      markers.push({ time: t, position: 'atPriceBottom', price: lo, shape: 'labelUp', color: bull, text: '▲',
-        textColor: '#000000', size: 'small', forceOverlay: true });
-    }
-    // plotshape(bearishTransition ? sma + sma * 0.075 : na, shape.labeldown, ..., color = bear, text = "▼")
-    const hi = sma[b] + sma[b] * 0.075;
-    if (bearishTransition && !isNaN(hi)) {
-      markers.push({ time: t, position: 'atPriceTop', price: hi, shape: 'labelDown', color: bear, text: '▼',
-        textColor: '#000000', size: 'small', forceOverlay: true });
-    }
-  }
-
-  const upCol = String(color.new(bull, 50));
-  const downCol = String(color.new(bear, 50));
-  const lineCol = (i: number) => col[i] ?? 'transparent';
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(fl, color = col, linewidth = 3, title = "FL Histogram")
-      plot0: bars.map((b, i) => ({ time: b.time, value: fl[i], color: lineCol(i) })),
-      plot1: bars.map((b) => ({ time: b.time, value: cfg.thrUp, color: upCol })),
-      plot2: bars.map((b) => ({ time: b.time, value: cfg.thrDown, color: downCol })),
-      // a = plot(sma, color = col, linewidth = 2, force_overlay = true)
-      plot3: bars.map((b, i) => ({ time: b.time, value: sma[i], color: lineCol(i) })),
-      // b = plot(sma[2], color = col, linewidth = 2, force_overlay = true)
-      plot4: bars.map((b, i) => ({ time: b.time, value: i >= 2 ? sma[i - 2] : NaN, color: lineCol(i) })),
-    },
-    // fill(a, b, color.new(col, 70)): color.new(na, 70) is black with transparency 70
-    fills: [{ plot1: 'plot3', plot2: 'plot4', colors: col.map((x) => String(color.new(x as string, 70))) }],
-    markers,
-    // barcolor(paint ? col : na): no bar colour while col is na
-    barColors: cfg.paint
-      ? bars.flatMap((b, i) => (col[i] === null ? [] : [{ time: b.time, color: col[i] as string }]))
-      : [],
-  };
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const TripleMaForLoop = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

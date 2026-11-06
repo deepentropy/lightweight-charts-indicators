@@ -17,9 +17,11 @@
  * Original notice: © LonesomeThecolor.blue
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { IndicatorResult, InputConfig, PlotConfig, Bar } from 'oakscriptjs';
 import type { BarColorData, LineDrawingData, MarkerData } from '../types';
-import { barInterval, barTime } from '../bar-time';
+import { barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface HigherHighLowerLowStrategyInputs {
   /** Bars on the left of a pivot */
@@ -100,40 +102,55 @@ interface Ln {
   deleted: boolean;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<HigherHighLowerLowStrategyInputs> = {},
-): Omit<IndicatorResult, 'markers' | 'barColors' | 'lines'> & { markers: MarkerData[]; barColors: BarColorData[]; lines: LineDrawingData[] } {
+type Result = Omit<IndicatorResult, 'markers' | 'barColors' | 'lines'> & { markers: MarkerData[]; barColors: BarColorData[]; lines: LineDrawingData[] };
+
+interface HhllVars {
+  /**
+   * valuewhen(x, x, 1) of each call of the script (rawDirection, rawPivot, pivotAfterLows, pivotAfterHighs,
+   * directionAfterLows): the two latest values of each, older first (changed in place)
+   */
+  hist: number[];
+  /** Live lines in creation order (changed in place) and the two held by the `var` variables */
+  lines: Ln[];
+  resLine: Ln | null;
+  supLine: Ln | null;
+  res: number;
+  sup: number;
+  trend: number;
+}
+
+interface HhllRun extends BarRunState<HhllVars> {
+  ph: PivotStep;
+  pl: PivotStep;
+  /** direction of the kept pivot: 1 high, -1 low */
+  hlArr: number[];
+  /** price of the kept pivot */
+  zzArr: number[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<HigherHighLowerLowStrategyInputs>): BarStudy<HhllRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const lb = Math.trunc(cfg.lb);
   const rb = Math.trunc(cfg.rb);
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const phArr = A(ta.pivothigh(new Series(bars, (b) => b.high), lb, rb));
-  const plArr = A(ta.pivotlow(new Series(bars, (b) => b.low), lb, rb));
 
-  // valuewhen(x, x, 1) of each call of the script: the value before the latest one (the latest can be the current
-  // bar). Each call has its own history, taken where the script calls it.
-  const history = () => {
-    const list: number[] = [];
-    return (v: number) => {
-      if (truthy(v)) list.push(v);
-      return list.length > 1 ? list[list.length - 2] : NaN;
-    };
+  // valuewhen(x, x, 1) of call k: the value before the latest one (the latest can be the current bar). Each call has
+  // its own history, taken where the script calls it.
+  const history = (h: number[], k: number, v: number): number => {
+    if (truthy(v)) {
+      h[k * 2] = h[k * 2 + 1];
+      h[k * 2 + 1] = v;
+    }
+    return h[k * 2];
   };
-  const rawDirection = history();
-  const rawPivot = history();
-  const pivotAfterLows = history();
-  const pivotAfterHighs = history();
-  const directionAfterLows = history();
 
-  const hlArr: number[] = new Array(n).fill(NaN); // direction of the kept pivot: 1 high, -1 low
-  const zzArr: number[] = new Array(n).fill(NaN); // price of the kept pivot
   /** x[k] of a variable; na before the first bar */
   const past = (arr: number[], i: number, k: number) => (i - k >= 0 && k >= 0 ? arr[i - k] : NaN);
 
   // findprevious(): the four pivots before the current one, of alternating kinds (0 when there is none)
-  const findPrevious = (i: number): [number, number, number, number] => {
+  const findPrevious = (s: HhllRun, i: number): [number, number, number, number] => {
+    const { hlArr, zzArr } = s;
     const hl = hlArr[i];
     const locs: [number, number, number, number] = [0, 0, 0, 0];
     let xx = 0;
@@ -159,114 +176,139 @@ export function calculate(
 
   // Live lines in creation order: when a creation brings the count above max + 5, the oldest are deleted until max
   // remain. The two lines held by the `var` variables of the script are never deleted by this limit, but they count.
-  const lines: Ln[] = [];
-  let resLine: Ln | null = null;
-  let supLine: Ln | null = null;
-  const newLine = (x1: number, x2: number, y: number, css: string): Ln => {
+  const newLine = (v: HhllVars, x1: number, x2: number, y: number, css: string): Ln => {
+    const { lines } = v;
     const o: Ln = { x1, x2, y, color: css, extendRight: true, deleted: false };
     lines.push(o);
     if (lines.length > MAX_LINES + 5) {
       for (let k = 0; k < lines.length && lines.length > MAX_LINES; ) {
-        if (lines[k] === resLine || lines[k] === supLine) k++;
+        if (lines[k] === v.resLine || lines[k] === v.supLine) k++;
         else lines.splice(k, 1)[0].deleted = true;
       }
     }
     return o;
   };
 
-  const interval = barInterval(bars);
-  const T = (i: number) => barTime(bars, i, interval);
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  let res = NaN;
-  let sup = NaN;
-  let trend = NaN;
-
-  for (let i = 0; i < n; i++) {
-    const ph = phArr[i];
-    const pl = plArr[i];
-    let hl = truthy(ph) ? 1 : truthy(pl) ? -1 : NaN;
-    let zz = truthy(ph) ? ph : truthy(pl) ? pl : NaN;
-
-    const prevDirection = rawDirection(hl);
-    // A low after a low: the higher one is dropped. A high after a high: the lower one is dropped.
-    const prevRaw = rawPivot(zz);
-    if (truthy(pl) && hl === -1 && prevDirection === -1 && gt(pl, prevRaw)) zz = NaN;
-    const beforeHighs = pivotAfterLows(zz);
-    if (truthy(ph) && hl === 1 && prevDirection === 1 && lt(ph, beforeHighs)) zz = NaN;
-
-    const prevPivot = pivotAfterHighs(zz);
-    if (hl === -1 && prevDirection === 1 && gt(zz, prevPivot)) hl = NaN;
-    const prevKept = directionAfterLows(hl);
-    if (hl === 1 && prevKept === -1 && lt(zz, prevPivot)) hl = NaN;
-    if (isNaN(hl)) zz = NaN;
-    hlArr[i] = hl;
-    zzArr[i] = zz;
-
-    let a = NaN, b = NaN, c = NaN, d = NaN, e = NaN;
-    if (!isNaN(hl)) {
-      [b, c, d, e] = findPrevious(i);
-      a = zz;
-    }
-    const on = truthy(zz);
-    const isHH = on && gt(a, b) && gt(a, c) && gt(c, b) && gt(c, d);
-    const isLL = on && lt(a, b) && lt(a, c) && lt(c, b) && lt(c, d);
-    const isHL = on && ((ge(a, c) && gt(b, c) && gt(b, d) && gt(d, c) && gt(d, e)) || (lt(a, b) && gt(a, c) && lt(b, d)));
-    const isLH = on && ((le(a, c) && lt(b, c) && lt(b, d) && lt(d, c) && lt(d, e)) || (gt(a, b) && lt(a, c) && gt(b, d)));
-
-    // plotshape(..., offset = -rb): drawn on the pivot bar
-    if (i - rb >= 0) {
-      const time = T(i - rb);
-      if (isHL) markers.push({ time, position: 'belowBar', shape: 'labelUp', color: LIME, text: 'HL', textColor: BLACK });
-      if (isHH) markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: LIME, text: 'HH', textColor: BLACK });
-      if (isLL) markers.push({ time, position: 'belowBar', shape: 'labelUp', color: RED, text: 'LL', textColor: WHITE });
-      if (isLH) markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: RED, text: 'LH', textColor: WHITE });
-    }
-
-    const prevRes = res;
-    const prevSup = sup;
-    if (isLH) res = zz;
-    if (isHL) sup = zz;
-    const close = bars[i].close;
-    trend = gt(close, res) ? 1 : lt(close, sup) ? -1 : (isNaN(trend) ? 0 : trend);
-    if ((trend === 1 && isHH) || (trend === -1 && isLH)) res = zz;
-    if ((trend === 1 && isHL) || (trend === -1 && isLL)) sup = zz;
-
-    if (cfg.showSupRes) {
-      if (ne(res, prevRes)) {
-        if (resLine && !resLine.deleted) {
-          resLine.x2 = i;
-          resLine.extendRight = false;
-        }
-        resLine = newLine(i - rb, i, res, cfg.resCol);
-      }
-      if (ne(sup, prevSup)) {
-        if (supLine && !supLine.deleted) {
-          supLine.x2 = i;
-          supLine.extendRight = false;
-        }
-        supLine = newLine(i - rb, i, sup, cfg.supCol);
-      }
-    }
-
-    if (cfg.changeBarCol) barColors.push({ time: bars[i].time, color: trend === 1 ? cfg.bColUp : cfg.bColDn });
-  }
-
-  const style = cfg.srLineStyle === 'sol' ? 'solid' : cfg.srLineStyle === 'dsh' ? 'dashed' : 'dotted';
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    barColors,
-    lines: lines.map((l) => ({
-      time1: T(l.x1), price1: l.y, time2: T(l.x2), price2: l.y, color: l.color, style, width: cfg.srLineWidth,
-      extend: l.extendRight ? 'right' as const : 'none' as const,
-    })),
+    init() {
+      const ph = new PivotStep(lb, rb, true);
+      const pl = new PivotStep(lb, rb, false);
+      const s: HhllRun = {
+        ph, pl, hlArr: [], zzArr: [], markers: [], barColors: [],
+        steps: [ph, pl],
+        vars: { hist: new Array(10).fill(NaN), lines: [], resLine: null, supLine: null, res: NaN, sup: NaN, trend: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, s.barColors];
+      s.series = [s.hlArr, s.zzArr];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const h = v.hist;
+      const ph = s.ph.step(i, bars[i].high);
+      const pl = s.pl.step(i, bars[i].low);
+      let hl = truthy(ph) ? 1 : truthy(pl) ? -1 : NaN;
+      let zz = truthy(ph) ? ph : truthy(pl) ? pl : NaN;
+
+      const prevDirection = history(h, 0, hl);
+      // A low after a low: the higher one is dropped. A high after a high: the lower one is dropped.
+      const prevRaw = history(h, 1, zz);
+      if (truthy(pl) && hl === -1 && prevDirection === -1 && gt(pl, prevRaw)) zz = NaN;
+      const beforeHighs = history(h, 2, zz);
+      if (truthy(ph) && hl === 1 && prevDirection === 1 && lt(ph, beforeHighs)) zz = NaN;
+
+      const prevPivot = history(h, 3, zz);
+      if (hl === -1 && prevDirection === 1 && gt(zz, prevPivot)) hl = NaN;
+      const prevKept = history(h, 4, hl);
+      if (hl === 1 && prevKept === -1 && lt(zz, prevPivot)) hl = NaN;
+      if (isNaN(hl)) zz = NaN;
+      s.hlArr[i] = hl;
+      s.zzArr[i] = zz;
+
+      let a = NaN, b = NaN, c = NaN, d = NaN, e = NaN;
+      if (!isNaN(hl)) {
+        [b, c, d, e] = findPrevious(s, i);
+        a = zz;
+      }
+      const on = truthy(zz);
+      const isHH = on && gt(a, b) && gt(a, c) && gt(c, b) && gt(c, d);
+      const isLL = on && lt(a, b) && lt(a, c) && lt(c, b) && lt(c, d);
+      const isHL = on && ((ge(a, c) && gt(b, c) && gt(b, d) && gt(d, c) && gt(d, e)) || (lt(a, b) && gt(a, c) && lt(b, d)));
+      const isLH = on && ((le(a, c) && lt(b, c) && lt(b, d) && lt(d, c) && lt(d, e)) || (gt(a, b) && lt(a, c) && gt(b, d)));
+
+      // plotshape(..., offset = -rb): drawn on the pivot bar
+      if (i - rb >= 0) {
+        const time = barTime(bars, i - rb);
+        if (isHL) s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: LIME, text: 'HL', textColor: BLACK });
+        if (isHH) s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: LIME, text: 'HH', textColor: BLACK });
+        if (isLL) s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: RED, text: 'LL', textColor: WHITE });
+        if (isLH) s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: RED, text: 'LH', textColor: WHITE });
+      }
+
+      const prevRes = v.res;
+      const prevSup = v.sup;
+      if (isLH) v.res = zz;
+      if (isHL) v.sup = zz;
+      const close = bars[i].close;
+      v.trend = gt(close, v.res) ? 1 : lt(close, v.sup) ? -1 : (isNaN(v.trend) ? 0 : v.trend);
+      if ((v.trend === 1 && isHH) || (v.trend === -1 && isLH)) v.res = zz;
+      if ((v.trend === 1 && isHL) || (v.trend === -1 && isLL)) v.sup = zz;
+
+      if (cfg.showSupRes) {
+        if (ne(v.res, prevRes)) {
+          if (v.resLine && !v.resLine.deleted) {
+            v.resLine.x2 = i;
+            v.resLine.extendRight = false;
+          }
+          v.resLine = newLine(v, i - rb, i, v.res, cfg.resCol);
+        }
+        if (ne(v.sup, prevSup)) {
+          if (v.supLine && !v.supLine.deleted) {
+            v.supLine.x2 = i;
+            v.supLine.extendRight = false;
+          }
+          v.supLine = newLine(v, i - rb, i, v.sup, cfg.supCol);
+        }
+      }
+
+      if (cfg.changeBarCol) s.barColors.push({ time: bars[i].time, color: v.trend === 1 ? cfg.bColUp : cfg.bColDn });
+    },
+    copyVars(v) {
+      // the lines are changed in place: copies, the held ones pointing at their copies
+      const lines = v.lines.map((l) => ({ ...l }));
+      const held = (l: Ln | null) => (l ? lines[v.lines.indexOf(l)] ?? { ...l } : null);
+      return { ...v, hist: v.hist.slice(), lines, resLine: held(v.resLine), supLine: held(v.supLine) };
+    },
+    result(s, bars) {
+      const style = cfg.srLineStyle === 'sol' ? 'solid' : cfg.srLineStyle === 'dsh' ? 'dashed' : 'dotted';
+      const T = (x: number) => barTime(bars, x);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        lines: s.vars.lines.map((l) => ({
+          time1: T(l.x1), price1: l.y, time2: T(l.x2), price2: l.y, color: l.color, style, width: cfg.srLineWidth,
+          extend: l.extendRight ? 'right' as const : 'none' as const,
+        })),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HigherHighLowerLowStrategyInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<HigherHighLowerLowStrategyInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const HigherHighLowerLowStrategy = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

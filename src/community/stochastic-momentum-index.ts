@@ -7,7 +7,9 @@
  * Reference: "Stochastic Momentum Index (SMI)"
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface StochasticMomentumIndexInputs {
   length: number;
@@ -46,76 +48,100 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<StochasticMomentumIndexInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface SmiRun extends BarRunState<Record<string, never>> {
+  hh: WindowExtreme;
+  ll: WindowExtreme;
+  num1: ReturnType<typeof taStep.ema>;
+  num2: ReturnType<typeof taStep.ema>;
+  den1: ReturnType<typeof taStep.ema>;
+  den2: ReturnType<typeof taStep.ema>;
+  sig: ReturnType<typeof taStep.ema>;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<StochasticMomentumIndexInputs>): BarStudy<SmiRun, IndicatorResult> {
   const { length, smoothLen1, smoothLen2, sigLen } = { ...defaultInputs, ...inputs };
-
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-  const hh = ta.highest(highSeries, length);
-  const ll = ta.lowest(lowSeries, length);
-
-  const closeSeries = new Series(bars, (b) => b.close);
-  const midpoint = hh.add(ll).div(2);
-  const relRange = closeSeries.sub(midpoint);
-  const hlRange = hh.sub(ll);
-
-  const numerator = ta.ema(ta.ema(relRange, smoothLen1), smoothLen2);
-  const denominator = ta.ema(ta.ema(hlRange, smoothLen1), smoothLen2).mul(0.5);
-
-  const numArr = numerator.toArray();
-  const denArr = denominator.toArray();
-
-  const smiArr: number[] = new Array(bars.length);
-  for (let i = 0; i < bars.length; i++) {
-    const n = numArr[i];
-    const d = denArr[i];
-    smiArr[i] = (d != null && d !== 0 && n != null) ? 100 * n / d : 0;
-  }
-
-  const smiSeries = new Series(bars, (_b, i) => smiArr[i]);
-  const signal = ta.ema(smiSeries, sigLen);
-  const sigArr = signal.toArray();
-
   const warmup = length + smoothLen1;
-  const toPlot = (arr: number[]) =>
-    arr.map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : v }));
-
-  const histArr = smiArr.map((v, i) => v - (sigArr[i] ?? 0));
-  const histPlot = histArr.map((v, i) => {
-    if (i < warmup) return { time: bars[i].time, value: NaN };
-    const color = v >= 0 ? '#26A69A' : '#EF5350';
-    return { time: bars[i].time, value: v, color };
-  });
-
   // OB/OS fill: clamp SMI for fill region above OB (40) and below OS (-40)
   const ob = 40;
   const os = -40;
-  const plot3 = bars.map((b, i) => ({ time: b.time, value: i < warmup ? NaN : ob }));
-  const plot4 = bars.map((b, i) => ({ time: b.time, value: i < warmup ? NaN : (smiArr[i] > ob ? smiArr[i] : ob) }));
-  const plot5 = bars.map((b, i) => ({ time: b.time, value: i < warmup ? NaN : os }));
-  const plot6 = bars.map((b, i) => ({ time: b.time, value: i < warmup ? NaN : (smiArr[i] < os ? smiArr[i] : os) }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      'plot0': toPlot(smiArr),
-      'plot1': sigArr.map((v, i) => ({ time: bars[i].time, value: (i < warmup || v == null) ? NaN : v })),
-      'plot2': histPlot,
-      'plot3': plot3,
-      'plot4': plot4,
-      'plot5': plot5,
-      'plot6': plot6,
+    init() {
+      const hh = new WindowExtreme(false, length);
+      const ll = new WindowExtreme(true, length);
+      const num1 = taStep.ema(smoothLen1);
+      const num2 = taStep.ema(smoothLen2);
+      const den1 = taStep.ema(smoothLen1);
+      const den2 = taStep.ema(smoothLen2);
+      const sig = taStep.ema(sigLen);
+      const s: SmiRun = {
+        hh, ll, num1, num2, den1, den2, sig, plots: Array.from({ length: 7 }, () => []),
+        steps: [hh, ll, num1, num2, den1, den2, sig], vars: {}, lists: [], series: [],
+      };
+      s.series = s.plots;
+      return s;
     },
-    fills: [
-      { plot1: 'plot3', plot2: 'plot4', options: { color: 'rgba(255,0,0,0.4)' } },
-      { plot1: 'plot5', plot2: 'plot6', options: { color: 'rgba(0,128,0,0.4)' } },
-    ],
-    hlines: [
-      { value: 40, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
-      { value: 0, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Zero' } },
-      { value: -40, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
-    ],
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const hh = s.hh.step(b.high);
+      const ll = s.ll.step(b.low);
+      const midpoint = (hh + ll) / 2;
+      const relRange = b.close - midpoint;
+      const hlRange = hh - ll;
+
+      const n = s.num2.step(s.num1.step(relRange));
+      const d = s.den2.step(s.den1.step(hlRange)) * 0.5;
+      const smi = (d != null && d !== 0 && n != null) ? 100 * n / d : 0;
+      const sig = s.sig.step(smi);
+
+      const w = i < warmup;
+      const p = s.plots;
+      p[0][i] = { time, value: w ? NaN : smi };
+      p[1][i] = { time, value: (w || sig == null) ? NaN : sig };
+      const hist = smi - (sig ?? 0);
+      p[2][i] = w ? { time, value: NaN } : { time, value: hist, color: hist >= 0 ? '#26A69A' : '#EF5350' };
+      p[3][i] = { time, value: w ? NaN : ob };
+      p[4][i] = { time, value: w ? NaN : (smi > ob ? smi : ob) };
+      p[5][i] = { time, value: w ? NaN : os };
+      p[6][i] = { time, value: w ? NaN : (smi < os ? smi : os) };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          'plot0': p[0].slice(),
+          'plot1': p[1].slice(),
+          'plot2': p[2].slice(),
+          'plot3': p[3].slice(),
+          'plot4': p[4].slice(),
+          'plot5': p[5].slice(),
+          'plot6': p[6].slice(),
+        },
+        fills: [
+          { plot1: 'plot3', plot2: 'plot4', options: { color: 'rgba(255,0,0,0.4)' } },
+          { plot1: 'plot5', plot2: 'plot6', options: { color: 'rgba(0,128,0,0.4)' } },
+        ],
+        hlines: [
+          { value: 40, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
+          { value: 0, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Zero' } },
+          { value: -40, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
+        ],
+      };
+    },
   };
 }
 
-export const StochasticMomentumIndex = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<StochasticMomentumIndexInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<StochasticMomentumIndexInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const StochasticMomentumIndex = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

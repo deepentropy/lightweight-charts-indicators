@@ -12,9 +12,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -97,92 +99,139 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 /** Pine division: x / 0 is na */
 const div = (a: number, b: number) => (b === 0 ? NaN : a / b);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<BullsVBearsInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+
+interface BvbRun extends BarRunState<Record<string, never>> {
+  ma: { step(v: number): number; commit(): void };
+  minBulls: WindowExtreme;
+  maxBulls: WindowExtreme;
+  minBears: WindowExtreme;
+  maxBears: WindowExtreme;
+  rawHighest: WindowExtreme;
+  rawLowest: WindowExtreme;
+  total: number[];
+  plots: Point[][];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<BullsVBearsInputs>): BarStudy<BvbRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
-
-  // ma = switch ma_type: "EMA" => ta.ema, "SMA" => ta.sma, "WMA" => ta.wma, => ta.ema
-  const ma = A(cfg.maType === 'SMA' ? ta.sma(close, cfg.len) : cfg.maType === 'WMA' ? ta.wma(close, cfg.len) : ta.ema(close, cfg.len));
-  const bulls = bars.map((b, i) => b.high - ma[i]);
-  const bears = bars.map((b, i) => ma[i] - b.low);
-
-  let total: number[];
-  if (cfg.normType === 'Normalized') {
-    const minBulls = A(ta.lowest(S(bulls), cfg.barsBack));
-    const maxBulls = A(ta.highest(S(bulls), cfg.barsBack));
-    const minBears = A(ta.lowest(S(bears), cfg.barsBack));
-    const maxBears = A(ta.highest(S(bears), cfg.barsBack));
-    total = bars.map((_b, i) => {
-      const normBulls = (div(bulls[i] - minBulls[i], maxBulls[i] - minBulls[i]) - 0.5) * 100;
-      const normBears = (div(bears[i] - minBears[i], maxBears[i] - minBears[i]) - 0.5) * 100;
-      return normBulls - normBears;
-    });
-  } else {
-    total = bulls.map((v, i) => v - bears[i]);
-  }
-
-  // Raw percentile thresholds
-  const rawHighest = A(ta.highest(S(total), cfg.rawLookback));
-  const rawLowest = A(ta.lowest(S(total), cfg.rawLookback));
-  const upper: number[] = new Array(n);
-  const lower: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const rawRange = rawHighest[i] - rawLowest[i];
-    const rawUpper = rawLowest[i] + rawRange * (cfg.rawPercentile / 100);
-    const rawLower = rawLowest[i] + rawRange * ((100 - cfg.rawPercentile) / 100);
-    upper[i] = cfg.normType === 'Normalized' ? cfg.tline : rawUpper;
-    lower[i] = cfg.normType === 'Normalized' ? -cfg.tline : rawLower;
-  }
-
-  const markers: MarkerData[] = [];
+  const normalized = cfg.normType === 'Normalized';
   const raw = cfg.normType === 'Raw' && cfg.showThresholdLines;
   const thresholdColor = String(color.new(color.gray, 50));
-  // bullish_o = total > upper_threshold; bearish_o = total < lower_threshold
-  const bullishO = total.map((v, i) => gt(v, upper[i]));
-  const bearishO = total.map((v, i) => lt(v, lower[i]));
-  for (let i = 0; i < n; i++) {
-    // plotshape(show_signals and bullish_o, shape.circle, location.top, ...); bearish_o: location.bottom.
-    if (cfg.showSignals && bullishO[i]) {
-      markers.push({ time: bars[i].time, position: 'top', shape: 'circle', color: cfg.bullishDotColor, size: 'auto' });
-    }
-    if (cfg.showSignals && bearishO[i]) {
-      markers.push({ time: bars[i].time, position: 'bottom', shape: 'circle', color: cfg.bearishDotColor, size: 'auto' });
-    }
-  }
-
-  // hline(norm_type == "Normalized" and show_threshold_lines ? tline / -tline : na): an na hline is not drawn
-  const hlineOptions = { color: thresholdColor, linestyle: 'dotted' as const };
-  const hlines = cfg.normType === 'Normalized' && cfg.showThresholdLines
-    ? [
-      { value: cfg.tline, options: { title: 'Upper Threshold', ...hlineOptions } },
-      { value: -cfg.tline, options: { title: 'Lower Threshold', ...hlineOptions } },
-    ]
-    : [];
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(total, color = total >= 0 ? bull_color : bear_color, style = plot.style_columns, title = "BvB")
-      plot0: bars.map((b, i) => ({ time: b.time, value: total[i], color: ge(total[i], 0) ? cfg.bullColor : cfg.bearColor })),
-      // plot(norm_type == "Raw" and show_threshold_lines ? upper_threshold / lower_threshold : na)
-      plot1: bars.map((b, i) => ({ time: b.time, value: raw ? upper[i] : NaN, color: thresholdColor })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: raw ? lower[i] : NaN, color: thresholdColor })),
+    init() {
+      // ma = switch ma_type: "EMA" => ta.ema, "SMA" => ta.sma, "WMA" => ta.wma, => ta.ema
+      let ma: BvbRun['ma'];
+      if (cfg.maType === 'SMA') ma = new WindowSma(cfg.len);
+      else if (cfg.maType === 'WMA') { const m = taStep.wma(); ma = { step: (v) => m.step(v, cfg.len), commit: () => m.commit() }; }
+      else ma = taStep.ema(cfg.len);
+      const s: BvbRun = {
+        ma, minBulls: new WindowExtreme(true, cfg.barsBack), maxBulls: new WindowExtreme(false, cfg.barsBack),
+        minBears: new WindowExtreme(true, cfg.barsBack), maxBears: new WindowExtreme(false, cfg.barsBack),
+        rawHighest: new WindowExtreme(false, cfg.rawLookback), rawLowest: new WindowExtreme(true, cfg.rawLookback),
+        total: [], plots: [[], [], []], markers: [], flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.ma, s.minBulls, s.maxBulls, s.minBears, s.maxBears, s.rawHighest, s.rawLowest];
+      s.lists = [...s.times, s.markers];
+      s.series = [s.total, ...s.plots, ...s.flags];
+      return s;
     },
-    hlines,
-    markers,
-    // alertcondition(bullish_o) / (bearish_o) / (ta.crossover(total, 0)) / (ta.crossunder(total, 0))
-    alerts: alertStates(alertConditions, bars, [bullishO, bearishO, crossedOver(total, 0), crossedUnder(total, 0)]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const ma = s.ma.step(b.close);
+      const bulls = b.high - ma;
+      const bears = ma - b.low;
+
+      let total: number;
+      if (normalized) {
+        const minBulls = s.minBulls.step(bulls);
+        const maxBulls = s.maxBulls.step(bulls);
+        const minBears = s.minBears.step(bears);
+        const maxBears = s.maxBears.step(bears);
+        const normBulls = (div(bulls - minBulls, maxBulls - minBulls) - 0.5) * 100;
+        const normBears = (div(bears - minBears, maxBears - minBears) - 0.5) * 100;
+        total = normBulls - normBears;
+      } else {
+        total = bulls - bears;
+      }
+      s.total[i] = total;
+
+      // Raw percentile thresholds
+      const rawHighest = s.rawHighest.step(total);
+      const rawLowest = s.rawLowest.step(total);
+      const rawRange = rawHighest - rawLowest;
+      const rawUpper = rawLowest + rawRange * (cfg.rawPercentile / 100);
+      const rawLower = rawLowest + rawRange * ((100 - cfg.rawPercentile) / 100);
+      const upper = normalized ? cfg.tline : rawUpper;
+      const lower = normalized ? -cfg.tline : rawLower;
+
+      // bullish_o = total > upper_threshold; bearish_o = total < lower_threshold
+      const bullishO = gt(total, upper);
+      const bearishO = lt(total, lower);
+      // plotshape(show_signals and bullish_o, shape.circle, location.top, ...); bearish_o: location.bottom.
+      if (cfg.showSignals && bullishO) {
+        s.markers.push({ time, position: 'top', shape: 'circle', color: cfg.bullishDotColor, size: 'auto' });
+      }
+      if (cfg.showSignals && bearishO) {
+        s.markers.push({ time, position: 'bottom', shape: 'circle', color: cfg.bearishDotColor, size: 'auto' });
+      }
+
+      const p = s.plots;
+      // plot(total, color = total >= 0 ? bull_color : bear_color, style = plot.style_columns, title = "BvB")
+      p[0][i] = { time, value: total, color: ge(total, 0) ? cfg.bullColor : cfg.bearColor };
+      // plot(norm_type == "Raw" and show_threshold_lines ? upper_threshold / lower_threshold : na)
+      p[1][i] = { time, value: raw ? upper : NaN, color: thresholdColor };
+      p[2][i] = { time, value: raw ? lower : NaN, color: thresholdColor };
+
+      // alertcondition(bullish_o) / (bearish_o) / (ta.crossover(total, 0)) / (ta.crossunder(total, 0))
+      const prev = i > 0 ? s.total[i - 1] : NaN;
+      const f = s.flags;
+      f[0][i] = bullishO;
+      f[1][i] = bearishO;
+      f[2][i] = total > 0 && prev <= 0;
+      f[3][i] = total < 0 && prev >= 0;
+      for (let k = 0; k < 4; k++) if (f[k][i]) s.times[k].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // hline(norm_type == "Normalized" and show_threshold_lines ? tline / -tline : na): an na hline is not drawn
+      const hlineOptions = { color: thresholdColor, linestyle: 'dotted' as const };
+      const hlines = normalized && cfg.showThresholdLines
+        ? [
+          { value: cfg.tline, options: { title: 'Upper Threshold', ...hlineOptions } },
+          { value: -cfg.tline, options: { title: 'Lower Threshold', ...hlineOptions } },
+        ]
+        : [];
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice() },
+        hlines,
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BullsVBearsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BullsVBearsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const BullsVBears = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

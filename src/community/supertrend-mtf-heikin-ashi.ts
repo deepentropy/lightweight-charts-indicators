@@ -21,10 +21,11 @@
  * Original notice: © LonesomeTheBlue
  */
 
-import { taCore, timeframe, heikinAshi, mapToChart, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taCore, taStep, timeframe, heikinAshi, mapToChart, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import { chartTimeframe, higherTimeframeBars } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SupertrendMtfHeikinAshiInputs {
   /** HTF Method: the higher timeframe from the chart timeframe ("Auto") or the timeframe input */
@@ -92,117 +93,186 @@ function autoTimeframe(period: string): string {
   return map[period] ?? 'D';
 }
 
-/** Supertrend state of one line: the bands follow the close of the bar before, the trend the bands of the bar before */
-function supertrend(
-  n: number, hl2: (i: number) => number, atr: (i: number) => number, closeOf: (i: number) => number, mult: number,
-): { trend: number[]; trailing: number[] } {
-  const trend: number[] = new Array(n);
-  const trailing: number[] = new Array(n);
-  let tUp = NaN;
-  let tDown = NaN;
-  let prevTrend = NaN;
-  for (let i = 0; i < n; i++) {
-    const up = hl2(i) - mult * atr(i);
-    const dn = hl2(i) + mult * atr(i);
-    const c = closeOf(i);
-    const c1 = i > 0 ? closeOf(i - 1) : NaN;
-    const prevUp = tUp;
-    const prevDown = tDown;
-    // TUp := c[1] > TUp[1] ? max(Up, TUp[1]) : Up; TDown := c[1] < TDown[1] ? min(Dn, TDown[1]) : Dn
-    tUp = gt(c1, prevUp) ? Math.max(up, prevUp) : up;
-    tDown = lt(c1, prevDown) ? Math.min(dn, prevDown) : dn;
-    // Trend := c > TDown[1] ? 1 : c < TUp[1] ? -1 : nz(Trend[1], 1)
-    const t = gt(c, prevDown) ? 1 : lt(c, prevUp) ? -1 : Number.isNaN(prevTrend) ? 1 : prevTrend;
-    trend[i] = t;
-    trailing[i] = t === 1 ? tUp : tDown;
-    prevTrend = t;
-  }
-  return { trend, trailing };
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+/** Supertrend state of one line (TUp[1], TDown[1], Trend[1]) */
+interface StState {
+  tUp: number;
+  tDown: number;
+  trend: number;
+}
+
+/**
+ * One bar of the supertrend of one line: the bands follow the close of the bar before, the trend the bands of the bar
+ * before. Changes `st`; gives the trailing line (the trend is in `st.trend`).
+ */
+function supertrendStep(st: StState, hl2: number, atr: number, c: number, c1: number, mult: number): number {
+  const up = hl2 - mult * atr;
+  const dn = hl2 + mult * atr;
+  const prevUp = st.tUp;
+  const prevDown = st.tDown;
+  // TUp := c[1] > TUp[1] ? max(Up, TUp[1]) : Up; TDown := c[1] < TDown[1] ? min(Dn, TDown[1]) : Dn
+  st.tUp = gt(c1, prevUp) ? Math.max(up, prevUp) : up;
+  st.tDown = lt(c1, prevDown) ? Math.min(dn, prevDown) : dn;
+  // Trend := c > TDown[1] ? 1 : c < TUp[1] ? -1 : nz(Trend[1], 1)
+  const t = gt(c, prevDown) ? 1 : lt(c, prevUp) ? -1 : Number.isNaN(st.trend) ? 1 : st.trend;
+  st.trend = t;
+  return t === 1 ? st.tUp : st.tDown;
+}
+
+interface StVars {
+  st: StState;
+  stH: StState;
+}
+
+interface StRun extends BarRunState<StVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  /** The higher timeframe values on the chart bars (another timeframe, calculated by init), else null */
+  pre: { high: number[]; low: number[]; close: number[]; atr: number[] } | null;
+  haOpen: number[];
+  haHigh: number[];
+  haLow: number[];
+  haClose: number[];
+  haAtr: number[];
+  trend: number[];
+  trendH: number[];
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<SupertrendMtfHeikinAshiInputs>): BarStudy<StRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const v = (x: number) => (Number.isFinite(x) ? x : NaN);
+  // Higher timeframe: security(heikinashi(syminfo.tickerid), HTF, x[1], lookahead = barmerge.lookahead_on)
+  const htfOf = (bars: Bar[], chart?: ChartContext) => {
+    const chartTf = chartTimeframe(bars, chart);
+    const htf = cfg.mode === 'Auto' ? autoTimeframe(chartTf === '' ? '' : v4Period(chartTf)) : cfg.htfUser;
+    const same = htf.trim() === '' || chartTf === '' || timeframe.in_seconds(htf) === timeframe.in_seconds(chartTf);
+    return { chartTf, htf, same };
+  };
+  /** Another timeframe on the bars of the last update (set by key) */
+  let other = false;
+  return {
+    key(bars, chart) {
+      const { chartTf, htf, same } = htfOf(bars, chart);
+      other = !same;
+      return `${chartTf}|${htf}`;
+    },
+    // another timeframe: the periods and their Heikin Ashi bars from the whole bar set
+    fullRunReason: () => (other ? 'another timeframe, calculated on the whole bar set' : null),
+    init(bars, chart) {
+      const { chartTf, htf, same } = htfOf(bars, chart);
+      let pre: StRun['pre'] = null;
+      if (!same) {
+        if (timeframe.in_seconds(htf) < timeframe.in_seconds(chartTf)) {
+          throw new Error(`Supertrend MTF Heikin Ashi: the timeframe "${htf}" is lower than the chart timeframe "${chartTf}": the chart bars do not have that data`);
+        }
+        // the value of the Heikin Ashi bar of the timeframe before the one of the chart bar
+        const sec = higherTimeframeBars(bars, htf, chart);
+        const hha = heikinAshi(sec.htf);
+        const hh = hha.map((b) => b.high);
+        const hl = hha.map((b) => b.low);
+        const hc = hha.map((b) => b.close);
+        const ha2 = taCore.atr(cfg.period, hh, hl, hc);
+        const toChart = (a: number[]) => mapToChart(a.map((_x, g) => (g > 0 ? a[g - 1] : NaN)), sec.group, sec.latest, true, false);
+        pre = { high: toChart(hh), low: toChart(hl), close: toChart(hc), atr: toChart(ha2) };
+      }
+      const s: StRun = {
+        atr: taStep.atr(cfg.period), pre,
+        haOpen: [], haHigh: [], haLow: [], haClose: [], haAtr: [], trend: [], trendH: [],
+        plots: [[], [], [], []], flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [],
+        vars: { st: { tUp: NaN, tDown: NaN, trend: NaN }, stH: { tUp: NaN, tDown: NaN, trend: NaN } },
+        lists: [], series: [],
+      };
+      s.steps = [s.atr];
+      s.lists = [...s.times];
+      s.series = [s.haOpen, s.haHigh, s.haLow, s.haClose, s.haAtr, s.trend, s.trendH, ...s.plots, ...s.flags];
+      return s;
+    },
+    copyVars: (x) => ({ st: { ...x.st }, stH: { ...x.stH } }),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      // Chart timeframe: security(heikinashi(syminfo.tickerid), timeframe.period, high / low / close / atr(Period))
+      // (Heikin Ashi bars: close = ohlc4, open = average of the previous Heikin Ashi open and close)
+      const haC = (b.open + b.high + b.low + b.close) / 4;
+      const haO = i > 0 ? (s.haOpen[i - 1] + s.haClose[i - 1]) / 2 : (b.open + b.close) / 2;
+      const haH = Math.max(b.high, haO, haC);
+      const haL = Math.min(b.low, haO, haC);
+      s.haOpen[i] = haO;
+      s.haHigh[i] = haH;
+      s.haLow[i] = haL;
+      s.haClose[i] = haC;
+      const atr = s.atr.step(haH, haL, haC);
+      s.haAtr[i] = atr;
+      const trailing = supertrendStep(s.vars.st, (haH + haL) / 2, atr, haC, i > 0 ? s.haClose[i - 1] : NaN, cfg.mult);
+      const tr = s.vars.st.trend;
+      s.trend[i] = tr;
+
+      // the higher timeframe values: the bar before on the chart timeframe
+      let hHigh: number, hLow: number, hClose: number, hClose1: number, hAtr: number;
+      if (s.pre) {
+        hHigh = s.pre.high[i];
+        hLow = s.pre.low[i];
+        hClose = s.pre.close[i];
+        hClose1 = i > 0 ? s.pre.close[i - 1] : NaN;
+        hAtr = s.pre.atr[i];
+      } else {
+        hHigh = i > 0 ? s.haHigh[i - 1] : NaN;
+        hLow = i > 0 ? s.haLow[i - 1] : NaN;
+        hClose = i > 0 ? s.haClose[i - 1] : NaN;
+        hClose1 = i > 1 ? s.haClose[i - 2] : NaN;
+        hAtr = i > 0 ? s.haAtr[i - 1] : NaN;
+      }
+      // Uphtf = abs(highhtf + lowhtf) / 2 - (Mult * HTfatr)
+      const trailingH = supertrendStep(s.vars.stH, Math.abs(hHigh + hLow) / 2, hAtr, hClose, hClose1, cfg.mult);
+      const th = s.vars.stH.trend;
+      s.trendH[i] = th;
+
+      const tr1 = i > 0 ? s.trend[i - 1] : 0; // nz(Trend[1])
+      // linecolor = Trend == 1 and nz(Trend[1]) == 1 ? color.lime : Trend == -1 and nz(Trend[1]) == -1 ? color.red : na
+      const col = tr === 1 && tr1 === 1 ? LIME : tr === -1 && tr1 === -1 ? RED : 'transparent';
+      s.plots[0][i] = { time: t, value: v(trailing), color: col };
+      const th1 = i > 0 ? s.trendH[i - 1] : NaN;
+      const colH = th === 1 && th1 === 1 ? BLUE : th === -1 && th1 === -1 ? RED : 'transparent';
+      s.plots[1][i] = { time: t, value: v(trailingH), color: colH };
+      // TrendHtf == 1 and TrendHtf[1] == -1 ? TrailingslHtf : na (and the reverse)
+      s.plots[2][i] = { time: t, value: th === 1 && th1 === -1 ? v(trailingH) : NaN };
+      s.plots[3][i] = { time: t, value: th === -1 && th1 === 1 ? v(trailingH) : NaN };
+      // alertcondition(Trend == 1 and Trend[1] == -1) / (Trend == -1 and Trend[1] == 1), the same with TrendHtf
+      // (Trend[1] is na on the first bar: false)
+      const trp = i > 0 ? s.trend[i - 1] : NaN;
+      const flags = [tr === 1 && trp === -1, tr === -1 && trp === 1, th === 1 && th1 === -1, th === -1 && th1 === 1];
+      for (let k = 0; k < 4; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SupertrendMtfHeikinAshiInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(
   bars: Bar[],
   inputs: Partial<SupertrendMtfHeikinAshiInputs> = {},
   chart?: ChartContext,
-): IndicatorResult & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const v = (x: number) => (Number.isFinite(x) ? x : NaN);
-
-  // Chart timeframe: security(heikinashi(syminfo.tickerid), timeframe.period, high / low / close / atr(Period))
-  const ha = heikinAshi(bars);
-  const haHigh = ha.map((b) => b.high);
-  const haLow = ha.map((b) => b.low);
-  const haClose = ha.map((b) => b.close);
-  const atr = taCore.atr(cfg.period, haHigh, haLow, haClose);
-  const st = supertrend(n, (i) => (haHigh[i] + haLow[i]) / 2, (i) => atr[i], (i) => haClose[i], cfg.mult);
-
-  // Higher timeframe: security(heikinashi(syminfo.tickerid), HTF, x[1], lookahead = barmerge.lookahead_on): the
-  // value of the Heikin Ashi bar of the timeframe before the one of the chart bar
-  const chartTf = chartTimeframe(bars, chart);
-  const htf = cfg.mode === 'Auto' ? autoTimeframe(chartTf === '' ? '' : v4Period(chartTf)) : cfg.htfUser;
-  let hHigh: number[];
-  let hLow: number[];
-  let hClose: number[];
-  let hAtr: number[];
-  if (htf.trim() === '' || chartTf === '' || timeframe.in_seconds(htf) === timeframe.in_seconds(chartTf)) {
-    const prev = (a: number[]) => a.map((_x, i) => (i > 0 ? a[i - 1] : NaN));
-    hHigh = prev(haHigh);
-    hLow = prev(haLow);
-    hClose = prev(haClose);
-    hAtr = prev(atr);
-  } else {
-    if (timeframe.in_seconds(htf) < timeframe.in_seconds(chartTf)) {
-      throw new Error(`Supertrend MTF Heikin Ashi: the timeframe "${htf}" is lower than the chart timeframe "${chartTf}": the chart bars do not have that data`);
-    }
-    const sec = higherTimeframeBars(bars, htf, chart);
-    const hha = heikinAshi(sec.htf);
-    const hh = hha.map((b) => b.high);
-    const hl = hha.map((b) => b.low);
-    const hc = hha.map((b) => b.close);
-    const ha2 = taCore.atr(cfg.period, hh, hl, hc);
-    const toChart = (a: number[]) => mapToChart(a.map((_x, g) => (g > 0 ? a[g - 1] : NaN)), sec.group, sec.latest, true, false);
-    hHigh = toChart(hh);
-    hLow = toChart(hl);
-    hClose = toChart(hc);
-    hAtr = toChart(ha2);
-  }
-  // Uphtf = abs(highhtf + lowhtf) / 2 - (Mult * HTfatr)
-  const stH = supertrend(n, (i) => Math.abs(hHigh[i] + hLow[i]) / 2, (i) => hAtr[i], (i) => hClose[i], cfg.mult);
-
-  const plot0 = [];
-  const plot1 = [];
-  const plot2 = [];
-  const plot3 = [];
-  const flags: boolean[][] = [[], [], [], []];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const tr = st.trend[i];
-    const tr1 = i > 0 ? st.trend[i - 1] : 0; // nz(Trend[1])
-    // linecolor = Trend == 1 and nz(Trend[1]) == 1 ? color.lime : Trend == -1 and nz(Trend[1]) == -1 ? color.red : na
-    const col = tr === 1 && tr1 === 1 ? LIME : tr === -1 && tr1 === -1 ? RED : 'transparent';
-    plot0.push({ time: t, value: v(st.trailing[i]), color: col });
-    const th = stH.trend[i];
-    const th1 = i > 0 ? stH.trend[i - 1] : NaN;
-    const colH = th === 1 && th1 === 1 ? BLUE : th === -1 && th1 === -1 ? RED : 'transparent';
-    plot1.push({ time: t, value: v(stH.trailing[i]), color: colH });
-    // TrendHtf == 1 and TrendHtf[1] == -1 ? TrailingslHtf : na (and the reverse)
-    plot2.push({ time: t, value: th === 1 && th1 === -1 ? v(stH.trailing[i]) : NaN });
-    plot3.push({ time: t, value: th === -1 && th1 === 1 ? v(stH.trailing[i]) : NaN });
-    // alertcondition(Trend == 1 and Trend[1] == -1) / (Trend == -1 and Trend[1] == 1), the same with TrendHtf
-    // (Trend[1] is na on the first bar: false)
-    const trp = i > 0 ? st.trend[i - 1] : NaN;
-    flags[0].push(tr === 1 && trp === -1);
-    flags[1].push(tr === -1 && trp === 1);
-    flags[2].push(th === 1 && th1 === -1);
-    flags[3].push(th === -1 && th1 === 1);
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
-    alerts: alertStates(alertConditions, bars, flags),
-  };
+): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 /** The original's alertconditions */
@@ -215,6 +285,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const SupertrendMtfHeikinAshi = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -30,8 +30,9 @@ import {
   ta, Series, color, timeframe, resample, mapToChart,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar,
 } from 'oakscriptjs';
-import { periodStarts, chartTimeframe, securityBars } from '../anchor-period';
+import { periodStarts, chartTimeframe, hasCalendar, securityBars } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CmPivotPointsFilteredInputs {
   /** Show Filtered Pivots */
@@ -206,28 +207,228 @@ function levelsOf(bars: Bar[], tf: string, pf: boolean, sh3: boolean, context?: 
   };
 }
 
-export function calculate(bars: Bar[], inputs: Partial<CmPivotPointsFilteredInputs> = {}, chart?: ChartContext): IndicatorResult {
+type Point = { time: number; value: number };
+
+const DAY = 86400000;
+const WEEK = 7 * DAY;
+const LEVELS: Level[] = ['avg', 'pivot', 'r1', 's1', 'r2', 's2', 'r3', 's3'];
+const NO_LEVELS = LEVELS.map(() => NaN);
+
+/** Start (UNIX ms, UTC) of the D / W / M calendar period of the day `day` (the UTC rule of `periodStarts`) */
+function calendarPeriodStart(day: number, info: ReturnType<typeof timeframe.info>): number {
+  const n = info.multiplier;
+  const d = new Date(day);
+  const year = d.getUTCFullYear();
+  if (info.isdaily) {
+    if (n === 1) return day;
+    const jan1 = Date.UTC(year, 0, 1);
+    return jan1 + Math.floor((day - jan1) / DAY / n) * n * DAY;
+  }
+  if (info.isweekly) {
+    const monday = day - ((d.getUTCDay() + 6) % 7) * DAY;
+    if (n === 1) return monday;
+    const jan1 = Date.UTC(new Date(monday).getUTCFullYear(), 0, 1);
+    const firstMonday = jan1 + ((8 - new Date(jan1).getUTCDay()) % 7) * DAY;
+    return firstMonday + Math.floor((monday - firstMonday) / WEEK / n) * n * WEEK;
+  }
+  return Date.UTC(year, Math.floor(d.getUTCMonth() / n) * n, 1);
+}
+
+/** One timeframe of the run: its periods (the UTC rule of `periodStarts`, one bar at a time), the bar of the current
+ *  period and the levels of the previous one */
+interface TfState {
+  /** 'off': not shown; 'chart': each chart bar is a period; 'utc': the UTC calendar periods; 'pre': levels computed
+   *  on all bars (exchange calendar) */
+  mode: 'off' | 'chart' | 'utc' | 'pre';
+  pre: Record<Level, number[]> | null;
+  // periodStarts state
+  prevDay: number;
+  sessionStart: number;
+  prevKey: number;
+  start: number;
+  tradingYear: number;
+  tradingDays: number;
+  prevTradingDay: number;
+  /** Start of the current period (resample: the time of its bar), its high / low / close */
+  cur: number;
+  high: number;
+  low: number;
+  close: number;
+  /** Pivot of the last completed bar of the timeframe */
+  lastPivot: number;
+  /** The levels of the previous period (LEVELS order) */
+  prev: number[];
+}
+
+interface PivotVars {
+  tfs: TfState[];
+}
+
+interface PivotRun extends BarRunState<PivotVars> {
+  /** ta.sma(pivot, 3) of each timeframe, stepped on the bar that completes a bar of the timeframe */
+  smas: WindowSma[];
+  plots: Point[][];
+}
+
+/** The timeframes of SPECS, in their order */
+const TFS = [...new Set(SPECS.map((s) => s.tf))];
+
+function study(inputs: Partial<CmPivotPointsFilteredInputs>): BarStudy<PivotRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-
-  // A timeframe is computed only when one of its plots is shown
-  const levels = new Map<string, Record<Level, number[]>>();
-  const plots: Record<string, Array<{ time: number; value: number }>> = {};
-  SPECS.forEach((s, j) => {
-    // plot(sa and sh and htime_pivotAvg ? htime_pivotAvg : na) / plot(sh and htime_pivot ? htime_pivot : na)
-    // r3 / s3 are na without sh3 (r3 = sh3 and ... ? ... : na)
-    const shown = cfg[s.on] && (s.level !== 'avg' || cfg.sa) && ((s.level !== 'r3' && s.level !== 's3') || cfg.sh3);
-    let values: number[] | null = null;
-    if (shown) {
-      if (!levels.has(s.tf)) levels.set(s.tf, levelsOf(bars, s.tf, cfg.pf, cfg.sh3, chart));
-      values = levels.get(s.tf)![s.level];
-    }
-    plots[`plot${j}`] = bars.map((b, i) => ({ time: b.time, value: values && truthy(values[i]) ? values[i] : NaN }));
-  });
-
+  // plot(sa and sh and htime_pivotAvg ? htime_pivotAvg : na) / plot(sh and htime_pivot ? htime_pivot : na)
+  // r3 / s3 are na without sh3 (r3 = sh3 and ... ? ... : na)
+  const SHOWN = SPECS.map((s) => !!cfg[s.on] && (s.level !== 'avg' || cfg.sa) && ((s.level !== 'r3' && s.level !== 's3') || cfg.sh3));
+  const SPEC_TF = SPECS.map((s) => TFS.indexOf(s.tf));
+  const SPEC_LEVEL = SPECS.map((s) => LEVELS.indexOf(s.level));
+  let inMs = false;
+  let everyDay = false;
+  let infos: Array<ReturnType<typeof timeframe.info>> = [];
+  const weekend = (t: number) => {
+    const wd = new Date(t).getUTCDay();
+    return wd === 0 || wd === 6;
+  };
+  const someWeekend = (bars: Bar[], ms: boolean) => bars.some((b) => weekend(ms ? b.time : b.time * 1000));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    // the chart timeframe comes from the bar gaps, the time unit from the first bar, the UTC periods from the days
+    // of the whole bar set (bars on a weekend)
+    key: (bars, chart) => {
+      const ms = bars.length > 0 && bars[0].time >= 1e12;
+      return `${chartTimeframe(bars, chart)}|${ms}|${someWeekend(bars, ms)}`;
+    },
+    // with the exchange calendar the periods come from the calendar of the whole bar set
+    fullRunReason: (chart) => (hasCalendar(chart) ? 'exchange calendar periods' : null),
+    init(bars, chart) {
+      inMs = bars.length > 0 && bars[0].time >= 1e12;
+      everyDay = someWeekend(bars, inMs);
+      const chartTf = chartTimeframe(bars, chart);
+      infos = TFS.map((tf) => timeframe.info(tf));
+      // A timeframe is computed only when one of its plots is shown
+      const tfs: TfState[] = TFS.map((tf, k) => {
+        const st: TfState = {
+          mode: 'off', pre: null, prevDay: NaN, sessionStart: NaN, prevKey: NaN, start: NaN, tradingYear: NaN,
+          tradingDays: -1, prevTradingDay: NaN, cur: NaN, high: NaN, low: NaN, close: NaN, lastPivot: NaN, prev: NO_LEVELS,
+        };
+        if (!SPECS.some((s, j) => SHOWN[j] && SPEC_TF[j] === k)) return st;
+        if (hasCalendar(chart)) {
+          st.mode = 'pre';
+          st.pre = levelsOf(bars, tf, cfg.pf, cfg.sh3, chart);
+          return st;
+        }
+        if (tf.trim() === '' || chartTf === '' || timeframe.in_seconds(tf) === timeframe.in_seconds(chartTf)) {
+          st.mode = 'chart';
+          return st;
+        }
+        if (timeframe.in_seconds(tf) < timeframe.in_seconds(chartTf)) {
+          throw new Error(`The timeframe "${tf}" is lower than the chart timeframe "${chartTf}": the bars do not carry that data.`);
+        }
+        if (infos[k].isticks) throw new RangeError(`Unsupported timeframe "${tf}"`);
+        st.mode = 'utc';
+        return st;
+      });
+      const smas = TFS.map(() => new WindowSma(3));
+      const s: PivotRun = { smas, plots: SPECS.map(() => []), steps: smas, vars: { tfs }, lists: [], series: [] };
+      s.series = s.plots;
+      return s;
+    },
+    copyVars: (v) => ({ tfs: v.tfs.map((t) => ({ ...t })) }),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // changed in place: copyVars copies them at the end of the last confirmed bar
+      const tfs = s.vars.tfs;
+      for (let k = 0; k < tfs.length; k++) {
+        const st = tfs[k];
+        if (st.mode === 'off' || st.mode === 'pre') continue;
+        // the period of the bar: periodStarts(bars, tf) (each chart bar for the chart timeframe)
+        let start: number;
+        if (st.mode === 'chart') start = i;
+        else {
+          const info = infos[k];
+          const t = inMs ? time : time * 1000;
+          const day = Math.floor(t / DAY) * DAY;
+          if (day !== st.prevDay) st.sessionStart = everyDay ? day : t;
+          st.prevDay = day;
+          if (info.isintraday) {
+            const len = timeframe.in_seconds(TFS[k]) * 1000;
+            st.start = len >= DAY ? st.sessionStart : st.sessionStart + Math.floor((t - st.sessionStart) / len) * len;
+          } else if (info.isdaily && info.multiplier > 1 && !everyDay) {
+            // n trading days (UTC days with bars) counted from the first trading day of the year
+            const year = new Date(day).getUTCFullYear();
+            if (year !== st.tradingYear) {
+              st.tradingYear = year;
+              st.tradingDays = -1;
+            }
+            if (day !== st.prevTradingDay) {
+              st.tradingDays++;
+              st.prevTradingDay = day;
+              if (st.tradingDays % info.multiplier === 0) st.start = t;
+            }
+          } else {
+            const key = calendarPeriodStart(day, info);
+            if (key !== st.prevKey) st.start = everyDay ? key : t;
+            st.prevKey = key;
+          }
+          start = inMs ? st.start : Math.floor(st.start / 1000);
+        }
+        // resample(bars, starts): a new bar of the timeframe when the start differs from the time of the last one
+        if (i === 0 || st.cur !== start) {
+          if (i > 0) {
+            // security(tickerid, tf, level[1]): the levels of the completed bar of the timeframe
+            const { high, low, close } = st;
+            const p = (high + low + close) / 3.0;
+            const avg = s.smas[k].step(p);
+            const mean = (p + st.lastPivot) / 2;
+            const bull = gt(p, mean + 0.0025);
+            const bear = lt(p, mean - 0.0025);
+            const pf = cfg.pf;
+            const r1 = pf && bear ? p + (p - low) : pf && bull ? p + (high - low) : p + (p - low);
+            const s1 = pf && bull ? p - (high - p) : pf && bear ? p - (high - low) : p - (high - p);
+            // r3 = sh3 and r1 + (high - low) ? r1 + (high - low) : na
+            const r3 = r1 + (high - low);
+            const s3 = s1 - (high - low);
+            st.prev = [
+              avg, p, r1, s1, pf ? NaN : p + (high - low), pf ? NaN : p - (high - low),
+              cfg.sh3 && truthy(r3) ? r3 : NaN, cfg.sh3 && truthy(s3) ? s3 : NaN,
+            ];
+            st.lastPivot = p;
+          }
+          st.cur = start;
+          st.high = b.high;
+          st.low = b.low;
+          st.close = b.close;
+        } else {
+          st.high = Math.max(st.high, b.high);
+          st.low = Math.min(st.low, b.low);
+          st.close = b.close;
+        }
+      }
+      for (let j = 0; j < SPECS.length; j++) {
+        let v = NaN;
+        if (SHOWN[j]) {
+          const st = tfs[SPEC_TF[j]];
+          v = st.mode === 'pre' ? st.pre![SPECS[j].level][i] : st.prev[SPEC_LEVEL[j]];
+        }
+        s.plots[j][i] = { time, value: truthy(v) ? v : NaN };
+      }
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, j) => { plots[`plot${j}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
 }
 
-export const CmPivotPointsFiltered = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CmPivotPointsFilteredInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CmPivotPointsFilteredInputs> = {}, chart?: ChartContext): IndicatorResult {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const CmPivotPointsFiltered = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

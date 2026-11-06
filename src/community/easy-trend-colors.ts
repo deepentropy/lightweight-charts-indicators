@@ -10,8 +10,10 @@
  * Reference: "Easy Entry/Exit Trend Colors (With Alerts)" (community)
  */
 
-import { ta, Series, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData, BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EasyTrendColorsInputs {
   bbLength: number;
@@ -57,130 +59,173 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<EasyTrendColorsInputs> = {}): Omit<IndicatorResult, 'markers'> {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] };
 
-  const srcSeries = getSourceSeries(bars, cfg.src);
-
-  // MACD = EMA(fast) - EMA(slow)
-  const fastEma = ta.ema(srcSeries, cfg.fastLength).toArray();
-  const slowEma = ta.ema(srcSeries, cfg.slowLength).toArray();
-  const macdArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    macdArr[i] = (fastEma[i] ?? 0) - (slowEma[i] ?? 0);
-  }
-
-  // BB on MACD: Upper = SMA(macd, bbLen) + dev * stdev(macd, bbLen)
-  const macdSeries = new Series(bars, (_b, i) => macdArr[i]);
-  const macdSmaArr = ta.sma(macdSeries, cfg.bbLength).toArray();
-  const macdStdArr = ta.stdev(macdSeries, cfg.bbLength).toArray();
-
-  // Death/golden cross from 50/200 SMA
-  const fastSma = ta.sma(srcSeries, cfg.fastSmaPeriod).toArray();
-  const slowSma = ta.sma(srcSeries, cfg.slowSmaPeriod).toArray();
-
-  const bbWarmup = Math.max(cfg.slowLength, cfg.bbLength);
-  const smaWarmup = cfg.slowSmaPeriod;
-
-  const upperPlot: { time: number; value: number }[] = [];
-  const lowerPlot: { time: number; value: number }[] = [];
-  const zeroPlot: { time: number; value: number }[] = [];
-  // Pine: plotshape(macd, color=mcl, style=shape.triangleup) where mcl = macd >= Upper ? lime : na
-  // Pine: plotshape(macd, color=mcr, style=shape.triangledown) where mcr = macd <= Upper ? red : na
-  // These are per-bar triangle shapes at MACD value position
-  const macdUpPlot: Array<{ time: number; value: number; color?: string }> = [];
-  const macdDnPlot: Array<{ time: number; value: number; color?: string }> = [];
-
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    if (i < bbWarmup) {
-      upperPlot.push({ time: t, value: NaN });
-      lowerPlot.push({ time: t, value: NaN });
-      zeroPlot.push({ time: t, value: NaN });
-      macdUpPlot.push({ time: t, value: NaN });
-      macdDnPlot.push({ time: t, value: NaN });
-      continue;
-    }
-
-    const sma = macdSmaArr[i] ?? 0;
-    const std = macdStdArr[i] ?? 0;
-    const upper = sma + std * cfg.bbDev;
-    const lower = sma - std * cfg.bbDev;
-
-    upperPlot.push({ time: t, value: upper });
-    lowerPlot.push({ time: t, value: lower });
-    zeroPlot.push({ time: t, value: 0 });
-
-    // Pine plotshape triangleup: shown when macd >= Upper (lime), otherwise na
-    // Pine plotshape triangledown: shown when macd <= Upper (red), otherwise na
-    // Pine plots BOTH shapes every bar: lime triangleUp when above upper, red triangleDown when not
-    if (macdArr[i] >= upper) {
-      macdUpPlot.push({ time: t, value: macdArr[i], color: '#00FF00' });
-      macdDnPlot.push({ time: t, value: NaN });
-      // Per-bar MACD triangle shape (visible MACD representation)
-      markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: '#00FF00' });
-    } else {
-      macdUpPlot.push({ time: t, value: NaN });
-      macdDnPlot.push({ time: t, value: macdArr[i], color: '#FF0000' });
-      // Per-bar MACD triangle shape (visible MACD representation)
-      markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: '#FF0000' });
-    }
-
-    // Pine barcolor: yellow when macd > Upper, aqua when macd < Lower
-    if (macdArr[i] > upper) {
-      barColors.push({ time: t, color: '#FFFF00' });
-    } else if (macdArr[i] < lower) {
-      barColors.push({ time: t, color: '#00FFFF' });
-    }
-
-    // Pine markers: MACD crossing Upper band
-    if (i > bbWarmup) {
-      const prevMacd = macdArr[i - 1];
-      const prevUpper = (macdSmaArr[i - 1] ?? 0) + (macdStdArr[i - 1] ?? 0) * cfg.bbDev;
-      const crossUp = prevMacd <= prevUpper && macdArr[i] > upper;
-      const crossDown = prevMacd >= prevUpper && macdArr[i] < upper;
-
-      if (crossDown) {
-        markers.push({ time: t, position: 'aboveBar', shape: 'xcross', color: '#FF0000', text: 'Bear' });
-      }
-      if (crossUp) {
-        markers.push({ time: t, position: 'belowBar', shape: 'diamond', color: '#00FF00', text: 'Bull' });
-      }
-
-      // Death/golden cross (only when SMA data available)
-      if (i >= smaWarmup) {
-        const pf = fastSma[i - 1] ?? 0;
-        const ps = slowSma[i - 1] ?? 0;
-        const cf = fastSma[i] ?? 0;
-        const cs = slowSma[i] ?? 0;
-        const goldenCross = (pf <= ps && cf > cs);
-        const deathCross = (ps <= pf && cs > cf);
-
-        if (deathCross) {
-          markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: '#880E4F', text: 'Death Cross' });
-          bgColors.push({ time: t, color: 'rgba(136,14,79,0.90)' });
-        }
-        if (goldenCross) {
-          markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: '#00FF00', text: 'Golden Cross' });
-          bgColors.push({ time: t, color: 'rgba(0,255,0,0.90)' });
-        }
-      }
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { upper: upperPlot, lower: lowerPlot, zeroline: zeroPlot, macdUp: macdUpPlot, macdDn: macdDnPlot },
-    markers,
-    barColors,
-    bgColors,
-    fills: [{ plot1: 'upper', plot2: 'lower', options: { color: '#2196F3', transp: 75, title: 'Fill' } }],
-  } as Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] };
+interface EasyTrendRun extends BarRunState<Record<string, never>> {
+  fastEma: ReturnType<typeof taStep.ema>;
+  slowEma: ReturnType<typeof taStep.ema>;
+  /** math.sum of the MACD and of its squares: the SMA and the biased stdev of the bands (WindowSma / WindowStdev) */
+  macdSum: WindowSum;
+  macdSq: WindowSum;
+  fastSma: WindowSma;
+  slowSma: WindowSma;
+  macdArr: number[];
+  macdSmaArr: number[];
+  macdStdArr: number[];
+  fastSmaArr: number[];
+  slowSmaArr: number[];
+  upperPlot: Point[];
+  lowerPlot: Point[];
+  zeroPlot: Point[];
+  macdUpPlot: Point[];
+  macdDnPlot: Point[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
 }
 
-export const EasyTrendColors = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+function study(inputs: Partial<EasyTrendColorsInputs>): BarStudy<EasyTrendRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  const bbWarmup = Math.max(cfg.slowLength, cfg.bbLength);
+  const smaWarmup = cfg.slowSmaPeriod;
+  const bbLen = Math.floor(cfg.bbLength);
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: EasyTrendRun = {
+        fastEma: taStep.ema(cfg.fastLength), slowEma: taStep.ema(cfg.slowLength), macdSum: new WindowSum(cfg.bbLength),
+        macdSq: new WindowSum(cfg.bbLength), fastSma: new WindowSma(cfg.fastSmaPeriod), slowSma: new WindowSma(cfg.slowSmaPeriod),
+        macdArr: [], macdSmaArr: [], macdStdArr: [], fastSmaArr: [], slowSmaArr: [], upperPlot: [], lowerPlot: [],
+        zeroPlot: [], macdUpPlot: [], macdDnPlot: [], markers: [], barColors: [], bgColors: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.fastEma, s.slowEma, s.macdSum, s.macdSq, s.fastSma, s.slowSma];
+      s.lists = [s.markers, s.barColors, s.bgColors];
+      s.series = [
+        s.macdArr, s.macdSmaArr, s.macdStdArr, s.fastSmaArr, s.slowSmaArr, s.upperPlot, s.lowerPlot, s.zeroPlot,
+        s.macdUpPlot, s.macdDnPlot,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time;
+      const src = value(bars[i]);
+      // MACD = EMA(fast) - EMA(slow)
+      const macd = (s.fastEma.step(src) ?? 0) - (s.slowEma.step(src) ?? 0);
+      s.macdArr[i] = macd;
+      // BB on MACD: Upper = SMA(macd, bbLen) + dev * stdev(macd, bbLen)
+      const sum = s.macdSum.step(macd);
+      const sq = s.macdSq.step(Number.isFinite(macd) ? macd * macd : NaN);
+      const mean = sum / bbLen;
+      const variance = sq / bbLen - mean * mean;
+      s.macdSmaArr[i] = mean;
+      s.macdStdArr[i] = Number.isNaN(variance) ? NaN : variance > 0 ? Math.sqrt(variance) : 0;
+      // Death/golden cross from 50/200 SMA
+      s.fastSmaArr[i] = s.fastSma.step(src);
+      s.slowSmaArr[i] = s.slowSma.step(src);
+
+      // Pine: plotshape(macd, color=mcl, style=shape.triangleup) where mcl = macd >= Upper ? lime : na
+      // Pine: plotshape(macd, color=mcr, style=shape.triangledown) where mcr = macd <= Upper ? red : na
+      // These are per-bar triangle shapes at MACD value position
+      if (i < bbWarmup) {
+        s.upperPlot[i] = { time: t, value: NaN };
+        s.lowerPlot[i] = { time: t, value: NaN };
+        s.zeroPlot[i] = { time: t, value: NaN };
+        s.macdUpPlot[i] = { time: t, value: NaN };
+        s.macdDnPlot[i] = { time: t, value: NaN };
+        return;
+      }
+
+      const sma = s.macdSmaArr[i] ?? 0;
+      const std = s.macdStdArr[i] ?? 0;
+      const upper = sma + std * cfg.bbDev;
+      const lower = sma - std * cfg.bbDev;
+
+      s.upperPlot[i] = { time: t, value: upper };
+      s.lowerPlot[i] = { time: t, value: lower };
+      s.zeroPlot[i] = { time: t, value: 0 };
+
+      // Pine plotshape triangleup: shown when macd >= Upper (lime), otherwise na
+      // Pine plotshape triangledown: shown when macd <= Upper (red), otherwise na
+      // Pine plots BOTH shapes every bar: lime triangleUp when above upper, red triangleDown when not
+      if (macd >= upper) {
+        s.macdUpPlot[i] = { time: t, value: macd, color: '#00FF00' };
+        s.macdDnPlot[i] = { time: t, value: NaN };
+        // Per-bar MACD triangle shape (visible MACD representation)
+        s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: '#00FF00' });
+      } else {
+        s.macdUpPlot[i] = { time: t, value: NaN };
+        s.macdDnPlot[i] = { time: t, value: macd, color: '#FF0000' };
+        // Per-bar MACD triangle shape (visible MACD representation)
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: '#FF0000' });
+      }
+
+      // Pine barcolor: yellow when macd > Upper, aqua when macd < Lower
+      if (macd > upper) {
+        s.barColors.push({ time: t, color: '#FFFF00' });
+      } else if (macd < lower) {
+        s.barColors.push({ time: t, color: '#00FFFF' });
+      }
+
+      // Pine markers: MACD crossing Upper band
+      if (i > bbWarmup) {
+        const prevMacd = s.macdArr[i - 1];
+        const prevUpper = (s.macdSmaArr[i - 1] ?? 0) + (s.macdStdArr[i - 1] ?? 0) * cfg.bbDev;
+        const crossUp = prevMacd <= prevUpper && macd > upper;
+        const crossDown = prevMacd >= prevUpper && macd < upper;
+
+        if (crossDown) {
+          s.markers.push({ time: t, position: 'aboveBar', shape: 'xcross', color: '#FF0000', text: 'Bear' });
+        }
+        if (crossUp) {
+          s.markers.push({ time: t, position: 'belowBar', shape: 'diamond', color: '#00FF00', text: 'Bull' });
+        }
+
+        // Death/golden cross (only when SMA data available)
+        if (i >= smaWarmup) {
+          const pf = s.fastSmaArr[i - 1] ?? 0;
+          const ps = s.slowSmaArr[i - 1] ?? 0;
+          const cf = s.fastSmaArr[i] ?? 0;
+          const cs = s.slowSmaArr[i] ?? 0;
+          const goldenCross = (pf <= ps && cf > cs);
+          const deathCross = (ps <= pf && cs > cf);
+
+          if (deathCross) {
+            s.markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: '#880E4F', text: 'Death Cross' });
+            s.bgColors.push({ time: t, color: 'rgba(136,14,79,0.90)' });
+          }
+          if (goldenCross) {
+            s.markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: '#00FF00', text: 'Golden Cross' });
+            s.bgColors.push({ time: t, color: 'rgba(0,255,0,0.90)' });
+          }
+        }
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          upper: s.upperPlot.slice(), lower: s.lowerPlot.slice(), zeroline: s.zeroPlot.slice(), macdUp: s.macdUpPlot.slice(),
+          macdDn: s.macdDnPlot.slice(),
+        },
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+        fills: [{ plot1: 'upper', plot2: 'lower', options: { color: '#2196F3', transp: 75, title: 'Fill' } }],
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EasyTrendColorsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EasyTrendColorsInputs> = {}): Omit<IndicatorResult, 'markers'> {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const EasyTrendColors = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

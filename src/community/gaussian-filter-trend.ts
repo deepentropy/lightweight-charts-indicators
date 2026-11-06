@@ -14,9 +14,14 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, math, getSourceSeries, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import {
+  barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, WindowSum,
+  type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 
 export type GaussianFilterTrendPreset = 'Default' | 'Fast Response' | 'Smooth Trend';
 export type GaussianFilterTrendColorPreset = 'Custom' | 'Classic' | 'Aqua' | 'Cosmic' | 'Cyber' | 'Neon';
@@ -134,11 +139,35 @@ const COLOR_PRESETS: Record<Exclude<GaussianFilterTrendColorPreset, 'Custom'>, [
 /** Pine float comparison a > b: true only when a - b > 1e-10; na operands give false */
 const gt = (a: number, b: number): boolean => a - b > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<GaussianFilterTrendInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] }
-  & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] }
+  & { alerts: AlertConditionState[] };
+
+interface GaussianVars {
+  stage1: number;
+  stage2: number;
+  stage3: number;
+  stage4: number;
+  /** trend direction (0 before the first step) */
+  dir: number;
+}
+
+interface GaussianRun extends BarRunState<GaussianVars> {
+  pathSum: WindowSum;
+  effEma: ReturnType<typeof taStep.ema>;
+  atr: ReturnType<typeof taStep.atr>;
+  span: WindowSma;
+  src: number[];
+  trendLine: number[];
+  trendDir: number[];
+  plots: Point[][];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<GaussianFilterTrendInputs>): BarStudy<GaussianRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   let { gaussianLength, gaussianPoles, atrLength, fixedMultiplier, efficiencyLength, trendMultiplier, chopMultiplier,
     efficiencySmooth } = cfg;
@@ -163,101 +192,111 @@ export function calculate(
   }
   const [bullishColor, bearishColor] = cfg.colorPreset === 'Custom'
     ? [cfg.bullishColor, cfg.bearishColor] : COLOR_PRESETS[cfg.colorPreset];
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const nz = (v: number, r: number) => (isNaN(v) ? r : v);
-  const src = A(getSourceSeries(bars, cfg.gaussianSource));
-
+  const value = barSource(cfg.gaussianSource);
   // gaussianFilter(src, length, poleCount): 4 cascaded one-pole stages, each seeded with src (nz(stageK, src))
   const beta = (1 - Math.cos((2 * Math.PI) / gaussianLength)) / (Math.pow(1.414, 2.0 / gaussianPoles) - 1);
   const alpha = -beta + Math.sqrt(beta * beta + 2 * beta);
-  const filtered: number[] = new Array(n);
-  let stage1 = NaN;
-  let stage2 = NaN;
-  let stage3 = NaN;
-  let stage4 = NaN;
-  for (let i = 0; i < n; i++) {
-    const s = src[i];
-    stage1 = alpha * s + (1 - alpha) * nz(stage1, s);
-    stage2 = alpha * stage1 + (1 - alpha) * nz(stage2, s);
-    stage3 = alpha * stage2 + (1 - alpha) * nz(stage3, s);
-    stage4 = alpha * stage3 + (1 - alpha) * nz(stage4, s);
-    filtered[i] = gaussianPoles <= 1 ? stage1 : gaussianPoles === 2 ? stage2 : gaussianPoles === 3 ? stage3 : stage4;
-  }
-
-  // efficiency_ratio = path_length == 0 ? 0 : |src - src[efficiency_length]| / math.sum(|ta.change(src)|, efficiency_length)
-  const absChange = src.map((v, i) => (i > 0 ? Math.abs(v - src[i - 1]) : NaN));
-  const pathLength = A(math.sum(S(absChange), efficiencyLength));
-  const efficiencyRatio = src.map((v, i) => {
-    const netMove = i >= efficiencyLength ? Math.abs(v - src[i - efficiencyLength]) : NaN;
-    return pathLength[i] === 0 ? 0.0 : netMove / pathLength[i];
-  });
-  const smoothedEfficiency = A(ta.ema(S(efficiencyRatio), efficiencySmooth));
-  const atr = A(ta.atr(bars, atrLength));
-
-  const trendLine: number[] = new Array(n);
-  const trendDir: number[] = new Array(n);
-  let dir = 0;
-  for (let i = 0; i < n; i++) {
-    const widthMultiplier = cfg.adaptiveWidth
-      ? chopMultiplier + (trendMultiplier - chopMultiplier) * smoothedEfficiency[i] : fixedMultiplier;
-    const trendWidth = atr[i] * widthMultiplier;
-    const upper = filtered[i] + trendWidth;
-    const lower = filtered[i] - trendWidth;
-    // var float trend_line = filtered_price; trend_line := nz(trend_line[1], filtered_price)
-    let tl = i > 0 ? nz(trendLine[i - 1], filtered[i]) : filtered[i];
-    if (gt(tl, upper)) tl = upper; // upper_band < trend_line
-    if (gt(lower, tl)) tl = lower; // lower_band > trend_line
-    trendLine[i] = tl;
-    const prev = i > 0 ? trendLine[i - 1] : NaN;
-    if (gt(tl, prev)) dir = 1; // stepped_up
-    else if (gt(prev, tl)) dir = -1; // stepped_down
-    trendDir[i] = dir;
-  }
-  const trendColor = (i: number) => (trendDir[i] === 1 ? bullishColor : trendDir[i] === -1 ? bearishColor : cfg.neutralColor);
-
-  // visual_span = ta.sma(high - low, 14); theta = bar_index * 0.52
-  const visualSpan = A(ta.sma(S(bars.map((b) => b.high - b.low)), 14));
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const plot2: { time: number; value: number; color: string }[] = [];
-  const plot3: { time: number; value: number; color: string }[] = [];
-  const plot4: { time: number; value: number; color: string }[] = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const tl = trendLine[i];
-    const c = trendColor(i);
-    const theta = i * 0.52;
-    const innerOrbit = visualSpan[i] * 0.85;
-    const outerOrbit = visualSpan[i] * 1.75;
-    const inner = String(color.new(c, 30));
-    const outer = String(color.new(c, 70));
-    plot0.push({ time: t, value: cfg.showTrend ? tl : NaN, color: c });
-    plot1.push({ time: t, value: cfg.showStars ? tl + Math.sin(theta) * innerOrbit : NaN, color: inner });
-    plot2.push({ time: t, value: cfg.showStars ? tl + Math.sin(theta + Math.PI) * innerOrbit : NaN, color: inner });
-    plot3.push({ time: t, value: cfg.showStars ? tl + Math.cos(theta * 0.71 + 1.1) * outerOrbit : NaN, color: outer });
-    plot4.push({ time: t, value: cfg.showStars ? tl + Math.cos(theta * 0.71 + 1.1 + Math.PI) * outerOrbit : NaN, color: outer });
-    // barcolor(show_candles and trend_dir != 0 ? color.new(trend_color, bar_trans) : na)
-    if (cfg.showCandles && trendDir[i] !== 0) barColors.push({ time: t, color: String(color.new(c, cfg.barTransparency)) });
-    // bgcolor(show_bg and trend_dir != 0 ? color.new(trend_color, bg_trans) : na)
-    if (cfg.showBg && trendDir[i] !== 0) bgColors.push({ time: t, color: String(color.new(c, cfg.bgTransparency)) });
-  }
-
-  // turned_bull = trend_dir == 1 and trend_dir[1] != 1 (na != 1 is false on the first bar), turned_bear the mirror
-  const turnedBull = trendDir.map((d, i) => d === 1 && i > 0 && trendDir[i - 1] !== 1);
-  const turnedBear = trendDir.map((d, i) => d === -1 && i > 0 && trendDir[i - 1] !== -1);
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3, plot4 },
-    markers: [],
-    barColors,
-    bgColors,
-    alerts: alertStates(alertConditions, bars, [turnedBull, turnedBear, turnedBull.map((f, i) => f || turnedBear[i])]),
+    fullRunReason: () => (isBarSource(cfg.gaussianSource) ? null : 'source of another study'),
+    init() {
+      const s: GaussianRun = {
+        pathSum: new WindowSum(efficiencyLength), effEma: taStep.ema(efficiencySmooth), atr: taStep.atr(atrLength),
+        span: new WindowSma(14), src: [], trendLine: [], trendDir: [], plots: Array.from({ length: 5 }, () => []),
+        barColors: [], bgColors: [], flags: [[], [], []], times: [[], [], []],
+        steps: [], vars: { stage1: NaN, stage2: NaN, stage3: NaN, stage4: NaN, dir: 0 }, lists: [], series: [],
+      };
+      s.steps = [s.pathSum, s.effEma, s.atr, s.span];
+      s.lists = [s.barColors, s.bgColors, ...s.times];
+      s.series = [s.src, s.trendLine, s.trendDir, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const sv = value(b);
+      s.src[i] = sv;
+      v.stage1 = alpha * sv + (1 - alpha) * nz(v.stage1, sv);
+      v.stage2 = alpha * v.stage1 + (1 - alpha) * nz(v.stage2, sv);
+      v.stage3 = alpha * v.stage2 + (1 - alpha) * nz(v.stage3, sv);
+      v.stage4 = alpha * v.stage3 + (1 - alpha) * nz(v.stage4, sv);
+      const filtered = gaussianPoles <= 1 ? v.stage1 : gaussianPoles === 2 ? v.stage2 : gaussianPoles === 3 ? v.stage3 : v.stage4;
+
+      // efficiency_ratio = path_length == 0 ? 0 : |src - src[efficiency_length]| / math.sum(|ta.change(src)|, efficiency_length)
+      const absChange = i > 0 ? Math.abs(sv - s.src[i - 1]) : NaN;
+      const pathLength = s.pathSum.step(absChange);
+      const netMove = i >= efficiencyLength ? Math.abs(sv - s.src[i - efficiencyLength]) : NaN;
+      const efficiencyRatio = pathLength === 0 ? 0.0 : netMove / pathLength;
+      const smoothedEfficiency = s.effEma.step(efficiencyRatio);
+      const atr = s.atr.step(b.high, b.low, b.close);
+
+      const widthMultiplier = cfg.adaptiveWidth
+        ? chopMultiplier + (trendMultiplier - chopMultiplier) * smoothedEfficiency : fixedMultiplier;
+      const trendWidth = atr * widthMultiplier;
+      const upper = filtered + trendWidth;
+      const lower = filtered - trendWidth;
+      // var float trend_line = filtered_price; trend_line := nz(trend_line[1], filtered_price)
+      let tl = i > 0 ? nz(s.trendLine[i - 1], filtered) : filtered;
+      if (gt(tl, upper)) tl = upper; // upper_band < trend_line
+      if (gt(lower, tl)) tl = lower; // lower_band > trend_line
+      s.trendLine[i] = tl;
+      const prev = i > 0 ? s.trendLine[i - 1] : NaN;
+      if (gt(tl, prev)) v.dir = 1; // stepped_up
+      else if (gt(prev, tl)) v.dir = -1; // stepped_down
+      const dir = v.dir;
+      s.trendDir[i] = dir;
+      const c = dir === 1 ? bullishColor : dir === -1 ? bearishColor : cfg.neutralColor;
+
+      // visual_span = ta.sma(high - low, 14); theta = bar_index * 0.52
+      const visualSpan = s.span.step(b.high - b.low);
+      const t = b.time;
+      const theta = i * 0.52;
+      const innerOrbit = visualSpan * 0.85;
+      const outerOrbit = visualSpan * 1.75;
+      const inner = String(color.new(c, 30));
+      const outer = String(color.new(c, 70));
+      const p = s.plots;
+      p[0][i] = { time: t, value: cfg.showTrend ? tl : NaN, color: c };
+      p[1][i] = { time: t, value: cfg.showStars ? tl + Math.sin(theta) * innerOrbit : NaN, color: inner };
+      p[2][i] = { time: t, value: cfg.showStars ? tl + Math.sin(theta + Math.PI) * innerOrbit : NaN, color: inner };
+      p[3][i] = { time: t, value: cfg.showStars ? tl + Math.cos(theta * 0.71 + 1.1) * outerOrbit : NaN, color: outer };
+      p[4][i] = { time: t, value: cfg.showStars ? tl + Math.cos(theta * 0.71 + 1.1 + Math.PI) * outerOrbit : NaN, color: outer };
+      // barcolor(show_candles and trend_dir != 0 ? color.new(trend_color, bar_trans) : na)
+      if (cfg.showCandles && dir !== 0) s.barColors.push({ time: t, color: String(color.new(c, cfg.barTransparency)) });
+      // bgcolor(show_bg and trend_dir != 0 ? color.new(trend_color, bg_trans) : na)
+      if (cfg.showBg && dir !== 0) s.bgColors.push({ time: t, color: String(color.new(c, cfg.bgTransparency)) });
+
+      // turned_bull = trend_dir == 1 and trend_dir[1] != 1 (na != 1 is false on the first bar), turned_bear the mirror
+      const turnedBull = dir === 1 && i > 0 && s.trendDir[i - 1] !== 1;
+      const turnedBear = dir === -1 && i > 0 && s.trendDir[i - 1] !== -1;
+      const flags = [turnedBull, turnedBear, turnedBull || turnedBear];
+      for (let k = 0; k < 3; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice() },
+        markers: [],
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GaussianFilterTrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<GaussianFilterTrendInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -281,7 +320,9 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const GaussianFilterTrend = {
   calculate,
+  createRun,
   metadata,
+
   defaultInputs,
   inputConfig,
   plotConfig,

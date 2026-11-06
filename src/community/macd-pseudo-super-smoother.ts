@@ -19,10 +19,12 @@
  */
 
 import {
-  getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar,
+  color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar,
   type SourceType,
 } from 'oakscriptjs';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type MacdPssFilterType = 'Type 1' | 'Type 2' | 'Type 3' | 'Type 4';
 
@@ -125,25 +127,35 @@ const fir4 = (x: number, length: number, shape: number, overshoot: number) => {
 };
 
 /**
- * One call site of pseudo_ss1 / 2 / 3 / 4 on every bar: sum(nz(src[i], first_nz) * w(i)) / sum(w(i)).
- * `var float first_nz` is the first non-na source of this call site.
+ * One call site of pseudo_ss1 / 2 / 3 / 4, one bar at a time: sum(nz(src[i], first_nz) * w(i)) / sum(w(i)).
+ * `var float first_nz` is the first non-na source of this call site (`firstNz[k]` of the run's vars).
  */
-function pseudoSuperSmoother(source: number[], length: number, style: MacdPssFilterType): number[] {
-  const n = source.length;
-  let src = source;
-  let weights: number[];
-  if (style === 'Type 4') {
-    // src = math.avg(source, source[1]); fir4(i, length, shape = 1.5, overshoot = 2.2) over length bars
-    src = source.map((v, t) => (t > 0 ? (v + source[t - 1]) / 2 : NaN));
-    weights = Array.from({ length }, (_v, i) => fir4(i, length, 1.5, 2.2));
-  } else {
-    const fir = style === 'Type 1' ? fir1 : style === 'Type 2' ? fir2 : fir3;
-    weights = Array.from({ length: length * 3 }, (_v, i) => fir(i, length));
+class PseudoSuperSmoother {
+  /** The inputs and the filtered sources of the bars */
+  readonly input: number[] = [];
+  readonly src: number[] = [];
+  private readonly weights: number[];
+  private readonly avg: boolean;
+
+  constructor(length: number, style: MacdPssFilterType, private readonly k: number) {
+    this.avg = style === 'Type 4';
+    if (style === 'Type 4') {
+      // src = math.avg(source, source[1]); fir4(i, length, shape = 1.5, overshoot = 2.2) over length bars
+      this.weights = Array.from({ length }, (_v, i) => fir4(i, length, 1.5, 2.2));
+    } else {
+      const fir = style === 'Type 1' ? fir1 : style === 'Type 2' ? fir2 : fir3;
+      this.weights = Array.from({ length: length * 3 }, (_v, i) => fir(i, length));
+    }
   }
-  const out = new Array<number>(n).fill(NaN);
-  let firstNz = NaN;
-  for (let t = 0; t < n; t++) {
-    if (isNa(firstNz) && !isNa(src[t])) firstNz = src[t];
+
+  step(firstNzs: number[], t: number, value: number): number {
+    this.input[t] = value;
+    const s = this.avg ? (t > 0 ? (value + this.input[t - 1]) / 2 : NaN) : value;
+    const src = this.src;
+    src[t] = s;
+    let firstNz = firstNzs[this.k];
+    if (isNa(firstNz) && !isNa(s)) firstNzs[this.k] = firstNz = s;
+    const weights = this.weights;
     let sum = 0;
     let weight = 0;
     for (let i = 0; i < weights.length; i++) {
@@ -152,46 +164,89 @@ function pseudoSuperSmoother(source: number[], length: number, style: MacdPssFil
       const v = t - i >= 0 ? src[t - i] : NaN;
       sum += (isNa(v) ? firstNz : v) * w;
     }
-    out[t] = sum / weight;
+    return sum / weight;
   }
-  return out;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MacdPseudoSuperSmootherInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface PssRun extends BarRunState<{ firstNz: number[] }> {
+  fast: PseudoSuperSmoother;
+  slow: PseudoSuperSmoother;
+  sig: PseudoSuperSmoother;
+  hist: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<MacdPseudoSuperSmootherInputs>): BarStudy<PssRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, cfg.source).toArray().map((v) => v ?? NaN);
-
-  const fastMa = pseudoSuperSmoother(source, cfg.fastLength, cfg.oscillatorStyle);
-  const slowMa = pseudoSuperSmoother(source, cfg.slowLength, cfg.oscillatorStyle);
-  const macd = fastMa.map((v, i) => v - slowMa[i]);
-  const signal = pseudoSuperSmoother(macd, cfg.signalLength, cfg.smoothingStyle);
-  const hist = macd.map((v, i) => v - signal[i]);
-
+  const value = barSource(cfg.source);
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const histNa = hist.map(fin);
-  // alertcondition(hist[1] >= 0 and hist < 0, "Rising to falling") / alertcondition(hist[1] <= 0 and hist > 0, ...)
   const le0 = (v: number) => !isNaN(v) && !(v > EPS);
-  const toFalling = histNa.map((h, i) => i > 0 && ge(histNa[i - 1], 0) && lt(h, 0));
-  const toRising = histNa.map((h, i) => i > 0 && le0(histNa[i - 1]) && h > EPS);
-  // hist >= 0 ? (hist[1] < hist ? #26A69A : #B2DFDB) : (hist[1] < hist ? #FFCDD2 : #FF5252)
-  const plot0 = bars.map((b, i) => {
-    const h = hist[i];
-    const rising = i > 0 && lt(hist[i - 1], h);
-    const c = ge(h, 0) ? (rising ? UP_STRONG : UP_WEAK) : rising ? DOWN_WEAK : DOWN_STRONG;
-    return { time: b.time, value: fin(h), color: c };
-  });
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: fin(macd[i]), color: '#2962FF' }));
-  const plot2 = bars.map((b, i) => ({ time: b.time, value: fin(signal[i]), color: '#FF6D00' }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    hlines: [{ value: 0, options: { title: 'Zero Line', color: ZERO_LINE, linestyle: 'dashed' } }],
-    alerts: alertStates(alertConditions, bars, [toFalling, toRising]),
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const fast = new PseudoSuperSmoother(cfg.fastLength, cfg.oscillatorStyle, 0);
+      const slow = new PseudoSuperSmoother(cfg.slowLength, cfg.oscillatorStyle, 1);
+      const sig = new PseudoSuperSmoother(cfg.signalLength, cfg.smoothingStyle, 2);
+      const s: PssRun = {
+        fast, slow, sig, hist: [], plot0: [], plot1: [], plot2: [], flags: [[], []], times: [[], []],
+        steps: [], vars: { firstNz: [NaN, NaN, NaN] }, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [fast.input, fast.src, slow.input, slow.src, sig.input, sig.src, s.hist, s.plot0, s.plot1, s.plot2, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const src = value(b);
+      const nz = s.vars.firstNz;
+      const macd = s.fast.step(nz, i, src) - s.slow.step(nz, i, src);
+      const signal = s.sig.step(nz, i, macd);
+      const h = macd - signal;
+      s.hist[i] = h;
+      const prev = i > 0 ? s.hist[i - 1] : NaN;
+
+      // alertcondition(hist[1] >= 0 and hist < 0, "Rising to falling") / alertcondition(hist[1] <= 0 and hist > 0, ...)
+      const hNa = fin(h);
+      const toFalling = i > 0 && ge(fin(prev), 0) && lt(hNa, 0);
+      const toRising = i > 0 && le0(fin(prev)) && hNa > EPS;
+      s.flags[0][i] = toFalling;
+      s.flags[1][i] = toRising;
+      if (toFalling) s.times[0].push(b.time as number);
+      if (toRising) s.times[1].push(b.time as number);
+      // hist >= 0 ? (hist[1] < hist ? #26A69A : #B2DFDB) : (hist[1] < hist ? #FFCDD2 : #FF5252)
+      const rising = i > 0 && lt(prev, h);
+      const c = ge(h, 0) ? (rising ? UP_STRONG : UP_WEAK) : rising ? DOWN_WEAK : DOWN_STRONG;
+      s.plot0[i] = { time: b.time, value: hNa, color: c };
+      s.plot1[i] = { time: b.time, value: fin(macd), color: '#2962FF' };
+      s.plot2[i] = { time: b.time, value: fin(signal), color: '#FF6D00' };
+    },
+    copyVars: (v) => ({ firstNz: v.firstNz.slice() }),
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        hlines: [{ value: 0, options: { title: 'Zero Line', color: ZERO_LINE, linestyle: 'dashed' } }],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MacdPseudoSuperSmootherInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MacdPseudoSuperSmootherInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -202,6 +257,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const MacdPseudoSuperSmoother = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

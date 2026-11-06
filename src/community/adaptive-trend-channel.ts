@@ -13,8 +13,10 @@
  * Original notice: Adaptive Trend Channel, developed by MarketStructureLab.
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AdaptiveTrendChannelInputs {
   /** Bars of the linear regression of high / low / close */
@@ -65,113 +67,172 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AdaptiveTrendChannelInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface AtcVars {
+  regime: number;
+  centerline: number;
+  bullSupportTrail: number;
+  bearResistanceTrail: number;
+}
+
+interface AtcRun extends BarRunState<AtcVars> {
+  linHigh: ReturnType<typeof taStep.linreg>;
+  linLow: ReturnType<typeof taStep.linreg>;
+  linClose: ReturnType<typeof taStep.linreg>;
+  upperSma: WindowSma;
+  lowerSma: WindowSma;
+  peak: WindowExtreme;
+  trough: WindowExtreme;
+  atr: ReturnType<typeof taStep.atr>;
+  regLow: number[];
+  regHigh: number[];
+  regimeArr: number[];
+  plots: Point[][];
+  fillMid: number[];
+  floor: number[];
+  roof: number[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<AdaptiveTrendChannelInputs>): BarStudy<AtcRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const volatilityLookback = 100;
-
-  // linreg(src, regressionBars, 0)
-  const regHigh = A(ta.linreg(S(bars.map((b) => b.high)), cfg.regressionBars, 0));
-  const regLow = A(ta.linreg(S(bars.map((b) => b.low)), cfg.regressionBars, 0));
-  const regClose = A(ta.linreg(S(bars.map((b) => b.close)), cfg.regressionBars, 0));
-  const upperReaction = A(ta.sma(S(regHigh), cfg.envelopeBars));
-  const lowerReaction = A(ta.sma(S(regLow), cfg.envelopeBars));
-  const windowPeak = A(ta.highest(S(regHigh), cfg.envelopeBars));
-  const windowTrough = A(ta.lowest(S(regLow), cfg.envelopeBars));
-  const atr = A(ta.atr(bars, volatilityLookback));
-
-  // Regime: var regime = na, centerline = na, bullSupportTrail = low (bar 0), bearResistanceTrail = high (bar 0).
-  // math.min / math.max give na when an argument is na.
-  const regimeArr: number[] = new Array(n);
-  const center: number[] = new Array(n);
-  let regime = NaN;
-  let centerline = NaN;
-  let bullSupportTrail = n > 0 ? bars[0].low : NaN;
-  let bearResistanceTrail = n > 0 ? bars[0].high : NaN;
-  for (let i = 0; i < n; i++) {
-    const historyReady = i > cfg.regressionBars;
-    const regLowPrev = i > 0 ? regLow[i - 1] : NaN;
-    const regHighPrev = i > 0 ? regHigh[i - 1] : NaN;
-    if (isNaN(regime) && historyReady) {
-      regime = 1;
-      centerline = windowTrough[i];
-      bullSupportTrail = regLow[i];
-    } else if (regime === 1) {
-      bullSupportTrail = Math.max(bullSupportTrail, windowTrough[i]);
-      if (lt(upperReaction[i], bullSupportTrail) && lt(regClose[i], regLowPrev)) {
-        regime = -1;
-        centerline = windowPeak[i];
-        bearResistanceTrail = regHigh[i];
-      }
-    } else {
-      bearResistanceTrail = Math.min(bearResistanceTrail, windowPeak[i]);
-      if (gt(lowerReaction[i], bearResistanceTrail) && gt(regClose[i], regHighPrev)) {
-        regime = 1;
-        centerline = windowTrough[i];
-        bullSupportTrail = regLow[i];
-      }
-    }
-    centerline = regime === 1 ? Math.max(centerline, windowTrough[i]) : Math.min(centerline, windowPeak[i]);
-    regimeArr[i] = regime;
-    center[i] = centerline;
-  }
-
-  const half = atr.map((a) => cfg.atrStretch * a * 0.5);
-  const roof = center.map((c, i) => c + half[i]);
-  const floor = center.map((c, i) => c - half[i]);
-  const fillMid = bars.map((b) => (b.open + b.close) * 0.5);
-
   const bullMid = String(color.new(cfg.uptrendPaint, 90));
   const bearMid = String(color.new(cfg.downtrendPaint, 90));
   const bullBand = String(color.new(cfg.uptrendPaint, 20));
   const bearBand = String(color.new(cfg.downtrendPaint, 20));
   const bullFillStrong = String(color.new(cfg.uptrendPaint, 45));
   const bearFillStrong = String(color.new(cfg.downtrendPaint, 45));
-
-  // ta.crossover(regime, 0) / ta.crossunder(regime, 0): exact comparisons (no 1e-10 tolerance); na on the previous
-  // bar gives false. plotshape(flipDown ? roof : na, "Bearish flip") is shape0, plotshape(flipUp ? floor : na,
-  // "Bullish flip") shape1
-  const markers: MarkerData[] = [];
-  for (let i = 1; i < n; i++) {
-    const flipUp = regimeArr[i] > 0 && regimeArr[i - 1] <= 0;
-    const flipDown = regimeArr[i] < 0 && regimeArr[i - 1] >= 0;
-    if (flipDown && !isNaN(roof[i])) {
-      markers.push({ id: 'shape0', time: bars[i].time, position: 'atPriceMiddle', price: roof[i], shape: 'circle',
-        color: cfg.downtrendPaint, size: 'small' });
-    }
-    if (flipUp && !isNaN(floor[i])) {
-      markers.push({ id: 'shape1', time: bars[i].time, position: 'atPriceMiddle', price: floor[i], shape: 'circle',
-        color: cfg.uptrendPaint, size: 'small' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // tint = regime == 1 ? uptrendPaint : downtrendPaint (na regime: downtrendPaint)
-      plot0: bars.map((b, i) => ({ time: b.time, value: center[i], color: regimeArr[i] === 1 ? bullMid : bearMid })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: regimeArr[i] === 1 ? floor[i] : NaN, color: bullBand })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: regimeArr[i] === -1 ? roof[i] : NaN, color: bearBand })),
+    init() {
+      // linreg(src, regressionBars, 0)
+      const linHigh = taStep.linreg(cfg.regressionBars, 0);
+      const linLow = taStep.linreg(cfg.regressionBars, 0);
+      const linClose = taStep.linreg(cfg.regressionBars, 0);
+      const upperSma = new WindowSma(cfg.envelopeBars);
+      const lowerSma = new WindowSma(cfg.envelopeBars);
+      const peak = new WindowExtreme(false, cfg.envelopeBars);
+      const trough = new WindowExtreme(true, cfg.envelopeBars);
+      const atr = taStep.atr(volatilityLookback);
+      const s: AtcRun = {
+        linHigh, linLow, linClose, upperSma, lowerSma, peak, trough, atr, regLow: [], regHigh: [], regimeArr: [],
+        plots: [[], [], []], fillMid: [], floor: [], roof: [], markers: [],
+        steps: [linHigh, linLow, linClose, upperSma, lowerSma, peak, trough, atr],
+        vars: { regime: NaN, centerline: NaN, bullSupportTrail: NaN, bearResistanceTrail: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.regLow, s.regHigh, s.regimeArr, ...s.plots, s.fillMid, s.floor, s.roof];
+      return s;
     },
-    fills: [
-      // fill(pMid, pFloor, fillMid, floor, color.new(uptrendPaint, 90), color.new(uptrendPaint, 45))
-      { plot1: 'plot0', plot2: 'plot1', gradient: { topValue: fillMid, bottomValue: floor,
-        topColor: new Array(n).fill(bullMid), bottomColor: new Array(n).fill(bullFillStrong) } },
-      // fill(pMid, pRoof, roof, fillMid, color.new(downtrendPaint, 45), color.new(downtrendPaint, 90))
-      { plot1: 'plot0', plot2: 'plot2', gradient: { topValue: roof, bottomValue: fillMid,
-        topColor: new Array(n).fill(bearFillStrong), bottomColor: new Array(n).fill(bearMid) } },
-    ],
-    markers,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const regHigh = s.linHigh.step(b.high);
+      const regLow = s.linLow.step(b.low);
+      const regClose = s.linClose.step(b.close);
+      s.regHigh[i] = regHigh;
+      s.regLow[i] = regLow;
+      const upperReaction = s.upperSma.step(regHigh);
+      const lowerReaction = s.lowerSma.step(regLow);
+      const windowPeak = s.peak.step(regHigh);
+      const windowTrough = s.trough.step(regLow);
+      const atr = s.atr.step(b.high, b.low, b.close);
+
+      // Regime: var regime = na, centerline = na, bullSupportTrail = low (bar 0), bearResistanceTrail = high (bar 0).
+      // math.min / math.max give na when an argument is na.
+      if (i === 0) {
+        v.bullSupportTrail = b.low;
+        v.bearResistanceTrail = b.high;
+      }
+      const historyReady = i > cfg.regressionBars;
+      const regLowPrev = i > 0 ? s.regLow[i - 1] : NaN;
+      const regHighPrev = i > 0 ? s.regHigh[i - 1] : NaN;
+      if (isNaN(v.regime) && historyReady) {
+        v.regime = 1;
+        v.centerline = windowTrough;
+        v.bullSupportTrail = regLow;
+      } else if (v.regime === 1) {
+        v.bullSupportTrail = Math.max(v.bullSupportTrail, windowTrough);
+        if (lt(upperReaction, v.bullSupportTrail) && lt(regClose, regLowPrev)) {
+          v.regime = -1;
+          v.centerline = windowPeak;
+          v.bearResistanceTrail = regHigh;
+        }
+      } else {
+        v.bearResistanceTrail = Math.min(v.bearResistanceTrail, windowPeak);
+        if (gt(lowerReaction, v.bearResistanceTrail) && gt(regClose, regHighPrev)) {
+          v.regime = 1;
+          v.centerline = windowTrough;
+          v.bullSupportTrail = regLow;
+        }
+      }
+      v.centerline = v.regime === 1 ? Math.max(v.centerline, windowTrough) : Math.min(v.centerline, windowPeak);
+      const regime = v.regime;
+      const center = v.centerline;
+      s.regimeArr[i] = regime;
+
+      const half = cfg.atrStretch * atr * 0.5;
+      const roof = center + half;
+      const floor = center - half;
+      s.roof[i] = roof;
+      s.floor[i] = floor;
+      s.fillMid[i] = (b.open + b.close) * 0.5;
+
+      const time = b.time;
+      // tint = regime == 1 ? uptrendPaint : downtrendPaint (na regime: downtrendPaint)
+      s.plots[0][i] = { time, value: center, color: regime === 1 ? bullMid : bearMid };
+      s.plots[1][i] = { time, value: regime === 1 ? floor : NaN, color: bullBand };
+      s.plots[2][i] = { time, value: regime === -1 ? roof : NaN, color: bearBand };
+
+      // ta.crossover(regime, 0) / ta.crossunder(regime, 0): exact comparisons (no 1e-10 tolerance); na on the previous
+      // bar gives false. plotshape(flipDown ? roof : na, "Bearish flip") is shape0, plotshape(flipUp ? floor : na,
+      // "Bullish flip") shape1
+      if (i === 0) return;
+      const prev = s.regimeArr[i - 1];
+      const flipUp = regime > 0 && prev <= 0;
+      const flipDown = regime < 0 && prev >= 0;
+      if (flipDown && !isNaN(roof)) {
+        s.markers.push({ id: 'shape0', time, position: 'atPriceMiddle', price: roof, shape: 'circle',
+          color: cfg.downtrendPaint, size: 'small' });
+      }
+      if (flipUp && !isNaN(floor)) {
+        s.markers.push({ id: 'shape1', time, position: 'atPriceMiddle', price: floor, shape: 'circle',
+          color: cfg.uptrendPaint, size: 'small' });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+        fills: [
+          // fill(pMid, pFloor, fillMid, floor, color.new(uptrendPaint, 90), color.new(uptrendPaint, 45))
+          { plot1: 'plot0', plot2: 'plot1', gradient: { topValue: s.fillMid.slice(), bottomValue: s.floor.slice(),
+            topColor: new Array(n).fill(bullMid), bottomColor: new Array(n).fill(bullFillStrong) } },
+          // fill(pMid, pRoof, roof, fillMid, color.new(downtrendPaint, 45), color.new(downtrendPaint, 90))
+          { plot1: 'plot0', plot2: 'plot2', gradient: { topValue: s.roof.slice(), bottomValue: s.fillMid.slice(),
+            topColor: new Array(n).fill(bearFillStrong), bottomColor: new Array(n).fill(bearMid) } },
+        ],
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdaptiveTrendChannelInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AdaptiveTrendChannelInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AdaptiveTrendChannel = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

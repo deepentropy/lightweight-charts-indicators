@@ -11,8 +11,10 @@
  * Reference: "Matrix Series" (community)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MatrixSeriesInputs {
   smoother: number;
@@ -60,139 +62,147 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MatrixSeriesInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: { candle0: PlotCandleData[] } } {
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { plotCandles: { candle0: PlotCandleData[] } };
+
+interface MatrixRun extends BarRunState<Record<string, never>> {
+  rk3: ReturnType<typeof taStep.ema>;
+  rk4: WindowStdev;
+  rk6: ReturnType<typeof taStep.ema>;
+  up: ReturnType<typeof taStep.ema>;
+  down: ReturnType<typeof taStep.ema>;
+  cci: ReturnType<typeof taStep.cci>;
+  cciArr: number[];
+  candles: PlotCandleData[];
+  resistancePlot: Point[];
+  supportPlot: Point[];
+  obMarkerPlot: Point[];
+  osMarkerPlot: Point[];
+}
+
+function study(inputs: Partial<MatrixSeriesInputs>): BarStudy<MatrixRun, Result> {
   const { smoother, supResPeriod, supResPercentage, pricePeriod, ob, os, showOBOS, dynamic } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const nn = smoother;
-
-  // Pine: ys1 = (high+low+close*2)/4, then series of EMA/stdev transforms
-  const ys1Series = new Series(bars, (b) => (b.high + b.low + b.close * 2) / 4);
-  const rk3 = ta.ema(ys1Series, nn);
-  const rk4 = ta.stdev(ys1Series, nn);
-  const rk3Arr = rk3.toArray();
-  const rk4Arr = rk4.toArray();
-
-  const rk5Arr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const ys1Val = (bars[i].high + bars[i].low + bars[i].close * 2) / 4;
-    const r3 = rk3Arr[i] ?? NaN;
-    const r4 = rk4Arr[i] ?? NaN;
-    // na while ema / stdev warm up; a division by a zero stdev is na
-    rk5Arr[i] = (r4 !== 0 && !isNaN(r4) && !isNaN(r3)) ? (ys1Val - r3) * 200 / r4 : NaN;
-  }
-  const rk5Series = new Series(bars, (_b, i) => rk5Arr[i]);
-  const rk6 = ta.ema(rk5Series, nn);
-  const upSeries = ta.ema(rk6, nn);
-  const downSeries = ta.ema(upSeries, nn);
-  const upArr = upSeries.toArray();
-  const downArr = downSeries.toArray();
-
-  // Pine: plotcandle(Oo,Hh,Ll,Cc,color=vcolor)
-  const candles: PlotCandleData[] = bars.map((b, i) => {
-    const up = upArr[i] ?? NaN;
-    const dn = downArr[i] ?? NaN;
-    if (isNaN(up) || isNaN(dn)) {
-      return { time: b.time, open: NaN, high: NaN, low: NaN, close: NaN };
-    }
-    // Pine: Oo = iff(up<down, up, down), Hh=Oo, Ll=iff(up<down, down, up), Cc=Ll
-    // vcolor = Oo > Cc ? red : up > down ? green : red
-    const Oo = up < dn ? up : dn;
-    const Ll = up < dn ? dn : up;
-    const color = up > dn ? '#008000' : '#FF0000';
-    return { time: b.time, open: Oo, high: Oo, low: Ll, close: Ll, color };
-  });
-
-  // -------S/R Zones------
-  // Pine: C3 = cci(close, Pds) — uses close as source, not hlc3
-  const closeSeries = new Series(bars, (b) => b.close);
-  const cciArr = ta.cci(closeSeries, pricePeriod).toArray();
-  // highest / lowest over the last Lookback bars (na values skipped), na until the window is full
-  const value2Arr: number[] = new Array(n).fill(NaN);
-  const value3Arr: number[] = new Array(n).fill(NaN);
-  for (let i = supResPeriod - 1; i < n; i++) {
-    let hi = NaN, lo = NaN;
-    for (let k = i - supResPeriod + 1; k <= i; k++) {
-      const v = cciArr[k];
-      if (v == null || isNaN(v)) continue;
-      if (isNaN(hi) || v > hi) hi = v;
-      if (isNaN(lo) || v < lo) lo = v;
-    }
-    value2Arr[i] = hi;
-    value3Arr[i] = lo;
-  }
-
-  // Pine: ResistanceLine = Value3 + Value5, SupportLine = Value2 - Value5
-  const resistancePlot = bars.map((b, i) => {
-    if (!dynamic || isNaN(value2Arr[i]) || isNaN(value3Arr[i])) {
-      return { time: b.time, value: NaN };
-    }
-    const v2 = value2Arr[i];
-    const v3 = value3Arr[i];
-    const v4 = v2 - v3;
-    const v5 = v4 * (supResPercentage / 100);
-    return { time: b.time, value: v3 + v5 };
-  });
-
-  const supportPlot = bars.map((b, i) => {
-    if (!dynamic || isNaN(value2Arr[i]) || isNaN(value3Arr[i])) {
-      return { time: b.time, value: NaN };
-    }
-    const v2 = value2Arr[i];
-    const v3 = value3Arr[i];
-    const v4 = v2 - v3;
-    const v5 = v4 * (supResPercentage / 100);
-    return { time: b.time, value: v2 - v5 };
-  });
-
-  // --Overbought/Oversold/Warning Detail
-  // Pine: UPshape = up > ob and up>down ? highest(up,1)+20 : up>ob and up<down ? highest(down,1)+20 : na
-  // Pine: DOWNshape = down < os and up>down ? lowest(down,1)-20 : down<os and up<down ? lowest(up,1)-20 : na
-  // Pine: plot(UPshape, style=cross, color=aqua, linewidth=2)
-  // Pine: plot(DOWNshape, style=cross, color=aqua, linewidth=2)
-  const obMarkerPlot = bars.map((b, i) => {
-    const up = upArr[i] ?? NaN;
-    const dn = downArr[i] ?? NaN;
-    if (isNaN(up) || isNaN(dn)) return { time: b.time, value: NaN };
-    let val = NaN;
-    if (up > ob && up > dn) {
-      val = up + 20;
-    } else if (up > ob && up < dn) {
-      val = dn + 20;
-    }
-    return { time: b.time, value: val };
-  });
-
-  const osMarkerPlot = bars.map((b, i) => {
-    const up = upArr[i] ?? NaN;
-    const dn = downArr[i] ?? NaN;
-    if (isNaN(up) || isNaN(dn)) return { time: b.time, value: NaN };
-    let val = NaN;
-    if (dn < os && up > dn) {
-      val = dn - 20;
-    } else if (dn < os && up < dn) {
-      val = up - 20;
-    }
-    return { time: b.time, value: val };
-  });
-
-  // Pine: hline(x1), hline(x2) where x1=OBOS?ob:false, x2=OBOS?os:false
-  const hlines: any[] = [];
-  if (showOBOS) {
-    hlines.push({ value: ob, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } });
-    hlines.push({ value: os, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      'resistance': resistancePlot,
-      'support': supportPlot,
-      'obMarker': obMarkerPlot,
-      'osMarker': osMarkerPlot,
+    init() {
+      const s: MatrixRun = {
+        rk3: taStep.ema(nn), rk4: new WindowStdev(nn), rk6: taStep.ema(nn), up: taStep.ema(nn), down: taStep.ema(nn),
+        cci: taStep.cci(pricePeriod), cciArr: [], candles: [], resistancePlot: [], supportPlot: [], obMarkerPlot: [],
+        osMarkerPlot: [], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.rk3, s.rk4, s.rk6, s.up, s.down, s.cci];
+      s.series = [s.cciArr, s.candles, s.resistancePlot, s.supportPlot, s.obMarkerPlot, s.osMarkerPlot];
+      return s;
     },
-    hlines,
-    plotCandles: { candle0: candles },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // Pine: ys1 = (high+low+close*2)/4, then series of EMA/stdev transforms
+      const ys1Val = (b.high + b.low + b.close * 2) / 4;
+      const r3 = s.rk3.step(ys1Val);
+      const r4 = s.rk4.step(ys1Val);
+      // na while ema / stdev warm up; a division by a zero stdev is na
+      const rk5 = (r4 !== 0 && !isNaN(r4) && !isNaN(r3)) ? (ys1Val - r3) * 200 / r4 : NaN;
+      const rk6 = s.rk6.step(rk5);
+      const up = s.up.step(rk6);
+      const dn = s.down.step(up);
+
+      // Pine: plotcandle(Oo,Hh,Ll,Cc,color=vcolor)
+      if (isNaN(up) || isNaN(dn)) {
+        s.candles[i] = { time, open: NaN, high: NaN, low: NaN, close: NaN };
+      } else {
+        // Pine: Oo = iff(up<down, up, down), Hh=Oo, Ll=iff(up<down, down, up), Cc=Ll
+        // vcolor = Oo > Cc ? red : up > down ? green : red
+        const Oo = up < dn ? up : dn;
+        const Ll = up < dn ? dn : up;
+        const color = up > dn ? '#008000' : '#FF0000';
+        s.candles[i] = { time, open: Oo, high: Oo, low: Ll, close: Ll, color };
+      }
+
+      // -------S/R Zones------
+      // Pine: C3 = cci(close, Pds) — uses close as source, not hlc3
+      s.cciArr[i] = s.cci.step(b.close);
+      // highest / lowest over the last Lookback bars (na values skipped), na until the window is full
+      let value2 = NaN;
+      let value3 = NaN;
+      if (i >= supResPeriod - 1) {
+        let hi = NaN, lo = NaN;
+        for (let k = i - supResPeriod + 1; k <= i; k++) {
+          const v = s.cciArr[k];
+          if (v == null || isNaN(v)) continue;
+          if (isNaN(hi) || v > hi) hi = v;
+          if (isNaN(lo) || v < lo) lo = v;
+        }
+        value2 = hi;
+        value3 = lo;
+      }
+
+      // Pine: ResistanceLine = Value3 + Value5, SupportLine = Value2 - Value5
+      if (!dynamic || isNaN(value2) || isNaN(value3)) {
+        s.resistancePlot[i] = { time, value: NaN };
+        s.supportPlot[i] = { time, value: NaN };
+      } else {
+        const v4 = value2 - value3;
+        const v5 = v4 * (supResPercentage / 100);
+        s.resistancePlot[i] = { time, value: value3 + v5 };
+        s.supportPlot[i] = { time, value: value2 - v5 };
+      }
+
+      // --Overbought/Oversold/Warning Detail
+      // Pine: UPshape = up > ob and up>down ? highest(up,1)+20 : up>ob and up<down ? highest(down,1)+20 : na
+      // Pine: DOWNshape = down < os and up>down ? lowest(down,1)-20 : down<os and up<down ? lowest(up,1)-20 : na
+      // Pine: plot(UPshape, style=cross, color=aqua, linewidth=2)
+      // Pine: plot(DOWNshape, style=cross, color=aqua, linewidth=2)
+      if (isNaN(up) || isNaN(dn)) {
+        s.obMarkerPlot[i] = { time, value: NaN };
+        s.osMarkerPlot[i] = { time, value: NaN };
+      } else {
+        let upVal = NaN;
+        if (up > ob && up > dn) {
+          upVal = up + 20;
+        } else if (up > ob && up < dn) {
+          upVal = dn + 20;
+        }
+        s.obMarkerPlot[i] = { time, value: upVal };
+        let dnVal = NaN;
+        if (dn < os && up > dn) {
+          dnVal = dn - 20;
+        } else if (dn < os && up < dn) {
+          dnVal = up - 20;
+        }
+        s.osMarkerPlot[i] = { time, value: dnVal };
+      }
+    },
+    result(s) {
+      // Pine: hline(x1), hline(x2) where x1=OBOS?ob:false, x2=OBOS?os:false
+      const hlines: any[] = [];
+      if (showOBOS) {
+        hlines.push({ value: ob, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } });
+        hlines.push({ value: os, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } });
+      }
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          'resistance': s.resistancePlot.slice(),
+          'support': s.supportPlot.slice(),
+          'obMarker': s.obMarkerPlot.slice(),
+          'osMarker': s.osMarkerPlot.slice(),
+        },
+        hlines,
+        plotCandles: { candle0: s.candles.slice() },
+      };
+    },
   };
 }
 
-export const MatrixSeries = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MatrixSeriesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MatrixSeriesInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: { candle0: PlotCandleData[] } } {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MatrixSeries = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

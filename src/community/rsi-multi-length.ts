@@ -14,9 +14,11 @@
  */
 
 import {
-  str, color, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
+  str, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { TableData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RSIMultiLengthInputs {
   /** Maximum RSI length */
@@ -90,112 +92,154 @@ export const metadata = {
 
 const GRAY = '#787B86';
 
-export function calculate(bars: Bar[], inputs: Partial<RSIMultiLengthInputs> = {}): IndicatorResult & { tables: TableData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { tables: TableData[] };
+
+interface RmlVars {
+  /** var num = array.new_float(N, 0); var den = array.new_float(N, 0) (changed in place, copied by copyVars) */
+  num: number[];
+  den: number[];
+}
+
+interface RmlRun extends BarRunState<RmlVars> {
+  src: number[];
+  buyMa: number[];
+  sellMa: number[];
+  overbuy: number[];
+  oversell: number[];
+  plots: Point[][];
+  fillColors: string[];
+}
+
+function study(inputs: Partial<RSIMultiLengthInputs>): BarStudy<RmlRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const maxLen = Math.trunc(cfg.max);
   const minLen = Math.trunc(cfg.min);
   const N = maxLen - minLen + 1;
-  if (N < 0) throw new Error(`Invalid value of the 'size' argument (${N}) in the 'array.new_float' function. It must be >= 0.`);
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
+  const value = barSource(cfg.src);
   const nz = (v: number, r = 0) => (isNaN(v) ? r : v);
-
-  // var num = array.new_float(N, 0); var den = array.new_float(N, 0)
-  const num = new Array<number>(N).fill(0);
-  const den = new Array<number>(N).fill(0);
   // for i = min to max (counts down when min > max)
   const lengths: number[] = [];
   for (let l = minLen; minLen <= maxLen ? l <= maxLen : l >= maxLen; l += minLen <= maxLen ? 1 : -1) lengths.push(l);
-
-  const avgRsi: number[] = new Array(n);
-  const buyMa: number[] = new Array(n);
-  const sellMa: number[] = new Array(n);
-  const overbuyArr: number[] = new Array(n);
-  const oversellArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const diff = nz(i > 0 ? src[i] - src[i - 1] : NaN);
-    let k = 0;
-    let overbuy = 0;
-    let oversell = 0;
-    let avg = 0;
-    for (const l of lengths) {
-      if (k >= N) throw new Error(`Index ${k} is out of bounds, array size is ${N}`);
-      const alpha = 1 / l;
-      const numRma = alpha * diff + (1 - alpha) * num[k];
-      const denRma = alpha * Math.abs(diff) + (1 - alpha) * den[k];
-      // 0 / 0 is na (a flat start): the average is na on that bar
-      const rsi = (50 * numRma) / denRma + 50;
-      avg += rsi;
-      overbuy = rsi - cfg.overbought > 1e-10 ? overbuy + 1 : overbuy;
-      oversell = cfg.oversold - rsi > 1e-10 ? oversell + 1 : oversell;
-      num[k] = numRma;
-      den[k] = denRma;
-      k += 1;
-    }
-    const a = avg / N;
-    avgRsi[i] = a;
-    overbuyArr[i] = overbuy;
-    oversellArr[i] = oversell;
-    // buy_rsi_ma := nz(buy_rsi_ma[1] + overbuy / N * (avg_rsi - buy_rsi_ma[1]), avg_rsi)
-    const pb = i > 0 ? buyMa[i - 1] : NaN;
-    const ps = i > 0 ? sellMa[i - 1] : NaN;
-    buyMa[i] = nz(pb + (overbuy / N) * (a - pb), a);
-    sellMa[i] = nz(ps + (oversell / N) * (a - ps), a);
-  }
-
-  // css = color.from_gradient(avg_rsi, sell_rsi_ma, buy_rsi_ma, rsi_avg_dn_css, rsi_avg_up_css)
-  const css = bars.map((_b, i) => color.from_gradient(avgRsi[i], sellMa[i], buyMa[i], cfg.rsiAvgDnCss, cfg.rsiAvgUpCss));
-  const cssStr = css.map((c) => (c == null ? 'transparent' : String(c)));
   const overColor = String(color.new(cfg.obArea, 100));
   const underColor = String(color.new(cfg.osArea, 100));
-
-  const P = (f: (i: number) => number, col: (i: number) => string) =>
-    bars.map((b, i) => ({ time: b.time, value: f(i), color: col(i) }));
-
-  const tables: TableData[] = [];
-  if (n > 0) {
-    // if barstate.islast: the table of the last bar
-    const last = n - 1;
-    tables.push({
-      position: 'top_right', columns: 2, rows: 2,
-      cells: [
-        { column: 0, row: 0, text: 'Overbought', textColor: GRAY, bgColor: 'transparent', textSize: 'auto' },
-        { column: 1, row: 0, text: 'Oversold', textColor: GRAY, bgColor: 'transparent', textSize: 'auto' },
-        { column: 0, row: 1, text: str.tostring((overbuyArr[last] / N) * 100, '#.##') + ' %', textColor: '#26a69a',
-          bgColor: String(color.new('#26a69a', 80)), textSize: 'auto' },
-        { column: 1, row: 1, text: str.tostring((oversellArr[last] / N) * 100, '#.##') + ' %', textColor: '#ef5350',
-          bgColor: String(color.new('#ef5350', 80)), textSize: 'auto' },
-      ],
-    });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: P((i) => avgRsi[i], (i) => cssStr[i]),
-      plot1: P((i) => buyMa[i], () => cfg.upperCss),
-      plot2: P((i) => sellMa[i], () => cfg.lowerCss),
-      plot3: P((i) => (overbuyArr[i] / N) * 100, () => overColor),
-      plot4: P((i) => 100 - (oversellArr[i] / N) * 100, () => underColor),
-      plot5: P(() => 100, () => 'transparent'),
-      plot6: P(() => 0, () => 'transparent'),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    copyVars: (v) => ({ num: v.num.slice(), den: v.den.slice() }),
+    init() {
+      if (N < 0) throw new Error(`Invalid value of the 'size' argument (${N}) in the 'array.new_float' function. It must be >= 0.`);
+      const s: RmlRun = {
+        src: [], buyMa: [], sellMa: [], overbuy: [], oversell: [], plots: Array.from({ length: 7 }, () => []), fillColors: [],
+        steps: [], vars: { num: new Array<number>(N).fill(0), den: new Array<number>(N).fill(0) }, lists: [], series: [],
+      };
+      s.series = [s.src, s.buyMa, s.sellMa, s.overbuy, s.oversell, ...s.plots, s.fillColors];
+      return s;
     },
-    hlines: [{ value: 50, options: { title: 'Level', color: String(color.new(GRAY, 50)), linestyle: 'dashed' } }],
-    fills: [
-      // fill(per_over, lower, ob_area)
-      { plot1: 'plot3', plot2: 'plot6', options: { title: 'Plots Background', color: cfg.obArea } },
-      // fill(upper, per_under, os_area)
-      { plot1: 'plot5', plot2: 'plot4', options: { title: 'Plots Background', color: cfg.osArea } },
-      // fill(up, dn, color.new(css, 90))
-      { plot1: 'plot1', plot2: 'plot2', options: { title: 'Plots Background' },
-        colors: css.map((c) => String(color.new(c as string, 90))) },
-    ],
-    tables,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time as number;
+      const { num, den } = s.vars;
+      const src = s.src;
+      src[i] = value(b);
+      const diff = nz(i > 0 ? src[i] - src[i - 1] : NaN);
+      let k = 0;
+      let overbuy = 0;
+      let oversell = 0;
+      let avg = 0;
+      for (const l of lengths) {
+        if (k >= N) throw new Error(`Index ${k} is out of bounds, array size is ${N}`);
+        const alpha = 1 / l;
+        const numRma = alpha * diff + (1 - alpha) * num[k];
+        const denRma = alpha * Math.abs(diff) + (1 - alpha) * den[k];
+        // 0 / 0 is na (a flat start): the average is na on that bar
+        const rsi = (50 * numRma) / denRma + 50;
+        avg += rsi;
+        overbuy = rsi - cfg.overbought > 1e-10 ? overbuy + 1 : overbuy;
+        oversell = cfg.oversold - rsi > 1e-10 ? oversell + 1 : oversell;
+        num[k] = numRma;
+        den[k] = denRma;
+        k += 1;
+      }
+      const a = avg / N;
+      s.overbuy[i] = overbuy;
+      s.oversell[i] = oversell;
+      // buy_rsi_ma := nz(buy_rsi_ma[1] + overbuy / N * (avg_rsi - buy_rsi_ma[1]), avg_rsi)
+      const pb = i > 0 ? s.buyMa[i - 1] : NaN;
+      const ps = i > 0 ? s.sellMa[i - 1] : NaN;
+      const buyMa = nz(pb + (overbuy / N) * (a - pb), a);
+      const sellMa = nz(ps + (oversell / N) * (a - ps), a);
+      s.buyMa[i] = buyMa;
+      s.sellMa[i] = sellMa;
+
+      // css = color.from_gradient(avg_rsi, sell_rsi_ma, buy_rsi_ma, rsi_avg_dn_css, rsi_avg_up_css)
+      const css = color.from_gradient(a, sellMa, buyMa, cfg.rsiAvgDnCss, cfg.rsiAvgUpCss);
+      const p = s.plots;
+      p[0][i] = { time, value: a, color: css == null ? 'transparent' : String(css) };
+      p[1][i] = { time, value: buyMa, color: cfg.upperCss };
+      p[2][i] = { time, value: sellMa, color: cfg.lowerCss };
+      p[3][i] = { time, value: (overbuy / N) * 100, color: overColor };
+      p[4][i] = { time, value: 100 - (oversell / N) * 100, color: underColor };
+      p[5][i] = { time, value: 100, color: 'transparent' };
+      p[6][i] = { time, value: 0, color: 'transparent' };
+      s.fillColors[i] = String(color.new(css as string, 90));
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const tables: TableData[] = [];
+      if (n > 0) {
+        // if barstate.islast: the table of the last bar
+        const last = n - 1;
+        tables.push({
+          position: 'top_right', columns: 2, rows: 2,
+          cells: [
+            { column: 0, row: 0, text: 'Overbought', textColor: GRAY, bgColor: 'transparent', textSize: 'auto' },
+            { column: 1, row: 0, text: 'Oversold', textColor: GRAY, bgColor: 'transparent', textSize: 'auto' },
+            { column: 0, row: 1, text: str.tostring((s.overbuy[last] / N) * 100, '#.##') + ' %', textColor: '#26a69a',
+              bgColor: String(color.new('#26a69a', 80)), textSize: 'auto' },
+            { column: 1, row: 1, text: str.tostring((s.oversell[last] / N) * 100, '#.##') + ' %', textColor: '#ef5350',
+              bgColor: String(color.new('#ef5350', 80)), textSize: 'auto' },
+          ],
+        });
+      }
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(),
+          plot1: p[1].slice(),
+          plot2: p[2].slice(),
+          plot3: p[3].slice(),
+          plot4: p[4].slice(),
+          plot5: p[5].slice(),
+          plot6: p[6].slice(),
+        },
+        hlines: [{ value: 50, options: { title: 'Level', color: String(color.new(GRAY, 50)), linestyle: 'dashed' } }],
+        fills: [
+          // fill(per_over, lower, ob_area)
+          { plot1: 'plot3', plot2: 'plot6', options: { title: 'Plots Background', color: cfg.obArea } },
+          // fill(upper, per_under, os_area)
+          { plot1: 'plot5', plot2: 'plot4', options: { title: 'Plots Background', color: cfg.osArea } },
+          // fill(up, dn, color.new(css, 90))
+          { plot1: 'plot1', plot2: 'plot2', options: { title: 'Plots Background' }, colors: s.fillColors.slice() },
+        ],
+        tables,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RSIMultiLengthInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RSIMultiLengthInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RSIMultiLength = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

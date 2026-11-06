@@ -11,8 +11,10 @@
  * Original notice: Copyright by HPotter v1.0 23/05/2014
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar } from 'oakscriptjs';
-import { barInterval, barTime } from '../bar-time';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+import { barTime } from '../bar-time';
 
 export interface IchimokuHpotterInputs {
   conversionPeriods: number;
@@ -57,46 +59,72 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<IchimokuHpotterInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface IchimokuRun extends BarRunState<Record<string, never>> {
+  ext: WindowExtreme[];
+  tenkan: number[];
+  kijun: number[];
+  senkouA: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  plot4: Point[];
+}
+
+function study(inputs: Partial<IchimokuHpotterInputs>): BarStudy<IchimokuRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const high = Series.fromArray(bars, bars.map((b) => b.high));
-  const low = Series.fromArray(bars, bars.map((b) => b.low));
-  // middleDonchian(Length) => avg(highest(Length), lowest(Length))
-  const middleDonchian = (length: number): number[] => {
-    const upper = ta.highest(high, length).toArray();
-    const lower = ta.lowest(low, length).toArray();
-    return upper.map((u, i) => ((u ?? NaN) + (lower[i] ?? NaN)) / 2);
-  };
-  const tenkan = middleDonchian(cfg.conversionPeriods);
-  const kijun = middleDonchian(cfg.basePeriods);
-  const senkouA = middleDonchian(cfg.laggingSpan2Periods);
   const back = (x: number[], i: number, k: number) => (i - k >= 0 ? x[i - k] : NaN);
-
-  const interval = barInterval(bars);
-  const plot0: Array<{ time: number; value: number }> = [];
-  const plot1: typeof plot0 = [];
-  const plot2: typeof plot0 = [];
-  const plot3: typeof plot0 = [];
-  const plot4: typeof plot0 = [];
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    plot0.push({ time, value: tenkan[i] });
-    plot1.push({ time, value: kijun[i] });
-    // plot(close, offset = -displacement): the close of bar i is drawn on bar i - displacement
-    if (i - cfg.displacement >= 0) {
-      plot2.push({ time: barTime(bars, i - cfg.displacement, interval), value: bars[i].close });
-    }
-    plot3.push({ time, value: back(senkouA, i, cfg.displacement) });
-    // SenkouB = (Tenkan[basePeriods] + Kijun[basePeriods]) / 2
-    plot4.push({ time, value: (back(tenkan, i, cfg.basePeriods) + back(kijun, i, cfg.basePeriods)) / 2 });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3, plot4 },
-    fills: fillConfig.map((f) => ({ plot1: f.plot1, plot2: f.plot2, options: { color: f.color, title: f.title } })),
+    init() {
+      // middleDonchian(Length) => avg(highest(Length), lowest(Length)) of the three lengths
+      const ext = [cfg.conversionPeriods, cfg.basePeriods, cfg.laggingSpan2Periods]
+        .flatMap((length) => [new WindowExtreme(false, length), new WindowExtreme(true, length)]);
+      const s: IchimokuRun = {
+        ext, tenkan: [], kijun: [], senkouA: [], plot0: [], plot1: [], plot2: [], plot3: [], plot4: [],
+        steps: ext, vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.plot2];
+      s.series = [s.tenkan, s.kijun, s.senkouA, s.plot0, s.plot1, s.plot3, s.plot4];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const e = s.ext;
+      const tenkan = (e[0].step(b.high) + e[1].step(b.low)) / 2;
+      const kijun = (e[2].step(b.high) + e[3].step(b.low)) / 2;
+      s.senkouA[i] = (e[4].step(b.high) + e[5].step(b.low)) / 2;
+      s.tenkan[i] = tenkan;
+      s.kijun[i] = kijun;
+      s.plot0[i] = { time, value: tenkan };
+      s.plot1[i] = { time, value: kijun };
+      // plot(close, offset = -displacement): the close of bar i is drawn on bar i - displacement
+      if (i - cfg.displacement >= 0) {
+        s.plot2.push({ time: barTime(bars, i - cfg.displacement), value: b.close });
+      }
+      s.plot3[i] = { time, value: back(s.senkouA, i, cfg.displacement) };
+      // SenkouB = (Tenkan[basePeriods] + Kijun[basePeriods]) / 2
+      s.plot4[i] = { time, value: (back(s.tenkan, i, cfg.basePeriods) + back(s.kijun, i, cfg.basePeriods)) / 2 };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice(), plot4: s.plot4.slice() },
+        fills: fillConfig.map((f) => ({ plot1: f.plot1, plot2: f.plot2, options: { color: f.color, title: f.title } })),
+      };
+    },
   };
 }
 
-export const IchimokuHpotter = { calculate, metadata, defaultInputs, inputConfig, plotConfig, fillConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IchimokuHpotterInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<IchimokuHpotterInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const IchimokuHpotter = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, fillConfig };

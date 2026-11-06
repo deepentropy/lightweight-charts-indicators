@@ -13,8 +13,10 @@
  * Reference: "QQE MOD"
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -71,134 +73,160 @@ export const metadata = {
   overlay: false,
 };
 
-function calculateQQE(
-  bars: Bar[],
-  source: Series,
-  rsiLength: number,
-  smoothingFactor: number,
-  qqeFactor: number,
-): { trendLine: number[]; smoothedRsi: number[]; smoothedRsiNa: number[] } {
-  const wildersLength = rsiLength * 2 - 1;
-  const rsi = ta.rsi(source, rsiLength);
-  const smoothedRsiSeries = ta.ema(rsi, smoothingFactor);
-  const smoothedRsiArr = smoothedRsiSeries.toArray();
+/** The running state of one QQE: longBand, shortBand and trendDir of the previous bar */
+interface QqeVars {
+  longBand: number;
+  shortBand: number;
+  trendDir: number;
+}
 
-  // atrRsi = abs(smoothedRsi[1] - smoothedRsi)
-  const n = bars.length;
-  const atrRsiRaw: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const prev = i > 0 ? (smoothedRsiArr[i - 1] ?? 0) : 0;
-    const cur = smoothedRsiArr[i] ?? 0;
-    atrRsiRaw[i] = Math.abs(prev - cur);
+/** One QQE stepped bar by bar: RSI smoothed by an EMA, the EMA of its absolute change, the trailing bands */
+class QqeCalc {
+  readonly rsi: ReturnType<typeof taStep.rsi>;
+  readonly ema: ReturnType<typeof taStep.ema>;
+  readonly atrEma: ReturnType<typeof taStep.ema>;
+  /** The smoothed RSI of each bar (na kept, NaN) */
+  readonly sr: number[] = [];
+
+  constructor(rsiLength: number, smoothingFactor: number, private readonly qqeFactor: number) {
+    const wildersLength = rsiLength * 2 - 1;
+    this.rsi = taStep.rsi(rsiLength);
+    this.ema = taStep.ema(smoothingFactor);
+    this.atrEma = taStep.ema(wildersLength);
   }
-  const atrRsiSeries = Series.fromArray(bars, atrRsiRaw);
-  const smoothedAtrRsiArr = ta.ema(atrRsiSeries, wildersLength).toArray();
 
-  const longBand: number[] = new Array(n);
-  const shortBand: number[] = new Array(n);
-  const trendDir: number[] = new Array(n);
-  const trendLine: number[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    const sr = smoothedRsiArr[i] ?? 0;
-    const prevSr = i > 0 ? (smoothedRsiArr[i - 1] ?? 0) : 0;
-    const dar = (smoothedAtrRsiArr[i] ?? 0) * qqeFactor;
+  /** The trend line of bar `i` (`v` changed in place); the smoothed RSI goes to `sr[i]` */
+  step(v: QqeVars, i: number, close: number): number {
+    const sr = this.ema.step(this.rsi.step(close));
+    this.sr[i] = sr;
+    // atrRsi = abs(smoothedRsi[1] - smoothedRsi)
+    const prevSr = i > 0 ? (this.sr[i - 1] ?? 0) : 0;
+    const dar = this.atrEma.step(Math.abs(prevSr - sr)) * this.qqeFactor;
     const newLong = sr - dar;
     const newShort = sr + dar;
 
     if (i === 0) {
-      longBand[i] = newLong;
-      shortBand[i] = newShort;
-      trendDir[i] = 0;
+      v.longBand = newLong;
+      v.shortBand = newShort;
+      v.trendDir = 0;
     } else {
-      longBand[i] = (prevSr > longBand[i - 1] && sr > longBand[i - 1])
-        ? Math.max(longBand[i - 1], newLong)
-        : newLong;
-      shortBand[i] = (prevSr < shortBand[i - 1] && sr < shortBand[i - 1])
-        ? Math.min(shortBand[i - 1], newShort)
-        : newShort;
+      const prevLong = v.longBand;
+      const prevShort = v.shortBand;
+      v.longBand = (prevSr > prevLong && sr > prevLong) ? Math.max(prevLong, newLong) : newLong;
+      v.shortBand = (prevSr < prevShort && sr < prevShort) ? Math.min(prevShort, newShort) : newShort;
 
       // Cross detection
-      const crossLong = (prevSr <= longBand[i - 1] && sr > longBand[i - 1]) ||
-                         (prevSr >= longBand[i - 1] && sr < longBand[i - 1]);
+      const crossLong = (prevSr <= prevLong && sr > prevLong) || (prevSr >= prevLong && sr < prevLong);
       // Use crossover for short (RSI crosses above shortBand)
-      const crossoverShort = prevSr <= shortBand[i - 1] && sr > shortBand[i - 1];
-      if (crossoverShort || (prevSr < shortBand[i - 1] && sr >= shortBand[i - 1])) {
-        trendDir[i] = 1;
+      const crossoverShort = prevSr <= prevShort && sr > prevShort;
+      if (crossoverShort || (prevSr < prevShort && sr >= prevShort)) {
+        v.trendDir = 1;
       } else if (crossLong) {
-        trendDir[i] = -1;
-      } else {
-        trendDir[i] = trendDir[i - 1];
+        v.trendDir = -1;
       }
     }
-    trendLine[i] = trendDir[i] === 1 ? longBand[i] : shortBand[i];
+    return v.trendDir === 1 ? v.longBand : v.shortBand;
   }
-
-  return {
-    trendLine,
-    smoothedRsi: smoothedRsiArr.map((v) => v ?? 0),
-    // na kept (NaN), for the alert crosses
-    smoothedRsiNa: smoothedRsiArr.map((v) => (v === null || v === undefined ? NaN : v)),
-  };
 }
 
-export function calculate(bars: Bar[], inputs: Partial<QQEModInputs> = {}): IndicatorResult & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface QqeRun extends BarRunState<{ pri: QqeVars; sec: QqeVars }> {
+  primary: QqeCalc;
+  secondary: QqeCalc;
+  basis: WindowSma;
+  dev: WindowStdev;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<QQEModInputs>): BarStudy<QqeRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const close = new Series(bars, (b) => b.close);
-
-  const primary = calculateQQE(bars, close, cfg.rsiLengthPrimary, cfg.rsiSmoothingPrimary, cfg.qqeFactorPrimary);
-  const secondary = calculateQQE(bars, close, cfg.rsiLengthSecondary, cfg.rsiSmoothingSecondary, cfg.qqeFactorSecondary);
-
-  // Bollinger on primary QQE trend line - 50
-  const qqeMinus50 = Series.fromArray(bars, primary.trendLine.map((v) => v - 50));
-  const [bbBasis] = ta.bb(qqeMinus50, cfg.bollingerLength, cfg.bollingerMultiplier);
-  const bbDev = ta.stdev(qqeMinus50, cfg.bollingerLength);
-  const bbBasisArr = bbBasis.toArray();
-  const bbDevArr = bbDev.toArray();
-
   const warmup = Math.max(cfg.rsiLengthPrimary * 2, cfg.rsiLengthSecondary * 2, cfg.bollingerLength);
-
-  const plot0: Array<{ time: number; value: number }> = [];
-  const plot1: Array<{ time: number; value: number; color?: string }> = [];
-  const plot2: Array<{ time: number; value: number }> = [];
-  const plot3: Array<{ time: number; value: number }> = [];
-
-  for (let i = 0; i < bars.length; i++) {
-    const t = bars[i].time;
-    const w = i < warmup;
-    const secTrend50 = secondary.trendLine[i] - 50;
-    const secRsi50 = secondary.smoothedRsi[i] - 50;
-    const priRsi50 = primary.smoothedRsi[i] - 50;
-    const bbUp = (bbBasisArr[i] ?? 0) + (bbDevArr[i] ?? 0) * cfg.bollingerMultiplier;
-    const bbLo = (bbBasisArr[i] ?? 0) - (bbDevArr[i] ?? 0) * cfg.bollingerMultiplier;
-
-    plot0.push({ time: t, value: w ? NaN : secTrend50 });
-
-    // Dynamic histogram color: gray at extremes, transparent in neutral
-    let histColor: string | undefined;
-    if (!w) {
-      if (secRsi50 > cfg.thresholdSecondary || secRsi50 < -cfg.thresholdSecondary) {
-        histColor = 'rgba(112,112,112,0.80)';
-      } else {
-        histColor = 'transparent';
-      }
-    }
-    plot1.push({ time: t, value: w ? NaN : secRsi50, color: histColor });
-
-    plot2.push({ time: t, value: w ? NaN : (secRsi50 > cfg.thresholdSecondary && priRsi50 > bbUp ? secRsi50 : NaN) });
-    plot3.push({ time: t, value: w ? NaN : (secRsi50 < -cfg.thresholdSecondary && priRsi50 < bbLo ? secRsi50 : NaN) });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
-    hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dotted', title: 'Zero' } }],
-    // alertcondition(ta.crossover(primaryRSI, 50)) / alertcondition(ta.crossunder(primaryRSI, 50))
-    alerts: alertStates(alertConditions, bars, [
-      crossedOver(primary.smoothedRsiNa, 50),
-      crossedUnder(primary.smoothedRsiNa, 50),
-    ]),
+    init() {
+      const primary = new QqeCalc(cfg.rsiLengthPrimary, cfg.rsiSmoothingPrimary, cfg.qqeFactorPrimary);
+      const secondary = new QqeCalc(cfg.rsiLengthSecondary, cfg.rsiSmoothingSecondary, cfg.qqeFactorSecondary);
+      // Bollinger on primary QQE trend line - 50 (basis = sma, dev = stdev)
+      const basis = new WindowSma(cfg.bollingerLength);
+      const dev = new WindowStdev(cfg.bollingerLength);
+      const s: QqeRun = {
+        primary, secondary, basis, dev, plot0: [], plot1: [], plot2: [], plot3: [], flags: [[], []], times: [[], []],
+        steps: [primary.rsi, primary.ema, primary.atrEma, secondary.rsi, secondary.ema, secondary.atrEma, basis, dev],
+        vars: { pri: { longBand: NaN, shortBand: NaN, trendDir: 0 }, sec: { longBand: NaN, shortBand: NaN, trendDir: 0 } },
+        lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [primary.sr, secondary.sr, s.plot0, s.plot1, s.plot2, s.plot3, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time;
+      const close = bars[i].close;
+      const priTrend = s.primary.step(s.vars.pri, i, close);
+      const secTrend = s.secondary.step(s.vars.sec, i, close);
+      const qqeMinus50 = priTrend - 50;
+      const bbBasis = s.basis.step(qqeMinus50);
+      const bbDev = s.dev.step(qqeMinus50);
+
+      const w = i < warmup;
+      const secTrend50 = secTrend - 50;
+      const secRsi50 = s.secondary.sr[i] - 50;
+      const priSr = s.primary.sr[i];
+      const priRsi50 = priSr - 50;
+      const bbUp = (bbBasis ?? 0) + (bbDev ?? 0) * cfg.bollingerMultiplier;
+      const bbLo = (bbBasis ?? 0) - (bbDev ?? 0) * cfg.bollingerMultiplier;
+
+      s.plot0[i] = { time: t, value: w ? NaN : secTrend50 };
+
+      // Dynamic histogram color: gray at extremes, transparent in neutral
+      let histColor: string | undefined;
+      if (!w) {
+        if (secRsi50 > cfg.thresholdSecondary || secRsi50 < -cfg.thresholdSecondary) {
+          histColor = 'rgba(112,112,112,0.80)';
+        } else {
+          histColor = 'transparent';
+        }
+      }
+      s.plot1[i] = { time: t, value: w ? NaN : secRsi50, color: histColor };
+
+      s.plot2[i] = { time: t, value: w ? NaN : (secRsi50 > cfg.thresholdSecondary && priRsi50 > bbUp ? secRsi50 : NaN) };
+      s.plot3[i] = { time: t, value: w ? NaN : (secRsi50 < -cfg.thresholdSecondary && priRsi50 < bbLo ? secRsi50 : NaN) };
+
+      // alertcondition(ta.crossover(primaryRSI, 50)) / alertcondition(ta.crossunder(primaryRSI, 50))
+      const prev = i > 0 ? s.primary.sr[i - 1] : NaN;
+      const up = priSr > 50 && prev <= 50;
+      const down = priSr < 50 && prev >= 50;
+      s.flags[0][i] = up;
+      s.flags[1][i] = down;
+      if (up) s.times[0].push(t as number);
+      if (down) s.times[1].push(t as number);
+    },
+    copyVars: (v) => ({ pri: { ...v.pri }, sec: { ...v.sec } }),
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice(), 'plot2': s.plot2.slice(), 'plot3': s.plot3.slice() },
+        hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dotted', title: 'Zero' } }],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
 }
 
-export const QQEMod = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<QQEModInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<QQEModInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const QQEMod = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

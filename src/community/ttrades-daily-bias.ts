@@ -31,11 +31,12 @@
  * Original notice: © tradeforopp
  */
 
-import { color, str, timeframe, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { chartSessions, color, periodTime, str, timeframe, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SessionContext } from 'oakscriptjs';
 import type { AlertCall, LabelData, LineDrawingData, MarkerData, PineSize, TableCellData, TablePosition } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
-import { chartTimeframe, periodStarts } from '../anchor-period';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { chartTimeframe, hasCalendar } from '../anchor-period';
 import { backgroundColorOf, foregroundColorOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type Location = 'Top' | 'Bottom';
 
@@ -162,13 +163,6 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => a - b >= -EPS;
 
-/** The drawing count limit of Pine: above max + 5 objects of one kind the oldest are deleted until max remain */
-function register<T>(list: T[], obj: T): T {
-  list.push(obj);
-  if (list.length > MAX_OBJECTS + 5) list.splice(0, list.length - MAX_OBJECTS);
-  return obj;
-}
-
 /** `info` of the script: the levels of the period before, the running period and the counters */
 interface Info {
   ph: number;
@@ -190,57 +184,134 @@ const newInfo = (): Info => ({
   ph: NaN, pl: NaN, ch: NaN, cl: NaN, co: NaN, pUp: false, bias: 0, biasPh: 0, biasPl: 0, hitPh: 0, hitPl: 0, closePh: 0, closePl: 0,
 });
 
-/** `lines` of the script: the two lines of the period before and whether they were reached */
+/**
+ * `lines` of the script: the two lines of the period before and whether they were reached. The lines are kept in the
+ * list of every line by their position (-1: none); their colour and right end, changed by a hit, are kept here and
+ * written to the list when the next period replaces them.
+ */
 interface Levels {
-  phLine?: LineDrawingData;
-  plLine?: LineDrawingData;
+  ph: number;
+  pl: number;
   hitPh: boolean;
   hitPl: boolean;
+  phTime2: number;
+  plTime2: number;
+  phColor: string;
+  plColor: string;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TtradesDailyBiasInputs> = {},
-  chart?: ChartContext,
-): IndicatorResult & { alerts: AlertConditionState[]; alertCalls: AlertCall[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  // chart.fg_color, chart.bg_color
-  const chartFg = foregroundColorOf(chart);
-  const chartBg = backgroundColorOf(chart);
-  // bar times in seconds or in ms
-  const unit = n > 0 && bars[0].time >= 1e12 ? 1000 : 1;
+const newLevels = (): Levels => ({ ph: -1, pl: -1, hitPh: false, hitPl: false, phTime2: NaN, plTime2: NaN, phColor: '', plColor: '' });
 
-  // timeframe.in_seconds() of the chart (unknown with fewer than 2 bars and no chart timeframe: nothing is computed)
-  const chartTf = chartTimeframe(bars, chart);
-  const tfSeconds = chartTf === '' ? NaN : timeframe.in_seconds(chartTf);
+/**
+ * register(): the count of objects of one kind kept by the drawing limit of Pine after one more is created (above
+ * max + 5 objects of one kind the oldest are deleted until max remain)
+ */
+const kept = (count: number) => (count + 1 > MAX_OBJECTS + 5 ? MAX_OBJECTS : count + 1);
+
+type Result = IndicatorResult & { alerts: AlertConditionState[]; alertCalls: AlertCall[] };
+
+interface TtradesVars {
+  dInfo: Info;
+  wInfo: Info;
+  dLevels: Levels;
+  wLevels: Levels;
+  /** Lines / labels kept by the drawing limit (the last ones of the lists) */
+  lineCount: number;
+  labelCount: number;
+}
+
+interface TtradesRun extends BarRunState<TtradesVars> {
+  /** time("D") / time("W") of each bar (with the exchange calendar) */
+  dayStarts: number[];
+  weekStarts: number[];
+  lines: LineDrawingData[];
+  labels: LabelData[];
+  markers: MarkerData[];
+  alertCalls: AlertCall[];
+  flags: boolean[][];
+  times: number[][];
+  dBias: Array<{ time: number; value: number; color: string }>;
+  wBias: Array<{ time: number; value: number; color: string }>;
+}
+
+/**
+ * The session context of the exchange calendar of periodStarts (anchor-period): the chart timeframe of the whole set,
+ * the time zone and session of the context, the unit of the bar times; null without it or when the library cannot read
+ * the time zone or the session (the UTC calendar of the bars is used)
+ */
+function calendarContext(bars: Bar[], chart: ChartContext): SessionContext | null {
+  if (!hasCalendar(chart) || bars.length === 0) return null;
+  const tf = chartTimeframe(bars, chart);
+  if (tf === '') return null;
+  const context: SessionContext = {
+    timeframe: tf, timezone: chart.timezone, session: chart.session, regularSession: chart.regularSession,
+    timeUnit: bars[0].time >= 1e12 ? 'ms' : 's',
+  };
+  try {
+    chartSessions(context);
+    periodTime(bars[0].time, '1D', context);
+  } catch {
+    return null;
+  }
+  return context;
+}
+
+function study(inputs: Partial<TtradesDailyBiasInputs>): BarStudy<TtradesRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const daySeconds = timeframe.in_seconds('D');
   const weekSeconds = timeframe.in_seconds('W');
-  const canPlotD = tfSeconds < daySeconds;
-  const canPlotW = tfSeconds < weekSeconds;
+  let chartFg = '';
+  let chartBg = '';
+  let unit = 1;
+  let tfSeconds = NaN;
+  let canPlotD = false;
+  let canPlotW = false;
+  let cal: SessionContext | null = null;
+  let calSessions: ReturnType<typeof chartSessions>['bars'] | null = null;
+  let calUnit = 1;
+  let ms = false;
 
-  // new_day = timeframe.change("D"), new_week = timeframe.change("W"): false on the first bar
-  const dayStarts = periodStarts(bars, 'D', chart);
-  const weekStarts = periodStarts(bars, 'W', chart);
-
-  const lines: LineDrawingData[] = [];
-  const labels: LabelData[] = [];
-  const markers: MarkerData[] = [];
-  const alertCalls: AlertCall[] = [];
-  const alertCall = (i: number, message: string) => {
-    alertCalls.push({ time: bars[i].time as number, message, freq: 'once_per_bar' });
+  /** register(): the line or label added to its list, the kept count of the drawing limit */
+  const addLine = (s: TtradesRun, line: LineDrawingData): number => {
+    s.lines.push(line);
+    s.vars.lineCount = kept(s.vars.lineCount);
+    return s.lines.length - 1;
   };
-  // alertcondition flags, in the original's order
-  const flags: boolean[][] = Array.from({ length: 10 }, () => []);
-  const dInfo = newInfo();
-  const wInfo = newInfo();
-  let dLevels: Levels = { hitPh: false, hitPl: false };
-  let wLevels: Levels = { hitPh: false, hitPl: false };
-  const dBias: Array<{ time: number; value: number; color: string }> = [];
-  const wBias: Array<{ time: number; value: number; color: string }> = [];
+  const addLabel = (s: TtradesRun, label: LabelData) => {
+    s.labels.push(label);
+    s.vars.labelCount = kept(s.vars.labelCount);
+  };
+
+  /**
+   * new_day = timeframe.change("D"), new_week = timeframe.change("W"): false on the first bar. periodStarts of the
+   * bars changes on bar i: without the calendar, when the UTC day (the UTC week from Monday) changes; with it, when
+   * time(tf) of bar i (the period of bar i - 1 for a stray bar after an early close, the bar time when the calendar
+   * finds no day) differs from bar i - 1's (the rules of periodStarts)
+   */
+  const periodChange = (s: TtradesRun, bars: Bar[], i: number, tf: 'D' | 'W'): boolean => {
+    if (cal) {
+      const starts = tf === 'D' ? s.dayStarts : s.weekStarts;
+      const b = bars[i];
+      const t = periodTime(b.time, tf, cal);
+      starts[i] = !Number.isNaN(t) ? t / calUnit : i > 0 && calSessions!.stray(b.time * calUnit) ? starts[i - 1] : b.time;
+      return i > 0 && starts[i] !== starts[i - 1];
+    }
+    if (i === 0) return false;
+    const key = (time: number) => {
+      const t = ms ? time : time * 1000;
+      const day = Math.floor(t / 86400000) * 86400000;
+      if (tf === 'D') return day;
+      return day - ((new Date(day).getUTCDay() + 6) % 7) * 86400000;
+    };
+    return key(bars[i].time) !== key(bars[i - 1].time);
+  };
+
+  const alertCall = (s: TtradesRun, bars: Bar[], i: number, message: string) => {
+    s.alertCalls.push({ time: bars[i].time as number, message, freq: 'once_per_bar' });
+  };
 
   /** handle_bias(): the bias of the new period, its label and its counters */
-  const handleBias = (info: Info, tf: 'D' | 'W', i: number) => {
+  const handleBias = (s: TtradesRun, bars: Bar[], info: Info, tf: 'D' | 'W', i: number) => {
     const canPlot = tf === 'D' ? canPlotD : canPlotW;
     const prevClose = i > 0 ? bars[i - 1].close : NaN;
     let txt: string;
@@ -266,7 +337,7 @@ export function calculate(
       txt = 'Outside Bar but Closed Inside\nNo Bias';
     }
     if (cfg.biasReason && canPlot) {
-      register(labels, {
+      addLabel(s, {
         time: bars[i].time, price: tf === 'D' ? info.cl : info.ch, text: txt, textColor: chartFg, color: chartBg,
         style: tf === 'D' ? 'label_up' : 'label_down',
       });
@@ -274,18 +345,18 @@ export function calculate(
     // alert("Bias P" + tf + "H" / "L", alert.freq_once_per_bar)
     if (info.bias === 1) {
       info.biasPh += 1;
-      alertCall(i, `Bias P${tf}H`);
+      alertCall(s, bars, i, `Bias P${tf}H`);
     } else if (info.bias === -1) {
       info.biasPl += 1;
-      alertCall(i, `Bias P${tf}L`);
+      alertCall(s, bars, i, `Bias P${tf}L`);
     }
   };
 
   /** update_info(): on a new period the running period becomes the period before */
-  const updateInfo = (info: Info, tf: 'D' | 'W', isNew: boolean, i: number) => {
+  const updateInfo = (s: TtradesRun, bars: Bar[], info: Info, tf: 'D' | 'W', isNew: boolean, i: number) => {
     const bar = bars[i];
     if (isNew && !Number.isNaN(info.ch)) {
-      handleBias(info, tf, i);
+      handleBias(s, bars, info, tf, i);
       // close[1] >= n.co
       info.pUp = i > 0 && ge(bars[i - 1].close, info.co);
       info.ph = info.ch;
@@ -304,156 +375,227 @@ export function calculate(
     }
   };
 
+  /** The line at position `k` with the colour and right end of its levels */
+  const withState = (line: LineDrawingData, time2: number, lineColor: string): LineDrawingData =>
+    line.time2 === time2 && line.color === lineColor ? line : { ...line, time2, color: lineColor };
+
   /** update_lines(): the lines of the period before and their hits; returns [hit_high, hit_low] */
-  const updateLines = (levels: Levels, info: Info, tf: 'D' | 'W', isNew: boolean, i: number): [Levels, boolean, boolean] => {
+  const updateLines = (s: TtradesRun, bars: Bar[], levels: Levels, info: Info, tf: 'D' | 'W', isNew: boolean, i: number): [boolean, boolean] => {
     const bar = bars[i];
     const canPlot = tf === 'D' ? canPlotD : canPlotW;
     let hitHigh = false;
     let hitLow = false;
-    let current = levels;
     if (isNew) {
+      // the lines replaced: their final state in the list (the same on every run of this bar)
+      if (levels.ph >= 0) s.lines[levels.ph] = withState(s.lines[levels.ph], levels.phTime2, levels.phColor);
+      if (levels.pl >= 0) s.lines[levels.pl] = withState(s.lines[levels.pl], levels.plTime2, levels.plColor);
       const right = bar.time + (tf === 'D' ? daySeconds : weekSeconds) * unit;
-      const make = (y: number): LineDrawingData => register(lines, {
-        time1: bar.time, price1: y, time2: right, price2: y, color: canPlot ? cfg.beforeRaidColor : 'transparent',
+      const lineColor = canPlot ? cfg.beforeRaidColor : 'transparent';
+      const make = (y: number): number => addLine(s, {
+        time1: bar.time, price1: y, time2: right, price2: y, color: lineColor,
         style: tf === 'D' ? 'solid' : 'dashed', width: cfg.lineWidth,
       });
-      current = { phLine: make(info.ph), plLine: make(info.pl), hitPh: false, hitPl: false };
+      levels.ph = make(info.ph);
+      levels.pl = make(info.pl);
+      levels.hitPh = false;
+      levels.hitPl = false;
+      levels.phTime2 = right;
+      levels.plTime2 = right;
+      levels.phColor = lineColor;
+      levels.plColor = lineColor;
     }
-    if (current.phLine && current.plLine) {
-      if (ge(bar.high, current.phLine.price1) && !current.hitPh) {
-        if (cfg.stopExt) current.phLine.time2 = bar.time;
+    if (levels.ph >= 0 && levels.pl >= 0) {
+      if (ge(bar.high, s.lines[levels.ph].price1) && !levels.hitPh) {
+        if (cfg.stopExt) levels.phTime2 = bar.time;
         if (info.bias === 1) info.hitPh += 1;
-        current.hitPh = true;
-        if (canPlot) current.phLine.color = cfg.afterRaidColor;
+        levels.hitPh = true;
+        if (canPlot) levels.phColor = cfg.afterRaidColor;
         hitHigh = true;
-        alertCall(i, `Hit P${tf}H`);
+        alertCall(s, bars, i, `Hit P${tf}H`);
       }
-      if (ge(current.plLine.price1, bar.low) && !current.hitPl) {
-        if (cfg.stopExt) current.plLine.time2 = bar.time;
+      if (ge(s.lines[levels.pl].price1, bar.low) && !levels.hitPl) {
+        if (cfg.stopExt) levels.plTime2 = bar.time;
         if (info.bias === -1) info.hitPl += 1;
-        current.hitPl = true;
-        if (canPlot) current.plLine.color = cfg.afterRaidColor;
+        levels.hitPl = true;
+        if (canPlot) levels.plColor = cfg.afterRaidColor;
         hitLow = true;
-        alertCall(i, `Hit P${tf}L`);
+        alertCall(s, bars, i, `Hit P${tf}L`);
       }
     }
-    return [current, hitHigh, hitLow];
+    return [hitHigh, hitLow];
   };
 
   const biasColor = (bias: number) => (bias === 1 ? cfg.bullColor : bias === -1 ? cfg.bearColor : undefined);
 
-  for (let i = 0; i < n; i++) {
-    const bar = bars[i];
-    const newDay = i > 0 && dayStarts[i] !== dayStarts[i - 1];
-    const newWeek = i > 0 && weekStarts[i] !== weekStarts[i - 1];
-
-    // Separators
-    if (cfg.useDSep && newDay && canPlotD) {
-      register(lines, { time1: bar.time, price1: bar.high * 1.000001, time2: bar.time, price2: bar.low, color: cfg.dSep, extend: 'both', width: cfg.lineWidth });
-    }
-    if (cfg.useWSep && newWeek && canPlotW) {
-      register(lines, { time1: bar.time, price1: bar.high * 1.000001, time2: bar.time, price2: bar.low, color: cfg.wSep, extend: 'both', width: cfg.lineWidth });
-    }
-
-    let dHitHigh = false;
-    let dHitLow = false;
-    let wHitHigh = false;
-    let wHitLow = false;
-    if (cfg.dStats && tfSeconds <= daySeconds) {
-      updateInfo(dInfo, 'D', newDay, i);
-      [dLevels, dHitHigh, dHitLow] = updateLines(dLevels, dInfo, 'D', newDay, i);
-    }
-    if (cfg.wStats && tfSeconds <= weekSeconds) {
-      updateInfo(wInfo, 'W', newWeek, i);
-      [wLevels, wHitHigh, wHitLow] = updateLines(wLevels, wInfo, 'W', newWeek, i);
-    }
-
-    // alertcondition(new_day and d_info.bias == 1 / -1 / 0), the same for the weeks, then the hits
-    flags[0].push(newDay && dInfo.bias === 1);
-    flags[1].push(newDay && dInfo.bias === -1);
-    flags[2].push(newDay && dInfo.bias === 0);
-    flags[3].push(newWeek && wInfo.bias === 1);
-    flags[4].push(newWeek && wInfo.bias === -1);
-    flags[5].push(newWeek && wInfo.bias === 0);
-    flags[6].push(dHitHigh);
-    flags[7].push(dHitLow);
-    flags[8].push(wHitHigh);
-    flags[9].push(wHitLow);
-
-    // PDH / PDL / PWH / PWL raids
-    if (canPlotD && dHitHigh) markers.push({ id: 'shape0', time: bar.time, position: 'aboveBar', shape: 'triangleUp', color: cfg.afterRaidColor, size: 'tiny' });
-    if (canPlotD && dHitLow) markers.push({ id: 'shape1', time: bar.time, position: 'belowBar', shape: 'triangleDown', color: cfg.afterRaidColor, size: 'tiny' });
-    if (canPlotW && wHitHigh) markers.push({ id: 'shape2', time: bar.time, position: 'aboveBar', shape: 'triangleUp', color: cfg.afterRaidColor, size: 'tiny' });
-    if (canPlotW && wHitLow) markers.push({ id: 'shape3', time: bar.time, position: 'belowBar', shape: 'triangleDown', color: cfg.afterRaidColor, size: 'tiny' });
-
-    // Daily / weekly bias squares: no colour (nothing drawn) without a bias
-    const dCol = biasColor(dInfo.bias);
-    if (cfg.dBiasPlot && dCol) {
-      markers.push({ id: 'shape4', time: bar.time, position: cfg.dBiasLoc === 'Top' ? 'top' : 'bottom', shape: 'square', color: dCol, size: 'tiny' });
-    }
-    const wCol = biasColor(wInfo.bias);
-    if (cfg.wBiasPlot && wCol) {
-      markers.push({ id: 'shape5', time: bar.time, position: cfg.wBiasLoc === 'Top' ? 'top' : 'bottom', shape: 'square', color: wCol, size: 'tiny' });
-    }
-
-    dBias.push({ time: bar.time, value: dInfo.bias, color: 'transparent' });
-    wBias.push({ time: bar.time, value: wInfo.bias, color: 'transparent' });
-  }
-
-  // Table (cells are set on the last bar)
-  const position = cfg.tblLoc.toLowerCase().replace(' ', '_') as TablePosition;
-  const textSize = cfg.tblSize.toLowerCase() as PineSize;
-  const cells: TableCellData[] = [];
-  if (n > 0) {
-    const cell = (column: number, row: number, text: string, bgColor?: string) => {
-      cells.push({ column, row, text, textColor: chartFg, textSize, ...(bgColor ? { bgColor } : {}) });
-    };
-    // format_result(): math.floor(hit / bias * 1000) / 10
-    const result = (hit: number, bias: number) => `${bias > 0 ? str.tostring(Math.floor((hit / bias) * 1000) / 10) : '0'}%`;
-    // format_color(): the level of the current bias, in the colour of its line
-    const cellColor = (bull: boolean, info: Info, levels: Levels) => {
-      if (bull ? info.bias !== 1 : info.bias !== -1) return undefined;
-      const hit = bull ? levels.hitPh : levels.hitPl;
-      return String(color.new(hit ? cfg.afterRaidColor : cfg.beforeRaidColor, 50));
-    };
-    const rows = (row: number, tf: 'D' | 'W', info: Info, levels: Levels) => {
-      cell(0, row, `P${tf}H`, cellColor(true, info, levels));
-      cell(0, row + 1, `P${tf}L`, cellColor(false, info, levels));
-      if (cfg.tblShowStats) {
-        cell(1, row, result(info.hitPh, info.biasPh));
-        cell(1, row + 1, result(info.hitPl, info.biasPl));
-        cell(2, row, result(info.closePh, info.hitPh));
-        cell(2, row + 1, result(info.closePl, info.hitPl));
-        cell(3, row, str.tostring(info.biasPh));
-        cell(3, row + 1, str.tostring(info.biasPl));
-      }
-    };
-    cell(0, 0, 'Bias');
-    if (cfg.tblShowStats) {
-      cell(1, 0, 'Success\nRate');
-      cell(2, 0, 'Close Thru\nRate');
-      cell(3, 0, 'Sample\nSize');
-    }
-    if (cfg.dStats) rows(1, 'D', dInfo, dLevels);
-    if (cfg.wStats) rows(3, 'W', wInfo, wLevels);
-  }
-
-  // A line or a label with an na price is not drawn
-  const drawnLines = lines.filter((ln) => !Number.isNaN(ln.price1) && !Number.isNaN(ln.price2));
-  const drawnLabels = labels.filter((lb) => !Number.isNaN(lb.price));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: dBias, plot1: wBias },
-    markers,
-    lines: drawnLines,
-    labels: drawnLabels,
-    tables: [{
-      position, columns: 20, rows: 20, bgColor: chartBg, frameColor: chartFg, frameWidth: 2, borderColor: chartFg, borderWidth: 1, cells,
-    }],
-    alerts: alertStates(alertConditions, bars, flags),
-    alertCalls,
+    // the chart timeframe comes from the bar gaps (or the context), the time unit from the first bar
+    key: (bars, chart) => `${chartTimeframe(bars, chart)}|${bars.length > 0 && bars[0].time >= 1e12}`,
+    init(bars, chart) {
+      // chart.fg_color, chart.bg_color
+      chartFg = foregroundColorOf(chart);
+      chartBg = backgroundColorOf(chart);
+      // bar times in seconds or in ms
+      ms = bars.length > 0 && bars[0].time >= 1e12;
+      unit = ms ? 1000 : 1;
+      // timeframe.in_seconds() of the chart (unknown with fewer than 2 bars and no chart timeframe: nothing is computed)
+      const chartTf = chartTimeframe(bars, chart);
+      tfSeconds = chartTf === '' ? NaN : timeframe.in_seconds(chartTf);
+      canPlotD = tfSeconds < daySeconds;
+      canPlotW = tfSeconds < weekSeconds;
+      cal = calendarContext(bars, chart);
+      calSessions = cal ? chartSessions(cal).bars : null;
+      calUnit = ms ? 1 : 1000;
+      const s: TtradesRun = {
+        dayStarts: [], weekStarts: [], lines: [], labels: [], markers: [], alertCalls: [],
+        // alertcondition flags, in the original's order
+        flags: Array.from({ length: 10 }, () => []), times: Array.from({ length: 10 }, () => []),
+        dBias: [], wBias: [], steps: [],
+        vars: { dInfo: newInfo(), wInfo: newInfo(), dLevels: newLevels(), wLevels: newLevels(), lineCount: 0, labelCount: 0 },
+        lists: [], series: [],
+      };
+      s.lists = [s.lines, s.labels, s.markers, s.alertCalls, ...s.times];
+      s.series = [s.dayStarts, s.weekStarts, s.dBias, s.wBias, ...s.flags];
+      return s;
+    },
+    copyVars: (v) => ({ ...v, dInfo: { ...v.dInfo }, wInfo: { ...v.wInfo }, dLevels: { ...v.dLevels }, wLevels: { ...v.wLevels } }),
+    bar(s, i, bars) {
+      const bar = bars[i];
+      const v = s.vars;
+      const { dInfo, wInfo } = v;
+      const newDay = periodChange(s, bars, i, 'D');
+      const newWeek = periodChange(s, bars, i, 'W');
+
+      // Separators
+      if (cfg.useDSep && newDay && canPlotD) {
+        addLine(s, { time1: bar.time, price1: bar.high * 1.000001, time2: bar.time, price2: bar.low, color: cfg.dSep, extend: 'both', width: cfg.lineWidth });
+      }
+      if (cfg.useWSep && newWeek && canPlotW) {
+        addLine(s, { time1: bar.time, price1: bar.high * 1.000001, time2: bar.time, price2: bar.low, color: cfg.wSep, extend: 'both', width: cfg.lineWidth });
+      }
+
+      let dHitHigh = false;
+      let dHitLow = false;
+      let wHitHigh = false;
+      let wHitLow = false;
+      if (cfg.dStats && tfSeconds <= daySeconds) {
+        updateInfo(s, bars, dInfo, 'D', newDay, i);
+        [dHitHigh, dHitLow] = updateLines(s, bars, v.dLevels, dInfo, 'D', newDay, i);
+      }
+      if (cfg.wStats && tfSeconds <= weekSeconds) {
+        updateInfo(s, bars, wInfo, 'W', newWeek, i);
+        [wHitHigh, wHitLow] = updateLines(s, bars, v.wLevels, wInfo, 'W', newWeek, i);
+      }
+
+      // alertcondition(new_day and d_info.bias == 1 / -1 / 0), the same for the weeks, then the hits
+      const f = [
+        newDay && dInfo.bias === 1, newDay && dInfo.bias === -1, newDay && dInfo.bias === 0,
+        newWeek && wInfo.bias === 1, newWeek && wInfo.bias === -1, newWeek && wInfo.bias === 0,
+        dHitHigh, dHitLow, wHitHigh, wHitLow,
+      ];
+      for (let k = 0; k < 10; k++) {
+        s.flags[k][i] = f[k];
+        if (f[k]) s.times[k].push(bar.time as number);
+      }
+
+      // PDH / PDL / PWH / PWL raids
+      const markers = s.markers;
+      if (canPlotD && dHitHigh) markers.push({ id: 'shape0', time: bar.time, position: 'aboveBar', shape: 'triangleUp', color: cfg.afterRaidColor, size: 'tiny' });
+      if (canPlotD && dHitLow) markers.push({ id: 'shape1', time: bar.time, position: 'belowBar', shape: 'triangleDown', color: cfg.afterRaidColor, size: 'tiny' });
+      if (canPlotW && wHitHigh) markers.push({ id: 'shape2', time: bar.time, position: 'aboveBar', shape: 'triangleUp', color: cfg.afterRaidColor, size: 'tiny' });
+      if (canPlotW && wHitLow) markers.push({ id: 'shape3', time: bar.time, position: 'belowBar', shape: 'triangleDown', color: cfg.afterRaidColor, size: 'tiny' });
+
+      // Daily / weekly bias squares: no colour (nothing drawn) without a bias
+      const dCol = biasColor(dInfo.bias);
+      if (cfg.dBiasPlot && dCol) {
+        markers.push({ id: 'shape4', time: bar.time, position: cfg.dBiasLoc === 'Top' ? 'top' : 'bottom', shape: 'square', color: dCol, size: 'tiny' });
+      }
+      const wCol = biasColor(wInfo.bias);
+      if (cfg.wBiasPlot && wCol) {
+        markers.push({ id: 'shape5', time: bar.time, position: cfg.wBiasLoc === 'Top' ? 'top' : 'bottom', shape: 'square', color: wCol, size: 'tiny' });
+      }
+
+      s.dBias[i] = { time: bar.time, value: dInfo.bias, color: 'transparent' };
+      s.wBias[i] = { time: bar.time, value: wInfo.bias, color: 'transparent' };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const { dInfo, wInfo, dLevels, wLevels, lineCount, labelCount } = s.vars;
+      // Table (cells are set on the last bar)
+      const position = cfg.tblLoc.toLowerCase().replace(' ', '_') as TablePosition;
+      const textSize = cfg.tblSize.toLowerCase() as PineSize;
+      const cells: TableCellData[] = [];
+      if (n > 0) {
+        const cell = (column: number, row: number, text: string, bgColor?: string) => {
+          cells.push({ column, row, text, textColor: chartFg, textSize, ...(bgColor ? { bgColor } : {}) });
+        };
+        // format_result(): math.floor(hit / bias * 1000) / 10
+        const result = (hit: number, bias: number) => `${bias > 0 ? str.tostring(Math.floor((hit / bias) * 1000) / 10) : '0'}%`;
+        // format_color(): the level of the current bias, in the colour of its line
+        const cellColor = (bull: boolean, info: Info, levels: Levels) => {
+          if (bull ? info.bias !== 1 : info.bias !== -1) return undefined;
+          const hit = bull ? levels.hitPh : levels.hitPl;
+          return String(color.new(hit ? cfg.afterRaidColor : cfg.beforeRaidColor, 50));
+        };
+        const rows = (row: number, tf: 'D' | 'W', info: Info, levels: Levels) => {
+          cell(0, row, `P${tf}H`, cellColor(true, info, levels));
+          cell(0, row + 1, `P${tf}L`, cellColor(false, info, levels));
+          if (cfg.tblShowStats) {
+            cell(1, row, result(info.hitPh, info.biasPh));
+            cell(1, row + 1, result(info.hitPl, info.biasPl));
+            cell(2, row, result(info.closePh, info.hitPh));
+            cell(2, row + 1, result(info.closePl, info.hitPl));
+            cell(3, row, str.tostring(info.biasPh));
+            cell(3, row + 1, str.tostring(info.biasPl));
+          }
+        };
+        cell(0, 0, 'Bias');
+        if (cfg.tblShowStats) {
+          cell(1, 0, 'Success\nRate');
+          cell(2, 0, 'Close Thru\nRate');
+          cell(3, 0, 'Sample\nSize');
+        }
+        if (cfg.dStats) rows(1, 'D', dInfo, dLevels);
+        if (cfg.wStats) rows(3, 'W', wInfo, wLevels);
+      }
+
+      // the lines kept by the drawing limit, the current lines of each period with their colour and right end
+      const first = s.lines.length - lineCount;
+      const lines = s.lines.slice(first);
+      for (const lv of [dLevels, wLevels]) {
+        if (lv.ph >= first) lines[lv.ph - first] = withState(lines[lv.ph - first], lv.phTime2, lv.phColor);
+        if (lv.pl >= first) lines[lv.pl - first] = withState(lines[lv.pl - first], lv.plTime2, lv.plColor);
+      }
+      // A line or a label with an na price is not drawn
+      const drawnLines = lines.filter((ln) => !Number.isNaN(ln.price1) && !Number.isNaN(ln.price2));
+      const drawnLabels = s.labels.slice(s.labels.length - labelCount).filter((lb) => !Number.isNaN(lb.price));
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.dBias.slice(), plot1: s.wBias.slice() },
+        markers: s.markers.slice(),
+        lines: drawnLines,
+        labels: drawnLabels,
+        tables: [{
+          position, columns: 20, rows: 20, bgColor: chartBg, frameColor: chartFg, frameWidth: 2, borderColor: chartFg, borderWidth: 1, cells,
+        }],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TtradesDailyBiasInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<TtradesDailyBiasInputs> = {},
+  chart?: ChartContext,
+): IndicatorResult & { alerts: AlertConditionState[]; alertCalls: AlertCall[] } {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 /** The original's alertconditions */
@@ -470,4 +612,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert9', title: 'Hit PWL', message: 'Hit PWL' },
 ];
 
-export const TtradesDailyBias = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions, hasAlertFunction };
+export const TtradesDailyBias = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions, hasAlertFunction };

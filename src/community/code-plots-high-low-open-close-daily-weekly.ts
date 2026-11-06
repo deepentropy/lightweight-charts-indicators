@@ -26,8 +26,9 @@ import {
   color, timeframe, resample, mapToChart,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar,
 } from 'oakscriptjs';
-import { periodStarts, chartTimeframe, securityBars } from '../anchor-period';
+import { periodStarts, chartTimeframe, hasCalendar, securityBars } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CodePlotsHighLowOpenCloseDailyWeeklyInputs {
   /** Show Todays OHLC? */
@@ -111,7 +112,7 @@ export const metadata = {
 /**
  * security(tickerid, tf, ...) on the chart symbol: the bars of timeframe `tf` built from the chart bars, and the
  * function that brings one value per bar of that timeframe back to the chart bars. Version 1 rule: every chart bar
- * of a period shows the value of the period (no gaps).
+ * of a period shows the value of the period (no gaps). Used with the exchange calendar of the context (a full run).
  */
 function timeframeBars(bars: Bar[], tf: string, context?: ChartContext): { htf: Bar[]; toChart: (values: number[]) => number[] } {
   const chart = chartTimeframe(bars, context);
@@ -128,45 +129,185 @@ function timeframeBars(bars: Bar[], tf: string, context?: ChartContext): { htf: 
   return { htf, toChart: (values) => mapToChart(values, group, [], true, false) };
 }
 
+/** Start (UNIX ms, UTC) of the D / W / M calendar period of the day `day` (the UTC rule of `periodStarts`) */
+function calendarPeriodStart(day: number, info: ReturnType<typeof timeframe.info>): number {
+  const DAY = 86400000;
+  const WEEK = 7 * DAY;
+  const n = info.multiplier;
+  const d = new Date(day);
+  const year = d.getUTCFullYear();
+  if (info.isdaily) {
+    if (n === 1) return day;
+    const jan1 = Date.UTC(year, 0, 1);
+    return jan1 + Math.floor((day - jan1) / DAY / n) * n * DAY;
+  }
+  if (info.isweekly) {
+    const monday = day - ((d.getUTCDay() + 6) % 7) * DAY;
+    if (n === 1) return monday;
+    const jan1 = Date.UTC(new Date(monday).getUTCFullYear(), 0, 1);
+    const firstMonday = jan1 + ((8 - new Date(jan1).getUTCDay()) % 7) * DAY;
+    return firstMonday + Math.floor((monday - firstMonday) / WEEK / n) * n * WEEK;
+  }
+  return Date.UTC(year, Math.floor(d.getUTCMonth() / n) * n, 1);
+}
+
+type Point = { time: number; value: number };
+
+/** `show and v ? v : na`: na and 0 are not drawn */
+const shown = (v: number) => (!Number.isNaN(v) && v !== 0 ? v : NaN);
+
+/**
+ * One group of the run: 'off' (both switches off), 'chart' (each chart bar is a period), 'utc' (the UTC calendar
+ * periods), 'pre' (the exchange calendar: the eight values per bar computed on all bars)
+ */
+interface GroupState {
+  mode: 'off' | 'chart' | 'utc' | 'pre';
+  info: ReturnType<typeof timeframe.info> | null;
+  pre: number[][] | null;
+  /** Period key of the current period, its first bar and its open / close / high / low */
+  key: number;
+  start: number;
+  cur: number[];
+  /** open / close / high / low of the previous period (na before the second period) */
+  prev: number[];
+}
+
+interface CodePlotsRun extends BarRunState<{ groups: GroupState[] }> {
+  plots: Point[][];
+}
+
+function study(inputs: Partial<CodePlotsHighLowOpenCloseDailyWeeklyInputs>): BarStudy<CodePlotsRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  let inMs = false;
+  const NONE = [NaN, NaN, NaN, NaN];
+  return {
+    // the chart timeframe comes from the bar gaps, the time unit from the first bar
+    key: (bars, chart) => `${chartTimeframe(bars, chart)}|${bars.length > 0 && bars[0].time >= 1e12}`,
+    // with the exchange calendar the periods come from the calendar of the whole bar set
+    fullRunReason: (chart) => (hasCalendar(chart) ? 'exchange calendar periods' : null),
+    init(bars, chart) {
+      inMs = bars.length > 0 && bars[0].time >= 1e12;
+      const chartTf = chartTimeframe(bars, chart);
+      const groups = GROUPS.map((grp): GroupState => {
+        const st: GroupState = { mode: 'off', info: null, pre: null, key: NaN, start: 0, cur: NONE.slice(), prev: NONE.slice() };
+        if (!cfg[grp.current] && !cfg[grp.previous]) return st;
+        if (hasCalendar(chart)) {
+          // open, open[1], close, close[1], high, high[1], low, low[1] of the bars of the timeframe
+          const { htf, toChart } = timeframeBars(bars, grp.tf, chart);
+          const fields = ['open', 'close', 'high', 'low'] as const;
+          st.mode = 'pre';
+          st.pre = fields.flatMap((f) => {
+            const v = htf.map((b) => b[f]);
+            return [toChart(v), toChart(v.map((_x, i) => (i > 0 ? v[i - 1] : NaN)))];
+          });
+        } else if (chartTf === '' || timeframe.in_seconds(grp.tf) === timeframe.in_seconds(chartTf)) {
+          st.mode = 'chart';
+        } else {
+          if (timeframe.in_seconds(grp.tf) < timeframe.in_seconds(chartTf)) {
+            throw new Error(`The timeframe "${grp.tf}" is lower than the chart timeframe "${chartTf}": the bars do not carry that data.`);
+          }
+          st.mode = 'utc';
+          st.info = timeframe.info(grp.tf);
+        }
+        return st;
+      });
+      const s: CodePlotsRun = { plots: GROUPS.flatMap(() => Array.from({ length: 8 }, () => [])), steps: [], vars: { groups }, lists: [], series: [] };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // changed in place: copyVars copies them at the end of the last confirmed bar
+      const groups = s.vars.groups;
+      for (let g = 0; g < GROUPS.length; g++) {
+        const st = groups[g];
+        const grp = GROUPS[g];
+        const showCurrent = cfg[grp.current];
+        const showPrevious = cfg[grp.previous];
+        const plots = s.plots;
+        if (st.mode === 'off' || st.mode === 'pre') {
+          for (let k = 0; k < 8; k++) {
+            const show = k % 2 === 0 ? showCurrent : showPrevious;
+            plots[g * 8 + k][i] = { time, value: shown(show ? st.pre![k][i] : NaN) };
+          }
+          continue;
+        }
+        let key: number;
+        if (st.mode === 'chart') key = i;
+        else {
+          const t = inMs ? time : time * 1000;
+          key = calendarPeriodStart(Math.floor(t / 86400000) * 86400000, st.info!);
+        }
+        if (i === 0 || key !== st.key) {
+          if (i > 0) {
+            // the period before is complete: its chart bars show its values (lookahead of the version 1 script)
+            if (showCurrent) {
+              for (let j = st.start; j < i; j++) {
+                for (let f = 0; f < 4; f++) plots[g * 8 + f * 2][j] = { time: bars[j].time, value: shown(st.cur[f]) };
+              }
+            }
+            st.prev[0] = st.cur[0];
+            st.prev[1] = st.cur[1];
+            st.prev[2] = st.cur[2];
+            st.prev[3] = st.cur[3];
+          }
+          st.key = key;
+          st.start = i;
+          st.cur[0] = b.open;
+          st.cur[1] = b.close;
+          st.cur[2] = b.high;
+          st.cur[3] = b.low;
+        } else {
+          st.cur[1] = b.close;
+          st.cur[2] = Math.max(st.cur[2], b.high);
+          st.cur[3] = Math.min(st.cur[3], b.low);
+        }
+        for (let f = 0; f < 4; f++) {
+          // the values of the current period are written when it is complete (or in result for the last one)
+          if (!showCurrent) plots[g * 8 + f * 2][i] = { time, value: NaN };
+          plots[g * 8 + f * 2 + 1][i] = { time, value: shown(showPrevious ? st.prev[f] : NaN) };
+        }
+      }
+    },
+    copyVars: (v) => ({ groups: v.groups.map((st) => ({ ...st, cur: st.cur.slice(), prev: st.prev.slice() })) }),
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      GROUPS.forEach((grp, g) => {
+        const st = s.vars.groups[g];
+        const open = cfg[grp.current] && (st.mode === 'chart' || st.mode === 'utc') && n > 0;
+        for (let k = 0; k < 8; k++) {
+          const points = s.plots[g * 8 + k].slice();
+          // the last period is still open: its chart bars show its values so far
+          if (open && k % 2 === 0) {
+            for (let j = st.start; j < n; j++) points[j] = { time: bars[j].time, value: shown(st.cur[k / 2]) };
+          }
+          plots[`plot${g * 8 + k}`] = points;
+        }
+      });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(
+  inputs: Partial<CodePlotsHighLowOpenCloseDailyWeeklyInputs> = {},
+  chart: ChartContext = {},
+): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<CodePlotsHighLowOpenCloseDailyWeeklyInputs> = {},
   chart?: ChartContext,
 ): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const plots: Record<string, Array<{ time: number; value: number }>> = {};
-
-  GROUPS.forEach((grp, g) => {
-    const showCurrent = cfg[grp.current];
-    const showPrevious = cfg[grp.previous];
-    let series: number[][] = [];
-    if (showCurrent || showPrevious) {
-      const { htf, toChart } = timeframeBars(bars, grp.tf, chart);
-      // open, open[1], close, close[1], high, high[1], low, low[1] of the bars of the timeframe
-      const fields = ['open', 'close', 'high', 'low'] as const;
-      series = fields.flatMap((f) => {
-        const v = htf.map((b) => b[f]);
-        return [toChart(v), toChart(v.map((_x, i) => (i > 0 ? v[i - 1] : NaN)))];
-      });
-    }
-    grp.titles.forEach((_title, k) => {
-      const show = k % 2 === 0 ? showCurrent : showPrevious;
-      const values = series[k];
-      const points: Array<{ time: number; value: number }> = [];
-      for (let i = 0; i < n; i++) {
-        const v = show ? values[i] : NaN;
-        // `show and v ? v : na`: na and 0 are not drawn
-        points.push({ time: bars[i].time, value: !Number.isNaN(v) && v !== 0 ? v : NaN });
-      }
-      plots[`plot${g * 8 + k}`] = points;
-    });
-  });
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-  };
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
-export const CodePlotsHighLowOpenCloseDailyWeekly = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+export const CodePlotsHighLowOpenCloseDailyWeekly = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

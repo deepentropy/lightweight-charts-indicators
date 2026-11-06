@@ -12,9 +12,11 @@
  * Original notice: © yasujiy
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface IchimokuWHeikinAshiInputs {
   /** Conversion Line length */
@@ -63,76 +65,117 @@ const lt = (a: number, b: number) => b - a > EPS;
 /** plotcandle without bordercolor: the style default of the plot (no colorer) */
 const CANDLE_BORDER = '#000000';
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<IchimokuWHeikinAshiInputs> = {},
-): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> };
+
+interface IchimokuVars {
+  /** h_open[1], h_close[1] */
+  prevOpen: number;
+  prevClose: number;
+}
+
+interface IchimokuRun extends BarRunState<IchimokuVars> {
+  /** ta.lowest(low, len) / ta.highest(high, len) of the conversion, base and span B lengths */
+  lows: WindowExtreme[];
+  highs: WindowExtreme[];
+  leadLine1: number[];
+  leadLine2: number[];
+  fillColors: string[];
+  plot0: Point[];
+  plot1: Point[];
+  candles: PlotCandleData[];
+}
+
+function study(inputs: Partial<IchimokuWHeikinAshiInputs>): BarStudy<IchimokuRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  // Heikin-Ashi
-  const candles: PlotCandleData[] = [];
-  let prevOpen = NaN;
-  let prevClose = NaN;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const hClose = (b.open + b.high + b.low + b.close) / 4;
-    // h_open := na(h_open[1]) ? (open + close) / 2 : (nz(h_open[1]) + nz(h_close[1])) / 2
-    const hOpen = isNaN(prevOpen) ? (b.open + b.close) / 2 : (prevOpen + (isNaN(prevClose) ? 0 : prevClose)) / 2;
-    const hHigh = Math.max(b.high, Math.max(hOpen, hClose));
-    const hLow = Math.min(b.low, Math.min(hOpen, hClose));
-    prevOpen = hOpen;
-    prevClose = hClose;
-    // plotcandle(h_open, h_high, h_low, h_close, color = h_open < h_close ? color.white : color.blue,
-    //   wickcolor = color.black)
-    if ([hOpen, hHigh, hLow, hClose].every((v) => !isNaN(v))) {
-      candles.push({ time: b.time, open: hOpen, high: hHigh, low: hLow, close: hClose,
-        color: lt(hOpen, hClose) ? color.white : color.blue, wickColor: color.black, borderColor: CANDLE_BORDER });
-    }
-  }
-
-  // Ichimoku: donchian(len) => math.avg(ta.lowest(len), ta.highest(len))
-  const high = Series.fromArray(bars, bars.map((b) => b.high));
-  const low = Series.fromArray(bars, bars.map((b) => b.low));
-  const donchian = (len: number) => {
-    const ll = A(ta.lowest(low, len));
-    const hh = A(ta.highest(high, len));
-    return ll.map((l, i) => (l + hh[i]) / 2);
-  };
-  const conversionLine = donchian(cfg.conversionPeriods);
-  const baseLine = donchian(cfg.basePeriods);
-  const leadLine1 = conversionLine.map((c, i) => (c + baseLine[i]) / 2);
-  const leadLine2 = donchian(cfg.laggingSpan2Periods);
-
-  // plot(..., offset = displacement - 1): the value of bar i is drawn on bar i + displacement - 1
-  const k = cfg.displacement - 1;
-  const interval = barInterval(bars);
-  const shifted = (vals: number[], col: string) => bars.map((_b, i) => ({
-    time: barTime(bars, i + k, interval), value: vals[i], color: col,
-  }));
+  const lengths = [cfg.conversionPeriods, cfg.basePeriods, cfg.laggingSpan2Periods];
   const bull = String(color.rgb(67, 160, 71, 90));
   const bear = String(color.rgb(67, 60, 71, 90));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: conversionLine[i], color: '#0000FF' })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: baseLine[i], color: '#FF0000' })),
-      plot2: shifted(bars.map((b) => b.close), '#800080'),
-      plot3: shifted(leadLine1, '#00FF00'),
-      plot4: shifted(leadLine2, '#008000'),
+    init() {
+      const s: IchimokuRun = {
+        lows: lengths.map((len) => new WindowExtreme(true, len)), highs: lengths.map((len) => new WindowExtreme(false, len)),
+        leadLine1: [], leadLine2: [], fillColors: [], plot0: [], plot1: [], candles: [],
+        steps: [], vars: { prevOpen: NaN, prevClose: NaN }, lists: [], series: [],
+      };
+      s.steps = [...s.lows, ...s.highs];
+      s.lists = [s.candles];
+      s.series = [s.leadLine1, s.leadLine2, s.fillColors, s.plot0, s.plot1];
+      return s;
     },
-    // fill(p1, p2, color = leadLine1 > leadLine2 ? color.rgb(67, 160, 71, 90) : color.rgb(67, 60, 71, 90)); the fill
-    // colour of bar i goes with the plot points of bar i
-    fills: [{ plot1: 'plot3', plot2: 'plot4', colors: leadLine1.map((a, i) => (gt(a, leadLine2[i]) ? bull : bear)) }],
-    plotCandles: { haCandles: candles },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      // Heikin-Ashi
+      const hClose = (b.open + b.high + b.low + b.close) / 4;
+      // h_open := na(h_open[1]) ? (open + close) / 2 : (nz(h_open[1]) + nz(h_close[1])) / 2
+      const hOpen = isNaN(v.prevOpen) ? (b.open + b.close) / 2 : (v.prevOpen + (isNaN(v.prevClose) ? 0 : v.prevClose)) / 2;
+      const hHigh = Math.max(b.high, Math.max(hOpen, hClose));
+      const hLow = Math.min(b.low, Math.min(hOpen, hClose));
+      v.prevOpen = hOpen;
+      v.prevClose = hClose;
+      // plotcandle(h_open, h_high, h_low, h_close, color = h_open < h_close ? color.white : color.blue,
+      //   wickcolor = color.black)
+      if (!isNaN(hOpen) && !isNaN(hHigh) && !isNaN(hLow) && !isNaN(hClose)) {
+        s.candles.push({ time: b.time, open: hOpen, high: hHigh, low: hLow, close: hClose,
+          color: lt(hOpen, hClose) ? color.white : color.blue, wickColor: color.black, borderColor: CANDLE_BORDER });
+      }
+
+      // Ichimoku: donchian(len) => math.avg(ta.lowest(len), ta.highest(len))
+      const donchian = (k: number) => (s.lows[k].step(b.low) + s.highs[k].step(b.high)) / 2;
+      const conversionLine = donchian(0);
+      const baseLine = donchian(1);
+      const leadLine1 = (conversionLine + baseLine) / 2;
+      const leadLine2 = donchian(2);
+      s.leadLine1[i] = leadLine1;
+      s.leadLine2[i] = leadLine2;
+      // fill(p1, p2, color = leadLine1 > leadLine2 ? color.rgb(67, 160, 71, 90) : color.rgb(67, 60, 71, 90)); the fill
+      // colour of bar i goes with the plot points of bar i
+      s.fillColors[i] = gt(leadLine1, leadLine2) ? bull : bear;
+      s.plot0[i] = { time: b.time, value: conversionLine, color: '#0000FF' };
+      s.plot1[i] = { time: b.time, value: baseLine, color: '#FF0000' };
+    },
+    result(s, bars) {
+      // plot(..., offset = displacement - 1): the value of bar i is drawn on bar i + displacement - 1 (the time of a
+      // bar after the last one follows the bar count: built from the per-bar values)
+      const n = bars.length;
+      const k = cfg.displacement - 1;
+      const interval = barInterval(bars);
+      const shifted = (value: (i: number) => number, col: string) => {
+        const out: Point[] = new Array(n);
+        for (let i = 0; i < n; i++) out[i] = { time: barTime(bars, i + k, interval), value: value(i), color: col };
+        return out;
+      };
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plot0.slice(),
+          plot1: s.plot1.slice(),
+          plot2: shifted((i) => bars[i].close, '#800080'),
+          plot3: shifted((i) => s.leadLine1[i], '#00FF00'),
+          plot4: shifted((i) => s.leadLine2[i], '#008000'),
+        },
+        fills: [{ plot1: 'plot3', plot2: 'plot4', colors: s.fillColors.slice() }],
+        plotCandles: { haCandles: s.candles.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IchimokuWHeikinAshiInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<IchimokuWHeikinAshiInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const IchimokuWHeikinAshi = {
   calculate,
+  createRun,
   metadata,
+
   defaultInputs,
   inputConfig,
   plotConfig,

@@ -13,8 +13,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { barInterval, barTime } from '../bar-time';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ObvGizmoInputs {
   /** Moving average type of the smoothed OBV and of the signal line */
@@ -101,129 +103,159 @@ const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(bars: Bar[], inputs: Partial<ObvGizmoInputs> = {}): IndicatorResult {
+type Ma = { step(v: number, volume: number): number; commit(): void };
+
+/** One moving average of the study (SMA / EMA / VWMA / WMA) with a constant length */
+function maStep(choice: ObvGizmoInputs['choice'], length: number): Ma {
+  switch (choice) {
+    case 'SMA': { const m = new WindowSma(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'EMA': { const m = taStep.ema(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'VWMA': {
+      // ta.vwma = sma(source * volume) / sma(volume), na when the volume average is 0 or na
+      const num = new WindowSma(length);
+      const den = new WindowSma(length);
+      return {
+        step: (v, vol) => { const a = num.step(v * vol); const d = den.step(vol); return d === 0 || Number.isNaN(d) ? NaN : a / d; },
+        commit: () => { num.commit(); den.commit(); },
+      };
+    }
+    default: { const m = taStep.wma(); return { step: (v) => m.step(v, length), commit: () => m.commit() }; }
+  }
+}
+
+interface ObvVars {
+  /** ta.valuewhen(found, x, 1): the last two values (older first) */
+  plObv: readonly number[];
+  plClose: readonly number[];
+  phObv: readonly number[];
+  phClose: readonly number[];
+  /** _inRange(found[1]): ta.barssince(found[1] == true), na before the first true */
+  plSince: number;
+  phSince: number;
+}
+
+interface ObvRun extends BarRunState<ObvVars> {
+  cum: ReturnType<typeof taStep.cum>;
+  change: ReturnType<typeof taStep.change>;
+  fastMa: Ma | null;
+  slowMa: Ma;
+  pl: PivotStep;
+  ph: PivotStep;
+  obv: number[];
+  plFound: boolean[];
+  phFound: boolean[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+}
+
+/** ta.valuewhen history: the value added on a bar where the condition is true */
+const pushed = (h: readonly number[], v: number): readonly number[] => (h.length < 2 ? [...h, v] : [h[1]!, v]);
+/** occurrence 1 of the history (NaN before two values) */
+const second = (h: readonly number[]): number => (h.length === 2 ? h[0]! : NaN);
+
+function study(inputs: Partial<ObvGizmoInputs>): BarStudy<ObvRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const volumeS = S(volume);
-
-  // buyVolume / sellVolume: (high == low) ? 0 : volume * (close - low) / (high - low), ... (high - close) / ...
-  const buyVolume = bars.map((b, i) => (eq(b.high, b.low) ? 0 : (volume[i] * (b.close - b.low)) / (b.high - b.low)));
-  const sellVolume = bars.map((b, i) => (eq(b.high, b.low) ? 0 : (volume[i] * (b.high - b.close)) / (b.high - b.low)));
-
-  // obvChoice = cumOBV ? ta.cum(deltaVolume) : ta.cum(math.sign(ta.change(close)) * volume)
-  let obvChoice: number[];
-  if (cfg.cumOBV) {
-    obvChoice = A(ta.cum(S(buyVolume.map((bv, i) => bv - sellVolume[i]))));
-  } else {
-    const change = A(ta.change(S(bars.map((b) => b.close))));
-    obvChoice = A(ta.cum(S(change.map((c, i) => Math.sign(c) * volume[i]))));
-  }
-  const obvChoiceS = S(obvChoice);
-
-  let obv: number[];
-  if (cfg.fast) {
-    switch (cfg.choice) {
-      case 'SMA': obv = A(ta.sma(obvChoiceS, cfg.smaFast)); break;
-      case 'EMA': obv = A(ta.ema(obvChoiceS, cfg.smaFast)); break;
-      case 'VWMA': obv = A(ta.vwma(obvChoiceS, cfg.smaFast, volumeS)); break;
-      default: obv = A(ta.wma(obvChoiceS, cfg.smaFast)); break;
-    }
-  } else {
-    obv = obvChoice;
-  }
-  const obvS = S(obv);
-
-  let smaObv: number[];
-  switch (cfg.choice) {
-    case 'SMA': smaObv = A(ta.sma(obvS, cfg.smaSlow)); break;
-    case 'EMA': smaObv = A(ta.ema(obvS, cfg.smaSlow)); break;
-    case 'VWMA': smaObv = A(ta.vwma(obvChoiceS, cfg.smaSlow, volumeS)); break;
-    default: smaObv = A(ta.wma(obvChoiceS, cfg.smaSlow)); break;
-  }
-
-  const obvColor = (i: number) => {
-    const closePrev = i > 0 ? bars[i - 1].close : NaN;
-    const doubleBuy = cfg.irr && gt(buyVolume[i], sellVolume[i] * 2) && lt(bars[i].close, closePrev);
-    const doubleSell = cfg.irr && gt(sellVolume[i], buyVolume[i] * 2) && ge(bars[i].close, closePrev);
-    return doubleBuy ? DOUBLE_BUY_COL : doubleSell ? DOUBLE_SELL_COL : color.blue;
-  };
-
-  // Divergences
   const { lbL, lbR, rangeLower, rangeUpper } = cfg;
-  const plFound = A(ta.pivotlow(obvS, lbL, lbR)).map((v) => !isNaN(v));
-  const phFound = A(ta.pivothigh(obvS, lbL, lbR)).map((v) => !isNaN(v));
-  const obvLbr = (i: number) => (i - lbR >= 0 ? obv[i - lbR] : NaN);
-  const closeLbr = (i: number) => (i - lbR >= 0 ? bars[i - lbR].close : NaN);
-  const bullCond: boolean[] = new Array(n).fill(false);
-  const bearCond: boolean[] = new Array(n).fill(false);
-  // ta.valuewhen(found, x, 1): x on the found bar before the latest one (the latest can be the current bar)
-  const plObv: number[] = [];
-  const plClose: number[] = [];
-  const phObv: number[] = [];
-  const phClose: number[] = [];
-  // _inRange(found[1]): ta.barssince(found[1] == true), na before the first true
-  let plSince = NaN;
-  let phSince = NaN;
-  for (let i = 0; i < n; i++) {
-    const o = obvLbr(i);
-    const c = closeLbr(i);
-
-    const plPrev = i > 0 && plFound[i - 1];
-    plSince = plPrev ? 0 : isNaN(plSince) ? NaN : plSince + 1;
-    const inRangePl = rangeLower <= plSince && plSince <= rangeUpper;
-    if (plFound[i]) {
-      plObv.push(o);
-      plClose.push(c);
-    }
-    const vwPlObv = plObv.length >= 2 ? plObv[plObv.length - 2] : NaN;
-    const vwPlClose = plClose.length >= 2 ? plClose[plClose.length - 2] : NaN;
-    const obvHL = ge(o, vwPlObv) && inRangePl;
-    const priceLL = lt(c, vwPlClose);
-    bullCond[i] = cfg.plotBull && priceLL && obvHL && plFound[i];
-
-    const phPrev = i > 0 && phFound[i - 1];
-    phSince = phPrev ? 0 : isNaN(phSince) ? NaN : phSince + 1;
-    const inRangePh = rangeLower <= phSince && phSince <= rangeUpper;
-    if (phFound[i]) {
-      phObv.push(o);
-      phClose.push(c);
-    }
-    const vwPhObv = phObv.length >= 2 ? phObv[phObv.length - 2] : NaN;
-    const vwPhClose = phClose.length >= 2 ? phClose[phClose.length - 2] : NaN;
-    const obvLH = le(o, vwPhObv) && inRangePh;
-    const priceHH = gt(c, vwPhClose);
-    bearCond[i] = cfg.plotBear && priceHH && obvLH && phFound[i];
-  }
-
-  const interval = barInterval(bars);
-  const t = (i: number) => bars[i].time;
-  const plots: Record<string, Point[]> = {
-    plot0: bars.map((_b, i) => ({ time: t(i), value: obv[i], color: obvColor(i) })),
-    // smaObvColor = obv > smaObv ? color.yellow : color.red
-    plot1: bars.map((_b, i) => ({ time: t(i), value: smaObv[i], color: gt(obv[i], smaObv[i]) ? color.yellow : color.red })),
-    plot2: [],
-    plot3: [],
-  };
-  // plot(found ? obv[lbR] : na, offset = -lbR, color = cond ? col : noneColor): the value of bar i is drawn on bar i - lbR
-  for (let i = 0; i < n; i++) {
-    if (i - lbR < 0) continue;
-    const time = barTime(bars, i - lbR, interval);
-    const o = obvLbr(i);
-    plots.plot2.push({ time, value: plFound[i] ? o : NaN, color: bullCond[i] ? BULL_COL : NONE_COL });
-    plots.plot3.push({ time, value: phFound[i] ? o : NaN, color: bearCond[i] ? BEAR_COL : NONE_COL });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, format: metadata.format },
-    plots,
+    init() {
+      const cum = taStep.cum();
+      const change = taStep.change();
+      const fastMa = cfg.fast ? maStep(cfg.choice, cfg.smaFast) : null;
+      const slowMa = maStep(cfg.choice, cfg.smaSlow);
+      const pl = new PivotStep(lbL, lbR, false);
+      const ph = new PivotStep(lbL, lbR, true);
+      const s: ObvRun = {
+        cum, change, fastMa, slowMa, pl, ph, obv: [], plFound: [], phFound: [], plot0: [], plot1: [], plot2: [],
+        plot3: [], steps: [cum, change, ...(fastMa ? [fastMa] : []), slowMa, pl, ph],
+        vars: { plObv: [], plClose: [], phObv: [], phClose: [], plSince: NaN, phSince: NaN }, lists: [], series: [],
+      };
+      s.series = [s.obv, s.plFound, s.phFound, s.plot0, s.plot1, s.plot2, s.plot3];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const vol = b.volume ?? NaN;
+      // buyVolume / sellVolume: (high == low) ? 0 : volume * (close - low) / (high - low), ... (high - close) / ...
+      const buyVolume = eq(b.high, b.low) ? 0 : (vol * (b.close - b.low)) / (b.high - b.low);
+      const sellVolume = eq(b.high, b.low) ? 0 : (vol * (b.high - b.close)) / (b.high - b.low);
+
+      // obvChoice = cumOBV ? ta.cum(deltaVolume) : ta.cum(math.sign(ta.change(close)) * volume)
+      const change = s.change.step(b.close);
+      const obvChoice = s.cum.step(cfg.cumOBV ? buyVolume - sellVolume : Math.sign(change) * vol);
+      const obv = s.fastMa ? s.fastMa.step(obvChoice, vol) : obvChoice;
+      s.obv[i] = obv;
+      // the signal: a VWMA / WMA of the unsmoothed OBV, an SMA / EMA of the OBV
+      const smaObv = s.slowMa.step(cfg.choice === 'VWMA' || cfg.choice === 'WMA' ? obvChoice : obv, vol);
+
+      const closePrev = i > 0 ? bars[i - 1].close : NaN;
+      const doubleBuy = cfg.irr && gt(buyVolume, sellVolume * 2) && lt(b.close, closePrev);
+      const doubleSell = cfg.irr && gt(sellVolume, buyVolume * 2) && ge(b.close, closePrev);
+      s.plot0[i] = { time: b.time, value: obv, color: doubleBuy ? DOUBLE_BUY_COL : doubleSell ? DOUBLE_SELL_COL : color.blue };
+      // smaObvColor = obv > smaObv ? color.yellow : color.red
+      s.plot1[i] = { time: b.time, value: smaObv, color: gt(obv, smaObv) ? color.yellow : color.red };
+
+      // Divergences
+      const plFound = !isNaN(s.pl.step(i, obv));
+      const phFound = !isNaN(s.ph.step(i, obv));
+      s.plFound[i] = plFound;
+      s.phFound[i] = phFound;
+      const o = i - lbR >= 0 ? s.obv[i - lbR] : NaN;
+      const c = i - lbR >= 0 ? bars[i - lbR].close : NaN;
+      const v = s.vars;
+
+      const plPrev = i > 0 && s.plFound[i - 1];
+      v.plSince = plPrev ? 0 : isNaN(v.plSince) ? NaN : v.plSince + 1;
+      const inRangePl = rangeLower <= v.plSince && v.plSince <= rangeUpper;
+      if (plFound) {
+        v.plObv = pushed(v.plObv, o);
+        v.plClose = pushed(v.plClose, c);
+      }
+      const obvHL = ge(o, second(v.plObv)) && inRangePl;
+      const priceLL = lt(c, second(v.plClose));
+      const bullCond = cfg.plotBull && priceLL && obvHL && plFound;
+
+      const phPrev = i > 0 && s.phFound[i - 1];
+      v.phSince = phPrev ? 0 : isNaN(v.phSince) ? NaN : v.phSince + 1;
+      const inRangePh = rangeLower <= v.phSince && v.phSince <= rangeUpper;
+      if (phFound) {
+        v.phObv = pushed(v.phObv, o);
+        v.phClose = pushed(v.phClose, c);
+      }
+      const obvLH = le(o, second(v.phObv)) && inRangePh;
+      const priceHH = gt(c, second(v.phClose));
+      const bearCond = cfg.plotBear && priceHH && obvLH && phFound;
+
+      // plot(found ? obv[lbR] : na, offset = -lbR, color = cond ? col : noneColor): the value of bar i is drawn on bar
+      // i - lbR (bar i is the only writer of that point)
+      if (i - lbR < 0) return;
+      const time = barTime(bars, i - lbR);
+      s.plot2[i - lbR] = { time, value: plFound ? o : NaN, color: bullCond ? BULL_COL : NONE_COL };
+      s.plot3[i - lbR] = { time, value: phFound ? o : NaN, color: bearCond ? BEAR_COL : NONE_COL };
+    },
+    result(s, bars) {
+      const m = Math.max(0, bars.length - lbR);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, format: metadata.format },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(0, m), plot3: s.plot3.slice(0, m) },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ObvGizmoInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ObvGizmoInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const ObvGizmo = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

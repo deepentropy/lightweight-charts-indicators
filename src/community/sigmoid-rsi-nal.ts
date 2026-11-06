@@ -14,8 +14,10 @@
  * Original notice: © NordicAlphaLab
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData, MarkerData, PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SigmoidRsiNalInputs {
   /** Colour mode: 'Standard', 'Nordic' or 'Simple' */
@@ -95,112 +97,152 @@ const clamp = (v: number, lo: number, hi: number) => (isNaN(v) ? NaN : Math.max(
 /** sigmoid_function(x) = 1 / (1 + exp(-clamp(nz(x), -60, 60))) */
 const sigmoid = (x: number) => 1.0 / (1.0 + Math.exp(-clamp(isNaN(x) ? 0 : x, -60.0, 60.0)));
 
-/** f_sigmoid_ema(source, feed, len): sigmoidEma := na(sigmoidEma[1]) ? source : sigmoidEma[1] + alpha * (source - sigmoidEma[1]) */
-function sigmoidEma(source: number[], feed: number[], len: number): number[] {
-  const out: number[] = new Array(source.length);
-  const baseAlpha = 2.0 / (len + 1.0);
-  let prev = NaN;
-  for (let i = 0; i < source.length; i++) {
-    const alpha = clamp(baseAlpha * (0.5 + sigmoid(feed[i])), 0.01, 1.0);
-    const v = isNaN(prev) ? source[i] : prev + alpha * (source[i] - prev);
-    out[i] = v;
-    prev = v;
-  }
-  return out;
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & {
+  markers: MarkerData[]; barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]>;
+};
+
+interface SigmoidVars {
+  /** sigmoidEma[1] of the Sigmoid RSI and of its signal line */
+  prevRsi: number;
+  prevSignal: number;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<SigmoidRsiNalInputs> = {},
-): Omit<IndicatorResult, 'markers'> & {
-  markers: MarkerData[]; barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]>;
-} {
+interface SigmoidRun extends BarRunState<SigmoidVars> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  modRsi: ReturnType<typeof taStep.rsi>;
+  modRsiChange: ReturnType<typeof taStep.change>;
+  atr: ReturnType<typeof taStep.atr>;
+  atrChange: ReturnType<typeof taStep.change>;
+  nal: number[];
+  plots: Point[][];
+  candles: PlotCandleData[];
+  barColors: BarColorData[];
+  markers: MarkerData[];
+}
+
+/** f_sigmoid_ema(source, feed, len) on one bar: sigmoidEma := na(sigmoidEma[1]) ? source : sigmoidEma[1] + alpha * (source - sigmoidEma[1]) */
+function sigmoidEmaStep(prev: number, source: number, feed: number, baseAlpha: number): number {
+  const alpha = clamp(baseAlpha * (0.5 + sigmoid(feed)), 0.01, 1.0);
+  return isNaN(prev) ? source : prev + alpha * (source - prev);
+}
+
+function study(inputs: Partial<SigmoidRsiNalInputs>): BarStudy<SigmoidRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = getSourceSeries(bars, cfg.src);
+  const value = barSource(cfg.src);
 
   const [colUp, colDn, colNu] = cfg.colMode === 'Nordic'
     ? [String(color.rgb(0, 96, 175)), String(color.rgb(150, 154, 169)), color.gray]
     : cfg.colMode === 'Simple'
       ? [color.lime, color.red, color.gray]
       : [STD_UP, STD_DN, color.gray];
-
-  const rsiRaw = A(ta.rsi(src, cfg.rsiLen));
-  const sigmoidRsiRaw = rsiRaw.map((r) => 100.0 * sigmoid(r - 50.0));
-  // momentumFeed = ta.change(ta.rsi(src, modLen), changeL); volatilityFeed = ta.change(ta.atr(modLen), changeL)
-  const momentumFeed = A(ta.change(ta.rsi(src, cfg.modLen), cfg.changeL));
-  const volatilityFeed = A(ta.change(ta.atr(bars, cfg.modLen), cfg.changeL));
-
-  const sigRsi = sigmoidEma(sigmoidRsiRaw, volatilityFeed, cfg.rsiSmoothLen);
-  const sigSignal = sigmoidEma(sigRsi, momentumFeed, cfg.rsiSignalLen);
-
-  // var int NAL = 0; NAL := ... : NAL[1] (NAL[1] is na on the first bar)
-  const nal: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const prev = i > 0 ? nal[i - 1] : NaN;
-    const s = sigRsi[i];
-    nal[i] = gt(s, cfg.longThres) && (gt(s, sigSignal[i]) || !cfg.boolCon) ? 1
-      : lt(s, cfg.shortThres) && (lt(s, sigSignal[i]) || !cfg.boolCon) ? -1 : prev;
-  }
-
-  const t = (i: number) => bars[i].time;
-  const plotColor = nal.map((x) => (x === 1 ? colUp : x === -1 ? colDn : colNu));
   const upFill = String(color.new(colUp, 100));
   const dnFill = String(color.new(colDn, 100));
   const mid = String(color.new(colNu, 75));
-  const plots = {
-    plot0: bars.map((_b, i) => ({ time: t(i), value: sigRsi[i], color: plotColor[i] })),
-    plot1: bars.map((_b, i) => ({ time: t(i), value: sigRsi[i], color: String(color.new(plotColor[i], 78)) })),
-    plot2: bars.map((_b, i) => ({ time: t(i), value: sigSignal[i], color: color.gray })),
-    plot3: bars.map((_b, i) => ({ time: t(i), value: cfg.longThres, color: colUp })),
-    plot4: bars.map((_b, i) => ({ time: t(i), value: cfg.shortThres, color: colDn })),
-    plot5: bars.map((_b, i) => ({ time: t(i), value: 50.0, color: mid })),
-    // plot(rsi_bullish ? sigmoidRSI : na, 'Upper Fill Anchor', color.new(col_up, 100), display = display.pane)
-    plot6: bars.map((_b, i) => ({ time: t(i), value: gt(sigRsi[i], cfg.longThres) ? sigRsi[i] : NaN, color: upFill })),
-    plot7: bars.map((_b, i) => ({ time: t(i), value: lt(sigRsi[i], cfg.shortThres) ? sigRsi[i] : NaN, color: dnFill })),
-  };
-
-  // fill(p_upper_fill, p_long, color.new(col_up, 86)); fill(p_lower_fill, p_short, color.new(col_dn, 86))
   const upFillCol = String(color.new(colUp, 86));
   const dnFillCol = String(color.new(colDn, 86));
-  const fills = [
-    { plot1: 'plot6', plot2: 'plot3', colors: bars.map(() => upFillCol) },
-    { plot1: 'plot7', plot2: 'plot4', colors: bars.map(() => dnFillCol) },
-  ];
-
-  // plotcandle(open, high, low, close, 'Candles', plotColor, wickcolor, bordercolor, force_overlay = true, display.pane)
-  const candles: PlotCandleData[] = bars.map((b, i) => ({
-    time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
-    color: plotColor[i], wickColor: plotColor[i], borderColor: plotColor[i], forceOverlay: true,
-  }));
-  const barColors: BarColorData[] = bars.map((b, i) => ({ time: b.time, color: plotColor[i] }));
-
-  const markers: MarkerData[] = [];
-  for (let i = 1; i < n; i++) {
-    // bullish_transition = NAL == 1 and NAL[1] == -1 (and the reverse)
-    if (nal[i] === 1 && nal[i - 1] === -1) {
-      markers.push({ time: t(i), position: 'belowBar', shape: 'triangleUp', color: colUp, text: '𝓑𝓾𝔂',
-        textColor: colUp, size: 'tiny', forceOverlay: true });
-    }
-    if (nal[i] === -1 && nal[i - 1] === 1) {
-      markers.push({ time: t(i), position: 'aboveBar', shape: 'triangleDown', color: colDn, text: '𝓢𝓮𝓵𝓵',
-        textColor: colDn, size: 'tiny', forceOverlay: true });
-    }
-  }
-
+  const rsiAlpha = 2.0 / (cfg.rsiSmoothLen + 1.0);
+  const signalAlpha = 2.0 / (cfg.rsiSignalLen + 1.0);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    markers,
-    barColors,
-    plotCandles: { Candles: candles },
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: SigmoidRun = {
+        rsi: taStep.rsi(cfg.rsiLen), modRsi: taStep.rsi(cfg.modLen), modRsiChange: taStep.change(cfg.changeL),
+        atr: taStep.atr(cfg.modLen), atrChange: taStep.change(cfg.changeL),
+        nal: [], plots: Array.from({ length: 8 }, () => []), candles: [], barColors: [], markers: [],
+        steps: [], vars: { prevRsi: NaN, prevSignal: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.rsi, s.modRsi, s.modRsiChange, s.atr, s.atrChange];
+      s.lists = [s.markers];
+      s.series = [s.nal, ...s.plots, s.candles, s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const time = b.time;
+      const x = value(b);
+      const rsiRaw = s.rsi.step(x);
+      const sigmoidRsiRaw = 100.0 * sigmoid(rsiRaw - 50.0);
+      // momentumFeed = ta.change(ta.rsi(src, modLen), changeL); volatilityFeed = ta.change(ta.atr(modLen), changeL)
+      const momentumFeed = s.modRsiChange.step(s.modRsi.step(x));
+      const volatilityFeed = s.atrChange.step(s.atr.step(b.high, b.low, b.close));
+
+      const sigRsi = sigmoidEmaStep(v.prevRsi, sigmoidRsiRaw, volatilityFeed, rsiAlpha);
+      v.prevRsi = sigRsi;
+      const sigSignal = sigmoidEmaStep(v.prevSignal, sigRsi, momentumFeed, signalAlpha);
+      v.prevSignal = sigSignal;
+
+      // var int NAL = 0; NAL := ... : NAL[1] (NAL[1] is na on the first bar)
+      const prev = i > 0 ? s.nal[i - 1] : NaN;
+      const nal = gt(sigRsi, cfg.longThres) && (gt(sigRsi, sigSignal) || !cfg.boolCon) ? 1
+        : lt(sigRsi, cfg.shortThres) && (lt(sigRsi, sigSignal) || !cfg.boolCon) ? -1 : prev;
+      s.nal[i] = nal;
+
+      const plotColor = nal === 1 ? colUp : nal === -1 ? colDn : colNu;
+      const p = s.plots;
+      p[0][i] = { time, value: sigRsi, color: plotColor };
+      p[1][i] = { time, value: sigRsi, color: String(color.new(plotColor, 78)) };
+      p[2][i] = { time, value: sigSignal, color: color.gray };
+      p[3][i] = { time, value: cfg.longThres, color: colUp };
+      p[4][i] = { time, value: cfg.shortThres, color: colDn };
+      p[5][i] = { time, value: 50.0, color: mid };
+      // plot(rsi_bullish ? sigmoidRSI : na, 'Upper Fill Anchor', color.new(col_up, 100), display = display.pane)
+      p[6][i] = { time, value: gt(sigRsi, cfg.longThres) ? sigRsi : NaN, color: upFill };
+      p[7][i] = { time, value: lt(sigRsi, cfg.shortThres) ? sigRsi : NaN, color: dnFill };
+
+      // plotcandle(open, high, low, close, 'Candles', plotColor, wickcolor, bordercolor, force_overlay = true, display.pane)
+      s.candles[i] = {
+        time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
+        color: plotColor, wickColor: plotColor, borderColor: plotColor, forceOverlay: true,
+      };
+      s.barColors[i] = { time: b.time, color: plotColor };
+
+      if (i >= 1) {
+        // bullish_transition = NAL == 1 and NAL[1] == -1 (and the reverse)
+        if (nal === 1 && prev === -1) {
+          s.markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: colUp, text: '𝓑𝓾𝔂',
+            textColor: colUp, size: 'tiny', forceOverlay: true });
+        }
+        if (nal === -1 && prev === 1) {
+          s.markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: colDn, text: '𝓢𝓮𝓵𝓵',
+            textColor: colDn, size: 'tiny', forceOverlay: true });
+        }
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      // fill(p_upper_fill, p_long, color.new(col_up, 86)); fill(p_lower_fill, p_short, color.new(col_dn, 86))
+      const fills = [
+        { plot1: 'plot6', plot2: 'plot3', colors: new Array<string>(n).fill(upFillCol) },
+        { plot1: 'plot7', plot2: 'plot4', colors: new Array<string>(n).fill(dnFillCol) },
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        plotCandles: { Candles: s.candles.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SigmoidRsiNalInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SigmoidRsiNalInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const SigmoidRsiNal = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

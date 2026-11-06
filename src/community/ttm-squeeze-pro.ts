@@ -16,8 +16,10 @@
  * Reference: "TTM Squeeze Pro" by John Carter
  */
 
-import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { AlertCall } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowExtreme, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -85,86 +87,125 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TTMSqueezeProInputs> = {},
-): IndicatorResult & { alertCalls: AlertCall[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { alertCalls: AlertCall[] };
+
+interface TtmRun extends BarRunState<Record<string, never>> {
+  bbBasis: WindowSma;
+  bbDev: WindowStdev;
+  hh: WindowExtreme;
+  ll: WindowExtreme;
+  kcSma: WindowSma;
+  trSma: WindowSma;
+  linreg: ReturnType<typeof taStep.linreg>;
+  val: number[];
+  noSqz: boolean[];
+  momData: Point[];
+  sqzData: Point[];
+  alertCalls: AlertCall[];
+}
+
+function study(inputs: Partial<TTMSqueezeProInputs>): BarStudy<TtmRun, Result> {
   const { bbLength, bbMult, kcLength, kcMult1, kcMult2, kcMult3, src, detectSqzStart, detectSqzFire } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
-
-  // Bollinger Bands
-  const bbBasis = ta.sma(source, bbLength);
-  const bbDev = ta.stdev(source, bbLength).mul(bbMult);
-  const upperBB = bbBasis.add(bbDev);
-  const lowerBB = bbBasis.sub(bbDev);
-
-  // Momentum: linreg(close - avg((highest+lowest)/2, sma), kcLength, 0)
-  const highSeries = new Series(bars, (bar) => bar.high);
-  const lowSeries = new Series(bars, (bar) => bar.low);
-  const hh = ta.highest(highSeries, kcLength);
-  const ll = ta.lowest(lowSeries, kcLength);
-  const donchianMid = hh.add(ll).div(2);
-  const smaClose = ta.sma(source, kcLength);
-  const midline = donchianMid.add(smaClose).div(2);
-  const val = ta.linreg(source.sub(midline), kcLength, 0);
-  const valArr = val.toArray();
-
+  const value = barSource(src);
   const warmup = Math.max(bbLength, kcLength);
-
-  // Momentum histogram colour: mom > 0 ? (mom > nz(mom[1]) ? aqua : #2962ff) : (mom < nz(mom[1]) ? red : yellow)
-  const momData = valArr.map((value, i) => {
-    const v = value ?? NaN;
-    if (i < warmup || isNaN(v)) return { time: bars[i].time, value: NaN };
-    const p = i > 0 ? (valArr[i - 1] ?? NaN) : NaN;
-    const prev = Number.isNaN(p) ? 0 : p;
-    const color = gt(v, 0) ? (gt(v, prev) ? AQUA : BLUE) : (lt(v, prev) ? RED : YELLOW);
-    return { time: bars[i].time, value: v, color };
-  });
-
-  // Keltner channels of the original: KC_basis = ta.sma(close, length), devKC = ta.sma(ta.tr, length) (ta.tr is na on
-  // the first bar), bands at basis +/- devKC * 1.0 / 1.5 / 2.0
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const upperBBArr = A(upperBB);
-  const lowerBBArr = A(lowerBB);
-  const kcBasis = A(ta.sma(source, kcLength));
-  const trArr = bars.map((b, i) => (i > 0
-    ? Math.max(b.high - b.low, Math.abs(b.high - bars[i - 1].close), Math.abs(b.low - bars[i - 1].close))
-    : NaN));
-  const devKC = A(ta.sma(Series.fromArray(bars, trArr), kcLength));
   // a >= b / a <= b with the 1e-10 tolerance (na compares false)
   const ge = (x: number, y: number) => !Number.isNaN(x) && !Number.isNaN(y) && !lt(x, y);
   const le = (x: number, y: number) => !Number.isNaN(x) && !Number.isNaN(y) && !gt(x, y);
-  const inside = (i: number, mult: number) => ge(lowerBBArr[i], kcBasis[i] - devKC[i] * mult)
-    || le(upperBBArr[i], kcBasis[i] + devKC[i] * mult);
-  // NoSqz = BB_lower < KC_lower_low or BB_upper > KC_upper_low
-  const noSqz = bars.map((_b, i) => lt(lowerBBArr[i], kcBasis[i] - devKC[i] * kcMult3)
-    || gt(upperBBArr[i], kcBasis[i] + devKC[i] * kcMult3));
-
-  // plot(0, 'SQZ', style circles): HighSqz (KC #1) orange, else MidSqz (KC #2) red, else LowSqz (KC #3) black, else
-  // green; each squeeze = the lower band at or above the lower Keltner band OR the upper band at or below the upper one
-  const sqzData = bars.map((b, i) => {
-    const color = inside(i, kcMult1) ? ORANGE : inside(i, kcMult2) ? RED : inside(i, kcMult3) ? BLACK : GREEN;
-    return { time: b.time, value: 0, color };
-  });
-
-  const alertCalls: AlertCall[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    // NoSqz[1] is na (false) on the first bar
-    const prevNoSqz = i > 0 && noSqz[i - 1];
-    // if Detect_Sqz_Start and NoSqz[1] and not NoSqz: alert("Squeeze Started")
-    // else if Detect_Sqz_Fire and NoSqz and not NoSqz[1]: alert("Squeeze Fired")
-    if (detectSqzStart && prevNoSqz && !noSqz[i]) {
-      alertCalls.push({ time: bars[i].time as number, message: 'Squeeze Started', freq: 'once_per_bar' });
-    } else if (detectSqzFire && noSqz[i] && !prevNoSqz) {
-      alertCalls.push({ time: bars[i].time as number, message: 'Squeeze Fired', freq: 'once_per_bar' });
-    }
-  }
-
+  const inside = (lowerBB: number, upperBB: number, kcBasis: number, devKC: number, mult: number) =>
+    ge(lowerBB, kcBasis - devKC * mult) || le(upperBB, kcBasis + devKC * mult);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': momData, 'plot1': sqzData },
-    alertCalls,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const bbBasis = new WindowSma(bbLength);
+      const bbDev = new WindowStdev(bbLength);
+      const hh = new WindowExtreme(false, kcLength);
+      const ll = new WindowExtreme(true, kcLength);
+      const kcSma = new WindowSma(kcLength);
+      const trSma = new WindowSma(kcLength);
+      const linreg = taStep.linreg(kcLength, 0);
+      const s: TtmRun = {
+        bbBasis, bbDev, hh, ll, kcSma, trSma, linreg, val: [], noSqz: [], momData: [], sqzData: [], alertCalls: [],
+        steps: [bbBasis, bbDev, hh, ll, kcSma, trSma, linreg], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.alertCalls];
+      s.series = [s.val, s.noSqz, s.momData, s.sqzData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const x = value(b);
+
+      // Bollinger Bands
+      const basis = s.bbBasis.step(x);
+      const dev = s.bbDev.step(x) * bbMult;
+      const upperBB = basis + dev;
+      const lowerBB = basis - dev;
+
+      // Momentum: linreg(close - avg((highest+lowest)/2, sma), kcLength, 0)
+      const donchianMid = (s.hh.step(b.high) + s.ll.step(b.low)) / 2;
+      const smaClose = s.kcSma.step(x);
+      const midline = (donchianMid + smaClose) / 2;
+      const v = s.linreg.step(x - midline);
+      s.val[i] = v;
+
+      // Momentum histogram colour: mom > 0 ? (mom > nz(mom[1]) ? aqua : #2962ff) : (mom < nz(mom[1]) ? red : yellow)
+      if (i < warmup || isNaN(v)) s.momData[i] = { time, value: NaN };
+      else {
+        const p = i > 0 ? s.val[i - 1] : NaN;
+        const prev = Number.isNaN(p) ? 0 : p;
+        s.momData[i] = { time, value: v, color: gt(v, 0) ? (gt(v, prev) ? AQUA : BLUE) : (lt(v, prev) ? RED : YELLOW) };
+      }
+
+      // Keltner channels of the original: KC_basis = ta.sma(close, length), devKC = ta.sma(ta.tr, length) (ta.tr is na on
+      // the first bar), bands at basis +/- devKC * 1.0 / 1.5 / 2.0
+      const kcBasis = smaClose;
+      const tr = i > 0
+        ? Math.max(b.high - b.low, Math.abs(b.high - bars[i - 1].close), Math.abs(b.low - bars[i - 1].close))
+        : NaN;
+      const devKC = s.trSma.step(tr);
+      // NoSqz = BB_lower < KC_lower_low or BB_upper > KC_upper_low
+      const noSqz = lt(lowerBB, kcBasis - devKC * kcMult3) || gt(upperBB, kcBasis + devKC * kcMult3);
+      s.noSqz[i] = noSqz;
+
+      // plot(0, 'SQZ', style circles): HighSqz (KC #1) orange, else MidSqz (KC #2) red, else LowSqz (KC #3) black, else
+      // green; each squeeze = the lower band at or above the lower Keltner band OR the upper band at or below the upper one
+      const color = inside(lowerBB, upperBB, kcBasis, devKC, kcMult1) ? ORANGE
+        : inside(lowerBB, upperBB, kcBasis, devKC, kcMult2) ? RED
+        : inside(lowerBB, upperBB, kcBasis, devKC, kcMult3) ? BLACK : GREEN;
+      s.sqzData[i] = { time, value: 0, color };
+
+      // NoSqz[1] is na (false) on the first bar
+      const prevNoSqz = i > 0 && s.noSqz[i - 1];
+      // if Detect_Sqz_Start and NoSqz[1] and not NoSqz: alert("Squeeze Started")
+      // else if Detect_Sqz_Fire and NoSqz and not NoSqz[1]: alert("Squeeze Fired")
+      if (detectSqzStart && prevNoSqz && !noSqz) {
+        s.alertCalls.push({ time: time as number, message: 'Squeeze Started', freq: 'once_per_bar' });
+      } else if (detectSqzFire && noSqz && !prevNoSqz) {
+        s.alertCalls.push({ time: time as number, message: 'Squeeze Fired', freq: 'once_per_bar' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.momData.slice(), 'plot1': s.sqzData.slice() },
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
 }
 
-export const TTMSqueezePro = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hasAlertFunction };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TTMSqueezeProInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<TTMSqueezeProInputs> = {},
+): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const TTMSqueezePro = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hasAlertFunction };

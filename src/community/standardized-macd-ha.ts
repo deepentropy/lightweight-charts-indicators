@@ -23,10 +23,11 @@
  * Reference: "Standardized MACD Heikin-Ashi Transformed" by EliCobra
  */
 
-import { taCore, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall, MarkerData, BarColorData, PlotCandleData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
 import { foregroundColorOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -80,185 +81,215 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<StandardizedMacdHAInputs> = {}, chart?: ChartContext): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]>; markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[]; alertCalls: AlertCall[] } {
-  const { src, fast, slow, signalSrc, signalLength, reversionThreshold, barColoring, hollow } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
+type Result = Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]>; markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[]; alertCalls: AlertCall[] };
+type Point = { time: number; value: number; color?: string };
 
-  const pick = (o: number, h: number, l: number, c: number, which: string): number => {
-    switch (which) {
-      case 'open': return o;
-      case 'high': return h;
-      case 'low': return l;
-      case 'oc2': return (o + c) / 2;
-      case 'hl2': return (h + l) / 2;
-      case 'hlc3': return (h + l + c) / 3;
-      case 'ohlc4': return (o + h + l + c) / 4;
-      case 'hlcc4': return (h + l + c + c) / 4;
-      default: return c;
-    }
-  };
-
-  // x = (ema(src, fast) - ema(src, slow)) / ema(high - low, slow) * 100
-  const srcArr = bars.map((b) => pick(b.open, b.high, b.low, b.close, src));
-  const emaFast = taCore.ema(srcArr, fast);
-  const emaSlow = taCore.ema(srcArr, slow);
-  const emaRange = taCore.ema(bars.map((b) => b.high - b.low), slow);
-  const macdArr = emaFast.map((f, i) => {
-    const v = ((f - emaSlow[i]) / emaRange[i]) * 100;
-    return Number.isFinite(v) ? v : NaN;
-  });
-
-  // One Heikin-Ashi pass (method ha) on the bar z = (x[1], max(x, x[1]), min(x, x[1]), x). The persistent object x
-  // holds the HA bar of the bar before; its close is first set to ohlc4(z), then the new bar is
-  //   open  = na(x.o[1]) ? oc2(z) : nz(x.src('oc2')[1])  (x.src('oc2') = avg(open of the HA bar before, ohlc4(z)),
-  //           evaluated in that branch only: its value of the bar before, na on the first bar of the branch)
-  //   high  = max(z.h, max(x.o, x.c)), low = min(z.l, min(x.o, x.c))  (x.o: the open of the HA bar before)
-  //   close = ohlc4(z)
-  const haOpen: number[] = new Array(n);
-  const haHigh: number[] = new Array(n);
-  const haLow: number[] = new Array(n);
-  const haClose: number[] = new Array(n);
-  let prevOpen = NaN; // x.o: the open of the HA bar before
-  let lastOc2 = NaN; // x.src('oc2') of the bar before (na when not evaluated)
-  for (let i = 0; i < n; i++) {
-    const m = macdArr[i];
-    const m1 = i > 0 ? macdArr[i - 1] : NaN;
-    const zo = m1, zh = Math.max(m, m1), zl = Math.min(m, m1), zc = m;
-    const c = (zo + zh + zl + zc) / 4;
-    let o: number;
-    if (!Number.isFinite(prevOpen)) {
-      o = (zo + zc) / 2;
-      lastOc2 = NaN;
-    } else {
-      o = Number.isFinite(lastOc2) ? lastOc2 : 0;
-      lastOc2 = (prevOpen + c) / 2;
-    }
-    haOpen[i] = Number.isFinite(o) ? o : NaN;
-    haHigh[i] = Math.max(zh, Math.max(prevOpen, c));
-    haLow[i] = Math.min(zl, Math.min(prevOpen, c));
-    haClose[i] = Number.isFinite(c) ? c : NaN;
-    prevOpen = haOpen[i];
+const pick = (o: number, h: number, l: number, c: number, which: string): number => {
+  switch (which) {
+    case 'open': return o;
+    case 'high': return h;
+    case 'low': return l;
+    case 'oc2': return (o + c) / 2;
+    case 'hl2': return (h + l) / 2;
+    case 'hlc3': return (h + l + c) / 3;
+    case 'ohlc4': return (o + h + l + c) / 4;
+    case 'hlcc4': return (h + l + c + c) / 4;
+    default: return c;
   }
-  const ha2Open = haOpen, ha2High = haHigh, ha2Low = haLow, ha2Close = haClose;
+};
 
-  // s = ema(z.src(sig), clen); H = z.c - s
-  const signalArr = taCore.ema(haClose.map((c, i) => pick(haOpen[i], haHigh[i], haLow[i], c, signalSrc)), signalLength);
-  const histArr = haClose.map((c, i) => c - signalArr[i]);
+interface SmacdVars {
+  /** x.o: the open of the HA bar before */
+  prevOpen: number;
+  /** x.src('oc2') of the bar before (na when not evaluated) */
+  lastOc2: number;
+}
 
+interface SmacdRun extends BarRunState<SmacdVars> {
+  emaFast: ReturnType<typeof taStep.ema>;
+  emaSlow: ReturnType<typeof taStep.ema>;
+  emaRange: ReturnType<typeof taStep.ema>;
+  emaSignal: ReturnType<typeof taStep.ema>;
+  neutralBar: string;
+  macd: number[];
+  haOpen: number[];
+  haClose: number[];
+  signal: number[];
+  hist: number[];
+  candles: PlotCandleData[];
+  signalPlot: Point[];
+  histPlot: Point[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  alertCalls: AlertCall[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<StandardizedMacdHAInputs>): BarStudy<SmacdRun, Result> {
+  const { src, fast, slow, signalSrc, signalLength, reversionThreshold, barColoring, hollow } = { ...defaultInputs, ...inputs };
   const upColor = '#00bcd4';
   const downColor = '#fc1f1f';
-  // haColor = c > o ? colup : c < o ? coldn : na; no body on a rising candle with "Hollow Candles"
-  const haColor = (i: number) => (haClose[i] > haOpen[i] ? upColor : haClose[i] < haOpen[i] ? downColor : 'transparent');
-
-  const candles: PlotCandleData[] = [];
-  for (let i = 0; i < n; i++) {
-    const ok = [haOpen[i], haHigh[i], haLow[i], haClose[i]].every(Number.isFinite);
-    if (!ok) {
-      candles.push({ time: bars[i].time as number, open: NaN, high: NaN, low: NaN, close: NaN });
-      continue;
-    }
-    const col = haColor(i);
-    candles.push({
-      time: bars[i].time as number,
-      open: haOpen[i],
-      high: haHigh[i],
-      low: haLow[i],
-      close: haClose[i],
-      color: hollow && haClose[i] > haOpen[i] ? 'transparent' : col,
-      borderColor: col,
-      wickColor: col,
-    });
-  }
-
-  const signalPlot = signalArr.map((v, i) => ({
-    time: bars[i].time,
-    value: Number.isFinite(v) ? v : NaN,
-  }));
-
   // colh = o.h > 0 ? (o.h > o.h[1] ? color.new(colhu, 20) : color.new(colhu, 30))
   //                 : (o.h > o.h[1] ? color.new(colhd, 20) : color.new(colhd, 30))
   const histColors = ['#8ac3f5', '#ffa7b6'].map((c) => [String(color.new(c, 20)), String(color.new(c, 30))]);
-  const histPlot = histArr.map((v, i) => {
-    const rising = i > 0 && v > histArr[i - 1];
-    return {
-      time: bars[i].time,
-      value: Number.isFinite(v) ? v : NaN,
-      color: histColors[v > 0 ? 0 : 1][rising ? 0 : 1],
-    };
-  });
-
-  // plotshape(a.s ? o.b.h + 40 : na, "OB", triangledown, absolute) / plotshape(a.b ? o.b.l - 40 : na, "OS", triangleup)
-  const markers: MarkerData[] = [];
-  const obSignal: boolean[] = new Array(n).fill(false);
-  const osSignal: boolean[] = new Array(n).fill(false);
-  {
-    const under = crossedUnder(haClose, haOpen);
-    const over = crossedOver(haClose, haOpen);
-    for (let i = 0; i < n; i++) {
-      obSignal[i] = under[i] && haHigh[i] > reversionThreshold;
-      osSignal[i] = over[i] && haLow[i] < -reversionThreshold;
-      if (obSignal[i]) {
-        markers.push({ id: 'shape0', time: bars[i].time as number, position: 'atPriceMiddle', price: haHigh[i] + 40, shape: 'triangleDown', color: downColor, size: 'tiny' });
-      }
-      if (osSignal[i]) {
-        markers.push({ id: 'shape1', time: bars[i].time as number, position: 'atPriceMiddle', price: haLow[i] - 40, shape: 'triangleUp', color: upColor, size: 'tiny' });
-      }
-    }
-  }
-
-  // barcolor(col): col = switch colb ('None' => na: no bar colour); na values compare false
-  const barColors: BarColorData[] = [];
-  if (barColoring !== 'None') {
-    const neutralBar = String(color.new(foregroundColorOf(chart), 25));
-    for (let i = 0; i < n; i++) {
-      const c = haClose[i];
-      let col: string;
-      switch (barColoring) {
-        case 'MidLine': col = c > 0 ? upColor : downColor; break;
-        case 'Candles': col = c > haOpen[i] ? upColor : downColor; break;
-        case 'Sig Cross': col = signalArr[i] > c ? downColor : upColor; break;
-        case 'Extremities': col = c > reversionThreshold ? downColor : c < -reversionThreshold ? upColor : neutralBar; break;
-        case 'Reversions': col = osSignal[i] ? downColor : obSignal[i] ? upColor : neutralBar; break;
-        default: continue;
-      }
-      barColors.push({ id: 'barcolor0', time: bars[i].time as number, color: col });
-    }
-  }
-
-  // alerts.new(...): crossunder(c, o) and h > revt, crossover(c, o) and l < -revt, crossover(c, 0), crossunder(c, 0),
-  // crossunder(c, o) and not h > revt, crossover(c, o) and not l < -revt, crossover(c, signal), crossunder(c, signal)
-  const cUnderO = crossedUnder(ha2Close, ha2Open);
-  const cOverO = crossedOver(ha2Close, ha2Open);
-  const sig = signalArr;
-  const flags: boolean[][] = [
-    cUnderO.map((x, i) => x && ha2High[i] > reversionThreshold),
-    cOverO.map((x, i) => x && ha2Low[i] < -reversionThreshold),
-    crossedOver(ha2Close, 0),
-    crossedUnder(ha2Close, 0),
-    cUnderO.map((x, i) => x && !(ha2High[i] > reversionThreshold)),
-    cOverO.map((x, i) => x && !(ha2Low[i] < -reversionThreshold)),
-    crossedOver(ha2Close, sig),
-    crossedUnder(ha2Close, sig),
-  ];
-  // a.any().notify(): alert(<message of the first true condition>, alert.freq_once_per_bar_close)
-  const alertCalls: AlertCall[] = [];
-  for (let i = 0; i < n; i++) {
-    const k = flags.findIndex((f) => f[i]);
-    if (k >= 0) alertCalls.push({ time: bars[i].time as number, message: alertConditions[k].message!, freq: 'once_per_bar_close' });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { signal: signalPlot, histogram: histPlot },
-    plotCandles: { candle0: candles },
-    hlines: [
-      { value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } },
-    ],
-    markers,
-    barColors,
-    alerts: alertStates(alertConditions, bars, flags),
-    alertCalls,
+    fullRunReason: () => (isBarSource(src) || src === 'oc2' ? null : 'source of another study'),
+    init(_bars, chart) {
+      const s: SmacdRun = {
+        emaFast: taStep.ema(fast), emaSlow: taStep.ema(slow), emaRange: taStep.ema(slow), emaSignal: taStep.ema(signalLength),
+        neutralBar: barColoring !== 'None' ? String(color.new(foregroundColorOf(chart), 25)) : '',
+        macd: [], haOpen: [], haClose: [], signal: [], hist: [], candles: [], signalPlot: [], histPlot: [], markers: [],
+        barColors: [], alertCalls: [], flags: Array.from({ length: 8 }, () => []), times: Array.from({ length: 8 }, () => []),
+        steps: [], vars: { prevOpen: NaN, lastOc2: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.emaFast, s.emaSlow, s.emaRange, s.emaSignal];
+      s.lists = [s.markers, s.barColors, s.alertCalls, ...s.times];
+      s.series = [s.macd, s.haOpen, s.haClose, s.signal, s.hist, s.candles, s.signalPlot, s.histPlot, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time as number;
+      const v = s.vars;
+      // x = (ema(src, fast) - ema(src, slow)) / ema(high - low, slow) * 100
+      const x = pick(b.open, b.high, b.low, b.close, src);
+      const f = s.emaFast.step(x);
+      const sl = s.emaSlow.step(x);
+      const r = s.emaRange.step(b.high - b.low);
+      const mv = ((f - sl) / r) * 100;
+      const m = Number.isFinite(mv) ? mv : NaN;
+      s.macd[i] = m;
+
+      // One Heikin-Ashi pass (method ha) on the bar z = (x[1], max(x, x[1]), min(x, x[1]), x). The persistent object x
+      // holds the HA bar of the bar before; its close is first set to ohlc4(z), then the new bar is
+      //   open  = na(x.o[1]) ? oc2(z) : nz(x.src('oc2')[1])  (x.src('oc2') = avg(open of the HA bar before, ohlc4(z)),
+      //           evaluated in that branch only: its value of the bar before, na on the first bar of the branch)
+      //   high  = max(z.h, max(x.o, x.c)), low = min(z.l, min(x.o, x.c))  (x.o: the open of the HA bar before)
+      //   close = ohlc4(z)
+      const m1 = i > 0 ? s.macd[i - 1] : NaN;
+      const zo = m1, zh = Math.max(m, m1), zl = Math.min(m, m1), zc = m;
+      const c = (zo + zh + zl + zc) / 4;
+      const prevOpen = v.prevOpen;
+      let o: number;
+      if (!Number.isFinite(prevOpen)) {
+        o = (zo + zc) / 2;
+        v.lastOc2 = NaN;
+      } else {
+        o = Number.isFinite(v.lastOc2) ? v.lastOc2 : 0;
+        v.lastOc2 = (prevOpen + c) / 2;
+      }
+      const haOpen = Number.isFinite(o) ? o : NaN;
+      const haHigh = Math.max(zh, Math.max(prevOpen, c));
+      const haLow = Math.min(zl, Math.min(prevOpen, c));
+      const haClose = Number.isFinite(c) ? c : NaN;
+      v.prevOpen = haOpen;
+      s.haOpen[i] = haOpen;
+      s.haClose[i] = haClose;
+
+      // s = ema(z.src(sig), clen); H = z.c - s
+      const signal = s.emaSignal.step(pick(haOpen, haHigh, haLow, haClose, signalSrc));
+      const hist = haClose - signal;
+      s.signal[i] = signal;
+      s.hist[i] = hist;
+
+      // haColor = c > o ? colup : c < o ? coldn : na; no body on a rising candle with "Hollow Candles"
+      if (![haOpen, haHigh, haLow, haClose].every(Number.isFinite)) {
+        s.candles[i] = { time, open: NaN, high: NaN, low: NaN, close: NaN };
+      } else {
+        const col = haClose > haOpen ? upColor : haClose < haOpen ? downColor : 'transparent';
+        s.candles[i] = {
+          time,
+          open: haOpen,
+          high: haHigh,
+          low: haLow,
+          close: haClose,
+          color: hollow && haClose > haOpen ? 'transparent' : col,
+          borderColor: col,
+          wickColor: col,
+        };
+      }
+
+      s.signalPlot[i] = { time: b.time, value: Number.isFinite(signal) ? signal : NaN };
+      const rising = i > 0 && hist > s.hist[i - 1];
+      s.histPlot[i] = { time: b.time, value: Number.isFinite(hist) ? hist : NaN, color: histColors[hist > 0 ? 0 : 1][rising ? 0 : 1] };
+
+      // plotshape(a.s ? o.b.h + 40 : na, "OB", triangledown, absolute) / plotshape(a.b ? o.b.l - 40 : na, "OS", triangleup)
+      const pc = i > 0 ? s.haClose[i - 1] : NaN;
+      const po = i > 0 ? s.haOpen[i - 1] : NaN;
+      const under = haClose < haOpen && pc >= po;
+      const over = haClose > haOpen && pc <= po;
+      const obSignal = under && haHigh > reversionThreshold;
+      const osSignal = over && haLow < -reversionThreshold;
+      if (obSignal) {
+        s.markers.push({ id: 'shape0', time, position: 'atPriceMiddle', price: haHigh + 40, shape: 'triangleDown', color: downColor, size: 'tiny' });
+      }
+      if (osSignal) {
+        s.markers.push({ id: 'shape1', time, position: 'atPriceMiddle', price: haLow - 40, shape: 'triangleUp', color: upColor, size: 'tiny' });
+      }
+
+      // barcolor(col): col = switch colb ('None' => na: no bar colour); na values compare false
+      if (barColoring !== 'None') {
+        const neutralBar = s.neutralBar;
+        let col: string | null;
+        switch (barColoring) {
+          case 'MidLine': col = haClose > 0 ? upColor : downColor; break;
+          case 'Candles': col = haClose > haOpen ? upColor : downColor; break;
+          case 'Sig Cross': col = signal > haClose ? downColor : upColor; break;
+          case 'Extremities': col = haClose > reversionThreshold ? downColor : haClose < -reversionThreshold ? upColor : neutralBar; break;
+          case 'Reversions': col = osSignal ? downColor : obSignal ? upColor : neutralBar; break;
+          default: col = null;
+        }
+        if (col !== null) s.barColors.push({ id: 'barcolor0', time, color: col });
+      }
+
+      // alerts.new(...): crossunder(c, o) and h > revt, crossover(c, o) and l < -revt, crossover(c, 0), crossunder(c, 0),
+      // crossunder(c, o) and not h > revt, crossover(c, o) and not l < -revt, crossover(c, signal), crossunder(c, signal)
+      const ps = i > 0 ? s.signal[i - 1] : NaN;
+      const fl = s.flags;
+      fl[0][i] = under && haHigh > reversionThreshold;
+      fl[1][i] = over && haLow < -reversionThreshold;
+      fl[2][i] = haClose > 0 && pc <= 0;
+      fl[3][i] = haClose < 0 && pc >= 0;
+      fl[4][i] = under && !(haHigh > reversionThreshold);
+      fl[5][i] = over && !(haLow < -reversionThreshold);
+      fl[6][i] = haClose > signal && pc <= ps;
+      fl[7][i] = haClose < signal && pc >= ps;
+      // a.any().notify(): alert(<message of the first true condition>, alert.freq_once_per_bar_close)
+      let first = -1;
+      for (let k = 0; k < 8; k++) {
+        if (fl[k][i]) {
+          s.times[k].push(time);
+          if (first < 0) first = k;
+        }
+      }
+      if (first >= 0) s.alertCalls.push({ time, message: alertConditions[first].message!, freq: 'once_per_bar_close' });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { signal: s.signalPlot.slice(), histogram: s.histPlot.slice() },
+        plotCandles: { candle0: s.candles.slice() },
+        hlines: [
+          { value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } },
+        ],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<StandardizedMacdHAInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<StandardizedMacdHAInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 /** The original's alertconditions */
@@ -273,4 +304,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert7', title: 'MACD Bear Cross', message: 'MACD Bearish Cross' },
 ];
 
-export const StandardizedMacdHA = { calculate, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig, alertConditions, hasAlertFunction };
+export const StandardizedMacdHA = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig, alertConditions, hasAlertFunction };

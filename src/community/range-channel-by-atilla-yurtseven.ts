@@ -12,7 +12,11 @@
  * Original notice: © AtillaYurtseven
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import {
+  barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowSum, type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 
 export type RangeChannelMaType =
   | 'SMA (Simple MA)'
@@ -75,94 +79,209 @@ const lt = (a: number, b: number) => b - a > EPS;
 
 type Point = { time: number; value: number; color?: string };
 
-/** calculate_ma(source, ma_type, look_back) */
-function movingAverage(bars: Bar[], source: Series, maType: RangeChannelMaType, len: number): Series {
-  const ema = (s: Series) => ta.ema(s, len);
+type Ma = { step(v: number, volume: number, i: number, src: number[]): number; commit(): void };
+
+/** calculate_ma(source, ma_type, look_back) stepped bar by bar (the doubles of the oakscriptjs Series functions) */
+function movingAverage(maType: RangeChannelMaType, len: number): Ma {
+  const L = Math.floor(len);
   switch (maType) {
-    case 'SMA (Simple MA)':
-      return ta.sma(source, len);
     case 'EMA (Exponential MA)':
-      return ta.ema(source, len);
-    case 'WMA (Weighted MA)':
-      return ta.wma(source, len);
+      return taStep.ema(len);
+    case 'WMA (Weighted MA)': {
+      const m = taStep.wma();
+      return { step: (v) => m.step(v, len), commit: () => m.commit() };
+    }
     case 'Linear MA (Linear Regression)':
-      return ta.linreg(source, len, 0);
-    case 'SMMA (Smoothed MA)':
-      return ta.sma(source, len); // the Pine script uses ta.sma here
-    case 'VWMA (Volume Weighted MA)':
-      return ta.vwma(source, len, Series.fromArray(bars, bars.map((b) => b.volume ?? NaN)));
-    case 'HWMA (Hull WMA)':
+      // ta.linreg(source, look_back, 0): the loops of the oakscriptjs array function over the source values
+      return {
+        step: (_v, _vol, i, src) => {
+          if (i < L - 1) return NaN;
+          for (let j = 0; j < L; j++) if (isNaN(src[i - j])) return NaN;
+          let sumX = 0;
+          let sumY = 0;
+          let sumXY = 0;
+          let sumX2 = 0;
+          for (let j = 0; j < L; j++) {
+            const x = j + 1;
+            const y = src[i - (L - 1 - j)];
+            sumX += x;
+            sumY += y;
+            sumXY += x * y;
+            sumX2 += x * x;
+          }
+          const slope = (L * sumXY - sumX * sumY) / (L * sumX2 - sumX * sumX);
+          const intercept = sumY / L - (slope * sumX) / L + slope;
+          return intercept + slope * (L - 1 - 0);
+        },
+        commit: () => {},
+      };
+    case 'VWMA (Volume Weighted MA)': {
+      // ta.sma(source * volume, look_back) / ta.sma(volume, look_back), na when the volume average is 0 or na
+      const num = new WindowSum(len);
+      const den = new WindowSum(len);
+      return {
+        step: (v, volume) => {
+          const nu = num.step(v * volume) / L;
+          const d = den.step(volume) / L;
+          return d === 0 || isNaN(d) ? NaN : nu / d;
+        },
+        commit: () => { num.commit(); den.commit(); },
+      };
+    }
+    case 'HWMA (Hull WMA)': {
       // ta.wma(2 * ta.wma(source, look_back / 2) - ta.wma(source, look_back), math.round(math.sqrt(look_back)))
-      return ta.wma(ta.wma(source, len / 2).mul(2).sub(ta.wma(source, len)), Math.round(Math.sqrt(len)));
+      const half = taStep.wma();
+      const full = taStep.wma();
+      const outer = taStep.wma();
+      const outerLen = Math.round(Math.sqrt(len));
+      return {
+        step: (v) => outer.step(half.step(v, len / 2) * 2 - full.step(v, len), outerLen),
+        commit: () => { half.commit(); full.commit(); outer.commit(); },
+      };
+    }
     case 'RMA (Running MA)':
-      return ta.rma(source, len);
-    case 'ALMA (Arnaud Legoux MA)':
-      return ta.alma(source, len, 0.85, 6.0);
+      return taStep.rma(len);
+    case 'ALMA (Arnaud Legoux MA)': {
+      // ta.alma(source, look_back, 0.85, 6.0): the weights of the oakscriptjs array function
+      const m = 0.85 * (len - 1);
+      const sd = len / 6.0;
+      const weights: number[] = [];
+      let weightSum = 0;
+      for (let i = 0; i < len; i++) {
+        const weight = Math.exp(-1 * Math.pow(i - m, 2) / (2 * Math.pow(sd, 2)));
+        weights.push(weight);
+        weightSum += weight;
+      }
+      for (let i = 0; i < len; i++) weights[i] /= weightSum;
+      return {
+        step: (_v, _vol, i, src) => {
+          if (i < len - 1) return NaN;
+          let almaValue = 0;
+          for (let j = 0; j < len; j++) almaValue += src[i - len + 1 + j] * weights[j];
+          return almaValue;
+        },
+        commit: () => {},
+      };
+    }
     case 'TEMA (Triple EMA)': {
-      const e1 = ema(source);
-      const e2 = ema(e1);
-      const e3 = ema(e2);
-      return e1.mul(3).sub(e2.mul(3)).add(e3);
+      const ema1 = taStep.ema(len);
+      const ema2 = taStep.ema(len);
+      const ema3 = taStep.ema(len);
+      return {
+        step: (v) => {
+          const e1 = ema1.step(v);
+          const e2 = ema2.step(e1);
+          const e3 = ema3.step(e2);
+          return e1 * 3 - e2 * 3 + e3;
+        },
+        commit: () => { ema1.commit(); ema2.commit(); ema3.commit(); },
+      };
     }
     case 'DEMA (Double EMA)': {
-      const e1 = ema(source);
-      return e1.mul(2).sub(ema(e1));
+      const ema1 = taStep.ema(len);
+      const ema2 = taStep.ema(len);
+      return {
+        step: (v) => {
+          const e1 = ema1.step(v);
+          return e1 * 2 - ema2.step(e1);
+        },
+        commit: () => { ema1.commit(); ema2.commit(); },
+      };
     }
-    default:
-      return ta.sma(source, len);
+    default: {
+      // SMA, and SMMA (the Pine script uses ta.sma here)
+      const sma = new WindowSma(len);
+      return { step: (v) => sma.step(v), commit: () => sma.commit() };
+    }
   }
 }
 
-export function calculate(bars: Bar[], inputs: Partial<RangeChannelByAtillaYurtsevenInputs> = {}): IndicatorResult {
+interface RangeVars {
+  /** calculate_diff_averages(diff): var sums and counts of the positive / negative diff / 100 since the first bar */
+  posSum: number;
+  posCount: number;
+  negSum: number;
+  negCount: number;
+}
+
+interface RangeRun extends BarRunState<RangeVars> {
+  ma: Ma;
+  src: number[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<RangeChannelByAtillaYurtsevenInputs>): BarStudy<RangeRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.src);
-  const srcA = src.toArray().map((v) => v ?? NaN);
-  const ma = movingAverage(bars, src, cfg.maType, cfg.lookBack).toArray().map((v) => v ?? NaN);
-
-  const plots: Record<string, Point[]> = {
-    plot0: [], plot1: [], plot2: [], plot3: [], plot4: [], plot5: [],
-  };
+  const value = barSource(cfg.src);
   const fin = (x: number) => (Number.isFinite(x) ? x : NaN);
-  // calculate_diff_averages(diff): var sums and counts of the positive / negative diff / 100 since the first bar
-  let posSum = 0.0;
-  let posCount = 0;
-  let negSum = 0.0;
-  let negCount = 0;
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // a plain division: ma = 0 gives +-infinity (0 / 0 na), as in Pine
-    const diff = (srcA[i] / ma[i] - 1) * 100;
-    const d = diff / 100;
-    if (gt(d, 0)) {
-      posSum += d;
-      posCount += 1;
-    } else if (lt(d, 0)) {
-      negSum += d;
-      negCount += 1;
-    }
-    const positiveDiff = posCount > 0 ? posSum / posCount : 0;
-    const negativeDiff = negCount > 0 ? negSum / negCount : 0;
-
-    plots.plot0.push({ time: t, value: fin(ma[i]) });
-    plots.plot1.push({ time: t, value: fin(ma[i] * (1 + positiveDiff)), color: color.gray });
-    plots.plot2.push({ time: t, value: fin(ma[i] * (1 + negativeDiff)), color: color.gray });
-    plots.plot3.push({ time: t, value: fin(diff), color: gt(diff, 0) ? color.green : color.red });
-    plots.plot4.push({ time: t, value: fin(positiveDiff * 100), color: color.gray });
-    plots.plot5.push({ time: t, value: fin(negativeDiff * 100), color: color.gray });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    // hline(0): Pine defaults (colour #787B86, dashed)
-    hlines: [{ value: 0, options: { title: 'Zero Line', color: '#787B86', linestyle: 'dashed' } }],
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: RangeRun = {
+        ma: movingAverage(cfg.maType, cfg.lookBack), src: [], plots: Array.from({ length: 6 }, () => []),
+        steps: [], vars: { posSum: 0.0, posCount: 0, negSum: 0.0, negCount: 0 }, lists: [], series: [],
+      };
+      s.steps = [s.ma];
+      s.series = [s.src, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      const src = value(b);
+      s.src[i] = src;
+      const ma = s.ma.step(src, b.volume ?? NaN, i, s.src);
+      // a plain division: ma = 0 gives +-infinity (0 / 0 na), as in Pine
+      const diff = (src / ma - 1) * 100;
+      const d = diff / 100;
+      if (gt(d, 0)) {
+        v.posSum += d;
+        v.posCount += 1;
+      } else if (lt(d, 0)) {
+        v.negSum += d;
+        v.negCount += 1;
+      }
+      const positiveDiff = v.posCount > 0 ? v.posSum / v.posCount : 0;
+      const negativeDiff = v.negCount > 0 ? v.negSum / v.negCount : 0;
+
+      const p = s.plots;
+      p[0][i] = { time: t, value: fin(ma) };
+      p[1][i] = { time: t, value: fin(ma * (1 + positiveDiff)), color: color.gray };
+      p[2][i] = { time: t, value: fin(ma * (1 + negativeDiff)), color: color.gray };
+      p[3][i] = { time: t, value: fin(diff), color: gt(diff, 0) ? color.green : color.red };
+      p[4][i] = { time: t, value: fin(positiveDiff * 100), color: color.gray };
+      p[5][i] = { time: t, value: fin(negativeDiff * 100), color: color.gray };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(),
+        },
+        // hline(0): Pine defaults (colour #787B86, dashed)
+        hlines: [{ value: 0, options: { title: 'Zero Line', color: '#787B86', linestyle: 'dashed' } }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RangeChannelByAtillaYurtsevenInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RangeChannelByAtillaYurtsevenInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RangeChannelByAtillaYurtseven = {
   calculate,
+  createRun,
   metadata,
+
   defaultInputs,
   inputConfig,
   plotConfig,

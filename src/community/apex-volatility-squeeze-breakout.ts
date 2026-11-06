@@ -13,9 +13,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
 
 export interface ApexVolatilitySqueezeBreakoutInputs {
   /** Lookback length of the SMA, stdev and ATR */
@@ -72,89 +74,127 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface ApexRun extends BarRunState<{ trend: number }> {
+  /** math.sum of the close and of its squares: ta.sma and the biased ta.stdev (WindowSma / WindowStdev) */
+  sum: WindowSum;
+  squares: WindowSum;
+  atr: ReturnType<typeof taStep.atr>;
+  upper: ReturnType<typeof taStep.ema>;
+  lower: ReturnType<typeof taStep.ema>;
+  basis: ReturnType<typeof taStep.ema>;
+  crossUp: ReturnType<typeof taStep.crossover>;
+  crossDown: ReturnType<typeof taStep.crossunder>;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  fillColors: string[];
+  barColors: BarColorData[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<ApexVolatilitySqueezeBreakoutInputs>): BarStudy<ApexRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const len = Math.floor(cfg.length);
+  return {
+    init() {
+      const s: ApexRun = {
+        sum: new WindowSum(cfg.length), squares: new WindowSum(cfg.length), atr: taStep.atr(cfg.length),
+        upper: taStep.ema(cfg.smoothLen), lower: taStep.ema(cfg.smoothLen), basis: taStep.ema(cfg.smoothLen),
+        crossUp: taStep.crossover(), crossDown: taStep.crossunder(), plot0: [], plot1: [], plot2: [], fillColors: [],
+        barColors: [], markers: [], flags: [[], []], times: [[], []],
+        steps: [], vars: { trend: 0 }, lists: [], series: [],
+      };
+      s.steps = [s.sum, s.squares, s.atr, s.upper, s.lower, s.basis, s.crossUp, s.crossDown];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.plot0, s.plot1, s.plot2, s.fillColors, s.barColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const c = b.close;
+      const sum = s.sum.step(c);
+      const sq = s.squares.step(Number.isFinite(c) ? c * c : NaN);
+      const basis = sum / len;
+      const variance = sq / len - basis * basis;
+      const sd = Number.isNaN(variance) ? NaN : variance > 0 ? Math.sqrt(variance) : 0;
+      const atrRaw = s.atr.step(b.high, b.low, c);
+      const dev = cfg.bbMult * sd;
+      const atr = cfg.kcMult * atrRaw;
+      const isSqueeze = lt(dev, atr);
+      const smoothUpper = s.upper.step(basis + dev);
+      const smoothLower = s.lower.step(basis - dev);
+      const smoothBasis = s.basis.step(basis);
+
+      // var int trend = 0
+      const v = s.vars;
+      if (gt(c, smoothUpper) && !isSqueeze) v.trend = 1;
+      else if (lt(c, smoothLower) && !isSqueeze) v.trend = -1;
+      else if (isSqueeze) v.trend = 0;
+      const trend = v.trend;
+      const currentColor = trend === 1 ? cfg.bullColor : trend === -1 ? cfg.bearColor : cfg.sqzColor;
+
+      const time = b.time;
+      s.plot0[i] = { time, value: smoothUpper, color: currentColor };
+      s.plot1[i] = { time, value: smoothLower, color: currentColor };
+      s.plot2[i] = { time, value: smoothBasis, color: String(color.new(currentColor, 50)) };
+
+      // fill(p_upper, p_lower, color = color.new(current_color, 90), title = "Volatility Cloud")
+      s.fillColors[i] = String(color.new(currentColor, 90));
+
+      // barcolor(color_bars ? (close > open ? current_color : color.new(current_color, 40)) : na)
+      if (cfg.colorBars) {
+        s.barColors[i] = { time, color: gt(b.close, b.open) ? currentColor : String(color.new(currentColor, 40)) };
+      }
+
+      // long_breakout = ta.crossover(close, smooth_upper) and trend == 1 and trend == 0 (never true, as in the source)
+      const crossUp = s.crossUp.step(c, smoothUpper);
+      const crossDown = s.crossDown.step(c, smoothLower);
+      const isTrend = (k: number) => trend === k;
+      const longBreakout = !!crossUp && isTrend(1) && isTrend(0);
+      const shortBreakout = !!crossDown && isTrend(-1) && isTrend(0);
+      s.flags[0][i] = longBreakout;
+      s.flags[1][i] = shortBreakout;
+      if (longBreakout) s.times[0].push(time as number);
+      if (shortBreakout) s.times[1].push(time as number);
+      if (longBreakout) {
+        s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: cfg.bullColor, text: 'BUY',
+          textColor: color.white, size: 'small' });
+      }
+      if (shortBreakout) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: cfg.bearColor, text: 'SELL',
+          textColor: color.white, size: 'small' });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Volatility Cloud' }, colors: s.fillColors.slice() }],
+        barColors: cfg.colorBars ? s.barColors.slice() : [],
+        markers: s.markers.slice(),
+        // alertcondition(long_breakout, ...) / alertcondition(short_breakout, ...)
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ApexVolatilitySqueezeBreakoutInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<ApexVolatilitySqueezeBreakoutInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-
-  const basis = A(ta.sma(S(close), cfg.length));
-  const sd = A(ta.stdev(S(close), cfg.length));
-  const atrRaw = A(ta.atr(bars, cfg.length));
-  const dev = sd.map((v) => cfg.bbMult * v);
-  const atr = atrRaw.map((v) => cfg.kcMult * v);
-  const isSqueeze = dev.map((d, i) => lt(d, atr[i]));
-  const upperRaw = basis.map((b, i) => b + dev[i]);
-  const lowerRaw = basis.map((b, i) => b - dev[i]);
-  const smoothUpper = A(ta.ema(S(upperRaw), cfg.smoothLen));
-  const smoothLower = A(ta.ema(S(lowerRaw), cfg.smoothLen));
-  const smoothBasis = A(ta.ema(S(basis), cfg.smoothLen));
-
-  // var int trend = 0
-  const trendArr: number[] = new Array(n);
-  let trend = 0;
-  for (let i = 0; i < n; i++) {
-    const c = close[i];
-    if (gt(c, smoothUpper[i]) && !isSqueeze[i]) trend = 1;
-    else if (lt(c, smoothLower[i]) && !isSqueeze[i]) trend = -1;
-    else if (isSqueeze[i]) trend = 0;
-    trendArr[i] = trend;
-  }
-  const currentColor = trendArr.map((t) => (t === 1 ? cfg.bullColor : t === -1 ? cfg.bearColor : cfg.sqzColor));
-
-  const t = (i: number) => bars[i].time;
-  const plot0 = bars.map((_b, i) => ({ time: t(i), value: smoothUpper[i], color: currentColor[i] }));
-  const plot1 = bars.map((_b, i) => ({ time: t(i), value: smoothLower[i], color: currentColor[i] }));
-  const plot2 = bars.map((_b, i) => ({ time: t(i), value: smoothBasis[i], color: String(color.new(currentColor[i], 50)) }));
-
-  // fill(p_upper, p_lower, color = color.new(current_color, 90), title = "Volatility Cloud")
-  const fills = [{
-    plot1: 'plot0', plot2: 'plot1', options: { title: 'Volatility Cloud' },
-    colors: currentColor.map((c) => String(color.new(c, 90))),
-  }];
-
-  // barcolor(color_bars ? (close > open ? current_color : color.new(current_color, 40)) : na)
-  const barColors: BarColorData[] = cfg.colorBars
-    ? bars.map((b, i) => ({
-      time: b.time,
-      color: gt(b.close, b.open) ? currentColor[i] : String(color.new(currentColor[i], 40)),
-    }))
-    : [];
-
-  // long_breakout = ta.crossover(close, smooth_upper) and trend == 1 and trend == 0 (never true, as in the source)
-  const crossUp = ta.crossover(S(close), S(smoothUpper)).toArray();
-  const crossDown = ta.crossunder(S(close), S(smoothLower)).toArray();
-  const markers: MarkerData[] = [];
-  const longFlags: boolean[] = [], shortFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const isTrend = (k: number) => trendArr[i] === k;
-    const longBreakout = !!crossUp[i] && isTrend(1) && isTrend(0);
-    const shortBreakout = !!crossDown[i] && isTrend(-1) && isTrend(0);
-    longFlags.push(longBreakout);
-    shortFlags.push(shortBreakout);
-    if (longBreakout) {
-      markers.push({ time: t(i), position: 'belowBar', shape: 'labelUp', color: cfg.bullColor, text: 'BUY',
-        textColor: color.white, size: 'small' });
-    }
-    if (shortBreakout) {
-      markers.push({ time: t(i), position: 'aboveBar', shape: 'labelDown', color: cfg.bearColor, text: 'SELL',
-        textColor: color.white, size: 'small' });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    fills,
-    barColors,
-    markers,
-    // alertcondition(long_breakout, ...) / alertcondition(short_breakout, ...)
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -165,6 +205,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const ApexVolatilitySqueezeBreakout = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

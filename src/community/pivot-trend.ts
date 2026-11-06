@@ -11,7 +11,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { MarkerData } from '../types';
 
 export interface PivotTrendInputs {
@@ -48,89 +50,118 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<PivotTrendInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface PivotTrendRun extends BarRunState<{ phy: number; ply: number }> {
+  atr: ReturnType<typeof taStep.atr>;
+  ph: PivotStep;
+  pl: PivotStep;
+  trend: number[];
+  trendLine: number[];
+  hl2: number[];
+  up: Point[];
+  down: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  topColor: (string | null)[];
+  bottomColor: (string | null)[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<PivotTrendInputs>): BarStudy<PivotTrendRun, Result> {
   const { leftBars, rightBars, offset } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  // atr = ta.atr(200); p_high = ta.pivothigh(high + atr * Offset, ...); p_low = ta.pivotlow(low - atr * Offset, ...)
-  const atr = ta.atr(bars, 200).toArray();
-  const hiSrc = bars.map((b, i) => b.high + (atr[i] ?? NaN) * offset);
-  const loSrc = bars.map((b, i) => b.low - (atr[i] ?? NaN) * offset);
-  const pHigh = ta.pivothigh(Series.fromArray(bars, hiSrc), leftBars, rightBars).toArray();
-  const pLow = ta.pivotlow(Series.fromArray(bars, loSrc), leftBars, rightBars).toArray();
-
-  const trend: number[] = new Array(n);
-  const trendLine: number[] = new Array(n);
-  let phy = NaN; // var float phy: last pivot high (upperBand)
-  let ply = NaN; // var float ply: last pivot low (lowerBand)
-  for (let i = 0; i < n; i++) {
-    // prevUpperBand = nz(upperBand[1]): phy before this bar's update
-    const prevUpper = isNaN(phy) ? 0 : phy;
-    // if bool(p_high): phy := p_high (bool(na) and bool(0) are false)
-    const ph = pHigh[i] ?? NaN;
-    const pl = pLow[i] ?? NaN;
-    if (!isNaN(ph) && ph !== 0) phy = ph;
-    if (!isNaN(pl) && pl !== 0) ply = pl;
-
-    // prevTrend = Trend[1]; if prevTrend == prevUpperBand: trend := close > upperBand ? 1 : -1
-    // else trend := close < lowerBand ? -1 : 1   (a comparison with na is false)
-    const prevTrend = i > 0 ? trendLine[i - 1] : NaN;
-    const close = bars[i].close;
-    const t = !isNaN(prevTrend) && prevTrend === prevUpper ? (close > phy ? 1 : -1) : (close < ply ? -1 : 1);
-    trend[i] = t;
-    // Trend := trend == 1 ? lowerBand : upperBand
-    trendLine[i] = t === 1 ? ply : phy;
-  }
-
-  const col = (i: number) => (trend[i] === 1 ? color.blue : color.red);
-  const hl2 = bars.map((b) => (b.high + b.low) / 2);
-  const markers: MarkerData[] = [];
-  const up: { time: number; value: number; color: string }[] = [];
-  const down: { time: number; value: number; color: string }[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // plot(trend < 0 ? Trend : na, 'Up Trend', color, style_linebr); plot(trend < 0 ? na : Trend, 'Down Trend', ...)
-    up.push({ time: t, value: trend[i] < 0 ? trendLine[i] : NaN, color: col(i) });
-    down.push({ time: t, value: trend[i] < 0 ? NaN : trendLine[i], color: col(i) });
-    // plotchar(ta.crossover(trend, 0) ? Trend : na, 'Buy', '🅑', location.absolute, color.blue, size.small)
-    // plotchar(ta.crossunder(trend, 0) ? Trend : na, 'Sell', '🅢', location.absolute, color.red, size.small)
-    if (i > 0 && !isNaN(trendLine[i])) {
-      if (trend[i] > 0 && trend[i - 1] <= 0) {
-        markers.push({ time: t, position: 'atPriceMiddle', price: trendLine[i], shape: 'circle', color: 'transparent',
-          text: '🅑', textColor: color.blue, size: 'small' });
-      } else if (trend[i] < 0 && trend[i - 1] >= 0) {
-        markers.push({ time: t, position: 'atPriceMiddle', price: trendLine[i], shape: 'circle', color: 'transparent',
-          text: '🅢', textColor: color.red, size: 'small' });
-      }
-    }
-  }
-
-  // p1 = plot(Trend, color = na); p2 = plot(hl2, color = na)
-  // fill(p1, p2, Trend, hl2, color.new(color, 85), color.new(color, 99))
-  const topColor = bars.map((_b, i): string | null => String(color.new(col(i), 85)));
-  const bottomColor = bars.map((_b, i): string | null => String(color.new(col(i), 99)));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: up,
-      plot1: down,
-      plot2: bars.map((b, i) => ({ time: b.time, value: trendLine[i] })),
-      plot3: bars.map((b, i) => ({ time: b.time, value: hl2[i] })),
+    init() {
+      const atr = taStep.atr(200);
+      const ph = new PivotStep(leftBars, rightBars, true);
+      const pl = new PivotStep(leftBars, rightBars, false);
+      const s: PivotTrendRun = {
+        atr, ph, pl, trend: [], trendLine: [], hl2: [], up: [], down: [], plot2: [], plot3: [], topColor: [],
+        bottomColor: [], markers: [],
+        // var float phy: last pivot high (upperBand); var float ply: last pivot low (lowerBand)
+        steps: [atr, ph, pl], vars: { phy: NaN, ply: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.trend, s.trendLine, s.hl2, s.up, s.down, s.plot2, s.plot3, s.topColor, s.bottomColor];
+      return s;
     },
-    fills: [{
-      plot1: 'plot2', plot2: 'plot3',
-      gradient: { topValue: trendLine, bottomValue: hl2, topColor, bottomColor },
-    }],
-    markers,
-  };
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      // atr = ta.atr(200); p_high = ta.pivothigh(high + atr * Offset, ...); p_low = ta.pivotlow(low - atr * Offset, ...)
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const ph = s.ph.step(i, b.high + atr * offset);
+      const pl = s.pl.step(i, b.low - atr * offset);
 
+      // prevUpperBand = nz(upperBand[1]): phy before this bar's update
+      const prevUpper = isNaN(v.phy) ? 0 : v.phy;
+      // if bool(p_high): phy := p_high (bool(na) and bool(0) are false)
+      if (!isNaN(ph) && ph !== 0) v.phy = ph;
+      if (!isNaN(pl) && pl !== 0) v.ply = pl;
+
+      // prevTrend = Trend[1]; if prevTrend == prevUpperBand: trend := close > upperBand ? 1 : -1
+      // else trend := close < lowerBand ? -1 : 1   (a comparison with na is false)
+      const prevTrend = i > 0 ? s.trendLine[i - 1] : NaN;
+      const close = b.close;
+      const tr = !isNaN(prevTrend) && prevTrend === prevUpper ? (close > v.phy ? 1 : -1) : (close < v.ply ? -1 : 1);
+      s.trend[i] = tr;
+      // Trend := trend == 1 ? lowerBand : upperBand
+      const trendLine = tr === 1 ? v.ply : v.phy;
+      s.trendLine[i] = trendLine;
+
+      const col = tr === 1 ? color.blue : color.red;
+      const hl2 = (b.high + b.low) / 2;
+      s.hl2[i] = hl2;
+      const t = b.time;
+      // plot(trend < 0 ? Trend : na, 'Up Trend', color, style_linebr); plot(trend < 0 ? na : Trend, 'Down Trend', ...)
+      s.up[i] = { time: t, value: tr < 0 ? trendLine : NaN, color: col };
+      s.down[i] = { time: t, value: tr < 0 ? NaN : trendLine, color: col };
+      // plotchar(ta.crossover(trend, 0) ? Trend : na, 'Buy', '🅑', location.absolute, color.blue, size.small)
+      // plotchar(ta.crossunder(trend, 0) ? Trend : na, 'Sell', '🅢', location.absolute, color.red, size.small)
+      if (i > 0 && !isNaN(trendLine)) {
+        const prev = s.trend[i - 1];
+        if (tr > 0 && prev <= 0) {
+          s.markers.push({ time: t, position: 'atPriceMiddle', price: trendLine, shape: 'circle', color: 'transparent',
+            text: '🅑', textColor: color.blue, size: 'small' });
+        } else if (tr < 0 && prev >= 0) {
+          s.markers.push({ time: t, position: 'atPriceMiddle', price: trendLine, shape: 'circle', color: 'transparent',
+            text: '🅢', textColor: color.red, size: 'small' });
+        }
+      }
+      // p1 = plot(Trend, color = na); p2 = plot(hl2, color = na)
+      // fill(p1, p2, Trend, hl2, color.new(color, 85), color.new(color, 99))
+      s.plot2[i] = { time: t, value: trendLine };
+      s.plot3[i] = { time: t, value: hl2 };
+      s.topColor[i] = String(color.new(col, 85));
+      s.bottomColor[i] = String(color.new(col, 99));
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.up.slice(), plot1: s.down.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+        fills: [{
+          plot1: 'plot2', plot2: 'plot3',
+          gradient: { topValue: s.trendLine.slice(), bottomValue: s.hl2.slice(), topColor: s.topColor.slice(), bottomColor: s.bottomColor.slice() },
+        }],
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PivotTrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PivotTrendInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PivotTrend = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

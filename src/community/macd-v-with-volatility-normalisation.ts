@@ -12,8 +12,10 @@
  * Original notice: © DutchCryptoDad
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MacdVWithVolatilityNormalisationInputs {
   /** MACD fast EMA length */
@@ -94,67 +96,106 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+
+interface MacdVRun extends BarRunState<Record<string, never>> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  atr: ReturnType<typeof taStep.atr>;
+  sig: ReturnType<typeof taStep.ema>;
+  over: ReturnType<typeof taStep.crossover>;
+  under: ReturnType<typeof taStep.crossunder>;
+  hist: number[];
+  plots: Point[][];
+  bgColors: BgColorData[];
+}
+
+const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+/** Pine nz(): na and +-infinity give 0 */
+const nz = (v: number) => (Number.isFinite(v) ? v : 0);
+
+function study(inputs: Partial<MacdVWithVolatilityNormalisationInputs>): BarStudy<MacdVRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.source);
+  const bgUp = String(color.new(color.green, 90));
+  const bgDown = String(color.new(color.red, 90));
+  return {
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const fast = taStep.ema(cfg.fastLength);
+      const slow = taStep.ema(cfg.slowLength);
+      const atr = taStep.atr(cfg.atrLength);
+      const sig = taStep.ema(cfg.signalLength);
+      const over = taStep.crossover();
+      const under = taStep.crossunder();
+      const s: MacdVRun = {
+        fast, slow, atr, sig, over, under, hist: [], plots: [[], [], [], [], []], bgColors: [],
+        steps: [fast, slow, atr, sig, over, under], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.bgColors];
+      s.series = [s.hist, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const v = value(b);
+      // macd = ((ta.ema(source, fast_len) - ta.ema(source, slow_len)) / ta.atr(atr_len)) * 100
+      // A plain division: x / 0 is +-infinity (0 / 0 NaN); ta.ema skips an infinite value, comparisons and crosses use it
+      const f = s.fast.step(v);
+      const sl = s.slow.step(v);
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const macd = ((f - sl) / atr) * 100;
+      const signal = s.sig.step(macd);
+      const h = (macd - signal) * 2;
+      s.hist[i] = h;
+      const crossover = s.over.step(macd, signal);
+      const crossdown = s.under.step(macd, signal);
+
+      s.plots[0][i] = { time: t, value: crossover ? fin(macd) : NaN, color: color.green };
+      s.plots[1][i] = { time: t, value: crossdown ? fin(macd) : NaN, color: color.red };
+      s.plots[2][i] = { time: t, value: fin(macd), color: cfg.macdColor };
+      s.plots[3][i] = { time: t, value: fin(signal), color: cfg.signalColor };
+      s.bgColors.push({ time: t, color: gt(macd, 0) ? bgUp : bgDown });
+      const h1 = nz(i > 0 ? s.hist[i - 1] : NaN);
+      const histColor = ge(h, 0)
+        ? (gt(h, h1) ? cfg.colGrowAbove : cfg.colFallAbove)
+        : (lt(h, h1) ? cfg.colFallBelow : cfg.colGrowBelow);
+      s.plots[4][i] = { time: t, value: fin(h), color: histColor };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice(), plot4: s.plots[4].slice() },
+        hlines: LEVELS.map((v) => ({
+          value: v,
+          options: { title: String(v), color: v === 0 ? ZERO_COL : LEVEL_COL, linestyle: v === 0 ? 'solid' : 'dotted' },
+        })),
+        bgColors: s.bgColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(
+  inputs: Partial<MacdVWithVolatilityNormalisationInputs> = {},
+  chart: ChartContext = {},
+): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<MacdVWithVolatilityNormalisationInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = getSourceSeries(bars, cfg.source);
-
-  // macd = ((ta.ema(source, fast_len) - ta.ema(source, slow_len)) / ta.atr(atr_len)) * 100
-  // A plain division: x / 0 is +-infinity (0 / 0 NaN); ta.ema skips an infinite value, comparisons and crosses use it
-  const fastEma = A(ta.ema(src, cfg.fastLength));
-  const slowEma = A(ta.ema(src, cfg.slowLength));
-  const atr = A(ta.atr(bars, cfg.atrLength));
-  const macd = fastEma.map((f, i) => ((f - slowEma[i]) / atr[i]) * 100);
-  const signal = A(ta.ema(S(macd), cfg.signalLength));
-  const hist = macd.map((m, i) => (m - signal[i]) * 2);
-  const crossover = A(ta.crossover(S(macd), S(signal)));
-  const crossdown = A(ta.crossunder(S(macd), S(signal)));
-
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  /** Pine nz(): na and +-infinity give 0 */
-  const nz = (v: number) => (Number.isFinite(v) ? v : 0);
-  const bgUp = String(color.new(color.green, 90));
-  const bgDown = String(color.new(color.red, 90));
-
-  const plot0 = [];
-  const plot1 = [];
-  const plot2 = [];
-  const plot3 = [];
-  const plot4 = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    plot0.push({ time: t, value: crossover[i] ? fin(macd[i]) : NaN, color: color.green });
-    plot1.push({ time: t, value: crossdown[i] ? fin(macd[i]) : NaN, color: color.red });
-    plot2.push({ time: t, value: fin(macd[i]), color: cfg.macdColor });
-    plot3.push({ time: t, value: fin(signal[i]), color: cfg.signalColor });
-    bgColors.push({ time: t, color: gt(macd[i], 0) ? bgUp : bgDown });
-    const h = hist[i];
-    const h1 = nz(i > 0 ? hist[i - 1] : NaN);
-    const histColor = ge(h, 0)
-      ? (gt(h, h1) ? cfg.colGrowAbove : cfg.colFallAbove)
-      : (lt(h, h1) ? cfg.colFallBelow : cfg.colGrowBelow);
-    plot4.push({ time: t, value: fin(h), color: histColor });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3, plot4 },
-    hlines: LEVELS.map((v) => ({
-      value: v,
-      options: { title: String(v), color: v === 0 ? ZERO_COL : LEVEL_COL, linestyle: v === 0 ? 'solid' : 'dotted' },
-    })),
-    bgColors,
-  };
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MacdVWithVolatilityNormalisation = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

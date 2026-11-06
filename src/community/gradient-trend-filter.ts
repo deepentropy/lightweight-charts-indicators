@@ -11,8 +11,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface GradientTrendFilterInputs {
   src: SourceType;
@@ -58,93 +60,136 @@ export const metadata = {
 };
 
 /** noise_filter(src, length): three chained EMAs with alpha = 2 / (length + 1), each started from 0 (nz) */
-function noiseFilter(src: number[], length: number): number[] {
-  const alpha = 2 / (length + 1);
-  const out: number[] = new Array(src.length);
-  let nf1 = NaN;
-  let nf2 = NaN;
-  let nf3 = NaN;
-  const nz = (v: number) => (isNaN(v) ? 0 : v);
-  for (let i = 0; i < src.length; i++) {
-    nf1 = alpha * src[i] + (1 - alpha) * nz(nf1);
-    nf2 = alpha * nf1 + (1 - alpha) * nz(nf2);
-    nf3 = alpha * nf2 + (1 - alpha) * nz(nf3);
-    out[i] = nf3;
-  }
-  return out;
+interface NoiseFilter {
+  nf1: number;
+  nf2: number;
+  nf3: number;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<GradientTrendFilterInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+const nz = (v: number) => (isNaN(v) ? 0 : v);
+
+/** One bar of noise_filter: the state changed in place, the filter value returned */
+function noiseFilterStep(f: NoiseFilter, value: number, alpha: number): number {
+  f.nf1 = alpha * value + (1 - alpha) * nz(f.nf1);
+  f.nf2 = alpha * f.nf1 + (1 - alpha) * nz(f.nf2);
+  f.nf3 = alpha * f.nf2 + (1 - alpha) * nz(f.nf3);
+  return f.nf3;
+}
+
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface GtfVars {
+  base: NoiseFilter;
+  val: NoiseFilter;
+}
+
+interface GtfRun extends BarRunState<GtfVars> {
+  lo: WindowExtreme;
+  hi: WindowExtreme;
+  base: number[];
+  diff: number[];
+  filter: Point[];
+  bands: Point[][];
+  trendColors: string[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<GradientTrendFilterInputs>): BarStudy<GtfRun, Result> {
   const { src, length, color1, color2, transp } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const source = getSourceSeries(bars, src).toArray().map((v) => v ?? NaN);
-
-  const base = noiseFilter(source, length);
-  const val = noiseFilter(bars.map((b) => b.high - b.low), length);
-  const band = (k: number) => base.map((b, i) => b + val[i] * k);
-  const upper3 = band(0.618 * 2.5);
-  const upper2 = band(0.382 * 2);
-  const upper1 = band(0.236 * 1.5);
-  const lower1 = base.map((b, i) => b - val[i] * 0.236 * 1.5);
-  const lower2 = base.map((b, i) => b - val[i] * 0.382 * 2);
-  const lower3 = base.map((b, i) => b - val[i] * 0.618 * 2.5);
-
-  // diff = base - base[2]
-  const diff = base.map((b, i) => (i >= 2 ? b - base[i - 2] : NaN));
-  const diffSeries = Series.fromArray(bars, diff);
-  const lo = ta.lowest(diffSeries, 100).toArray();
-  const hi = ta.highest(diffSeries, 100).toArray();
-
-  const filter: { time: number; value: number; color: string }[] = [];
-  const trendColors: string[] = [];
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    // color gradient_col = color.from_gradient(diff, lowest(diff, 100), highest(diff, 100), color2, color1)
-    // trend_color = color.new(gradient_col, transp)
-    const grad = color.from_gradient(diff[i], lo[i] ?? NaN, hi[i] ?? NaN, color2, color1);
-    trendColors.push(String(color.new(grad, transp)));
-    // plot(base, "Filter", color = diff >= 0 ? color1 : color2)
-    filter.push({ time: bars[i].time, value: base[i], color: diff[i] >= 0 ? color1 : color2 });
-    // plotshape(signal_up / signal_dn ? base[1] : na, shape.diamond, location.absolute, offset = -1, color.orange)
-    // signal: ta.crossover / ta.crossunder(diff, 0) (every historical bar is confirmed)
-    if (i > 0 && !isNaN(diff[i - 1])) {
-      const up = diff[i] > 0 && diff[i - 1] <= 0;
-      const dn = diff[i] < 0 && diff[i - 1] >= 0;
-      // shape0: the signal_up diamond, shape1: the signal_dn diamond
-      if (up || dn) {
-        markers.push({ id: up ? 'shape0' : 'shape1', time: bars[i - 1].time, position: 'atPriceMiddle', price: base[i - 1],
-          shape: 'diamond', color: color.orange, size: 'tiny' });
-      }
-    }
-  }
-
-  const line = (arr: number[]) => bars.map((b, i) => ({ time: b.time, value: arr[i] }));
+  const value = barSource(src);
+  const alpha = 2 / (length + 1);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: filter,
-      plot1: line(upper3),
-      plot2: line(upper2),
-      plot3: line(upper1),
-      plot4: line(lower1),
-      plot5: line(lower2),
-      plot6: line(lower3),
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const lo = new WindowExtreme(true, 100);
+      const hi = new WindowExtreme(false, 100);
+      const s: GtfRun = {
+        lo, hi, base: [], diff: [], filter: [], bands: [[], [], [], [], [], []], trendColors: [], markers: [],
+        steps: [lo, hi],
+        vars: { base: { nf1: NaN, nf2: NaN, nf3: NaN }, val: { nf1: NaN, nf2: NaN, nf3: NaN } },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.base, s.diff, s.filter, ...s.bands, s.trendColors];
+      return s;
     },
-    // fill(up3, lw3, trend_color); fill(up2, lw2, trend_color); fill(up1, lw1, trend_color)
-    fills: [
-      { plot1: 'plot1', plot2: 'plot6', colors: trendColors },
-      { plot1: 'plot2', plot2: 'plot5', colors: trendColors },
-      { plot1: 'plot3', plot2: 'plot4', colors: trendColors },
-    ],
-    markers,
+    copyVars: (v) => ({ base: { ...v.base }, val: { ...v.val } }),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const base = noiseFilterStep(s.vars.base, value(b), alpha);
+      const val = noiseFilterStep(s.vars.val, b.high - b.low, alpha);
+      s.base[i] = base;
+      const bd = s.bands;
+      bd[0][i] = { time, value: base + val * (0.618 * 2.5) };
+      bd[1][i] = { time, value: base + val * (0.382 * 2) };
+      bd[2][i] = { time, value: base + val * (0.236 * 1.5) };
+      bd[3][i] = { time, value: base - val * 0.236 * 1.5 };
+      bd[4][i] = { time, value: base - val * 0.382 * 2 };
+      bd[5][i] = { time, value: base - val * 0.618 * 2.5 };
+
+      // diff = base - base[2]
+      const diff = i >= 2 ? base - s.base[i - 2] : NaN;
+      s.diff[i] = diff;
+      const lo = s.lo.step(diff);
+      const hi = s.hi.step(diff);
+      // color gradient_col = color.from_gradient(diff, lowest(diff, 100), highest(diff, 100), color2, color1)
+      // trend_color = color.new(gradient_col, transp)
+      const grad = color.from_gradient(diff, lo, hi, color2, color1);
+      s.trendColors[i] = String(color.new(grad, transp));
+      // plot(base, "Filter", color = diff >= 0 ? color1 : color2)
+      s.filter[i] = { time, value: base, color: diff >= 0 ? color1 : color2 };
+      // plotshape(signal_up / signal_dn ? base[1] : na, shape.diamond, location.absolute, offset = -1, color.orange)
+      // signal: ta.crossover / ta.crossunder(diff, 0) (every historical bar is confirmed)
+      const prev = i > 0 ? s.diff[i - 1] : NaN;
+      if (i > 0 && !isNaN(prev)) {
+        const up = diff > 0 && prev <= 0;
+        const dn = diff < 0 && prev >= 0;
+        // shape0: the signal_up diamond, shape1: the signal_dn diamond
+        if (up || dn) {
+          s.markers.push({ id: up ? 'shape0' : 'shape1', time: bars[i - 1].time, position: 'atPriceMiddle', price: s.base[i - 1],
+            shape: 'diamond', color: color.orange, size: 'tiny' });
+        }
+      }
+    },
+    result(s) {
+      const trendColors = s.trendColors.slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.filter.slice(),
+          plot1: s.bands[0].slice(),
+          plot2: s.bands[1].slice(),
+          plot3: s.bands[2].slice(),
+          plot4: s.bands[3].slice(),
+          plot5: s.bands[4].slice(),
+          plot6: s.bands[5].slice(),
+        },
+        // fill(up3, lw3, trend_color); fill(up2, lw2, trend_color); fill(up1, lw1, trend_color)
+        fills: [
+          { plot1: 'plot1', plot2: 'plot6', colors: trendColors },
+          { plot1: 'plot2', plot2: 'plot5', colors: trendColors },
+          { plot1: 'plot3', plot2: 'plot4', colors: trendColors },
+        ],
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GradientTrendFilterInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<GradientTrendFilterInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const GradientTrendFilter = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

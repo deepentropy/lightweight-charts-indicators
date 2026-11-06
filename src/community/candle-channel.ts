@@ -12,8 +12,10 @@
  * Original notice: © Uncle_the_shooter
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CandleChannelInputs {
   /** SMA length of the candle midpoint and of the candle height */
@@ -94,100 +96,129 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CandleChannelInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface CandleRun extends BarRunState<Record<string, never>> {
+  midSma: WindowSma;
+  avgRange: WindowSma;
+  crossUp: ReturnType<typeof taStep.crossover>;
+  crossDown: ReturnType<typeof taStep.crossunder>;
+  upperBand: number[];
+  lowerBand: number[];
+  /** plot0..plot27 */
+  plots: Point[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<CandleChannelInputs>): BarStudy<CandleRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const close = bars.map((b) => b.close);
-  // candleMid = (high + low) / 2; midSma = ta.sma(candleMid, length); avgRange = ta.sma(high - low, length)
-  const midSma = A(ta.sma(S(bars.map((b) => (b.high + b.low) / 2)), cfg.length));
-  const avgRange = A(ta.sma(S(bars.map((b) => b.high - b.low)), cfg.length));
-  const upperBand: number[] = new Array(n);
-  const lowerBand: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const offset = (avgRange[i] * cfg.scale) / 100;
-    upperBand[i] = midSma[i] + offset;
-    lowerBand[i] = midSma[i] - offset;
-  }
-
-  // ta.crossover(close, midSma) / ta.crossunder(close, midSma): run on every bar (left side of `and` is an input)
-  const crossUp = ta.crossover(S(close), S(midSma)).toArray();
-  const crossDown = ta.crossunder(S(close), S(midSma)).toArray();
-
-  const t = (i: number) => bars[i].time;
-  const plots: Record<string, Array<{ time: number; value: number; color?: string }>> = {};
-  plots.plot0 = bars.map((_b, i) => ({ time: t(i), value: midSma[i] }));
-  plots.plot1 = bars.map((_b, i) => ({ time: t(i), value: upperBand[i], color: cfg.colUpper }));
-  plots.plot2 = bars.map((_b, i) => ({ time: t(i), value: lowerBand[i], color: cfg.colLower }));
-  const midCenter = bars.map((_b, i) => (upperBand[i] + lowerBand[i]) / 2);
-  plots.plot3 = bars.map((_b, i) => ({ time: t(i), value: midCenter[i] }));
-  for (let k = 0; k < LEVELS; k++) {
-    plots[`plot${4 + k}`] = bars.map((_b, i) => {
-      // mid0..mid11: upperBand - (upperBand - midCenter) * k / 12
-      // mid12..mid23: midCenter + (lowerBand - midCenter) * (k - 11) / 12
-      const u = upperBand[i];
-      const m = midCenter[i];
-      const value = k < 12 ? u - ((u - m) * k) / 12 : m + ((lowerBand[i] - m) * (k - 11)) / 12;
-      return { time: t(i), value };
-    });
-  }
-
-  // Fills: plotUpper / mid0, mid0 / mid1, ..., mid10 / mid11 (colUpper, transparency 60..93), mid11 / mid12 (gray 95),
-  // mid12 / mid13, ..., mid22 / mid23 (colLower, transparency 90..60); then plotUpper / plotLower (solid)
-  const gradient = cfg.fillType === 'Gradient';
-  const constant = (c: string) => new Array<string>(n).fill(c);
-  const fills: NonNullable<IndicatorResult['fills']> = [];
-  const level = (k: number) => `plot${4 + k}`;
-  const gradFill = (plot1: string, plot2: string, c: string, tr: number) => {
-    fills.push({ plot1, plot2, options: { title: 'Plots Background' },
-      colors: constant(gradient ? String(color.new(c, tr)) : 'transparent') });
-  };
-  gradFill('plot1', level(0), cfg.colUpper, 60);
-  for (let k = 0; k < 11; k++) gradFill(level(k), level(k + 1), cfg.colUpper, 63 + 3 * k);
-  gradFill(level(11), level(12), color.gray, 95);
-  for (let k = 12; k < 23; k++) gradFill(level(k), level(k + 1), cfg.colLower, 90 - 3 * (k - 12));
-  fills.push({ plot1: 'plot1', plot2: 'plot2', options: { title: 'Solid Fill' },
-    colors: constant(cfg.fillType === 'Solid' ? String(color.new(cfg.solidFillColor, 90)) : 'transparent') });
-
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    // aboveUpper = close[1] > upperBand[1]; returnToUpper = ... and close < upperBand and close < open
-    const aboveUpper = i > 0 && gt(close[i - 1], upperBand[i - 1]);
-    const returnToUpper = cfg.showReturnSignals && aboveUpper && lt(b.close, upperBand[i]) && lt(b.close, b.open);
-    const belowLower = i > 0 && lt(close[i - 1], lowerBand[i - 1]);
-    const returnToLower = cfg.showReturnSignals && belowLower && gt(b.close, lowerBand[i]) && gt(b.close, b.open);
-    const smaCrossUp = cfg.showSmaSignals && !!crossUp[i];
-    const smaCrossDown = cfg.showSmaSignals && !!crossDown[i];
-    if (returnToUpper) {
-      markers.push({ time: t(i), position: 'aboveBar', shape: 'triangleDown', color: cfg.bearishSignalColor, size: 'tiny' });
-    }
-    if (returnToLower) {
-      markers.push({ time: t(i), position: 'belowBar', shape: 'triangleUp', color: cfg.bullishSignalColor, size: 'tiny' });
-    }
-    if (smaCrossUp) {
-      markers.push({ time: t(i), position: 'belowBar', shape: 'circle', color: cfg.smaCrossUpColor, size: 'tiny' });
-    }
-    if (smaCrossDown) {
-      markers.push({ time: t(i), position: 'aboveBar', shape: 'circle', color: cfg.smaCrossDownColor, size: 'tiny' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    markers,
+    init() {
+      const s: CandleRun = {
+        midSma: new WindowSma(cfg.length), avgRange: new WindowSma(cfg.length),
+        crossUp: taStep.crossover(), crossDown: taStep.crossunder(),
+        upperBand: [], lowerBand: [], plots: Array.from({ length: 4 + LEVELS }, () => []), markers: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.midSma, s.avgRange, s.crossUp, s.crossDown];
+      s.lists = [s.markers];
+      s.series = [s.upperBand, s.lowerBand, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // candleMid = (high + low) / 2; midSma = ta.sma(candleMid, length); avgRange = ta.sma(high - low, length)
+      const midSma = s.midSma.step((b.high + b.low) / 2);
+      const avgRange = s.avgRange.step(b.high - b.low);
+      const offset = (avgRange * cfg.scale) / 100;
+      const u = midSma + offset;
+      const l = midSma - offset;
+      s.upperBand[i] = u;
+      s.lowerBand[i] = l;
+      // ta.crossover(close, midSma) / ta.crossunder(close, midSma): run on every bar (left side of `and` is an input)
+      const crossUp = s.crossUp.step(b.close, midSma);
+      const crossDown = s.crossDown.step(b.close, midSma);
+
+      const plots = s.plots;
+      plots[0][i] = { time, value: midSma };
+      plots[1][i] = { time, value: u, color: cfg.colUpper };
+      plots[2][i] = { time, value: l, color: cfg.colLower };
+      const m = (u + l) / 2;
+      plots[3][i] = { time, value: m };
+      for (let k = 0; k < LEVELS; k++) {
+        // mid0..mid11: upperBand - (upperBand - midCenter) * k / 12
+        // mid12..mid23: midCenter + (lowerBand - midCenter) * (k - 11) / 12
+        const value = k < 12 ? u - ((u - m) * k) / 12 : m + ((l - m) * (k - 11)) / 12;
+        plots[4 + k][i] = { time, value };
+      }
+
+      // aboveUpper = close[1] > upperBand[1]; returnToUpper = ... and close < upperBand and close < open
+      const prevClose = i > 0 ? bars[i - 1].close : NaN;
+      const aboveUpper = i > 0 && gt(prevClose, s.upperBand[i - 1]);
+      const returnToUpper = cfg.showReturnSignals && aboveUpper && lt(b.close, u) && lt(b.close, b.open);
+      const belowLower = i > 0 && lt(prevClose, s.lowerBand[i - 1]);
+      const returnToLower = cfg.showReturnSignals && belowLower && gt(b.close, l) && gt(b.close, b.open);
+      const smaCrossUp = cfg.showSmaSignals && !!crossUp;
+      const smaCrossDown = cfg.showSmaSignals && !!crossDown;
+      if (returnToUpper) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: cfg.bearishSignalColor, size: 'tiny' });
+      }
+      if (returnToLower) {
+        s.markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: cfg.bullishSignalColor, size: 'tiny' });
+      }
+      if (smaCrossUp) {
+        s.markers.push({ time, position: 'belowBar', shape: 'circle', color: cfg.smaCrossUpColor, size: 'tiny' });
+      }
+      if (smaCrossDown) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'circle', color: cfg.smaCrossDownColor, size: 'tiny' });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+
+      // Fills: plotUpper / mid0, mid0 / mid1, ..., mid10 / mid11 (colUpper, transparency 60..93), mid11 / mid12 (gray 95),
+      // mid12 / mid13, ..., mid22 / mid23 (colLower, transparency 90..60); then plotUpper / plotLower (solid)
+      const gradient = cfg.fillType === 'Gradient';
+      const constant = (c: string) => new Array<string>(n).fill(c);
+      const fills: NonNullable<IndicatorResult['fills']> = [];
+      const level = (k: number) => `plot${4 + k}`;
+      const gradFill = (plot1: string, plot2: string, c: string, tr: number) => {
+        fills.push({ plot1, plot2, options: { title: 'Plots Background' },
+          colors: constant(gradient ? String(color.new(c, tr)) : 'transparent') });
+      };
+      gradFill('plot1', level(0), cfg.colUpper, 60);
+      for (let k = 0; k < 11; k++) gradFill(level(k), level(k + 1), cfg.colUpper, 63 + 3 * k);
+      gradFill(level(11), level(12), color.gray, 95);
+      for (let k = 12; k < 23; k++) gradFill(level(k), level(k + 1), cfg.colLower, 90 - 3 * (k - 12));
+      fills.push({ plot1: 'plot1', plot2: 'plot2', options: { title: 'Solid Fill' },
+        colors: constant(cfg.fillType === 'Solid' ? String(color.new(cfg.solidFillColor, 90)) : 'transparent') });
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CandleChannelInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CandleChannelInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const CandleChannel = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

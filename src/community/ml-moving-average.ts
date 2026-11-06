@@ -12,7 +12,9 @@
  * Reference: "Machine Learning Moving Average [LuxAlgo]"
  */
 
-import { getSourceSeries, ta, Series, color, matrix, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+import { color, matrix, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 
 export interface MlMovingAverageInputs {
   window: number;
@@ -92,74 +94,110 @@ export function gprKernelRow(window: number, forecast: number, sigma: number): n
   return Array.from({ length: window }, (_, i) => matrix.get(prod, r, i));
 }
 
-export function calculate(bars: Bar[], inputs: Partial<MlMovingAverageInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface MlmaRun extends BarRunState<{ state: number }> {
+  mean: WindowSma | null;
+  mae: WindowSma | null;
+  srcArr: number[];
+  out: number[];
+  upper: number[];
+  lower: number[];
+  os: number[];
+  plot0: Point[];
+  circle: Point[];
+  plot1: Point[];
+  plot2: Point[];
+}
+
+function study(inputs: Partial<MlMovingAverageInputs>): BarStudy<MlmaRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const win = cfg.window;
-  const n = bars.length;
-  const srcArr = getSourceSeries(bars, cfg.src).toArray();
-
+  const value = barSource(cfg.src);
   const kRow = gprKernelRow(win, cfg.forecast, cfg.sigma);
-  const meanArr = win >= 1 ? ta.sma(Series.fromArray(bars, srcArr), win).toArray() : new Array<number>(n).fill(NaN);
-
-  // float out = na; if bar_index > window: out := dotprod + mean
-  const out: number[] = new Array(n).fill(NaN);
-  if (kRow) {
-    for (let t = win + 1; t < n; t++) {
-      const mean = meanArr[t];
-      let dot = 0;
-      for (let i = 0; i < win; i++) dot += kRow[i] * (srcArr[t - (win - 1 - i)] - mean);
-      out[t] = dot + mean;
-    }
-  }
-
-  // mae = ta.sma(math.abs(src - out), window) * mult
-  const maeArr = win >= 1
-    ? ta.sma(Series.fromArray(bars, srcArr.map((v, t) => Math.abs(v - out[t]))), win).toArray().map((v) => v * cfg.mult)
-    : new Array<number>(n).fill(NaN);
-  const upper = out.map((v, t) => v + maeArr[t]);
-  const lower = out.map((v, t) => v - maeArr[t]);
-
-  // var os = 0; os := close > upper and out > out[1] ? 1 : close < lower and out < out[1] ? 0 : os
-  const os: number[] = new Array(n).fill(0);
-  let state = 0;
-  for (let t = 0; t < n; t++) {
-    const c = bars[t].close;
-    const prev = t > 0 ? out[t - 1] : NaN;
-    if (c > upper[t] && out[t] > prev) state = 1;
-    else if (c < lower[t] && out[t] < prev) state = 0;
-    os[t] = state;
-  }
-
-  const css = (t: number) => (os[t] ? cfg.bullCss : cfg.bearCss);
-  const plot0 = out.map((v, t) => ({ time: bars[t].time, value: v, color: css(t) }));
-  // plot(os != os[1] ? out : na, 'Circle', os ? bullCss : bearCss, 3, plot.style_circles)
-  const circle = out.map((v, t) => ({
-    time: bars[t].time,
-    value: t > 0 && os[t] !== os[t - 1] ? v : NaN,
-    color: css(t),
-  }));
-  const plot1 = upper.map((v, t) => ({ time: bars[t].time, value: v }));
-  const plot2 = lower.map((v, t) => ({ time: bars[t].time, value: v }));
-
-  //   fill(plot_upper, plot_out, out + mae, out, upCss, color.new(chart.bg_color, 100))
-  //   fill(plot_out, plot_lower, out, out - mae, color.new(chart.bg_color, 100), dnCss)
-  const bgTransparent = '#00000000';
-  const constant = <T>(v: T): T[] => new Array(n).fill(v);
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'circle': circle, 'plot1': plot1, 'plot2': plot2 },
-    fills: [
-      {
-        plot1: 'plot1', plot2: 'plot0',
-        gradient: { topValue: upper, bottomValue: out, topColor: constant(cfg.upCss), bottomColor: constant(bgTransparent) },
-      },
-      {
-        plot1: 'plot0', plot2: 'plot2',
-        gradient: { topValue: out, bottomValue: lower, topColor: constant(bgTransparent), bottomColor: constant(cfg.dnCss) },
-      },
-    ],
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const mean = win >= 1 ? new WindowSma(win) : null;
+      const mae = win >= 1 ? new WindowSma(win) : null;
+      const s: MlmaRun = {
+        mean, mae, srcArr: [], out: [], upper: [], lower: [], os: [], plot0: [], circle: [], plot1: [], plot2: [],
+        steps: [...(mean ? [mean] : []), ...(mae ? [mae] : [])], vars: { state: 0 }, lists: [], series: [],
+      };
+      s.series = [s.srcArr, s.out, s.upper, s.lower, s.os, s.plot0, s.circle, s.plot1, s.plot2];
+      return s;
+    },
+    bar(s, t, bars) {
+      const b = bars[t];
+      const time = b.time as number;
+      const srcArr = s.srcArr;
+      const v = value(b);
+      srcArr[t] = v;
+      const mean = s.mean ? s.mean.step(v) : NaN;
+
+      // float out = na; if bar_index > window: out := dotprod + mean
+      let o = NaN;
+      if (kRow && t >= win + 1) {
+        let dot = 0;
+        for (let i = 0; i < win; i++) dot += kRow[i] * (srcArr[t - (win - 1 - i)] - mean);
+        o = dot + mean;
+      }
+      s.out[t] = o;
+
+      // mae = ta.sma(math.abs(src - out), window) * mult
+      const mae = s.mae ? s.mae.step(Math.abs(v - o)) * cfg.mult : NaN;
+      const upper = o + mae;
+      const lower = o - mae;
+      s.upper[t] = upper;
+      s.lower[t] = lower;
+
+      // var os = 0; os := close > upper and out > out[1] ? 1 : close < lower and out < out[1] ? 0 : os
+      const c = b.close;
+      const prev = t > 0 ? s.out[t - 1] : NaN;
+      if (c > upper && o > prev) s.vars.state = 1;
+      else if (c < lower && o < prev) s.vars.state = 0;
+      const os = s.vars.state;
+      s.os[t] = os;
+
+      const css = os ? cfg.bullCss : cfg.bearCss;
+      s.plot0[t] = { time, value: o, color: css };
+      // plot(os != os[1] ? out : na, 'Circle', os ? bullCss : bearCss, 3, plot.style_circles)
+      s.circle[t] = { time, value: t > 0 && os !== s.os[t - 1] ? o : NaN, color: css };
+      s.plot1[t] = { time, value: upper };
+      s.plot2[t] = { time, value: lower };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      //   fill(plot_upper, plot_out, out + mae, out, upCss, color.new(chart.bg_color, 100))
+      //   fill(plot_out, plot_lower, out, out - mae, color.new(chart.bg_color, 100), dnCss)
+      const bgTransparent = '#00000000';
+      const constant = <T>(v: T): T[] => new Array(n).fill(v);
+      const out = s.out.slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'circle': s.circle.slice(), 'plot1': s.plot1.slice(), 'plot2': s.plot2.slice() },
+        fills: [
+          {
+            plot1: 'plot1', plot2: 'plot0',
+            gradient: { topValue: s.upper.slice(), bottomValue: out, topColor: constant(cfg.upCss), bottomColor: constant(bgTransparent) },
+          },
+          {
+            plot1: 'plot0', plot2: 'plot2',
+            gradient: { topValue: out.slice(), bottomValue: s.lower.slice(), topColor: constant(bgTransparent), bottomColor: constant(cfg.dnCss) },
+          },
+        ],
+      };
+    },
   };
 }
 
-export const MlMovingAverage = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MlMovingAverageInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MlMovingAverageInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MlMovingAverage = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

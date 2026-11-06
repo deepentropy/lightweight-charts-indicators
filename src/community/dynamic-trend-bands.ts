@@ -12,8 +12,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DynamicTrendBandsInputs {
   /** Double HMA length (the inner HMA uses length - 10) */
@@ -80,91 +82,133 @@ const le = (a: number, b: number) => ge(b, a);
 /** Pine a > b: true only when a - b > 1e-10 */
 const gt = (a: number, b: number) => a - b > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DynamicTrendBandsInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
+
+interface DtbRun extends BarRunState<Record<string, never>> {
+  hma1: ReturnType<typeof taStep.hma>;
+  hma2: ReturnType<typeof taStep.hma>;
+  atr: ReturnType<typeof taStep.atr>;
+  upper: number[];
+  lower: number[];
+  lowerBand: number[];
+  lowerBand1: number[];
+  upperBand: number[];
+  upperBand1: number[];
+  plots: Point[][];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<DynamicTrendBandsInputs>): BarStudy<DtbRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const bs = cfg.bandSize;
   const at = (a: number[], j: number) => (j >= 0 ? a[j] : NaN);
-
-  // base = ta.hma(ta.hma(close, length - 10), length)
-  const close = bars.map((b) => b.close);
-  const base = A(ta.hma(S(A(ta.hma(S(close), cfg.length - 10))), cfg.length));
-  // dist = ta.atr(100) * multi
-  const atr = A(ta.atr(bars, 100));
-  const upper = base.map((v, i) => v + atr[i] * cfg.multi);
-  const lower = base.map((v, i) => v - atr[i] * cfg.multi);
-
-  // lower_band = lower >= lower[band_size] ? lower[band_size] : na; lower_band1 = ... ? lower : na
-  // upper_band = upper <= upper[band_size] ? upper[band_size] : na; upper_band1 = ... ? upper : na
-  const lowerBand: number[] = new Array(n);
-  const lowerBand1: number[] = new Array(n);
-  const upperBand: number[] = new Array(n);
-  const upperBand1: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const lb = at(lower, i - bs);
-    const lowOk = ge(lower[i], lb);
-    lowerBand[i] = lowOk ? lb : NaN;
-    lowerBand1[i] = lowOk ? lower[i] : NaN;
-    const ub = at(upper, i - bs);
-    const upOk = le(upper[i], ub);
-    upperBand[i] = upOk ? ub : NaN;
-    upperBand1[i] = upOk ? upper[i] : NaN;
-  }
-
   // middle lines: upper_band1[band_size - int(band_size / 2)], lower_band1[...]
   const mid = bs - Math.trunc(bs / 2);
-
-  const plot = (vals: number[], c: string) => bars.map((b, i) => ({ time: b.time, value: vals[i], color: c }));
-  const upperMid = bars.map((_b, i) => at(upperBand1, i - mid));
-  const lowerMid = bars.map((_b, i) => at(lowerBand1, i - mid));
-
-  // switch: upper_band1 <= upper_band1[2] and high > upper_band => color.orange
-  //         lower_band >= lower_band[2] and low < lower_band => color.orange; default #ff980000
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    let c = '#ff980000';
-    if (le(upperBand1[i], at(upperBand1, i - 2)) && gt(bars[i].high, upperBand[i])) c = color.orange;
-    else if (ge(lowerBand[i], at(lowerBand, i - 2)) && gt(lowerBand[i], bars[i].low)) c = color.orange;
-    // barcolor(color, display = bars_col ? display.all : display.none)
-    if (cfg.barsCol) barColors.push({ time: bars[i].time, color: c });
-  }
-
-  const colUp1 = String(color.new(cfg.colUp, 50));
-  const colDn1 = String(color.new(cfg.colDn, 50));
-  const upFill = new Array<string | null>(n).fill(colUp1);
-  const dnFill = new Array<string | null>(n).fill(colDn1);
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: plot(base, cfg.colMid),
-      plot1: plot(lowerBand1, cfg.colUp),
-      plot2: plot(lowerBand, cfg.colUp),
-      plot3: plot(upperBand, cfg.colDn),
-      plot4: plot(upperBand1, cfg.colDn),
-      plot5: plot(upperMid, cfg.colDn),
-      plot6: plot(lowerMid, cfg.colUp),
+    init() {
+      // base = ta.hma(ta.hma(close, length - 10), length)
+      const hma1 = taStep.hma(cfg.length - 10);
+      const hma2 = taStep.hma(cfg.length);
+      // dist = ta.atr(100) * multi
+      const atr = taStep.atr(100);
+      const s: DtbRun = {
+        hma1, hma2, atr, upper: [], lower: [], lowerBand: [], lowerBand1: [], upperBand: [], upperBand1: [],
+        plots: [[], [], [], [], [], [], []], barColors: [], steps: [hma1, hma2, atr], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.barColors];
+      s.series = [s.upper, s.lower, s.lowerBand, s.lowerBand1, s.upperBand, s.upperBand1, ...s.plots];
+      return s;
     },
-    // fill(pl1, pl, lower_band1, lower_band, col_up1, col_up1); fill(ph1, ph, upper_band, upper_band1, col_dn1, col_dn1)
-    // display = filll ? display.all : display.none
-    fills: cfg.fill
-      ? [
-        { plot1: 'plot2', plot2: 'plot1', gradient: { topValue: lowerBand1, bottomValue: lowerBand, topColor: upFill, bottomColor: upFill } },
-        { plot1: 'plot4', plot2: 'plot3', gradient: { topValue: upperBand, bottomValue: upperBand1, topColor: dnFill, bottomColor: dnFill } },
-      ]
-      : [],
-    markers: [],
-    barColors,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const base = s.hma2.step(s.hma1.step(b.close));
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const upper = base + atr * cfg.multi;
+      const lower = base - atr * cfg.multi;
+      s.upper[i] = upper;
+      s.lower[i] = lower;
+
+      // lower_band = lower >= lower[band_size] ? lower[band_size] : na; lower_band1 = ... ? lower : na
+      // upper_band = upper <= upper[band_size] ? upper[band_size] : na; upper_band1 = ... ? upper : na
+      const lb = at(s.lower, i - bs);
+      const lowOk = ge(lower, lb);
+      const lowerBand = lowOk ? lb : NaN;
+      const lowerBand1 = lowOk ? lower : NaN;
+      const ub = at(s.upper, i - bs);
+      const upOk = le(upper, ub);
+      const upperBand = upOk ? ub : NaN;
+      const upperBand1 = upOk ? upper : NaN;
+      s.lowerBand[i] = lowerBand;
+      s.lowerBand1[i] = lowerBand1;
+      s.upperBand[i] = upperBand;
+      s.upperBand1[i] = upperBand1;
+
+      const time = b.time;
+      const p = s.plots;
+      p[0][i] = { time, value: base, color: cfg.colMid };
+      p[1][i] = { time, value: lowerBand1, color: cfg.colUp };
+      p[2][i] = { time, value: lowerBand, color: cfg.colUp };
+      p[3][i] = { time, value: upperBand, color: cfg.colDn };
+      p[4][i] = { time, value: upperBand1, color: cfg.colDn };
+      p[5][i] = { time, value: at(s.upperBand1, i - mid), color: cfg.colDn };
+      p[6][i] = { time, value: at(s.lowerBand1, i - mid), color: cfg.colUp };
+
+      // switch: upper_band1 <= upper_band1[2] and high > upper_band => color.orange
+      //         lower_band >= lower_band[2] and low < lower_band => color.orange; default #ff980000
+      let c = '#ff980000';
+      if (le(upperBand1, at(s.upperBand1, i - 2)) && gt(b.high, upperBand)) c = color.orange;
+      else if (ge(lowerBand, at(s.lowerBand, i - 2)) && gt(lowerBand, b.low)) c = color.orange;
+      // barcolor(color, display = bars_col ? display.all : display.none)
+      if (cfg.barsCol) s.barColors.push({ time, color: c });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const colUp1 = String(color.new(cfg.colUp, 50));
+      const colDn1 = String(color.new(cfg.colDn, 50));
+      const p = s.plots;
+      let fills: NonNullable<IndicatorResult['fills']> = [];
+      if (cfg.fill) {
+        const upFill = new Array<string | null>(n).fill(colUp1);
+        const dnFill = new Array<string | null>(n).fill(colDn1);
+        // fill(pl1, pl, lower_band1, lower_band, col_up1, col_up1); fill(ph1, ph, upper_band, upper_band1, col_dn1, col_dn1)
+        // display = filll ? display.all : display.none
+        fills = [
+          { plot1: 'plot2', plot2: 'plot1', gradient: { topValue: s.lowerBand1.slice(), bottomValue: s.lowerBand.slice(), topColor: upFill, bottomColor: upFill } },
+          { plot1: 'plot4', plot2: 'plot3', gradient: { topValue: s.upperBand.slice(), bottomValue: s.upperBand1.slice(), topColor: dnFill, bottomColor: dnFill } },
+        ];
+      }
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(),
+          plot1: p[1].slice(),
+          plot2: p[2].slice(),
+          plot3: p[3].slice(),
+          plot4: p[4].slice(),
+          plot5: p[5].slice(),
+          plot6: p[6].slice(),
+        },
+        fills,
+        markers: [],
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DynamicTrendBandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DynamicTrendBandsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const DynamicTrendBands = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

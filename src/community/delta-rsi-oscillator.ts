@@ -11,10 +11,9 @@
  * Original notice: © tbiktag
  */
 
-import {
-  ta, getSourceSeries, Series,
-  type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
-} from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DeltaRsiOscillatorInputs {
   /** RSI Source */
@@ -154,8 +153,23 @@ function pinv(A: number[], nrows: number, ncolumns: number): number[] {
   return multiply(Rinv, QT, ncolumns, ncolumns, nrows);
 }
 
-/** diff(_src, _window, _degree): derivative at the last point of the frame of the fitted polynomial */
-function polyDiff(src: number[], window: number, degree: number): number[] {
+type Point = { time: number; value: number; color?: string };
+
+interface DeltaRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  signal: ReturnType<typeof taStep.ema>;
+  rsiArr: number[];
+  drsi: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+}
+
+function study(inputs: Partial<DeltaRsiOscillatorInputs>): BarStudy<DeltaRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  const { window, degree } = cfg;
+  // diff(_src, _window, _degree): derivative at the last point of the frame of the fitted polynomial
   // Vandermonde matrix (window x degree + 1): z = 0 .. window - 1
   const J = new Array<number>(window * (degree + 1)).fill(0);
   for (let i = 0; i <= window - 1; i++) {
@@ -164,41 +178,57 @@ function polyDiff(src: number[], window: number, degree: number): number[] {
   // The matrix only depends on the inputs: the same on every bar
   const C = pinv(J, window, degree + 1);
   const Y = new Array<number>(window).fill(NaN);
-  return src.map((_v, bar) => {
-    for (let j = 0; j <= window - 1; j++) {
-      const k = bar - (window - 1 - j);
-      Y[j] = k >= 0 ? src[k] : NaN;
-    }
-    const coef = multiply(C, Y, degree + 1, window, 1);
-    let d = 0;
-    for (let i = 1; i <= degree; i++) d = d + i * coef[i] * Math.pow(window - 1, i - 1);
-    return Number.isFinite(d) ? d : NaN;
-  });
-}
-
-export function calculate(bars: Bar[], inputs: Partial<DeltaRsiOscillatorInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, cfg.src);
-  const rsi = ta.rsi(source, cfg.rsiLength).toArray().map((v) => v ?? NaN);
-  const drsi = polyDiff(rsi, cfg.window, cfg.degree);
-  const signal = ta.ema(Series.fromArray(bars, drsi), cfg.signalLength).toArray().map((v) => v ?? NaN);
-
-  const plot0 = bars.map((b, i) => {
-    const prev = i > 0 ? drsi[i - 1] : NaN;
-    const rising = lt(prev, drsi[i]);
-    const col = ge(drsi[i], 0) ? (rising ? UP_RISING : UP_FALLING) : (rising ? DOWN_RISING : DOWN_FALLING);
-    return { time: b.time, value: drsi[i], color: col };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0,
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: DeltaRun = {
+        rsi: taStep.rsi(cfg.rsiLength), signal: taStep.ema(cfg.signalLength),
+        rsiArr: [], drsi: [], plot0: [], plot1: [], plot2: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.rsi, s.signal];
+      s.series = [s.rsiArr, s.drsi, s.plot0, s.plot1, s.plot2];
+      return s;
+    },
+    bar(s, bar, bars) {
+      const b = bars[bar];
+      const src = s.rsiArr;
+      src[bar] = s.rsi.step(value(b));
+      for (let j = 0; j <= window - 1; j++) {
+        const k = bar - (window - 1 - j);
+        Y[j] = k >= 0 ? src[k] : NaN;
+      }
+      const coef = multiply(C, Y, degree + 1, window, 1);
+      let d = 0;
+      for (let i = 1; i <= degree; i++) d = d + i * coef[i] * Math.pow(window - 1, i - 1);
+      const drsi = Number.isFinite(d) ? d : NaN;
+      s.drsi[bar] = drsi;
+      const signal = s.signal.step(drsi);
+
+      const prev = bar > 0 ? s.drsi[bar - 1] : NaN;
+      const rising = lt(prev, drsi);
+      const col = ge(drsi, 0) ? (rising ? UP_RISING : UP_FALLING) : (rising ? DOWN_RISING : DOWN_FALLING);
+      s.plot0[bar] = { time: b.time, value: drsi, color: col };
       // plot(issignal ? singalline : na)
-      plot1: bars.map((b, i) => ({ time: b.time, value: cfg.showSignal ? signal[i] : NaN })),
-      plot2: bars.map((b) => ({ time: b.time, value: 0 })),
+      s.plot1[bar] = { time: b.time, value: cfg.showSignal ? signal : NaN };
+      s.plot2[bar] = { time: b.time, value: 0 };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+      };
     },
   };
 }
 
-export const DeltaRsiOscillator = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DeltaRsiOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DeltaRsiOscillatorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const DeltaRsiOscillator = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

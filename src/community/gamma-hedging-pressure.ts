@@ -11,9 +11,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
-import { alertStates, crossedOver, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
 
 export interface GammaHedgingPressureInputs {
   /** Length of the stdev and of the momentum */
@@ -65,71 +67,107 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<GammaHedgingPressureInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface GhpRun extends BarRunState<Record<string, never>> {
+  dev: WindowStdev;
+  lowest: WindowExtreme;
+  highest: WindowExtreme;
+  ema: ReturnType<typeof taStep.ema> | null;
+  close: number[];
+  bulls: number[];
+  bears: number[];
+  plot0: Point[];
+  plot1: Point[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<GammaHedgingPressureInputs>): BarStudy<GhpRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-
-  // volatility = ta.stdev(close, gammaLength); momentum = close - close[gammaLength]
-  const volatility = A(ta.stdev(S(close), cfg.gammaLength));
-  const gammaRaw = close.map((c, i) => {
-    const momentum = i - cfg.gammaLength >= 0 ? c - close[i - cfg.gammaLength] : NaN;
-    // math.max(na, x) is na
-    return momentum / (isNaN(volatility[i]) ? NaN : Math.max(volatility[i], 0.00001));
-  });
-
-  const lowestVal = A(ta.lowest(S(gammaRaw), cfg.normLookback));
-  const highestVal = A(ta.highest(S(gammaRaw), cfg.normLookback));
-  const gammaNorm = gammaRaw.map((g, i) => {
-    const d = highestVal[i] - lowestVal[i];
-    const rangeVal = isNaN(d) ? NaN : Math.max(d, 0.00001);
-    return (200 * (g - lowestVal[i])) / rangeVal - 100;
-  });
-
-  const gammaFinal = cfg.useSmoothing ? A(ta.ema(S(gammaNorm), cfg.smoothLength)) : gammaNorm;
-
   const bullBg = String(color.new(color.green, 85));
   const bearBg = String(color.new(color.red, 85));
-  const plot0 = [];
-  const plot1 = [];
-  const bgColors: BgColorData[] = [];
-  const bulls: number[] = [];
-  const bears: number[] = [];
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    const g = gammaFinal[i];
-    // math.max(gammaFinal, 0) / math.abs(math.min(gammaFinal, 0)): na stays na
-    const bullPressure = isNaN(g) ? NaN : Math.max(g, 0);
-    const bearPressure = isNaN(g) ? NaN : Math.abs(Math.min(g, 0));
-    bulls.push(bullPressure);
-    bears.push(bearPressure);
-    plot0.push({ time, value: fin(bullPressure), color: color.green });
-    plot1.push({ time, value: fin(bearPressure), color: color.red });
-    const bg = gt(bullPressure, cfg.extremeLevel) ? bullBg : gt(bearPressure, cfg.extremeLevel) ? bearBg : null;
-    if (bg) bgColors.push({ time, color: bg });
-  }
-
+  const level = cfg.extremeLevel;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    hlines: [
-      { value: cfg.extremeLevel, options: { title: 'Extreme Level', color: color.gray, linestyle: 'dashed' } },
-      { value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dashed' } },
-    ],
-    bgColors,
-    // alertcondition(bullPressure > extremeLevel) / (bearPressure > extremeLevel) / ta.crossover(..., extremeLevel)
-    alerts: alertStates(alertConditions, bars, [
-      bulls.map((v) => gt(v, cfg.extremeLevel)),
-      bears.map((v) => gt(v, cfg.extremeLevel)),
-      crossedOver(bulls, cfg.extremeLevel),
-      crossedOver(bears, cfg.extremeLevel),
-    ]),
+    init() {
+      const s: GhpRun = {
+        dev: new WindowStdev(cfg.gammaLength), lowest: new WindowExtreme(true, cfg.normLookback),
+        highest: new WindowExtreme(false, cfg.normLookback), ema: cfg.useSmoothing ? taStep.ema(cfg.smoothLength) : null,
+        close: [], bulls: [], bears: [], plot0: [], plot1: [], bgColors: [], flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.dev, s.lowest, s.highest, ...(s.ema ? [s.ema] : [])];
+      s.lists = [s.bgColors, ...s.times];
+      s.series = [s.close, s.bulls, s.bears, s.plot0, s.plot1, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time as number;
+      const c = b.close;
+      s.close[i] = c;
+      // volatility = ta.stdev(close, gammaLength); momentum = close - close[gammaLength]
+      const volatility = s.dev.step(c);
+      const momentum = i - cfg.gammaLength >= 0 ? c - s.close[i - cfg.gammaLength] : NaN;
+      // math.max(na, x) is na
+      const gammaRaw = momentum / (isNaN(volatility) ? NaN : Math.max(volatility, 0.00001));
+
+      const lowestVal = s.lowest.step(gammaRaw);
+      const highestVal = s.highest.step(gammaRaw);
+      const d = highestVal - lowestVal;
+      const rangeVal = isNaN(d) ? NaN : Math.max(d, 0.00001);
+      const gammaNorm = (200 * (gammaRaw - lowestVal)) / rangeVal - 100;
+
+      const g = s.ema ? s.ema.step(gammaNorm) : gammaNorm;
+      // math.max(gammaFinal, 0) / math.abs(math.min(gammaFinal, 0)): na stays na
+      const bullPressure = isNaN(g) ? NaN : Math.max(g, 0);
+      const bearPressure = isNaN(g) ? NaN : Math.abs(Math.min(g, 0));
+      s.bulls[i] = bullPressure;
+      s.bears[i] = bearPressure;
+      s.plot0[i] = { time, value: fin(bullPressure), color: color.green };
+      s.plot1[i] = { time, value: fin(bearPressure), color: color.red };
+      const bg = gt(bullPressure, level) ? bullBg : gt(bearPressure, level) ? bearBg : null;
+      if (bg) s.bgColors.push({ time, color: bg });
+
+      // alertcondition(bullPressure > extremeLevel) / (bearPressure > extremeLevel) / ta.crossover(..., extremeLevel)
+      const pBull = i > 0 ? s.bulls[i - 1] : NaN;
+      const pBear = i > 0 ? s.bears[i - 1] : NaN;
+      const flags = [
+        gt(bullPressure, level),
+        gt(bearPressure, level),
+        bullPressure > level && pBull <= level,
+        bearPressure > level && pBear <= level,
+      ];
+      for (let k = 0; k < 4; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(time);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [
+          { value: cfg.extremeLevel, options: { title: 'Extreme Level', color: color.gray, linestyle: 'dashed' } },
+          { value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dashed' } },
+        ],
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GammaHedgingPressureInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<GammaHedgingPressureInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -142,6 +180,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const GammaHedgingPressure = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

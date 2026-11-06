@@ -516,3 +516,71 @@ export class WindowStdev implements Committable {
     this.squares.commit();
   }
 }
+
+/** `ta.vwma(source, length)` with a constant length: two {@link WindowSum}s (the doubles of taStep.vwma) */
+export class WindowVwma implements Committable {
+  private readonly num: WindowSum;
+  private readonly den: WindowSum;
+  private readonly len: number;
+
+  constructor(length: number) {
+    this.len = Math.floor(length);
+    this.num = new WindowSum(length);
+    this.den = new WindowSum(length);
+  }
+
+  step(value: number, volume: number): number {
+    const num = this.num.step(value * volume) / this.len;
+    const den = this.den.step(volume) / this.len;
+    return den === 0 || Number.isNaN(den) ? NaN : num / den;
+  }
+
+  commit(): void {
+    this.num.commit();
+    this.den.commit();
+  }
+}
+
+/**
+ * `ta.alma(source, length, offset, sigma, floor)` one bar at a time (no taStep machine yet, oakScriptJS #202): the
+ * weights and the sum of the oakscriptjs array function (the same doubles; na values are not skipped, as there).
+ */
+export class AlmaStep implements Committable {
+  private readonly weights: number[] = [];
+  private readonly len: number;
+  private values: number[] = [];
+  private pending = NaN;
+  private stepped = false;
+
+  constructor(length: number, offset = 0.85, sigma = 6, floor = false) {
+    if (!(length > 0)) throw new Error(`alma: length must be greater than 0, ${length} given`);
+    this.len = length;
+    const m = floor ? Math.floor(offset * (length - 1)) : offset * (length - 1);
+    const s = length / sigma;
+    let weightSum = 0;
+    for (let i = 0; i < length; i++) {
+      const weight = Math.exp(-1 * Math.pow(i - m, 2) / (2 * Math.pow(s, 2)));
+      this.weights.push(weight);
+      weightSum += weight;
+    }
+    for (let i = 0; i < length; i++) this.weights[i]! /= weightSum;
+  }
+
+  step(value: number): number {
+    this.stepped = true;
+    this.pending = value;
+    const len = this.len;
+    const n = this.values.length;
+    if (n + 1 < len) return NaN;
+    let almaValue = 0;
+    for (let j = 0; j < len; j++) almaValue += (j === len - 1 ? value : this.values[n - len + 1 + j]!) * this.weights[j]!;
+    return almaValue;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.values.push(this.pending);
+    if (this.values.length > this.len * 2 + 1024) this.values = this.values.slice(-this.len);
+  }
+}

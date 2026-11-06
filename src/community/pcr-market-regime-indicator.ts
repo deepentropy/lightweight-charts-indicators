@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PcrMarketRegimeIndicatorInputs {
   /** PCR length */
@@ -75,65 +77,99 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<PcrMarketRegimeIndicatorInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+
+interface PcrRun extends BarRunState<{ regime: number }> {
+  hh: WindowExtreme;
+  ll: WindowExtreme;
+  pcr: ReturnType<typeof taStep.ema>;
+  pcrEma: ReturnType<typeof taStep.ema>;
+  sinceNotAbove: ReturnType<typeof taStep.barssince>;
+  sinceNotBelow: ReturnType<typeof taStep.barssince>;
+  plot0: Point[];
+  plot1: Point[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<PcrMarketRegimeIndicatorInputs>): BarStudy<PcrRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const len = cfg.pcrLen;
-
-  // f_pcr(_length): _r != 0 ? _c / _r * 100 : 0 (an na range compares false: 0)
-  const hh = A(ta.highest(S(bars.map((b) => b.high)), len));
-  const ll = A(ta.lowest(S(bars.map((b) => b.low)), len));
-  const raw = bars.map((b, i) => {
-    const c = i >= len ? b.close - bars[i - len].close : NaN;
-    const r = hh[i] - ll[i];
-    return !isNaN(r) && Math.abs(r) > EPS ? (c / r) * 100 : 0;
-  });
-  const pcr = A(ta.ema(S(raw), cfg.smoothLen));
-  const pcrEma = A(ta.ema(S(pcr), cfg.emaLen));
-
-  // Zones, hold (ta.barssince(not above) >= holdBars) and the regime state
-  const above = pcr.map((v) => gt(v, cfg.zone));
-  const below = pcr.map((v) => lt(v, -cfg.zone));
-  const sinceNotAbove = A(ta.barssince(S(above.map((x) => (x ? 0 : 1)))));
-  const sinceNotBelow = A(ta.barssince(S(below.map((x) => (x ? 0 : 1)))));
   const bgUp = String(color.new(color.green, 85));
   const bgDown = String(color.new(color.red, 85));
   const bgFlat = String(color.new(color.gray, 85));
-  const bgColors: BgColorData[] = [];
-  let regime = 0;
-  for (let i = 0; i < n; i++) {
-    const neutral = !above[i] && !below[i];
-    if (above[i] && sinceNotAbove[i] >= cfg.holdBars) regime = 1;
-    else if (below[i] && sinceNotBelow[i] >= cfg.holdBars) regime = -1;
-    else if (neutral) regime = 0;
-    bgColors.push({ time: bars[i].time, color: regime === 1 ? bgUp : regime === -1 ? bgDown : bgFlat });
-  }
-
-  const hlines: NonNullable<IndicatorResult['hlines']> = [];
-  const level = (show: boolean, value: number, title: string, c: string) => {
-    if (show) hlines.push({ value, options: { title, color: c, linestyle: 'dashed' } });
-  };
-  level(cfg.show100, 100, '100', color.blue);
-  level(cfg.show70, 70, '70', color.green);
-  level(cfg.show0, 0, '0', String(color.rgb(251, 251, 253)));
-  level(cfg.showNeg70, -70, '-70', color.red);
-  level(cfg.showNeg100, -100, '-100', color.maroon);
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: pcr[i], color: gt(pcr[i], 0) ? color.lime : color.red })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: cfg.showEMA ? pcrEma[i] : NaN, color: color.purple })),
+    init() {
+      const s: PcrRun = {
+        hh: new WindowExtreme(false, len), ll: new WindowExtreme(true, len), pcr: taStep.ema(cfg.smoothLen),
+        pcrEma: taStep.ema(cfg.emaLen), sinceNotAbove: taStep.barssince(), sinceNotBelow: taStep.barssince(),
+        plot0: [], plot1: [], bgColors: [],
+        steps: [], vars: { regime: 0 }, lists: [], series: [],
+      };
+      s.steps = [s.hh, s.ll, s.pcr, s.pcrEma, s.sinceNotAbove, s.sinceNotBelow];
+      s.series = [s.plot0, s.plot1, s.bgColors];
+      return s;
     },
-    hlines,
-    bgColors,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // f_pcr(_length): _r != 0 ? _c / _r * 100 : 0 (an na range compares false: 0)
+      const hh = s.hh.step(b.high);
+      const ll = s.ll.step(b.low);
+      const c = i >= len ? b.close - bars[i - len].close : NaN;
+      const r = hh - ll;
+      const raw = !isNaN(r) && Math.abs(r) > EPS ? (c / r) * 100 : 0;
+      const pcr = s.pcr.step(raw);
+      const pcrEma = s.pcrEma.step(pcr);
+
+      // Zones, hold (ta.barssince(not above) >= holdBars) and the regime state
+      const above = gt(pcr, cfg.zone);
+      const below = lt(pcr, -cfg.zone);
+      const sinceNotAbove = s.sinceNotAbove.step(above ? 0 : 1);
+      const sinceNotBelow = s.sinceNotBelow.step(below ? 0 : 1);
+      const neutral = !above && !below;
+      const v = s.vars;
+      if (above && sinceNotAbove >= cfg.holdBars) v.regime = 1;
+      else if (below && sinceNotBelow >= cfg.holdBars) v.regime = -1;
+      else if (neutral) v.regime = 0;
+      s.bgColors[i] = { time, color: v.regime === 1 ? bgUp : v.regime === -1 ? bgDown : bgFlat };
+
+      s.plot0[i] = { time, value: pcr, color: gt(pcr, 0) ? color.lime : color.red };
+      s.plot1[i] = { time, value: cfg.showEMA ? pcrEma : NaN, color: color.purple };
+    },
+    result(s) {
+      const hlines: NonNullable<IndicatorResult['hlines']> = [];
+      const level = (show: boolean, value: number, title: string, c: string) => {
+        if (show) hlines.push({ value, options: { title, color: c, linestyle: 'dashed' } });
+      };
+      level(cfg.show100, 100, '100', color.blue);
+      level(cfg.show70, 70, '70', color.green);
+      level(cfg.show0, 0, '0', String(color.rgb(251, 251, 253)));
+      level(cfg.showNeg70, -70, '-70', color.red);
+      level(cfg.showNeg100, -100, '-100', color.maroon);
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines,
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PcrMarketRegimeIndicatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PcrMarketRegimeIndicatorInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PcrMarketRegimeIndicator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

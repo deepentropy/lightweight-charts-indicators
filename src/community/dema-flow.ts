@@ -12,9 +12,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData, PlotCandleData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DemaFlowInputs {
   /** DEMA length */
@@ -72,70 +74,103 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DemaFlowInputs> = {},
-): IndicatorResult & { barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]> }
-  & { alerts: AlertConditionState[] } {
+type Result = IndicatorResult & { barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]> }
+  & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+
+interface DemaFlowRun extends BarRunState<{ median: number; trendSignal: number }> {
+  ema1: ReturnType<typeof taStep.ema>;
+  ema2: ReturnType<typeof taStep.ema>;
+  atr: ReturnType<typeof taStep.atr>;
+  dema: number[];
+  trend: number[];
+  plot0: Point[];
+  candles: PlotCandleData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<DemaFlowInputs>): BarStudy<DemaFlowRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // dema(close, demaLength) = 2 * ema1 - ema2
-  const ema1 = A(ta.ema(S(bars.map((b) => b.close)), cfg.demaLength));
-  const ema2 = A(ta.ema(S(ema1), cfg.demaLength));
-  const demaValue = ema1.map((e, i) => 2 * e - ema2[i]);
-
-  // hlMedian(demaValue, hlFilterLength): from bar_index >= length - 1, the median of demaValue[0..length-1]
-  // (array.sort puts na values last); before that bar the median keeps its var value (na)
   const len = cfg.hlFilterLength;
-  const smooth: number[] = new Array(n);
-  let median = NaN;
-  for (let i = 0; i < n; i++) {
-    if (i >= len - 1) {
-      const w: number[] = [];
-      for (let k = 0; k < len; k++) w.push(demaValue[i - k]);
-      w.sort((a, b) => (isNaN(a) ? (isNaN(b) ? 0 : 1) : isNaN(b) ? -1 : a - b));
-      const m = w.length;
-      median = m % 2 === 1 ? w[Math.floor(m / 2)] : (w[m / 2 - 1] + w[m / 2]) / 2;
-    }
-    smooth[i] = median;
-  }
-
-  const atr = A(ta.atr(bars, cfg.atrLength));
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const candles: PlotCandleData[] = [];
-  const barColors: BarColorData[] = [];
-  let trendSignal = 0; // var trendSignal = 0
-  const trend: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const upperBand = smooth[i] + cfg.upperAtrMult * atr[i];
-    const lowerBand = smooth[i] - cfg.lowerAtrMult * atr[i];
-    const c = bars[i].close;
-    if (gt(c, upperBand)) trendSignal = 1;
-    if (lt(c, lowerBand)) trendSignal = -1;
-    trend[i] = trendSignal;
-    const trendColor = trendSignal === 1 ? BULL : trendSignal === -1 ? BEAR : NEUTRAL;
-    const t = bars[i].time;
-    plot0.push({ time: t, value: smooth[i], color: trendColor });
-    // plotcandle(open, high, low, close, color = trendColor, wickcolor = trendColor, bordercolor = trendColor,
-    //   force_overlay = true)
-    const b = bars[i];
-    candles.push({ time: t, open: b.open, high: b.high, low: b.low, close: b.close,
-      color: trendColor, wickColor: trendColor, borderColor: trendColor, forceOverlay: true });
-    // barcolor(trendColor, title = 'Trend Bars')
-    barColors.push({ time: t, color: trendColor });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    plotCandles: { demaTrendCandles: candles },
-    barColors,
-    // bullishSignal = ta.crossover(trendSignal, 0) / bearishSignal = ta.crossunder(trendSignal, 0)
-    alerts: alertStates(alertConditions, bars, [crossedOver(trend, 0), crossedUnder(trend, 0)]),
+    init() {
+      const s: DemaFlowRun = {
+        ema1: taStep.ema(cfg.demaLength), ema2: taStep.ema(cfg.demaLength), atr: taStep.atr(cfg.atrLength),
+        dema: [], trend: [], plot0: [], candles: [], barColors: [], flags: [[], []], times: [[], []],
+        steps: [], vars: { median: NaN, trendSignal: 0 }, lists: [], series: [],
+      };
+      s.steps = [s.ema1, s.ema2, s.atr];
+      s.lists = s.times;
+      s.series = [s.dema, s.trend, s.plot0, s.candles, s.barColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      // dema(close, demaLength) = 2 * ema1 - ema2
+      const ema1 = s.ema1.step(b.close);
+      const ema2 = s.ema2.step(ema1);
+      s.dema[i] = 2 * ema1 - ema2;
+
+      // hlMedian(demaValue, hlFilterLength): from bar_index >= length - 1, the median of demaValue[0..length-1]
+      // (array.sort puts na values last); before that bar the median keeps its var value (na)
+      if (i >= len - 1) {
+        const w: number[] = [];
+        for (let k = 0; k < len; k++) w.push(s.dema[i - k]);
+        w.sort((a, b) => (isNaN(a) ? (isNaN(b) ? 0 : 1) : isNaN(b) ? -1 : a - b));
+        const m = w.length;
+        v.median = m % 2 === 1 ? w[Math.floor(m / 2)] : (w[m / 2 - 1] + w[m / 2]) / 2;
+      }
+      const smooth = v.median;
+
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const upperBand = smooth + cfg.upperAtrMult * atr;
+      const lowerBand = smooth - cfg.lowerAtrMult * atr;
+      const c = b.close;
+      if (gt(c, upperBand)) v.trendSignal = 1;
+      if (lt(c, lowerBand)) v.trendSignal = -1;
+      const trendSignal = v.trendSignal;
+      s.trend[i] = trendSignal;
+      const trendColor = trendSignal === 1 ? BULL : trendSignal === -1 ? BEAR : NEUTRAL;
+      const t = b.time;
+      s.plot0[i] = { time: t, value: smooth, color: trendColor };
+      // plotcandle(open, high, low, close, color = trendColor, wickcolor = trendColor, bordercolor = trendColor,
+      //   force_overlay = true)
+      s.candles[i] = { time: t, open: b.open, high: b.high, low: b.low, close: b.close,
+        color: trendColor, wickColor: trendColor, borderColor: trendColor, forceOverlay: true };
+      // barcolor(trendColor, title = 'Trend Bars')
+      s.barColors[i] = { time: t, color: trendColor };
+
+      // bullishSignal = ta.crossover(trendSignal, 0) / bearishSignal = ta.crossunder(trendSignal, 0)
+      const prev = i > 0 ? s.trend[i - 1] : NaN;
+      const flags = [trendSignal > 0 && prev <= 0, trendSignal < 0 && prev >= 0];
+      for (let k = 0; k < 2; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        plotCandles: { demaTrendCandles: s.candles.slice() },
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DemaFlowInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DemaFlowInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -146,6 +181,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const DemaFlow = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

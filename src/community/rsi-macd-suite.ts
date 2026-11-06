@@ -14,10 +14,15 @@
  */
 
 import {
-  ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig,
+  taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig,
   type FillConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import {
+  barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma,
+  type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 
 type MaType = 'EMA' | 'SMA';
 
@@ -90,78 +95,134 @@ const EPS = 1e-10;
 const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <= EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RsiMacdSuiteInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+type Ma = { step(v: number): number; commit(): void };
+
+interface SuiteRun extends BarRunState<Record<string, never>> {
+  change: ReturnType<typeof taStep.change>;
+  up: ReturnType<typeof taStep.rma>;
+  down: ReturnType<typeof taStep.rma>;
+  maFast: Ma;
+  maSlow: Ma;
+  maSignal: Ma;
+  rsi: number[];
+  macd: number[];
+  signal: number[];
+  hist: number[];
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<RsiMacdSuiteInputs>): BarStudy<SuiteRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
   if (cfg.fastLength >= cfg.slowLength) throw new Error('MACD Fast length must be less than Slow length');
-
-  // RSI: change = ta.change(src); up = ta.rma(math.max(change, 0)); down = ta.rma(-math.min(change, 0))
-  const change = A(ta.change(getSourceSeries(bars, cfg.rsiSource)));
-  const up = A(ta.rma(S(change.map((c) => (isNaN(c) ? NaN : Math.max(c, 0)))), cfg.rsiLength));
-  const down = A(ta.rma(S(change.map((c) => (isNaN(c) ? NaN : -Math.min(c, 0)))), cfg.rsiLength));
-  // rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
-  const rsi = up.map((u, i) => (eq(down[i], 0) ? 100 : eq(u, 0) ? 0 : 100 - 100 / (1 + u / down[i])));
-
-  // MACD
-  const ma = (src: Series, len: number, type: MaType) => A(type === 'EMA' ? ta.ema(src, len) : ta.sma(src, len));
-  const macdSrc = getSourceSeries(bars, cfg.macdSource);
-  const maFast = ma(macdSrc, cfg.fastLength, cfg.oscType);
-  const maSlow = ma(macdSrc, cfg.slowLength, cfg.oscType);
-  const macd = maFast.map((f, i) => f - maSlow[i]);
-  const signal = ma(S(macd), cfg.signalLength, cfg.sigType);
-  const hist = macd.map((m, i) => m - signal[i]);
-
+  const rsiValue = barSource(cfg.rsiSource);
+  const macdValue = barSource(cfg.macdSource);
+  const ma = (len: number, type: MaType): Ma => (type === 'EMA' ? taStep.ema(len) : new WindowSma(len));
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const t = (i: number) => bars[i].time;
-  const plots = {
-    plot0: bars.map((_b, i) => ({ time: t(i), value: fin(rsi[i]), color: color.yellow })),
-    // midLinePlot = plot(50, color = na, editable = false, display = display.none)
-    plot1: bars.map((_b, i) => ({ time: t(i), value: 50 })),
-    // hColor = hist >= 0 ? #26a69a : #ff5252
-    plot2: bars.map((_b, i) => ({ time: t(i), value: fin(hist[i]), color: ge(hist[i], 0) ? '#26a69a' : '#ff5252' })),
-    plot3: bars.map((_b, i) => ({ time: t(i), value: fin(macd[i]), color: color.blue })),
-    plot4: bars.map((_b, i) => ({ time: t(i), value: fin(signal[i]), color: '#ff6d00' })),
-  };
-
-  // fill(rsiPlot, midLinePlot, 100, 70, top_color = color.new(color.green, 0), bottom_color = color.new(color.green, 100))
-  // fill(rsiPlot, midLinePlot, 30, 0, top_color = color.new(color.red, 100), bottom_color = color.new(color.red, 0))
-  const fillArr = <T>(v: T) => new Array<T>(n).fill(v);
-  // ta.cross(rsi, 50) = crossover or crossunder
-  const rsiOver50 = crossedOver(rsi, 50);
-  const rsiUnder50 = crossedUnder(rsi, 50);
-  const alertFlags = [
-    crossedOver(rsi, 70),
-    crossedUnder(rsi, 30),
-    rsiOver50.map((v, i) => v || rsiUnder50[i]),
-    crossedOver(macd, signal),
-    crossedUnder(macd, signal),
-    crossedOver(hist, 0),
-    crossedUnder(hist, 0),
-  ];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 2 },
-    plots,
-    hlines: hlineConfig.map((h) => ({ value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle } })),
-    fills: [
-      { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'RSI - Background Fill' },
-        colors: fillArr(String(color.rgb(126, 87, 194, 90))) },
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'RSI - Overbought Gradient' },
-        gradient: { topValue: fillArr(100), bottomValue: fillArr(70),
-          topColor: fillArr<string | null>(String(color.new(color.green, 0))),
-          bottomColor: fillArr<string | null>(String(color.new(color.green, 100))) } },
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'RSI - Oversold Gradient' },
-        gradient: { topValue: fillArr(30), bottomValue: fillArr(0),
-          topColor: fillArr<string | null>(String(color.new(color.red, 100))),
-          bottomColor: fillArr<string | null>(String(color.new(color.red, 0))) } },
-    ],
-    alerts: alertStates(alertConditions, bars, alertFlags),
+    fullRunReason: () => (isBarSource(cfg.rsiSource) && isBarSource(cfg.macdSource) ? null : 'source of another study'),
+    init() {
+      const s: SuiteRun = {
+        change: taStep.change(), up: taStep.rma(cfg.rsiLength), down: taStep.rma(cfg.rsiLength),
+        maFast: ma(cfg.fastLength, cfg.oscType), maSlow: ma(cfg.slowLength, cfg.oscType),
+        maSignal: ma(cfg.signalLength, cfg.sigType), rsi: [], macd: [], signal: [], hist: [],
+        plots: Array.from({ length: 5 }, () => []), flags: Array.from({ length: 7 }, () => []),
+        times: Array.from({ length: 7 }, () => []), steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.change, s.up, s.down, s.maFast, s.maSlow, s.maSignal];
+      s.lists = s.times;
+      s.series = [s.rsi, s.macd, s.signal, s.hist, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      // RSI: change = ta.change(src); up = ta.rma(math.max(change, 0)); down = ta.rma(-math.min(change, 0))
+      const c = s.change.step(rsiValue(b));
+      const up = s.up.step(isNaN(c) ? NaN : Math.max(c, 0));
+      const down = s.down.step(isNaN(c) ? NaN : -Math.min(c, 0));
+      // rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+      const rsi = eq(down, 0) ? 100 : eq(up, 0) ? 0 : 100 - 100 / (1 + up / down);
+
+      // MACD
+      const src = macdValue(b);
+      const macd = s.maFast.step(src) - s.maSlow.step(src);
+      const signal = s.maSignal.step(macd);
+      const hist = macd - signal;
+      s.rsi[i] = rsi;
+      s.macd[i] = macd;
+      s.signal[i] = signal;
+      s.hist[i] = hist;
+
+      const p = s.plots;
+      p[0][i] = { time: t, value: fin(rsi), color: color.yellow };
+      // midLinePlot = plot(50, color = na, editable = false, display = display.none)
+      p[1][i] = { time: t, value: 50 };
+      // hColor = hist >= 0 ? #26a69a : #ff5252
+      p[2][i] = { time: t, value: fin(hist), color: ge(hist, 0) ? '#26a69a' : '#ff5252' };
+      p[3][i] = { time: t, value: fin(macd), color: color.blue };
+      p[4][i] = { time: t, value: fin(signal), color: '#ff6d00' };
+
+      // ta.crossover / ta.crossunder against the values of the bar before (na compares false)
+      const pr = i > 0 ? s.rsi[i - 1] : NaN;
+      const pm = i > 0 ? s.macd[i - 1] : NaN;
+      const ps = i > 0 ? s.signal[i - 1] : NaN;
+      const ph = i > 0 ? s.hist[i - 1] : NaN;
+      const over = (v: number, w: number, pv: number, pw: number) => v > w && pv <= pw;
+      const under = (v: number, w: number, pv: number, pw: number) => v < w && pv >= pw;
+      const flags = [
+        over(rsi, 70, pr, 70),
+        under(rsi, 30, pr, 30),
+        // ta.cross(rsi, 50) = crossover or crossunder
+        over(rsi, 50, pr, 50) || under(rsi, 50, pr, 50),
+        over(macd, signal, pm, ps),
+        under(macd, signal, pm, ps),
+        over(hist, 0, ph, 0),
+        under(hist, 0, ph, 0),
+      ];
+      for (let k = 0; k < 7; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      // fill(rsiPlot, midLinePlot, 100, 70, top_color = color.new(color.green, 0), bottom_color = color.new(color.green, 100))
+      // fill(rsiPlot, midLinePlot, 30, 0, top_color = color.new(color.red, 100), bottom_color = color.new(color.red, 0))
+      const fillArr = <T>(v: T) => new Array<T>(n).fill(v);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 2 },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice() },
+        hlines: hlineConfig.map((h) => ({ value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle } })),
+        fills: [
+          { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'RSI - Background Fill' },
+            colors: fillArr(String(color.rgb(126, 87, 194, 90))) },
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'RSI - Overbought Gradient' },
+            gradient: { topValue: fillArr(100), bottomValue: fillArr(70),
+              topColor: fillArr<string | null>(String(color.new(color.green, 0))),
+              bottomColor: fillArr<string | null>(String(color.new(color.green, 100))) } },
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'RSI - Oversold Gradient' },
+            gradient: { topValue: fillArr(30), bottomValue: fillArr(0),
+              topColor: fillArr<string | null>(String(color.new(color.red, 100))),
+              bottomColor: fillArr<string | null>(String(color.new(color.red, 0))) } },
+        ],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RsiMacdSuiteInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RsiMacdSuiteInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -177,7 +238,9 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const RsiMacdSuite = {
   calculate,
+  createRun,
   metadata,
+
   defaultInputs,
   inputConfig,
   plotConfig,

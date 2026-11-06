@@ -7,8 +7,10 @@
  * Reference: "AK MACD BB INDICATOR" by Algokid
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MACDBBInputs {
   fastLength: number;
@@ -50,61 +52,86 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MACDBBInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
+
+interface MacdBbRun extends BarRunState<Record<string, never>> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  basis: WindowSma;
+  dev: WindowStdev;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<MACDBBInputs>): BarStudy<MacdBbRun, Result> {
   const { fastLength, slowLength, bbLength, bbMult, src } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
-
-  const fastEMA = ta.ema(source, fastLength);
-  const slowEMA = ta.ema(source, slowLength);
-  const macdLine = fastEMA.sub(slowEMA);
-
-  // BB on MACD (Pine applies BB directly to macd, not histogram)
-  const bbBasis = ta.sma(macdLine, bbLength);
-  const bbDev = ta.stdev(macdLine, bbLength).mul(bbMult);
-  const bbUpper = bbBasis.add(bbDev);
-  const bbLower = bbBasis.sub(bbDev);
-
-  const basisArr = bbBasis.toArray();
-  const upperArr = bbUpper.toArray();
-  const lowerArr = bbLower.toArray();
-
+  const value = barSource(src);
   const warmup = Math.max(slowLength, bbLength);
-
-  const macdArr = macdLine.toArray();
-
-  const plot0 = macdArr.map((v, i) => {
-    if (i < warmup || v == null) return { time: bars[i].time, value: NaN };
-    const u = upperArr[i];
-    const color = (u != null && v >= u) ? '#00FF00' : '#FF0000';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  const toPlot = (arr: (number | null)[]) =>
-    arr.map((v, i) => ({ time: bars[i].time, value: (i < warmup || v == null) ? NaN : v }));
-
-  // Pine barcolor: macd > Upper => yellow; macd < Lower => aqua
-  const barColors: BarColorData[] = [];
-  for (let i = warmup; i < bars.length; i++) {
-    const m = macdArr[i];
-    const u = upperArr[i];
-    const l = lowerArr[i];
-    if (m == null || u == null || l == null) continue;
-    if (m > u) {
-      barColors.push({ time: bars[i].time, color: '#FFEB3B' });
-    } else if (m < l) {
-      barColors.push({ time: bars[i].time, color: '#00BCD4' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': toPlot(upperArr), 'plot2': toPlot(lowerArr), 'plot3': toPlot(basisArr) },
-    hlines: [{ value: 0, options: { color: '#FF7F00', linestyle: 'solid' as const, title: 'Zeroline' } }],
-    fills: [
-      { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(33, 150, 243, 0.15)' } },
-    ],
-    barColors,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const fast = taStep.ema(fastLength);
+      const slow = taStep.ema(slowLength);
+      const basis = new WindowSma(bbLength);
+      const dev = new WindowStdev(bbLength);
+      const s: MacdBbRun = {
+        fast, slow, basis, dev, plot0: [], plot1: [], plot2: [], plot3: [], barColors: [],
+        steps: [fast, slow, basis, dev], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.barColors];
+      s.series = [s.plot0, s.plot1, s.plot2, s.plot3];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const v = value(b);
+      const m = s.fast.step(v) - s.slow.step(v);
+
+      // BB on MACD (Pine applies BB directly to macd, not histogram)
+      const basis = s.basis.step(m);
+      const dev = s.dev.step(m) * bbMult;
+      const u = basis + dev;
+      const l = basis - dev;
+
+      if (i < warmup || m == null) s.plot0[i] = { time, value: NaN };
+      else s.plot0[i] = { time, value: m, color: (u != null && m >= u) ? '#00FF00' : '#FF0000' };
+      const early = i < warmup;
+      s.plot1[i] = { time, value: early || u == null ? NaN : u };
+      s.plot2[i] = { time, value: early || l == null ? NaN : l };
+      s.plot3[i] = { time, value: early || basis == null ? NaN : basis };
+
+      // Pine barcolor: macd > Upper => yellow; macd < Lower => aqua
+      if (!early) {
+        if (m > u) s.barColors.push({ time, color: '#FFEB3B' });
+        else if (m < l) s.barColors.push({ time, color: '#00BCD4' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice(), 'plot2': s.plot2.slice(), 'plot3': s.plot3.slice() },
+        hlines: [{ value: 0, options: { color: '#FF7F00', linestyle: 'solid' as const, title: 'Zeroline' } }],
+        fills: [
+          { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(33, 150, 243, 0.15)' } },
+        ],
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const MACDBB = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MACDBBInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MACDBBInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MACDBB = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

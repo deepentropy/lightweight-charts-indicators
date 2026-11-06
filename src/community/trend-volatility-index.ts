@@ -11,8 +11,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrendVolatilityIndexInputs {
   /** Base price */
@@ -64,75 +66,117 @@ export const metadata = {
 /** Pine a > b: a - b > 1e-10 (false with na) */
 const gt = (a: number, b: number) => a - b > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TrendVolatilityIndexInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> };
+type Point = { time: number; value: number; color: string };
+
+interface TviVars {
+  /** var float ha_op = na */
+  haOp: number;
+  /** var float ha_cl = na */
+  haCl: number;
+}
+
+interface TviRun extends BarRunState<TviVars> {
+  sma1: WindowSma;
+  sma4: WindowSma;
+  sma6: WindowSma;
+  sma9: WindowSma;
+  atr: ReturnType<typeof taStep.atr>;
+  hlRange: WindowSma;
+  tvi: number[];
+  plots: Point[][];
+  candles: PlotCandleData[];
+}
+
+function study(inputs: Partial<TrendVolatilityIndexInputs>): BarStudy<TviRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = getSourceSeries(bars, cfg.src);
-
-  const sma1 = A(ta.sma(src, 10));
-  const sma4 = A(ta.sma(src, 20));
-  const sma6 = A(ta.sma(src, 40));
-  const sma9 = A(ta.sma(src, 70));
-  const atr = A(ta.atr(bars, cfg.atrLen));
-  const hlRange = A(ta.sma(Series.fromArray(bars, bars.map((b) => b.high - b.low)), cfg.rangeLen));
-
+  const value = barSource(cfg.src);
   const up = '#009076';
   const down = '#F8213D';
-  const candles: PlotCandleData[] = [];
-  const tvi: number[] = new Array(n);
-  let haOp = NaN; // var float ha_op = na
-  let haCl = NaN; // var float ha_cl = na
-  for (let i = 0; i < n; i++) {
-    // gini_mean_diff of the four SMAs (math.abs(math.pow(x, 1)))
-    const d = [sma1[i] - sma4[i], sma1[i] - sma6[i], sma1[i] - sma9[i], sma4[i] - sma6[i], sma4[i] - sma9[i], sma6[i] - sma9[i]];
-    const cl = d.reduce((acc, x) => acc + Math.abs(Math.pow(x, 1)), 0) / 6;
-    tvi[i] = cl;
-    // TVI / tickStep: a plain division (Step Factor 0 gives +-infinity or NaN, as in Pine)
-    const lowerTVI = Math.floor(cl / cfg.tickStep) * cfg.tickStep;
-    const upperTVI = Math.ceil(cl / cfg.tickStep) * cfg.tickStep;
-    const op = i > 0 ? tvi[i - 1] : NaN;
-    const hi = Math.max(op, upperTVI, cl);
-    const lo = Math.min(op, lowerTVI, cl);
-
-    // if na(ha_op): initialise; else ha_op := (ha_op[1] + ha_cl[1]) / 2
-    if (isNaN(haOp)) {
-      haCl = (op + hi + lo + cl) / 4;
-      haOp = (op + cl) / 2;
-    } else {
-      haOp = (haOp + haCl) / 2;
-      haCl = (op + hi + lo + cl) / 4;
-    }
-    const haHi = Math.max(hi, haOp, haCl);
-    const haLo = Math.min(lo, haOp, haCl);
-
-    const candle = cfg.mode === 'Candle' ? [op, hi, lo, cl] : [haOp, haHi, haLo, haCl];
-    const col = cfg.colorMode === 'Candle' ? (gt(cl, op) ? up : down) : gt(haCl, haOp) ? up : down;
-    // plotcandle draws no candle when a value is na
-    if (candle.every((v) => !isNaN(v))) {
-      const [o, h, l, c] = candle;
-      candles.push({ time: bars[i].time, open: o, high: h, low: l, close: c, color: col, wickColor: col, borderColor: col });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(atr, 'ATR (28)', color.new(color.red, 70), style = plot.style_area)
-      plot0: bars.map((b, i) => ({ time: b.time, value: atr[i], color: ATR_COL })),
-      // plot(hl_range, 'High-Low Range MA (28)', color.new(color.black, 80), style = plot.style_area)
-      plot1: bars.map((b, i) => ({ time: b.time, value: hlRange[i], color: RANGE_COL })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: TviRun = {
+        sma1: new WindowSma(10), sma4: new WindowSma(20), sma6: new WindowSma(40), sma9: new WindowSma(70),
+        atr: taStep.atr(cfg.atrLen), hlRange: new WindowSma(cfg.rangeLen), tvi: [], plots: [[], []], candles: [],
+        steps: [], vars: { haOp: NaN, haCl: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.sma1, s.sma4, s.sma6, s.sma9, s.atr, s.hlRange];
+      s.lists = [s.candles];
+      s.series = [s.tvi, ...s.plots];
+      return s;
     },
-    markers: [],
-    plotCandles: { tviCandles: candles },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const src = value(b);
+      const sma1 = s.sma1.step(src);
+      const sma4 = s.sma4.step(src);
+      const sma6 = s.sma6.step(src);
+      const sma9 = s.sma9.step(src);
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const hlRange = s.hlRange.step(b.high - b.low);
+
+      // gini_mean_diff of the four SMAs (math.abs(math.pow(x, 1)))
+      const d = [sma1 - sma4, sma1 - sma6, sma1 - sma9, sma4 - sma6, sma4 - sma9, sma6 - sma9];
+      const cl = d.reduce((acc, x) => acc + Math.abs(Math.pow(x, 1)), 0) / 6;
+      s.tvi[i] = cl;
+      // TVI / tickStep: a plain division (Step Factor 0 gives +-infinity or NaN, as in Pine)
+      const lowerTVI = Math.floor(cl / cfg.tickStep) * cfg.tickStep;
+      const upperTVI = Math.ceil(cl / cfg.tickStep) * cfg.tickStep;
+      const op = i > 0 ? s.tvi[i - 1] : NaN;
+      const hi = Math.max(op, upperTVI, cl);
+      const lo = Math.min(op, lowerTVI, cl);
+
+      // if na(ha_op): initialise; else ha_op := (ha_op[1] + ha_cl[1]) / 2
+      if (isNaN(v.haOp)) {
+        v.haCl = (op + hi + lo + cl) / 4;
+        v.haOp = (op + cl) / 2;
+      } else {
+        v.haOp = (v.haOp + v.haCl) / 2;
+        v.haCl = (op + hi + lo + cl) / 4;
+      }
+      const haOp = v.haOp;
+      const haCl = v.haCl;
+      const haHi = Math.max(hi, haOp, haCl);
+      const haLo = Math.min(lo, haOp, haCl);
+
+      const candle = cfg.mode === 'Candle' ? [op, hi, lo, cl] : [haOp, haHi, haLo, haCl];
+      const col = cfg.colorMode === 'Candle' ? (gt(cl, op) ? up : down) : gt(haCl, haOp) ? up : down;
+      // plotcandle draws no candle when a value is na
+      if (candle.every((x) => !isNaN(x))) {
+        const [o, h, l, c] = candle;
+        s.candles.push({ time: b.time, open: o, high: h, low: l, close: c, color: col, wickColor: col, borderColor: col });
+      }
+
+      // plot(atr, 'ATR (28)', color.new(color.red, 70), style = plot.style_area)
+      s.plots[0][i] = { time: b.time, value: atr, color: ATR_COL };
+      // plot(hl_range, 'High-Low Range MA (28)', color.new(color.black, 80), style = plot.style_area)
+      s.plots[1][i] = { time: b.time, value: hlRange, color: RANGE_COL };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice() },
+        markers: [],
+        plotCandles: { tviCandles: s.candles.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrendVolatilityIndexInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TrendVolatilityIndexInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const TrendVolatilityIndex = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

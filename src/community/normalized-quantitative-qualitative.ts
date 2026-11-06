@@ -15,9 +15,11 @@
  * Original notice: © KivancOzbilgic
  */
 
-import { taCore, getSource, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertcondition() calls, in declaration order */
 export const alertConditions: AlertConditionDecl[] = [
@@ -30,24 +32,6 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert6', title: 'Cross -10 Down Alert', message: 'QQE Below -10 DOWNTREND SIGNAL!' },
   { id: 'alert7', title: 'SIDEWAYS', message: 'QQE Entering Sideways Market!' },
 ];
-
-/** The 8 conditions on the (not normalised) QQEF / QQES lines */
-function qqeAlertFlags(qqef: number[], qqes: number[]): boolean[][] {
-  const up = crossedOver(qqef, qqes);
-  const dn = crossedUnder(qqef, qqes);
-  const under60 = crossedUnder(qqef, 60);
-  const over40 = crossedOver(qqef, 40);
-  return [
-    up.map((f, i) => f || dn[i]), // cross(QQEF, QQES)
-    up,
-    dn,
-    crossedOver(qqef, 50),
-    crossedUnder(qqef, 50),
-    crossedOver(qqef, 60),
-    crossedUnder(qqef, 40),
-    under60.map((f, i) => f || over40[i]), // crossunder(QQEF, 60) or crossover(QQEF, 40)
-  ];
-}
 
 export interface NormalizedQuantitativeQualitativeInputs {
   /** Source */
@@ -92,86 +76,146 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const nz = (x: number) => (Number.isNaN(x) ? 0 : x);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<NormalizedQuantitativeQualitativeInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface NqqeVars {
+  wwma: number;
+  atrRsi: number;
+  prevQqes: number;
+}
+
+interface NqqeRun extends BarRunState<NqqeVars> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  ema: ReturnType<typeof taStep.ema>;
+  buy: ReturnType<typeof taStep.crossover>;
+  sell: ReturnType<typeof taStep.crossunder>;
+  qqef: number[];
+  qqes: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<NormalizedQuantitativeQualitativeInputs>): BarStudy<NqqeRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const src = getSource(bars, cfg.src);
-
-  // QQEF = ema(rsi(src, length), SSF) (RSII is the same series)
-  const qqef = taCore.ema(taCore.rsi(src, cfg.length), cfg.ssf);
+  const value = barSource(cfg.src);
   const wwalpha = 1 / cfg.length;
-  const qqes: number[] = new Array(n);
-  let wwma = 0;
-  let atrRsi = 0;
-  let prevQqes = NaN;
-  for (let i = 0; i < n; i++) {
-    const tr = Math.abs(qqef[i] - (i > 0 ? qqef[i - 1] : NaN));
-    // WWMA := wwalpha * TR + (1 - wwalpha) * nz(WWMA[1]); ATRRSI likewise from WWMA
-    wwma = wwalpha * tr + (1 - wwalpha) * nz(wwma);
-    atrRsi = wwalpha * wwma + (1 - wwalpha) * nz(atrRsi);
-    const f = qqef[i];
-    const f1 = i > 0 ? qqef[i - 1] : NaN;
-    const qup = f + atrRsi * 4.236;
-    const qdn = f - atrRsi * 4.236;
-    const p = nz(prevQqes);
-    let q: number;
-    if (lt(qup, p)) q = qup;
-    else if (gt(f, p) && lt(f1, p)) q = qdn;
-    else if (gt(qdn, p)) q = qdn;
-    else if (lt(f, p) && gt(f1, p)) q = qup;
-    else q = p;
-    qqes[i] = q;
-    prevQqes = q;
-  }
-
-  const t = (i: number) => bars[i].time;
   const v = (x: number) => (Number.isFinite(x) ? x : NaN);
-  const plot0 = [];
-  const plot1 = [];
-  const plot2 = [];
-  for (let i = 0; i < n; i++) {
-    const fast = qqef[i] - 50;
-    // Colorh = QQEF - 50 > 10 ? #007002 : QQEF - 50 < -10 ? color.red : #E8E81A
-    const colorh = gt(fast, 10) ? '#007002' : lt(fast, -10) ? '#FF5252' : '#E8E81A';
-    plot0.push({ time: t(i), value: v(fast) });
-    plot1.push({ time: t(i), value: v(fast), color: colorh });
-    plot2.push({ time: t(i), value: v(qqes[i] - 50) });
-  }
-
-  const markers: MarkerData[] = [];
-  if (cfg.showSignals) {
-    const buy = taCore.crossover(qqef, qqes);
-    const sell = taCore.crossunder(qqef, qqes);
-    for (let i = 0; i < n; i++) {
-      // plotshape(buySignalr and showsignals ? (QQES - 50) * 0.995 : na, location.absolute, shape.labelup, size.tiny)
-      if (buy[i]) {
-        markers.push({ time: t(i), position: 'atPriceBottom', price: (qqes[i] - 50) * 0.995, shape: 'labelUp',
-          color: '#4CAF50', text: 'Buy', textColor: '#FFFFFF', size: 'tiny' });
-      }
-      if (sell[i]) {
-        markers.push({ time: t(i), position: 'atPriceTop', price: (qqes[i] - 50) * 1.005, shape: 'labelDown',
-          color: '#FF5252', text: 'Sell', textColor: '#FFFFFF', size: 'tiny' });
-      }
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    hlines: [
-      { value: 10, options: { title: 'Level', color: '#787B86', linestyle: 'dashed' } },
-      { value: -10, options: { title: 'Level', color: '#787B86', linestyle: 'dashed' } },
-    ],
-    markers,
-    alerts: alertStates(alertConditions, bars, qqeAlertFlags(Array.from(qqef), qqes)),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const rsi = taStep.rsi(cfg.length);
+      const ema = taStep.ema(cfg.ssf);
+      const buy = taStep.crossover();
+      const sell = taStep.crossunder();
+      const s: NqqeRun = {
+        rsi, ema, buy, sell, qqef: [], qqes: [], plot0: [], plot1: [], plot2: [], markers: [],
+        flags: alertConditions.map(() => []), times: alertConditions.map(() => []),
+        steps: [rsi, ema, buy, sell], vars: { wwma: 0, atrRsi: 0, prevQqes: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.qqef, s.qqes, s.plot0, s.plot1, s.plot2, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const vr = s.vars;
+      // QQEF = ema(rsi(src, length), SSF) (RSII is the same series)
+      const f = s.ema.step(s.rsi.step(value(b)));
+      s.qqef[i] = f;
+      const f1 = i > 0 ? s.qqef[i - 1] : NaN;
+      const tr = Math.abs(f - f1);
+      // WWMA := wwalpha * TR + (1 - wwalpha) * nz(WWMA[1]); ATRRSI likewise from WWMA
+      vr.wwma = wwalpha * tr + (1 - wwalpha) * nz(vr.wwma);
+      vr.atrRsi = wwalpha * vr.wwma + (1 - wwalpha) * nz(vr.atrRsi);
+      const qup = f + vr.atrRsi * 4.236;
+      const qdn = f - vr.atrRsi * 4.236;
+      const p = nz(vr.prevQqes);
+      let q: number;
+      if (lt(qup, p)) q = qup;
+      else if (gt(f, p) && lt(f1, p)) q = qdn;
+      else if (gt(qdn, p)) q = qdn;
+      else if (lt(f, p) && gt(f1, p)) q = qup;
+      else q = p;
+      s.qqes[i] = q;
+      vr.prevQqes = q;
+
+      const time = b.time;
+      const fast = f - 50;
+      // Colorh = QQEF - 50 > 10 ? #007002 : QQEF - 50 < -10 ? color.red : #E8E81A
+      const colorh = gt(fast, 10) ? '#007002' : lt(fast, -10) ? '#FF5252' : '#E8E81A';
+      s.plot0[i] = { time, value: v(fast) };
+      s.plot1[i] = { time, value: v(fast), color: colorh };
+      s.plot2[i] = { time, value: v(q - 50) };
+
+      const isBuy = s.buy.step(f, q);
+      const isSell = s.sell.step(f, q);
+      if (cfg.showSignals) {
+        // plotshape(buySignalr and showsignals ? (QQES - 50) * 0.995 : na, location.absolute, shape.labelup, size.tiny)
+        if (isBuy) {
+          s.markers.push({ time, position: 'atPriceBottom', price: (q - 50) * 0.995, shape: 'labelUp',
+            color: '#4CAF50', text: 'Buy', textColor: '#FFFFFF', size: 'tiny' });
+        }
+        if (isSell) {
+          s.markers.push({ time, position: 'atPriceTop', price: (q - 50) * 1.005, shape: 'labelDown',
+            color: '#FF5252', text: 'Sell', textColor: '#FFFFFF', size: 'tiny' });
+        }
+      }
+
+      // The 8 conditions on the (not normalised) QQEF / QQES lines (compared with the bar before)
+      const pf = f1;
+      const pq = i > 0 ? s.qqes[i - 1] : NaN;
+      const up = f > q && pf <= pq;
+      const dn = f < q && pf >= pq;
+      const over = (lvl: number) => f > lvl && pf <= lvl;
+      const under = (lvl: number) => f < lvl && pf >= lvl;
+      const flags = [
+        up || dn, // cross(QQEF, QQES)
+        up,
+        dn,
+        over(50),
+        under(50),
+        over(60),
+        under(40),
+        under(60) || over(40), // crossunder(QQEF, 60) or crossover(QQEF, 40)
+      ];
+      for (let k = 0; k < flags.length; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        hlines: [
+          { value: 10, options: { title: 'Level', color: '#787B86', linestyle: 'dashed' } },
+          { value: -10, options: { title: 'Level', color: '#787B86', linestyle: 'dashed' } },
+        ],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<NormalizedQuantitativeQualitativeInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<NormalizedQuantitativeQualitativeInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const NormalizedQuantitativeQualitative = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

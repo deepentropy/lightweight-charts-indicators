@@ -12,7 +12,9 @@
  * Original notice: © LuxAlgo
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RollingTrendlineInputs {
   /** Slope lookback: period of the linear regression slope */
@@ -79,82 +81,150 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(bars: Bar[], inputs: Partial<RollingTrendlineInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface RtVars {
+  /** var float trendValue = na */
+  trendValue: number;
+  /** var float activeSlope = na */
+  activeSlope: number;
+  /** var float resetAtr = na */
+  resetAtr: number;
+}
+
+interface RtRun extends BarRunState<RtVars> {
+  /** The source of each bar (the window of ta.linreg) */
+  src: number[];
+  dev: WindowStdev;
+  atr: ReturnType<typeof taStep.atr>;
+  trend: number[];
+  upper: number[];
+  lower: number[];
+  zoneTop: string[];
+  zoneBottom: string[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<RollingTrendlineInputs>): BarStudy<RtRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const len = cfg.lengthInput;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const srcSeries = getSourceSeries(bars, cfg.sourceInput);
-  const src = A(srcSeries);
-
-  const lrCurrent = A(ta.linreg(srcSeries, len, 0));
-  const lrPast = A(ta.linreg(srcSeries, len, len - 1));
-  const dev = A(ta.stdev(srcSeries, len));
-  const atrVal = A(ta.atr(bars, cfg.atrLengthInput));
-
-  const trend: number[] = new Array(n);
-  const upper: number[] = new Array(n);
-  const lower: number[] = new Array(n);
-  const reset: number[] = new Array(n);
-  const trendCol: string[] = new Array(n);
-  const lineCol: string[] = new Array(n);
-  const bandCol: string[] = new Array(n);
-  const zoneTop: string[] = new Array(n);
-  const zoneBottom: string[] = new Array(n);
-
-  let trendValue = NaN; // var float trendValue = na
-  let activeSlope = NaN; // var float activeSlope = na
-  let resetAtr = NaN; // var float resetAtr = na
-  for (let i = 0; i < n; i++) {
-    const lrSlope = (lrCurrent[i] - lrPast[i]) / (len - 1) / cfg.slopeDivInput;
-    const threshold = dev[i] * cfg.multInput;
-    // projectedValue = trendValue[1] + activeSlope (trendValue still holds the previous bar value here)
-    const projectedValue = trendValue + activeSlope;
-    const isDeviating = gt(Math.abs(src[i] - projectedValue), threshold);
-    // bar_index == lengthInput (bar_index counts from the first bar of the history)
-    const isFirstBar = i === len;
-    if (isFirstBar || isDeviating) {
-      trendValue = src[i];
-      activeSlope = lrSlope;
-      resetAtr = atrVal[i];
-    } else {
-      trendValue = projectedValue;
-    }
-    trend[i] = trendValue;
-    upper[i] = trendValue + resetAtr * cfg.atrMultInput;
-    lower[i] = trendValue - resetAtr * cfg.atrMultInput;
-    reset[i] = isDeviating ? src[i] : NaN;
-
-    const c = ge(activeSlope, 0) ? cfg.bullColorInput : cfg.bearColorInput;
-    trendCol[i] = c;
-    // color = isDeviating ? na : ...: no line segment into the reset bar
-    lineCol[i] = isDeviating ? 'transparent' : c;
-    bandCol[i] = isDeviating ? 'transparent' : String(color.new(c, 80));
-    zoneTop[i] = String(color.new(c, 80));
-    zoneBottom[i] = String(color.new(c, 100));
-  }
-
+  const L = Math.floor(len);
+  const value = barSource(cfg.sourceInput);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: trend[i], color: lineCol[i] })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: upper[i], color: bandCol[i] })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: lower[i], color: bandCol[i] })),
-      plot3: bars.map((b, i) => ({ time: b.time, value: reset[i], color: trendCol[i] })),
+    fullRunReason: () => (isBarSource(cfg.sourceInput) ? null : 'source of another study'),
+    init() {
+      const s: RtRun = {
+        src: [], dev: new WindowStdev(len),
+        atr: taStep.atr(cfg.atrLengthInput), trend: [], upper: [], lower: [], zoneTop: [], zoneBottom: [],
+        plots: [[], [], [], []], steps: [], vars: { trendValue: NaN, activeSlope: NaN, resetAtr: NaN },
+        lists: [], series: [],
+      };
+      s.steps = [s.dev, s.atr];
+      s.series = [s.src, s.trend, s.upper, s.lower, s.zoneTop, s.zoneBottom, ...s.plots];
+      return s;
     },
-    fills: [
-      // fill(plotUpper, plotTrend, upperBand, trendValue, color.new(zone, 80), color.new(zone, 100), 'Upper Zone Fill')
-      { plot1: 'plot1', plot2: 'plot0', options: { title: 'Upper Zone Fill' },
-        gradient: { topValue: upper, bottomValue: trend, topColor: zoneTop, bottomColor: zoneBottom } },
-      // fill(plotLower, plotTrend, lowerBand, trendValue, color.new(zone, 80), color.new(zone, 100), 'Lower Zone Fill')
-      { plot1: 'plot2', plot2: 'plot0', options: { title: 'Lower Zone Fill' },
-        gradient: { topValue: lower, bottomValue: trend, topColor: zoneTop, bottomColor: zoneBottom } },
-    ],
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const src = value(b);
+      s.src[i] = src;
+      // ta.linreg(src, len, 0) and ta.linreg(src, len, len - 1): one least squares line of the last len bars (the
+      // operations of taStep.linreg), na when one of them is NaN
+      let lrCurrent = NaN;
+      let lrPast = NaN;
+      if (i >= L - 1) {
+        let sumX = 0;
+        let sumY = 0;
+        let sumXY = 0;
+        let sumX2 = 0;
+        let ok = true;
+        for (let j = 0; j < L; j++) {
+          const y = s.src[i - L + 1 + j];
+          if (isNaN(y)) { ok = false; break; }
+          const x = j + 1;
+          sumX += x;
+          sumY += y;
+          sumXY += x * y;
+          sumX2 += x * x;
+        }
+        if (ok) {
+          const slope = (L * sumXY - sumX * sumY) / (L * sumX2 - sumX * sumX);
+          const intercept = sumY / L - (slope * sumX) / L + slope;
+          lrCurrent = intercept + slope * (L - 1 - 0);
+          lrPast = intercept + slope * (L - 1 - (len - 1));
+        }
+      }
+      const dev = s.dev.step(src);
+      const atrVal = s.atr.step(b.high, b.low, b.close);
+
+      const lrSlope = (lrCurrent - lrPast) / (len - 1) / cfg.slopeDivInput;
+      const threshold = dev * cfg.multInput;
+      // projectedValue = trendValue[1] + activeSlope (trendValue still holds the previous bar value here)
+      const projectedValue = v.trendValue + v.activeSlope;
+      const isDeviating = gt(Math.abs(src - projectedValue), threshold);
+      // bar_index == lengthInput (bar_index counts from the first bar of the history)
+      const isFirstBar = i === len;
+      if (isFirstBar || isDeviating) {
+        v.trendValue = src;
+        v.activeSlope = lrSlope;
+        v.resetAtr = atrVal;
+      } else {
+        v.trendValue = projectedValue;
+      }
+      const trendValue = v.trendValue;
+      const upper = trendValue + v.resetAtr * cfg.atrMultInput;
+      const lower = trendValue - v.resetAtr * cfg.atrMultInput;
+      s.trend[i] = trendValue;
+      s.upper[i] = upper;
+      s.lower[i] = lower;
+      const reset = isDeviating ? src : NaN;
+
+      const c = ge(v.activeSlope, 0) ? cfg.bullColorInput : cfg.bearColorInput;
+      // color = isDeviating ? na : ...: no line segment into the reset bar
+      const lineCol = isDeviating ? 'transparent' : c;
+      const bandCol = isDeviating ? 'transparent' : String(color.new(c, 80));
+      s.zoneTop[i] = String(color.new(c, 80));
+      s.zoneBottom[i] = String(color.new(c, 100));
+      const time = b.time;
+      const p = s.plots;
+      p[0][i] = { time, value: trendValue, color: lineCol };
+      p[1][i] = { time, value: upper, color: bandCol };
+      p[2][i] = { time, value: lower, color: bandCol };
+      p[3][i] = { time, value: reset, color: c };
+    },
+    result(s) {
+      const p = s.plots;
+      const trend = s.trend.slice();
+      const zoneTop = s.zoneTop.slice();
+      const zoneBottom = s.zoneBottom.slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice() },
+        fills: [
+          // fill(plotUpper, plotTrend, upperBand, trendValue, color.new(zone, 80), color.new(zone, 100), 'Upper Zone Fill')
+          { plot1: 'plot1', plot2: 'plot0', options: { title: 'Upper Zone Fill' },
+            gradient: { topValue: s.upper.slice(), bottomValue: trend, topColor: zoneTop, bottomColor: zoneBottom } },
+          // fill(plotLower, plotTrend, lowerBand, trendValue, color.new(zone, 80), color.new(zone, 100), 'Lower Zone Fill')
+          { plot1: 'plot2', plot2: 'plot0', options: { title: 'Lower Zone Fill' },
+            gradient: { topValue: s.lower.slice(), bottomValue: trend, topColor: zoneTop, bottomColor: zoneBottom } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RollingTrendlineInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RollingTrendlineInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RollingTrendline = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

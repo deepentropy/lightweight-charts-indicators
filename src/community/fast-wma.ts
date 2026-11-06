@@ -13,9 +13,11 @@
  * Original notice: © Clokivez
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, PlotCandleData } from '../types';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type FastWmaColorType = 'Trend' | 'ETHBTC' | 'SOLETH' | 'SOLBTC';
 
@@ -101,103 +103,138 @@ const COLOURS: Record<FastWmaColorType, [string, string]> = {
 
 type Point = { time: number; value: number; color: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<FastWmaInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> };
+
+interface FastWmaRun extends BarRunState<{ prevSignal: number }> {
+  wma: ReturnType<typeof taStep.wma>;
+  wcd: WindowStdev;
+  wmaN: ReturnType<typeof taStep.wma>;
+  arrowL: ReturnType<typeof taStep.crossover>;
+  arrowS: ReturnType<typeof taStep.crossunder>;
+  col: string[];
+  plots: Point[][];
+  fill80: string[];
+  fill95: string[];
+  candles: PlotCandleData[];
+  /** Bars of the arrows (drawn one bar later) and their kind (0: buy, 1: sell) */
+  arrowBars: number[];
+  arrowKinds: number[];
+}
+
+function study(inputs: Partial<FastWmaInputs>): BarStudy<FastWmaRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const srcSeries = getSourceSeries(bars, cfg.wmasrc);
-  const src = A(srcSeries);
-  const wma = A(ta.wma(srcSeries, cfg.wmalen));
-  const wcd = A(ta.stdev(srcSeries, cfg.wmasrclen));
-  const wmaN = A(ta.wma(srcSeries, cfg.nwmalen));
-
+  const value = barSource(cfg.wmasrc);
   const [upCol, downCol] = COLOURS[cfg.coltype] ?? COLOURS.ETHBTC;
-  const wmah: number[] = new Array(n);
-  const wmal: number[] = new Array(n);
-  const wcsdh: number[] = new Array(n);
-  const wcsdl: number[] = new Array(n);
-  const nwma: number[] = new Array(n);
-  const signal: number[] = new Array(n);
-  const col: string[] = new Array(n);
-  let prevSignal = NaN; // Signal[1]: na on bar 0
-  for (let i = 0; i < n; i++) {
-    wmah[i] = wma[i] * cfg.wwl;
-    wmal[i] = wma[i] * cfg.wws;
-    wcsdh[i] = src[i] + wcd[i];
-    wcsdl[i] = src[i] - wcd[i];
-    // plain division: x / 0 is +-infinity (the comparisons use it, the plot shows na)
-    nwma[i] = src[i] / wmaN[i] - 1;
-    const long = gt(wcsdl[i], wmah[i]) && gt(nwma[i], cfg.lt);
-    const short = lt(wcsdh[i], wmal[i]) && lt(nwma[i], cfg.st);
-    // Signal := Long ? 1 : Short ? -1 : Signal[1]
-    signal[i] = long ? 1 : short ? -1 : prevSignal;
-    prevSignal = signal[i];
-    col[i] = gt(signal[i], 0) ? upCol : downCol;
-  }
-
-  const t = (i: number) => bars[i].time;
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const line = (vals: number[], c: (i: number) => string): Point[] =>
-    bars.map((_b, i) => ({ time: t(i), value: fin(vals[i]), color: c(i) }));
-  const lineCol = (i: number) => col[i];
-  const sdCol = (i: number) => (cfg.pl ? col[i] : 'transparent');
-
-  // fill(wmalplot, wmahplot, pl ? color.new(col, 80) : na); fill(sdhplot, sdlplot, pl ? color.new(col, 95) : na)
-  const fillCols = (tr: number) => bars.map((_b, i) => (cfg.pl ? String(color.new(col[i], tr)) : 'transparent'));
-
-  // plotcandle(open, high, low, close, "Bar Color", bcol, bcol, bordercolor = bcol, force_overlay = true)
-  const candles: PlotCandleData[] = bars.map((b, i) => {
-    const c = cfg.bc ? col[i] : 'transparent';
-    return { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: c, wickColor: c,
-      borderColor: c, forceOverlay: true };
-  });
-
-  // plotshape(ta.crossover(Signal, 0), "Real Buy", shape.triangleup, location.belowbar, col, offset = 1, size.tiny)
-  // plotshape(ta.crossunder(Signal, 0), "Real Sell", shape.triangledown, location.abovebar, col, offset = 1, size.tiny)
-  const arrowL = ta.crossover(S(signal), 0).toArray();
-  const arrowS = ta.crossunder(S(signal), 0).toArray();
-  const interval = barInterval(bars);
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const time = barTime(bars, i + 1, interval);
-    if (arrowL[i]) {
-      markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: col[i], size: 'tiny', forceOverlay: true });
-    }
-    if (arrowS[i]) {
-      markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: col[i], size: 'tiny', forceOverlay: true });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(nwma, lineCol),
-      plot1: line(wma, lineCol),
-      plot2: line(wmah, lineCol),
-      plot3: line(wmal, lineCol),
-      plot4: line(wcsdh, sdCol),
-      plot5: line(wcsdl, sdCol),
+    fullRunReason: () => (isBarSource(cfg.wmasrc) ? null : 'source of another study'),
+    init() {
+      const s: FastWmaRun = {
+        wma: taStep.wma(), wcd: new WindowStdev(cfg.wmasrclen), wmaN: taStep.wma(), arrowL: taStep.crossover(),
+        arrowS: taStep.crossunder(), col: [], plots: [[], [], [], [], [], []], fill80: [], fill95: [], candles: [],
+        arrowBars: [], arrowKinds: [], steps: [], vars: { prevSignal: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.wma, s.wcd, s.wmaN, s.arrowL, s.arrowS];
+      s.lists = [s.arrowBars, s.arrowKinds];
+      s.series = [s.col, ...s.plots, s.fill80, s.fill95, s.candles];
+      return s;
     },
-    hlines: [
-      { value: cfg.lt, options: { title: 'Long Threshold', color: color.green, linestyle: 'dashed' } },
-      { value: cfg.st, options: { title: 'Short Threshold', color: color.red, linestyle: 'dashed' } },
-    ],
-    fills: [
-      { plot1: 'plot3', plot2: 'plot2', options: { title: 'Plots Background' }, colors: fillCols(80) },
-      { plot1: 'plot4', plot2: 'plot5', options: { title: 'Plots Background' }, colors: fillCols(95) },
-    ],
-    markers,
-    plotCandles: { barColor: candles },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const v = s.vars;
+      const src = value(b);
+      const wma = s.wma.step(src, cfg.wmalen);
+      const wcd = s.wcd.step(src);
+      const wmaN = s.wmaN.step(src, cfg.nwmalen);
+
+      const wmah = wma * cfg.wwl;
+      const wmal = wma * cfg.wws;
+      const wcsdh = src + wcd;
+      const wcsdl = src - wcd;
+      // plain division: x / 0 is +-infinity (the comparisons use it, the plot shows na)
+      const nwma = src / wmaN - 1;
+      const long = gt(wcsdl, wmah) && gt(nwma, cfg.lt);
+      const short = lt(wcsdh, wmal) && lt(nwma, cfg.st);
+      // Signal := Long ? 1 : Short ? -1 : Signal[1]
+      const signal = long ? 1 : short ? -1 : v.prevSignal;
+      v.prevSignal = signal;
+      const col = gt(signal, 0) ? upCol : downCol;
+      s.col[i] = col;
+
+      const sdCol = cfg.pl ? col : 'transparent';
+      const p = s.plots;
+      p[0][i] = { time, value: fin(nwma), color: col };
+      p[1][i] = { time, value: fin(wma), color: col };
+      p[2][i] = { time, value: fin(wmah), color: col };
+      p[3][i] = { time, value: fin(wmal), color: col };
+      p[4][i] = { time, value: fin(wcsdh), color: sdCol };
+      p[5][i] = { time, value: fin(wcsdl), color: sdCol };
+
+      // fill(wmalplot, wmahplot, pl ? color.new(col, 80) : na); fill(sdhplot, sdlplot, pl ? color.new(col, 95) : na)
+      s.fill80[i] = cfg.pl ? String(color.new(col, 80)) : 'transparent';
+      s.fill95[i] = cfg.pl ? String(color.new(col, 95)) : 'transparent';
+
+      // plotcandle(open, high, low, close, "Bar Color", bcol, bcol, bordercolor = bcol, force_overlay = true)
+      const c = cfg.bc ? col : 'transparent';
+      s.candles[i] = { time, open: b.open, high: b.high, low: b.low, close: b.close, color: c, wickColor: c,
+        borderColor: c, forceOverlay: true };
+
+      // plotshape(ta.crossover(Signal, 0), "Real Buy", shape.triangleup, location.belowbar, col, offset = 1, size.tiny)
+      // plotshape(ta.crossunder(Signal, 0), "Real Sell", shape.triangledown, location.abovebar, col, offset = 1, size.tiny)
+      // (placed in the result: the time of the next bar)
+      if (s.arrowL.step(signal, 0)) { s.arrowBars.push(i); s.arrowKinds.push(0); }
+      if (s.arrowS.step(signal, 0)) { s.arrowBars.push(i); s.arrowKinds.push(1); }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const ab = s.arrowBars;
+      // the time of the bar after the last one: the bar interval of the whole set
+      const interval = ab.length > 0 && ab[ab.length - 1] + 1 >= n ? barInterval(bars) : undefined;
+      const markers: MarkerData[] = [];
+      for (let k = 0; k < ab.length; k++) {
+        const i = ab[k];
+        const time = barTime(bars, i + 1, interval);
+        if (s.arrowKinds[k] === 0) {
+          markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: s.col[i], size: 'tiny', forceOverlay: true });
+        } else {
+          markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: s.col[i], size: 'tiny', forceOverlay: true });
+        }
+      }
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(),
+        },
+        hlines: [
+          { value: cfg.lt, options: { title: 'Long Threshold', color: color.green, linestyle: 'dashed' } },
+          { value: cfg.st, options: { title: 'Short Threshold', color: color.red, linestyle: 'dashed' } },
+        ],
+        fills: [
+          { plot1: 'plot3', plot2: 'plot2', options: { title: 'Plots Background' }, colors: s.fill80.slice() },
+          { plot1: 'plot4', plot2: 'plot5', options: { title: 'Plots Background' }, colors: s.fill95.slice() },
+        ],
+        markers,
+        plotCandles: { barColor: s.candles.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FastWmaInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<FastWmaInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const FastWma = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

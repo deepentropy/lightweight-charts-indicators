@@ -18,9 +18,11 @@
  * Original notice: © LonesomeTheBlue
  */
 
-import { ta, color, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { LineDrawingData, MarkerData } from '../types';
-import { barInterval, barTime } from '../bar-time';
+import { barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrendLinesInputs {
   /** Bars before the pivot bar */
@@ -80,113 +82,152 @@ interface Ln {
   deleted: boolean;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TrendLinesInputs> = {},
-): Omit<IndicatorResult, 'lines' | 'markers'> & { lines: LineDrawingData[]; markers: MarkerData[] } {
+type Result = Omit<IndicatorResult, 'lines' | 'markers'> & { lines: LineDrawingData[]; markers: MarkerData[] };
+
+/** The state of one side (pivot highs or pivot lows) */
+interface Side {
+  /** bst / bsb */
+  since: number;
+  /** t_angle / b_angle: na on the first bar, then carried */
+  angle: number;
+  /** `line tline = na` inside the `if` block: tline[1] is the value the block gave it the last time it ran */
+  lineBefore: Ln | null;
+}
+
+interface TlVars {
+  /** Lines in creation order (the deleted ones are out) */
+  lines: Ln[];
+  top: Side;
+  bot: Side;
+}
+
+interface TlRun extends BarRunState<TlVars> {
+  ph: PivotStep;
+  pl: PivotStep;
+  /** valuewhen(top, top, 1), valuewhen(bot, bot, 1) */
+  ltop: ReturnType<typeof taStep.valuewhen>;
+  lbot: ReturnType<typeof taStep.valuewhen>;
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<TrendLinesInputs>): BarStudy<TlRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const lb = Math.trunc(cfg.lb);
   const rb = Math.trunc(cfg.rb);
   const mb = lb + rb + 1;
+  const labelColor = String(color.new('#FFFFFF', 100));
 
-  const highS = new Series(bars, (b) => b.high);
-  const lowS = new Series(bars, (b) => b.low);
-  const highestBars = ta.highestbars(highS, mb).toArray();
-  const lowestBars = ta.lowestbars(lowS, mb).toArray();
-
-  // top := not na(high[mb]) ? (highestbars(high, mb) == -rb ? high[rb] : na) : na
-  const top: number[] = new Array(n).fill(NaN);
-  const bot: number[] = new Array(n).fill(NaN);
-  for (let i = mb; i < n; i++) {
-    if (!isNaN(bars[i - mb].high) && highestBars[i] === -rb) top[i] = bars[i - rb].high;
-    if (!isNaN(bars[i - mb].low) && lowestBars[i] === -rb) bot[i] = bars[i - rb].low;
-  }
-  // valuewhen(top, top, 1): the pivot before the latest one (a float is true when it is not na and not 0)
-  const topS = Series.fromArray(bars, top);
-  const botS = Series.fromArray(bars, bot);
-  const ltop = ta.valuewhen(Series.fromArray(bars, top.map((v) => (nonZero(v) ? 1 : 0))), topS, 1).toArray();
-  const lbot = ta.valuewhen(Series.fromArray(bars, bot.map((v) => (nonZero(v) ? 1 : 0))), botS, 1).toArray();
-
-  // Lines in creation order: when a creation brings the count above max + 5, the oldest are deleted until max remain
-  const lines: Ln[] = [];
-  const newLine = (l: Omit<Ln, 'deleted'>): Ln => {
+  /** Lines in creation order: when a creation brings the count above max + 5, the oldest are deleted until max remain */
+  const newLine = (lines: Ln[], l: Omit<Ln, 'deleted'>): Ln => {
     const o = { ...l, deleted: false };
     lines.push(o);
     if (lines.length > MAX_LINES + 5) for (const old of lines.splice(0, lines.length - MAX_LINES)) old.deleted = true;
     return o;
   };
 
-  const interval = barInterval(bars);
-  const T = (index: number) => barTime(bars, index, interval);
-  const markers: MarkerData[] = [];
-  const labelColor = String(color.new('#FFFFFF', 100));
-
-  /** One side: pivot highs (downtrend lines) or pivot lows (uptrend lines) */
-  const side = (isTop: boolean) => {
-    const pivot = isTop ? top : bot;
-    const before = isTop ? ltop : lbot;
-    const price = (i: number) => (i >= 0 ? (isTop ? bars[i].high : bars[i].low) : NaN);
+  /** One bar of one side: pivot highs (downtrend lines) or pivot lows (uptrend lines) */
+  const sideBar = (s: TlRun, sd: Side, isTop: boolean, i: number, bars: Bar[], p: number, last: number) => {
+    const price = (j: number) => (j >= 0 ? (isTop ? bars[j].high : bars[j].low) : NaN);
     const css = isTop ? cfg.dcolor : cfg.ucolor;
-    let since = NaN; // bst / bsb
-    let angle = NaN; // t_angle / b_angle: na on the first bar, then carried
-    // `line tline = na` inside the `if` block: tline[1] is the value the block gave it the last time it ran
-    let lineBefore: Ln | null = null;
+    const isPivot = nonZero(p);
+    const sinceBefore = sd.since;
+    sd.since = isPivot ? 1 : (isNaN(sinceBefore) ? 0 : sinceBefore) + 1;
+    const angleBefore = sd.angle;
 
-    return (i: number) => {
-      const p = pivot[i];
-      const isPivot = nonZero(p);
-      const sinceBefore = since;
-      since = isPivot ? 1 : (isNaN(sinceBefore) ? 0 : sinceBefore) + 1;
-      const angleBefore = angle;
+    if (isPivot && cfg.showpivot) {
+      const time = barTime(bars, i - rb);
+      s.markers.push(isTop
+        ? { time, position: 'aboveBar', shape: 'labelDown', color: labelColor, text: 'H', textColor: '#FF5252' }
+        : { time, position: 'belowBar', shape: 'labelUp', color: labelColor, text: 'L', textColor: '#00E676' });
+    }
 
-      if (isPivot && cfg.showpivot) {
-        markers.push(isTop
-          ? { time: T(i - rb), position: 'aboveBar', shape: 'labelDown', color: labelColor, text: 'H', textColor: '#FF5252' }
-          : { time: T(i - rb), position: 'belowBar', shape: 'labelUp', color: labelColor, text: 'L', textColor: '#00E676' });
-      }
-
-      const last = before[i] ?? NaN;
-      if (isNaN(last) || isNaN(p)) return;
-      let line: Ln | null = null;
-      if (isTop ? gt(last, p) : lt(last, p)) {
-        const y1 = price(i - sinceBefore - rb);
-        const y2 = price(i - rb);
-        line = newLine({ x1: i - sinceBefore - rb, y1, x2: i - rb, y2, color: css, extend: 'right', dashed: false });
-        angle = (y1 - y2) / sinceBefore;
-        const flatter = isTop ? lt(angle, angleBefore) : gt(angle, angleBefore);
-        const steeper = isTop ? gt(angle, angleBefore) : lt(angle, angleBefore);
-        if (flatter && nonZero(angleBefore) && lineBefore && !lineBefore.deleted) lineBefore.extend = 'none';
-        if (steeper && nonZero(angleBefore)) line.extend = 'none';
-      }
-      if (isTop ? !gt(last, p) : !lt(last, p)) angle = 0;
-      if (cfg.chdashed && lineBefore && !lineBefore.deleted) lineBefore.dashed = true;
-      lineBefore = line;
-    };
+    if (isNaN(last) || isNaN(p)) return;
+    let line: Ln | null = null;
+    const lineBefore = sd.lineBefore;
+    if (isTop ? gt(last, p) : lt(last, p)) {
+      const y1 = price(i - sinceBefore - rb);
+      const y2 = price(i - rb);
+      line = newLine(s.vars.lines, { x1: i - sinceBefore - rb, y1, x2: i - rb, y2, color: css, extend: 'right', dashed: false });
+      sd.angle = (y1 - y2) / sinceBefore;
+      const flatter = isTop ? lt(sd.angle, angleBefore) : gt(sd.angle, angleBefore);
+      const steeper = isTop ? gt(sd.angle, angleBefore) : lt(sd.angle, angleBefore);
+      if (flatter && nonZero(angleBefore) && lineBefore && !lineBefore.deleted) lineBefore.extend = 'none';
+      if (steeper && nonZero(angleBefore)) line.extend = 'none';
+    }
+    if (isTop ? !gt(last, p) : !lt(last, p)) sd.angle = 0;
+    if (cfg.chdashed && lineBefore && !lineBefore.deleted) lineBefore.dashed = true;
+    sd.lineBefore = line;
   };
-
-  const tops = side(true);
-  const bots = side(false);
-  for (let i = 0; i < n; i++) {
-    tops(i);
-    bots(i);
-  }
-  markers.sort((a, b) => a.time - b.time);
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    // a line with an na coordinate is not drawn
-    lines: lines.filter((l) => !isNaN(l.y1) && !isNaN(l.y2) && !isNaN(l.x1)).map((l) => ({
-      time1: T(l.x1), price1: l.y1, time2: T(l.x2), price2: l.y2, color: l.color, extend: l.extend,
-      ...(l.dashed ? { style: 'dashed' as const } : {}),
-    })),
+    init() {
+      // highestbars(high, mb) == -rb: the newest highest of the last mb values is on the bar rb bars back
+      const ph = new PivotStep(lb, rb, true);
+      const pl = new PivotStep(lb, rb, false);
+      const ltop = taStep.valuewhen(1);
+      const lbot = taStep.valuewhen(1);
+      const side = (): Side => ({ since: NaN, angle: NaN, lineBefore: null });
+      const s: TlRun = {
+        ph, pl, ltop, lbot, markers: [], steps: [ph, pl, ltop, lbot],
+        vars: { lines: [], top: side(), bot: side() }, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      return s;
+    },
+    copyVars(v) {
+      // the lines are changed in place: copied with the line of each side (a deleted line is never changed again)
+      const copies = new Map<Ln, Ln>();
+      const lines = v.lines.map((l) => {
+        const c = { ...l };
+        copies.set(l, c);
+        return c;
+      });
+      const side = (sd: Side): Side => ({
+        since: sd.since, angle: sd.angle, lineBefore: sd.lineBefore ? (copies.get(sd.lineBefore) ?? sd.lineBefore) : null,
+      });
+      return { lines, top: side(v.top), bot: side(v.bot) };
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const isHigh = !Number.isNaN(s.ph.step(i, b.high));
+      const isLow = !Number.isNaN(s.pl.step(i, b.low));
+      // top := not na(high[mb]) ? (highestbars(high, mb) == -rb ? high[rb] : na) : na
+      const top = i >= mb && !isNaN(bars[i - mb].high) && isHigh ? bars[i - rb].high : NaN;
+      const bot = i >= mb && !isNaN(bars[i - mb].low) && isLow ? bars[i - rb].low : NaN;
+      // valuewhen(top, top, 1): the pivot before the latest one (a float is true when it is not na and not 0)
+      const ltop = s.ltop.step(nonZero(top) ? 1 : 0, top);
+      const lbot = s.lbot.step(nonZero(bot) ? 1 : 0, bot);
+      sideBar(s, s.vars.top, true, i, bars, top, ltop);
+      sideBar(s, s.vars.bot, false, i, bars, bot, lbot);
+    },
+    result(s, bars) {
+      const markers = s.markers.slice().sort((a, b) => a.time - b.time);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers,
+        // a line with an na coordinate is not drawn
+        lines: s.vars.lines.filter((l) => !isNaN(l.y1) && !isNaN(l.y2) && !isNaN(l.x1)).map((l) => ({
+          time1: barTime(bars, l.x1), price1: l.y1, time2: barTime(bars, l.x2), price2: l.y2, color: l.color, extend: l.extend,
+          ...(l.dashed ? { style: 'dashed' as const } : {}),
+        })),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrendLinesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TrendLinesInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const TrendLines = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

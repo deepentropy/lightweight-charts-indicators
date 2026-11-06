@@ -27,8 +27,9 @@ import {
   color, timeframe, resample, mapToChart,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar,
 } from 'oakscriptjs';
-import { periodStarts, chartTimeframe, securityBars } from '../anchor-period';
+import { periodStarts, chartTimeframe, hasCalendar, securityBars } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CmOldschoolProjectedHighLowInputs {
   /** Show Daily Projected High Low? */
@@ -115,49 +116,170 @@ function timeframeBars(
   return { htf, toChart: (values) => mapToChart(values, group, [], true, false) };
 }
 
+type Point = { time: number; value: number; color: string };
+
+/** Start (UNIX ms, UTC) of the D / W / M calendar period of the day `day` (the UTC rule of `periodStarts`) */
+function calendarPeriodStart(day: number, info: ReturnType<typeof timeframe.info>): number {
+  const DAY = 86400000;
+  const WEEK = 7 * DAY;
+  const n = info.multiplier;
+  const d = new Date(day);
+  const year = d.getUTCFullYear();
+  if (info.isdaily) {
+    if (n === 1) return day;
+    const jan1 = Date.UTC(year, 0, 1);
+    return jan1 + Math.floor((day - jan1) / DAY / n) * n * DAY;
+  }
+  if (info.isweekly) {
+    const monday = day - ((d.getUTCDay() + 6) % 7) * DAY;
+    if (n === 1) return monday;
+    const jan1 = Date.UTC(new Date(monday).getUTCFullYear(), 0, 1);
+    const firstMonday = jan1 + ((8 - new Date(jan1).getUTCDay()) % 7) * DAY;
+    return firstMonday + Math.floor((monday - firstMonday) / WEEK / n) * n * WEEK;
+  }
+  return Date.UTC(year, Math.floor(d.getUTCMonth() / n) * n, 1);
+}
+
+/** One timeframe of the run: how its periods are found, the bar of the current period, the levels of the previous one */
+interface TfState {
+  /**
+   * 'chart': each chart bar is a period; 'utc': the UTC calendar periods; 'none': a timeframe below the chart
+   * timeframe (na levels); 'pre': levels computed on all bars (exchange calendar)
+   */
+  mode: 'chart' | 'utc' | 'none' | 'pre';
+  info: ReturnType<typeof timeframe.info> | null;
+  pre: { lows: number[]; highs: number[] } | null;
+  /** Period key of the current period, its high / low / close */
+  key: number;
+  high: number;
+  low: number;
+  close: number;
+  /** pl / ph of the previous period */
+  prevLow: number;
+  prevHigh: number;
+}
+
+interface CmoRun extends BarRunState<{ tfs: TfState[] }> {
+  plots: Point[][];
+}
+
+function study(inputs: Partial<CmOldschoolProjectedHighLowInputs>): BarStudy<CmoRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  let inMs = false;
+  return {
+    // the chart timeframe comes from the bar gaps, the time unit from the first bar
+    key: (bars, chart) => `${chartTimeframe(bars, chart)}|${bars.length > 0 && bars[0].time >= 1e12}`,
+    // with the exchange calendar the periods come from the calendar of the whole bar set
+    fullRunReason: (chart) => (hasCalendar(chart) ? 'exchange calendar periods' : null),
+    init(bars, chart) {
+      inMs = bars.length > 0 && bars[0].time >= 1e12;
+      const chartTf = chartTimeframe(bars, chart);
+      const tfs: TfState[] = LEVELS.map((l) => {
+        const show = cfg[l.key];
+        const st: TfState = {
+          mode: 'chart', info: null, pre: null, key: NaN, high: NaN, low: NaN, close: NaN, prevLow: NaN, prevHigh: NaN,
+        };
+        // the levels are computed when hidden too: the plot colours read them
+        if (chartTf === '' || timeframe.in_seconds(l.tf) === timeframe.in_seconds(chartTf)) return st;
+        // a timeframe below the chart timeframe: the bars do not carry that data
+        if (timeframe.in_seconds(l.tf) < timeframe.in_seconds(chartTf)) {
+          if (show) throw new Error(`The timeframe "${l.tf}" is lower than the chart timeframe: the bars do not carry that data.`);
+          st.mode = 'none';
+          return st;
+        }
+        if (hasCalendar(chart)) {
+          const security = timeframeBars(bars, l.tf, chart);
+          if (security) {
+            const { htf, toChart } = security;
+            // pf = hlc3 * 2, pl = pf - high, ph = pf - low; security(tickerid, tf, pl[1]) / (ph[1])
+            const pf = htf.map((b) => ((b.high + b.low + b.close) / 3) * 2);
+            const pl = htf.map((b, g) => pf[g] - b.high);
+            const ph = htf.map((b, g) => pf[g] - b.low);
+            st.mode = 'pre';
+            st.pre = {
+              lows: toChart(pl.map((_v, g) => (g > 0 ? pl[g - 1] : NaN))),
+              highs: toChart(ph.map((_v, g) => (g > 0 ? ph[g - 1] : NaN))),
+            };
+            return st;
+          }
+        }
+        st.mode = 'utc';
+        st.info = timeframe.info(l.tf);
+        return st;
+      });
+      const s: CmoRun = { plots: LEVELS.flatMap(() => [[], []]), steps: [], vars: { tfs }, lists: [], series: [] };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const c = b.close;
+      // changed in place: copyVars copies them at the end of the last confirmed bar
+      const tfs = s.vars.tfs;
+      for (let k = 0; k < LEVELS.length; k++) {
+        const st = tfs[k];
+        let low = NaN;
+        let high = NaN;
+        if (st.mode === 'pre') {
+          low = st.pre!.lows[i];
+          high = st.pre!.highs[i];
+        } else if (st.mode !== 'none') {
+          // security(tickerid, tf, pl[1]) / (ph[1]): the levels of the bar of the previous period
+          let key: number;
+          if (st.mode === 'chart') key = i;
+          else {
+            const t = inMs ? time : time * 1000;
+            key = calendarPeriodStart(Math.floor(t / 86400000) * 86400000, st.info!);
+          }
+          if (i === 0 || key !== st.key) {
+            if (i > 0) {
+              // pf = hlc3 * 2, pl = pf - high, ph = pf - low
+              const pf = ((st.high + st.low + st.close) / 3) * 2;
+              st.prevLow = pf - st.high;
+              st.prevHigh = pf - st.low;
+            }
+            st.key = key;
+            st.high = b.high;
+            st.low = b.low;
+            st.close = b.close;
+          } else {
+            st.high = Math.max(st.high, b.high);
+            st.low = Math.min(st.low, b.low);
+            st.close = b.close;
+          }
+          low = st.prevLow;
+          high = st.prevHigh;
+        }
+        const show = cfg[LEVELS[k].key];
+        // plot(show and level ? level : na); colour close < pl ? red : yellow, close > ph ? lime : yellow
+        s.plots[2 * k][i] = { time, value: show && truthy(low) ? low : NaN, color: lt(c, low) ? RED : YELLOW };
+        s.plots[2 * k + 1][i] = { time, value: show && truthy(high) ? high : NaN, color: gt(c, high) ? LIME : YELLOW };
+      }
+    },
+    copyVars: (v) => ({ tfs: v.tfs.map((t) => ({ ...t })) }),
+    result(s) {
+      const plots: IndicatorResult['plots'] = {};
+      s.plots.forEach((p, j) => { plots[`plot${j}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CmOldschoolProjectedHighLowInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<CmOldschoolProjectedHighLowInputs> = {},
   chart?: ChartContext,
 ): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const plots: IndicatorResult['plots'] = {};
-
-  LEVELS.forEach((l, k) => {
-    const show = cfg[l.key];
-    let lows: number[] = new Array(n).fill(NaN);
-    let highs: number[] = new Array(n).fill(NaN);
-    // the levels are computed when hidden too: the plot colours read them
-    const security = timeframeBars(bars, l.tf, chart);
-    if (!security && show) {
-      throw new Error(`The timeframe "${l.tf}" is lower than the chart timeframe: the bars do not carry that data.`);
-    }
-    if (security) {
-      const { htf, toChart } = security;
-      // pf = hlc3 * 2, pl = pf - high, ph = pf - low; security(tickerid, tf, pl[1]) / (ph[1])
-      const pf = htf.map((b) => ((b.high + b.low + b.close) / 3) * 2);
-      const pl = htf.map((b, g) => pf[g] - b.high);
-      const ph = htf.map((b, g) => pf[g] - b.low);
-      lows = toChart(pl.map((_v, g) => (g > 0 ? pl[g - 1] : NaN)));
-      highs = toChart(ph.map((_v, g) => (g > 0 ? ph[g - 1] : NaN)));
-    }
-    const low: IndicatorResult['plots'][string] = [];
-    const high: IndicatorResult['plots'][string] = [];
-    for (let i = 0; i < n; i++) {
-      const c = bars[i].close;
-      // plot(show and level ? level : na); colour close < pl ? red : yellow, close > ph ? lime : yellow
-      low.push({ time: bars[i].time, value: show && truthy(lows[i]) ? lows[i] : NaN, color: lt(c, lows[i]) ? RED : YELLOW });
-      high.push({ time: bars[i].time, value: show && truthy(highs[i]) ? highs[i] : NaN, color: gt(c, highs[i]) ? LIME : YELLOW });
-    }
-    plots[`plot${2 * k}`] = low;
-    plots[`plot${2 * k + 1}`] = high;
-  });
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-  };
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
-export const CmOldschoolProjectedHighLow = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+export const CmOldschoolProjectedHighLow = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

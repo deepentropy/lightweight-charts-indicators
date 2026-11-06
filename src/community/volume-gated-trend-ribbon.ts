@@ -13,9 +13,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, math, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, WindowSum, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
 
 const MA_TYPES = ['SMA', 'EMA', 'WMA', 'RMA', 'HMA', 'VWMA', 'DEMA', 'TEMA', 'ALMA', 'LSMA', 'SMMA', 'KAMA', 'ZLEMA', 'T3', 'VIDYA'];
 const COLOR_PAIRS: Record<string, [string, string]> = {
@@ -99,10 +101,208 @@ const ge = (a: number, b: number) => b - a <= EPS;
 /** Pine x != 0 (false when x is na) */
 const ne0 = (x: number) => Math.abs(x) > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<VolumeGatedTrendRibbonInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+/** One moving average of the ribbon stepped bar by bar: `step(i, src, volume)` reads `src[i]` and earlier values */
+type MaStep = Committable & { step(i: number, src: number[], volume: number): number };
+
+/** A machine of one value per bar (ema chains of DEMA / TEMA / T3) */
+type ValueStep = Committable & { step(v: number): number };
+
+/** gd(src, len, factor) = ema * (1 + factor) - ema(ema) * factor */
+function gdStep(len: number, factor: number): ValueStep {
+  const e1 = taStep.ema(len);
+  const e2 = taStep.ema(len);
+  return {
+    step: (v) => {
+      const a = e1.step(v);
+      return a * (1 + factor) - e2.step(a) * factor;
+    },
+    commit: () => { e1.commit(); e2.commit(); },
+  };
+}
+
+/** A machine whose output on bar i reads its own output of the bar before (`prev`), committed with the bar */
+abstract class Recursive implements Committable {
+  protected prev = NaN;
+  private next = NaN;
+  protected abstract parts: Committable[];
+  protected abstract value(i: number, src: number[], volume: number): number;
+
+  step(i: number, src: number[], volume: number): number {
+    this.next = this.value(i, src, volume);
+    return this.next;
+  }
+
+  commit(): void {
+    for (const p of this.parts) p.commit();
+    this.prev = this.next;
+  }
+}
+
+/** smma: result := na(result[1]) ? ta.sma(src, len) : (result[1] * (len - 1) + src) / len */
+class SmmaStep extends Recursive {
+  // ta.sma only runs while result[1] is na: consecutive bars from bar 0, so it is the plain SMA there
+  private readonly sma: WindowSma;
+  protected parts: Committable[];
+
+  constructor(private readonly len: number) {
+    super();
+    this.sma = new WindowSma(len);
+    this.parts = [this.sma];
+  }
+
+  protected value(i: number, src: number[]): number {
+    const sma = this.sma.step(src[i]);
+    const prev = i > 0 ? this.prev : NaN;
+    return isNaN(prev) ? sma : (prev * (this.len - 1) + src[i]) / this.len;
+  }
+}
+
+/** kama: er = vol != 0 ? change / vol : 0; sc = (er * (fastSC - slowSC) + slowSC)^2 */
+class KamaStep extends Recursive {
+  private readonly vol: WindowSum;
+  protected parts: Committable[];
+
+  constructor(private readonly len: number) {
+    super();
+    this.vol = new WindowSum(len);
+    this.parts = [this.vol];
+  }
+
+  protected value(i: number, src: number[]): number {
+    const fastSC = 2.0 / 3;
+    const slowSC = 2.0 / 31;
+    const len = this.len;
+    const vol = this.vol.step(i > 0 ? Math.abs(src[i] - src[i - 1]) : NaN);
+    const change = Math.abs(src[i] - (i - len >= 0 ? src[i - len] : NaN));
+    const er = ne0(vol) ? change / vol : 0;
+    const sc = Math.pow(er * (fastSC - slowSC) + slowSC, 2);
+    const prev = i > 0 ? this.prev : NaN;
+    return isNaN(prev) ? src[i] : prev + sc * (src[i] - prev);
+  }
+}
+
+/** vidya: cmo = (upSum + dnSum) != 0 ? |(upSum - dnSum) / (upSum + dnSum)| : 0 */
+class VidyaStep extends Recursive {
+  private readonly up: WindowSum;
+  private readonly dn: WindowSum;
+  protected parts: Committable[];
+
+  constructor(private readonly len: number) {
+    super();
+    this.up = new WindowSum(len);
+    this.dn = new WindowSum(len);
+    this.parts = [this.up, this.dn];
+  }
+
+  protected value(i: number, src: number[]): number {
+    const m = i > 0 ? src[i] - src[i - 1] : NaN;
+    // math.max(na, 0) is na
+    const upSum = this.up.step(isNaN(m) ? NaN : Math.max(m, 0));
+    const dnSum = this.dn.step(isNaN(m) ? NaN : Math.max(-m, 0));
+    const alpha = 2.0 / (this.len + 1);
+    const tot = upSum + dnSum;
+    const cmo = ne0(tot) ? Math.abs((upSum - dnSum) / tot) : 0;
+    const prev = i > 0 ? this.prev : NaN;
+    return isNaN(prev) ? src[i] : src[i] * alpha * cmo + prev * (1 - alpha * cmo);
+  }
+}
+
+/** ta.alma(src, len, 0.85, 6): the weights and the sum of the library function (same doubles) */
+function almaStep(length: number, offset: number, sigma: number): MaStep {
+  const m = offset * (length - 1);
+  const s = length / sigma;
+  const weights: number[] = [];
+  let weightSum = 0;
+  for (let i = 0; i < length; i++) {
+    const weight = Math.exp(-1 * Math.pow(i - m, 2) / (2 * Math.pow(s, 2)));
+    weights.push(weight);
+    weightSum += weight;
+  }
+  for (let i = 0; i < length; i++) weights[i] /= weightSum;
+  return {
+    step: (i, src) => {
+      if (i < length - 1) return NaN;
+      let almaValue = 0;
+      for (let j = 0; j < length; j++) almaValue += src[i - length + 1 + j] * weights[j];
+      return almaValue;
+    },
+    commit: () => {},
+  };
+}
+
+const wrap = (m: ValueStep): MaStep => ({ step: (i, src) => m.step(src[i]), commit: () => m.commit() });
+
+/** ma(src, len) of the selected type */
+function maStep(maType: string, len: number): MaStep {
+  switch (maType) {
+    case 'SMA': return wrap(new WindowSma(len));
+    case 'EMA': return wrap(taStep.ema(len));
+    case 'WMA': { const m = taStep.wma(); return wrap({ step: (v) => m.step(v, len), commit: () => m.commit() }); }
+    case 'RMA': return wrap(taStep.rma(len));
+    case 'HMA': return wrap(taStep.hma(len));
+    case 'VWMA': { const m = taStep.vwma(len); return { step: (i, src, vol) => m.step(src[i], vol), commit: () => m.commit() }; }
+    case 'DEMA': {
+      const e1 = taStep.ema(len);
+      const e2 = taStep.ema(len);
+      return wrap({
+        step: (v) => { const a = e1.step(v); return 2 * a - e2.step(a); },
+        commit: () => { e1.commit(); e2.commit(); },
+      });
+    }
+    case 'TEMA': {
+      const e1 = taStep.ema(len);
+      const e2 = taStep.ema(len);
+      const e3 = taStep.ema(len);
+      return wrap({
+        step: (v) => { const a = e1.step(v); const b = e2.step(a); const c = e3.step(b); return 3 * (a - b) + c; },
+        commit: () => { e1.commit(); e2.commit(); e3.commit(); },
+      });
+    }
+    case 'ALMA': return almaStep(len, 0.85, 6);
+    case 'LSMA': return wrap(taStep.linreg(len, 0));
+    case 'SMMA': return new SmmaStep(len);
+    case 'KAMA': return new KamaStep(len);
+    case 'ZLEMA': {
+      /** zlema: lag = (len - 1) / 2; ta.ema(src + (src - src[lag]), len) */
+      const lag = Math.floor((len - 1) / 2);
+      const e = taStep.ema(len);
+      return { step: (i, src) => { const v = src[i]; return e.step(v + (v - (i - lag >= 0 ? src[i - lag] : NaN))); }, commit: () => e.commit() };
+    }
+    case 'T3': {
+      const g1 = gdStep(len, 0.7);
+      const g2 = gdStep(len, 0.7);
+      const g3 = gdStep(len, 0.7);
+      return wrap({ step: (v) => g3.step(g2.step(g1.step(v))), commit: () => { g1.commit(); g2.commit(); g3.commit(); } });
+    }
+    case 'VIDYA': return new VidyaStep(len);
+    default: return wrap(taStep.ema(len));
+  }
+}
+
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface VgtrVars {
+  /** var float gatedClose = close */
+  gated: number;
+  /** trendState of the bar before (na on the first bar) */
+  prevState: number;
+}
+
+interface VgtrRun extends BarRunState<VgtrVars> {
+  avgVol: WindowSma;
+  fast: MaStep;
+  slow: MaStep;
+  close: number[];
+  gated: number[];
+  plots: Point[][];
+  fillCols: string[][];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<VolumeGatedTrendRibbonInputs>): BarStudy<VgtrRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   let { volMult, volPeriod, fastLen, slowLen } = cfg;
   if (cfg.presetConfig === 'Fast Response') {
@@ -122,166 +322,94 @@ export function calculate(
   const fastPeriod = maType === 'HMA' ? Math.max(fastLen, 4) : fastLen;
   const slowPeriod = Math.max(slowLen, fastPeriod + 1);
 
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-  const volume = bars.map((b) => b.volume ?? NaN);
-
-  // avgVol = ta.sma(volume, volPeriod); highVol = volume >= avgVol * volMult
-  const avgVol = A(ta.sma(S(volume), volPeriod));
-  // var float gatedClose = close; if highVol: gatedClose := close
-  const gated: number[] = new Array(n);
-  let gatedVar = NaN;
-  for (let i = 0; i < n; i++) {
-    if (i === 0) gatedVar = close[0];
-    if (ge(volume[i], avgVol[i] * volMult)) gatedVar = close[i];
-    gated[i] = gatedVar;
-  }
-
-  const ema = (src: number[], len: number) => A(ta.ema(S(src), len));
-  const gd = (src: number[], len: number, factor: number) => {
-    const e1 = ema(src, len);
-    const e2 = ema(e1, len);
-    return e1.map((v, i) => v * (1 + factor) - e2[i] * factor);
-  };
-  /** smma: result := na(result[1]) ? ta.sma(src, len) : (result[1] * (len - 1) + src) / len */
-  const smma = (src: number[], len: number) => {
-    // ta.sma only runs while result[1] is na: consecutive bars from bar 0, so it is the plain SMA there
-    const sma = A(ta.sma(S(src), len));
-    const out: number[] = new Array(n);
-    for (let i = 0; i < n; i++) {
-      const prev = i > 0 ? out[i - 1] : NaN;
-      out[i] = isNaN(prev) ? sma[i] : (prev * (len - 1) + src[i]) / len;
-    }
-    return out;
-  };
-  /** kama: er = vol != 0 ? change / vol : 0; sc = (er * (fastSC - slowSC) + slowSC)^2 */
-  const kama = (src: number[], len: number) => {
-    const absDiff = src.map((v, i) => (i > 0 ? Math.abs(v - src[i - 1]) : NaN));
-    const vol = A(math.sum(S(absDiff), len) as Series);
-    const fastSC = 2.0 / 3;
-    const slowSC = 2.0 / 31;
-    const out: number[] = new Array(n);
-    for (let i = 0; i < n; i++) {
-      const change = Math.abs(src[i] - (i - len >= 0 ? src[i - len] : NaN));
-      const er = ne0(vol[i]) ? change / vol[i] : 0;
-      const sc = Math.pow(er * (fastSC - slowSC) + slowSC, 2);
-      const prev = i > 0 ? out[i - 1] : NaN;
-      out[i] = isNaN(prev) ? src[i] : prev + sc * (src[i] - prev);
-    }
-    return out;
-  };
-  /** zlema: lag = (len - 1) / 2; ta.ema(src + (src - src[lag]), len) */
-  const zlema = (src: number[], len: number) => {
-    const lag = Math.floor((len - 1) / 2);
-    return ema(src.map((v, i) => v + (v - (i - lag >= 0 ? src[i - lag] : NaN))), len);
-  };
-  /** vidya: cmo = (upSum + dnSum) != 0 ? |(upSum - dnSum) / (upSum + dnSum)| : 0 */
-  const vidya = (src: number[], len: number) => {
-    const mom = src.map((v, i) => (i > 0 ? v - src[i - 1] : NaN));
-    // math.max(na, 0) is na
-    const upSum = A(math.sum(S(mom.map((m) => (isNaN(m) ? NaN : Math.max(m, 0)))), len) as Series);
-    const dnSum = A(math.sum(S(mom.map((m) => (isNaN(m) ? NaN : Math.max(-m, 0)))), len) as Series);
-    const alpha = 2.0 / (len + 1);
-    const out: number[] = new Array(n);
-    for (let i = 0; i < n; i++) {
-      const tot = upSum[i] + dnSum[i];
-      const cmo = ne0(tot) ? Math.abs((upSum[i] - dnSum[i]) / tot) : 0;
-      const prev = i > 0 ? out[i - 1] : NaN;
-      out[i] = isNaN(prev) ? src[i] : src[i] * alpha * cmo + prev * (1 - alpha * cmo);
-    }
-    return out;
-  };
-
-  const ma = (src: number[], len: number): number[] => {
-    switch (maType) {
-      case 'SMA': return A(ta.sma(S(src), len));
-      case 'EMA': return ema(src, len);
-      case 'WMA': return A(ta.wma(S(src), len));
-      case 'RMA': return A(ta.rma(S(src), len));
-      case 'HMA': return A(ta.hma(S(src), len));
-      case 'VWMA': return A(ta.vwma(S(src), len, S(volume)));
-      case 'DEMA': {
-        const e1 = ema(src, len);
-        const e2 = ema(e1, len);
-        return e1.map((v, i) => 2 * v - e2[i]);
-      }
-      case 'TEMA': {
-        const e1 = ema(src, len);
-        const e2 = ema(e1, len);
-        const e3 = ema(e2, len);
-        return e1.map((v, i) => 3 * (v - e2[i]) + e3[i]);
-      }
-      case 'ALMA': return A(ta.alma(S(src), len, 0.85, 6));
-      case 'LSMA': return A(ta.linreg(S(src), len, 0));
-      case 'SMMA': return smma(src, len);
-      case 'KAMA': return kama(src, len);
-      case 'ZLEMA': return zlema(src, len);
-      case 'T3': return gd(gd(gd(src, len, 0.7), len, 0.7), len, 0.7);
-      case 'VIDYA': return vidya(src, len);
-      default: return ema(src, len);
-    }
-  };
-  // volMA(gatedSrc, rawSrc, len) => maType == 'VWMA' ? ta.vwma(rawSrc, len) : ma(gatedSrc, len)
-  const volMA = (len: number) => (maType === 'VWMA' ? A(ta.vwma(S(close), len, S(volume))) : ma(gated, len));
-
-  const fastMA = volMA(fastPeriod);
-  const slowMA = volMA(slowPeriod);
-
   // outerOp = 100 - math.round(fillOpacity * 0.8); innerOp: * 0.6; coreOp: * 0.4
   const outerOp = 100 - Math.round(cfg.fillOpacity * 0.8);
   const innerOp = 100 - Math.round(cfg.fillOpacity * 0.6);
   const coreOp = 100 - Math.round(cfg.fillOpacity * 0.4);
   const c = (col: string, transp: number) => String(color.new(col, transp));
-
-  type Point = { time: number; value: number; color: string };
-  const plots: Point[][] = Array.from({ length: 6 }, () => []);
-  const fillCols: string[][] = [[], [], []];
-  const barColors: BarColorData[] = [];
-  // trendState := bullish ? 1 : -1; longSignal = trendState == 1 and trendState[1] != 1 (na on the first bar: false)
-  const longFlags: boolean[] = [], shortFlags: boolean[] = [], changeFlags: boolean[] = [];
-  let prevState = NaN;
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const state = gt(fastMA[i], slowMA[i]) ? 1 : -1;
-    const longSignal = state === 1 && i > 0 && prevState !== 1;
-    const shortSignal = state === -1 && i > 0 && prevState !== -1;
-    longFlags.push(longSignal);
-    shortFlags.push(shortSignal);
-    changeFlags.push(longSignal || shortSignal);
-    prevState = state;
-    const f = fastMA[i];
-    const s = slowMA[i];
-    // bullish = fastMA > slowMA; trendCol = bullish ? bullColor : bearColor
-    const trendCol = gt(f, s) ? bullColor : bearColor;
-    const line = c(trendCol, 80);
-    plots[0].push({ time: t, value: f, color: line });
-    plots[1].push({ time: t, value: f * 0.67 + s * 0.33, color: line });
-    plots[2].push({ time: t, value: f * 0.33 + s * 0.67, color: line });
-    plots[3].push({ time: t, value: s, color: line });
-    plots[4].push({ time: t, value: f, color: c(trendCol, 0) });
-    plots[5].push({ time: t, value: s, color: c(trendCol, 0) });
-    fillCols[0].push(c(trendCol, coreOp));
-    fillCols[1].push(c(trendCol, innerOp));
-    fillCols[2].push(c(trendCol, outerOp));
-    // barcolor(enableBarColor ? trendCol : na)
-    if (cfg.enableBarColor) barColors.push({ time: t, color: trendCol });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: Object.fromEntries(plots.map((p, k) => [`plot${k}`, p])),
-    fills: [
-      // fill(pMidSlow, pSlow, 'Core Fill'); fill(pMidFast, pMidSlow, 'Inner Fill'); fill(pFast, pMidFast, 'Outer Fill')
-      { plot1: 'plot2', plot2: 'plot3', colors: fillCols[0] },
-      { plot1: 'plot1', plot2: 'plot2', colors: fillCols[1] },
-      { plot1: 'plot0', plot2: 'plot1', colors: fillCols[2] },
-    ],
-    markers: [],
-    barColors,
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags, changeFlags]),
+    init() {
+      // volMA(gatedSrc, rawSrc, len) => maType == 'VWMA' ? ta.vwma(rawSrc, len) : ma(gatedSrc, len)
+      const s: VgtrRun = {
+        avgVol: new WindowSma(volPeriod), fast: maStep(maType, fastPeriod), slow: maStep(maType, slowPeriod),
+        close: [], gated: [], plots: Array.from({ length: 6 }, () => []), fillCols: [[], [], []], barColors: [],
+        flags: [[], [], []], times: [[], [], []],
+        steps: [], vars: { gated: NaN, prevState: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.avgVol, s.fast, s.slow];
+      s.lists = s.times;
+      s.series = [s.close, s.gated, ...s.plots, ...s.fillCols, s.barColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time as number;
+      const v = s.vars;
+      const volume = b.volume ?? NaN;
+      s.close[i] = b.close;
+      // avgVol = ta.sma(volume, volPeriod); highVol = volume >= avgVol * volMult
+      const avgVol = s.avgVol.step(volume);
+      // var float gatedClose = close; if highVol: gatedClose := close
+      if (i === 0) v.gated = b.close;
+      if (ge(volume, avgVol * volMult)) v.gated = b.close;
+      s.gated[i] = v.gated;
+
+      const src = maType === 'VWMA' ? s.close : s.gated;
+      const f = s.fast.step(i, src, volume);
+      const sl = s.slow.step(i, src, volume);
+
+      // trendState := bullish ? 1 : -1; longSignal = trendState == 1 and trendState[1] != 1 (na on the first bar: false)
+      const state = gt(f, sl) ? 1 : -1;
+      const longSignal = state === 1 && i > 0 && v.prevState !== 1;
+      const shortSignal = state === -1 && i > 0 && v.prevState !== -1;
+      v.prevState = state;
+      const flags = [longSignal, shortSignal, longSignal || shortSignal];
+      for (let k = 0; k < 3; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t);
+      }
+      // bullish = fastMA > slowMA; trendCol = bullish ? bullColor : bearColor
+      const trendCol = gt(f, sl) ? bullColor : bearColor;
+      const line = c(trendCol, 80);
+      const p = s.plots;
+      p[0][i] = { time: t, value: f, color: line };
+      p[1][i] = { time: t, value: f * 0.67 + sl * 0.33, color: line };
+      p[2][i] = { time: t, value: f * 0.33 + sl * 0.67, color: line };
+      p[3][i] = { time: t, value: sl, color: line };
+      p[4][i] = { time: t, value: f, color: c(trendCol, 0) };
+      p[5][i] = { time: t, value: sl, color: c(trendCol, 0) };
+      s.fillCols[0][i] = c(trendCol, coreOp);
+      s.fillCols[1][i] = c(trendCol, innerOp);
+      s.fillCols[2][i] = c(trendCol, outerOp);
+      // barcolor(enableBarColor ? trendCol : na)
+      if (cfg.enableBarColor) s.barColors[i] = { time: t, color: trendCol };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: Object.fromEntries(s.plots.map((p, k) => [`plot${k}`, p.slice()])),
+        fills: [
+          // fill(pMidSlow, pSlow, 'Core Fill'); fill(pMidFast, pMidSlow, 'Inner Fill'); fill(pFast, pMidFast, 'Outer Fill')
+          { plot1: 'plot2', plot2: 'plot3', colors: s.fillCols[0].slice() },
+          { plot1: 'plot1', plot2: 'plot2', colors: s.fillCols[1].slice() },
+          { plot1: 'plot0', plot2: 'plot1', colors: s.fillCols[2].slice() },
+        ],
+        markers: [],
+        barColors: cfg.enableBarColor ? s.barColors.slice() : [],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeGatedTrendRibbonInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolumeGatedTrendRibbonInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -293,6 +421,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const VolumeGatedTrendRibbon = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

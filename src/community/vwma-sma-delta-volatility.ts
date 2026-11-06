@@ -13,9 +13,14 @@
  */
 
 import {
-  ta, Series, color, getSourceSeries,
+  taStep, color,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import {
+  barSource, createBarRun, fullResult, isBarSource, WindowExtreme, WindowSma,
+  type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 
 export interface VwmaSmaDeltaVolatilityInputs {
   /** Source for the MA delta */
@@ -65,72 +70,103 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<VwmaSmaDeltaVolatilityInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface DeltaRun extends BarRunState<Record<string, never>> {
+  vwma: ReturnType<typeof taStep.vwma>;
+  sma: WindowSma;
+  lo: WindowExtreme;
+  hi: WindowExtreme;
+  delta: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+}
+
+function study(inputs: Partial<VwmaSmaDeltaVolatilityInputs>): BarStudy<DeltaRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const { length, sampleSize, zScore, showChannel } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const src = getSourceSeries(bars, cfg.source);
-  const volume = S(bars.map((b) => b.volume ?? NaN));
-  // delta = ta.vwma(source, lenght) - ta.sma(source, lenght)
-  const vwma = A(ta.vwma(src, length, volume));
-  const sma = A(ta.sma(src, length));
-  const delta = bars.map((_b, i) => vwma[i] - sma[i]);
-
-  // var array<float> data = array.new_float(sampleSize, na); push(delta); shift()
-  const data: number[] = new Array(sampleSize).fill(NaN);
-  const lowerFilter: number[] = new Array(n);
-  const upperFilter: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    data.push(delta[i]);
-    data.shift();
-    // array.avg / array.stdev (biased): na values skipped, na when the array has no value
-    let count = 0;
-    let sum = 0;
-    for (const v of data) {
-      if (!Number.isNaN(v)) {
-        count++;
-        sum += v;
-      }
-    }
-    const mean = count ? sum / count : NaN;
-    let sq = 0;
-    for (const v of data) if (!Number.isNaN(v)) sq += (v - mean) * (v - mean);
-    const stdev = count ? Math.sqrt(sq / count) : NaN;
-    lowerFilter[i] = mean - zScore * stdev;
-    upperFilter[i] = mean + zScore * stdev;
-  }
-
-  // Scaling to -100..100 with the lowest / highest delta of the last sampleSize bars
-  const lo = A(ta.lowest(S(delta), sampleSize));
-  const hi = A(ta.highest(S(delta), sampleSize));
-  const scale = (x: number, i: number) => -100 + (200.0 * (x - lo[i])) / Math.max(hi[i] - lo[i], 10e-10);
-
+  const value = barSource(cfg.source);
   const silver = String(color.new(color.silver, 80));
-  const plot0 = bars.map((b, i) => {
-    const d = delta[i];
-    const c = lt(d, 0) && lt(d, lowerFilter[i]) ? color.red : gt(d, 0) && gt(d, upperFilter[i]) ? color.green : silver;
-    const v = scale(d, i);
-    return { time: b.time, value: Number.isFinite(v) ? v : NaN, color: c };
-  });
-  const channel = (f: number[]) => bars.map((b, i) => {
-    const v = scale(f[i], i);
-    return { time: b.time, value: showChannel && Number.isFinite(v) ? v : NaN, color: CHANNEL_COLOR };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1: channel(lowerFilter), plot2: channel(upperFilter) },
-    hlines: [
-      { value: 0, options: { title: 'Base Line', color: String(color.new(color.orange, 50)), linestyle: 'dotted' } },
-    ],
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const s: DeltaRun = {
+        vwma: taStep.vwma(length), sma: new WindowSma(length), lo: new WindowExtreme(true, sampleSize),
+        hi: new WindowExtreme(false, sampleSize), delta: [], plot0: [], plot1: [], plot2: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.vwma, s.sma, s.lo, s.hi];
+      s.series = [s.delta, s.plot0, s.plot1, s.plot2];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const src = value(b);
+      // delta = ta.vwma(source, lenght) - ta.sma(source, lenght)
+      const d = s.vwma.step(src, b.volume ?? NaN) - s.sma.step(src);
+      s.delta[i] = d;
+
+      // var array<float> data = array.new_float(sampleSize, na); push(delta); shift(): the last sampleSize deltas
+      // (na before the first bar); array.avg / array.stdev (biased): na values skipped, na when the array has no value
+      const delta = s.delta;
+      const first = i - sampleSize + 1;
+      let count = 0;
+      let sum = 0;
+      for (let k = first; k <= i; k++) {
+        const v = k >= 0 ? delta[k] : NaN;
+        if (!Number.isNaN(v)) {
+          count++;
+          sum += v;
+        }
+      }
+      const mean = count ? sum / count : NaN;
+      let sq = 0;
+      for (let k = first; k <= i; k++) {
+        const v = k >= 0 ? delta[k] : NaN;
+        if (!Number.isNaN(v)) sq += (v - mean) * (v - mean);
+      }
+      const stdev = count ? Math.sqrt(sq / count) : NaN;
+      const lowerFilter = mean - zScore * stdev;
+      const upperFilter = mean + zScore * stdev;
+
+      // Scaling to -100..100 with the lowest / highest delta of the last sampleSize bars
+      const lo = s.lo.step(d);
+      const hi = s.hi.step(d);
+      const scale = (x: number) => -100 + (200.0 * (x - lo)) / Math.max(hi - lo, 10e-10);
+
+      const c = lt(d, 0) && lt(d, lowerFilter) ? color.red : gt(d, 0) && gt(d, upperFilter) ? color.green : silver;
+      const v0 = scale(d);
+      s.plot0[i] = { time: b.time, value: Number.isFinite(v0) ? v0 : NaN, color: c };
+      const v1 = scale(lowerFilter);
+      s.plot1[i] = { time: b.time, value: showChannel && Number.isFinite(v1) ? v1 : NaN, color: CHANNEL_COLOR };
+      const v2 = scale(upperFilter);
+      s.plot2[i] = { time: b.time, value: showChannel && Number.isFinite(v2) ? v2 : NaN, color: CHANNEL_COLOR };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        hlines: [
+          { value: 0, options: { title: 'Base Line', color: String(color.new(color.orange, 50)), linestyle: 'dotted' } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VwmaSmaDeltaVolatilityInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VwmaSmaDeltaVolatilityInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const VwmaSmaDeltaVolatility = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

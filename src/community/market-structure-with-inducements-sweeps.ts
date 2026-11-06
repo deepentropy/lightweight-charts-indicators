@@ -21,9 +21,11 @@
  * Original notice: © LuxAlgo
  */
 
-import { ta, color, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taCore, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { LabelData, LineDrawingData } from '../types';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MarketStructureWithInducementsSweepsInputs {
   /** Bars after a swing of the long set */
@@ -114,244 +116,297 @@ interface Lb {
   size?: 'tiny';
 }
 
-/** swings(len): the swing high / low confirmed on each bar and the bar of the latest one */
-function swings(bars: Bar[], len: number): { top: number[]; topx: number[]; btm: number[]; btmx: number[] } {
-  const n = bars.length;
-  const upper = ta.highest(new Series(bars, (b) => b.high), len).toArray();
-  const lower = ta.lowest(new Series(bars, (b) => b.low), len).toArray();
-  const top: number[] = [];
-  const topx: number[] = [];
-  const btm: number[] = [];
-  const btmx: number[] = [];
-  // var os = 0, then os := ... : os[1]: na from the first bar until the first swing
-  let os = NaN;
-  let tx = NaN;
-  let bx = NaN;
-  for (let i = 0; i < n; i++) {
-    const before = os;
-    const back = i >= len ? bars[i - len] : null;
-    const h = back ? back.high : NaN;
-    const l = back ? back.low : NaN;
-    os = gt(h, upper[i] ?? NaN) ? 0 : lt(l, lower[i] ?? NaN) ? 1 : before;
-    // os[1] != 0 is false while os[1] is na
-    const isTop = os === 0 && !isNaN(before) && before !== 0;
-    const isBtm = os === 1 && !isNaN(before) && before !== 1;
-    if (isTop) tx = i - len;
-    if (isBtm) bx = i - len;
-    top.push(isTop ? h : NaN);
-    topx.push(tx);
-    btm.push(isBtm ? l : NaN);
-    btmx.push(bx);
-  }
-  return { top, topx, btm, btmx };
+
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'labels' | 'lines'> & { labels: LabelData[]; lines: LineDrawingData[] };
+
+/** Kept drawings of `total` created ones: when a creation brings the count above max + 5, the oldest (not held) are
+ *  deleted until max remain */
+function keptCount(total: number): number {
+  return total <= MAX_OBJECTS + 5 ? total : MAX_OBJECTS + ((total - (MAX_OBJECTS + 6)) % 6);
+}
+
+interface MsVars {
+  /** swings(len) / swings(shortLen): os (na until the first swing), the bar of the latest swing high / low */
+  lOs: number;
+  lTx: number;
+  lBx: number;
+  sOs: number;
+  sTx: number;
+  sBx: number;
+  os: number;
+  topCrossed: boolean;
+  btmCrossed: boolean;
+  max: number;
+  min: number;
+  maxX1: number;
+  minX1: number;
+  topy: number;
+  btmy: number;
+  stopCrossed: boolean;
+  sbtmCrossed: boolean;
+  /** fixnan(stop), fixnan(sbtm) */
+  stopy: number;
+  sbtmy: number;
+}
+
+interface MsRun extends BarRunState<MsVars> {
+  lUpper: WindowExtreme;
+  lLower: WindowExtreme;
+  sUpper: WindowExtreme;
+  sLower: WindowExtreme;
+  plot0: Point[];
+  plot1: Point[];
+  /** The drawings created after the three held ones of each list, in creation order */
+  lines: Ln[];
+  labels: Lb[];
+}
+
+function study(inputs: Partial<MarketStructureWithInducementsSweepsInputs>): BarStudy<MsRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const len = Math.trunc(cfg.len);
+  const shortLen = Math.trunc(cfg.shortLen);
+  const { bullCss, bearCss, idmCss, sweepsCss } = cfg;
+  const highCss = String(color.new(bearCss, 50));
+  const lowCss = String(color.new(bullCss, 50));
+  /** A level line from bar x to the current bar i with its label in the middle */
+  const level = (
+    s: MsRun, i: number, x: number, y: number, css: string, style: Ln['style'], text: string, labelStyle: Lb['style'], tiny = true,
+  ) => {
+    s.lines.push({ x1: x, y1: y, x2: i, y2: y, color: css, style });
+    // int(math.avg(n, x))
+    s.labels.push({ x: Math.trunc((i + x) / 2), y, text, textColor: css, style: labelStyle, ...(tiny ? { size: 'tiny' as const } : {}) });
+  };
+  return {
+    init() {
+      // the length checks of ta.highest / ta.lowest
+      taCore.highest([], len);
+      taCore.highest([], shortLen);
+      const lUpper = new WindowExtreme(false, len);
+      const lLower = new WindowExtreme(true, len);
+      const sUpper = new WindowExtreme(false, shortLen);
+      const sLower = new WindowExtreme(true, shortLen);
+      const s: MsRun = {
+        lUpper, lLower, sUpper, sLower, plot0: [], plot1: [], lines: [], labels: [],
+        steps: [lUpper, lLower, sUpper, sLower],
+        vars: {
+          lOs: NaN, lTx: NaN, lBx: NaN, sOs: NaN, sTx: NaN, sBx: NaN,
+          os: 0, topCrossed: false, btmCrossed: false, max: NaN, min: NaN, maxX1: NaN, minX1: NaN, topy: NaN, btmy: NaN,
+          stopCrossed: false, sbtmCrossed: false, stopy: NaN, sbtmy: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.lists = [s.lines, s.labels];
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+
+      // swings(len): a bar is a swing high when its high is above the highest high of the len bars after it
+      // var os = 0, then os := ... : os[1]: na from the first bar until the first swing
+      let top: number;
+      let btm: number;
+      {
+        const upper = s.lUpper.step(b.high);
+        const lower = s.lLower.step(b.low);
+        const before = v.lOs;
+        const back = i >= len ? bars[i - len] : null;
+        const h = back ? back.high : NaN;
+        const l = back ? back.low : NaN;
+        v.lOs = gt(h, upper) ? 0 : lt(l, lower) ? 1 : before;
+        // os[1] != 0 is false while os[1] is na
+        const isTop = v.lOs === 0 && !isNaN(before) && before !== 0;
+        const isBtm = v.lOs === 1 && !isNaN(before) && before !== 1;
+        if (isTop) v.lTx = i - len;
+        if (isBtm) v.lBx = i - len;
+        top = isTop ? h : NaN;
+        btm = isBtm ? l : NaN;
+      }
+      // swings(shortLen)
+      let stop: number;
+      let sbtm: number;
+      {
+        const upper = s.sUpper.step(b.high);
+        const lower = s.sLower.step(b.low);
+        const before = v.sOs;
+        const back = i >= shortLen ? bars[i - shortLen] : null;
+        const h = back ? back.high : NaN;
+        const l = back ? back.low : NaN;
+        v.sOs = gt(h, upper) ? 0 : lt(l, lower) ? 1 : before;
+        const isTop = v.sOs === 0 && !isNaN(before) && before !== 0;
+        const isBtm = v.sOs === 1 && !isNaN(before) && before !== 1;
+        if (isTop) v.sTx = i - shortLen;
+        if (isBtm) v.sBx = i - shortLen;
+        stop = isTop ? h : NaN;
+        sbtm = isBtm ? l : NaN;
+      }
+
+      // plot(showCircles ? top : na, offset = -len): the swing confirmed on bar i is drawn on bar i - len (the only
+      // writer of that slot; the last len bars keep na)
+      s.plot0[i] = { time: b.time, value: NaN, color: highCss };
+      s.plot1[i] = { time: b.time, value: NaN, color: lowCss };
+      if (i - len >= 0) {
+        const t = bars[i - len].time;
+        s.plot0[i - len] = { time: t, value: cfg.showCircles ? top : NaN, color: highCss };
+        s.plot1[i - len] = { time: t, value: cfg.showCircles ? btm : NaN, color: lowCss };
+      }
+
+      const osBefore = i > 0 ? v.os : NaN;
+      const maxBefore = v.max;
+      const minBefore = v.min;
+      const topx = v.lTx;
+      const btmx = v.lBx;
+      const stopx = v.sTx;
+      const sbtmx = v.sBx;
+
+      // CHoCH detection
+      if (truthy(top)) {
+        v.topy = top;
+        v.topCrossed = false;
+      }
+      if (truthy(btm)) {
+        v.btmy = btm;
+        v.btmCrossed = false;
+      }
+      if (gt(b.close, v.topy) && !v.topCrossed) {
+        v.os = 1;
+        v.topCrossed = true;
+      }
+      if (lt(b.close, v.btmy) && !v.btmCrossed) {
+        v.os = 0;
+        v.btmCrossed = true;
+      }
+
+      // os != os[1]
+      if (!isNaN(osBefore) && v.os !== osBefore) {
+        v.max = b.high;
+        v.min = b.low;
+        v.maxX1 = i;
+        v.minX1 = i;
+        v.stopCrossed = false;
+        v.sbtmCrossed = false;
+        if (v.os === 1 && cfg.showChoch) level(s, i, topx, v.topy, bullCss, 'dashed', 'CHoCH', 'label_down');
+        else if (cfg.showChoch) level(s, i, btmx, v.btmy, bearCss, 'dashed', 'CHoCH', 'label_up');
+      }
+
+      if (!isNaN(stop)) v.stopy = stop;
+      if (!isNaN(sbtm)) v.sbtmy = sbtm;
+
+      // Bullish IDM and BOS
+      if (lt(b.low, v.sbtmy) && !v.sbtmCrossed && v.os === 1 && ne(v.sbtmy, v.btmy)) {
+        if (cfg.showIdm) level(s, i, sbtmx, v.sbtmy, idmCss, 'dotted', 'IDM', 'label_up');
+        v.sbtmCrossed = true;
+      }
+      if (gt(b.close, v.max) && v.sbtmCrossed && v.os === 1) {
+        if (cfg.showBos) level(s, i, v.maxX1, v.max, bullCss, 'solid', 'BOS', 'label_down');
+        v.sbtmCrossed = false;
+      }
+
+      // Bearish IDM (always gray) and BOS
+      if (gt(b.high, v.stopy) && !v.stopCrossed && v.os === 0 && ne(v.stopy, v.topy)) {
+        if (cfg.showIdm) level(s, i, stopx, v.stopy, GRAY, 'dotted', 'IDM', 'label_down');
+        v.stopCrossed = true;
+      }
+      if (lt(b.close, v.min) && v.stopCrossed && v.os === 0) {
+        if (cfg.showBos) level(s, i, v.minX1, v.min, bearCss, 'solid', 'BOS', 'label_up');
+        v.stopCrossed = false;
+      }
+
+      // Sweeps
+      if (gt(b.high, v.max) && lt(b.close, v.max) && v.os === 1 && i - v.maxX1 > 1 && cfg.showSweeps) {
+        level(s, i, v.maxX1, v.max, sweepsCss, 'dotted', 'x', 'label_down', false);
+      }
+      if (lt(b.low, v.min) && gt(b.close, v.min) && v.os === 0 && i - v.minX1 > 1 && cfg.showSweeps) {
+        level(s, i, v.minX1, v.min, sweepsCss, 'dotted', 'x', 'label_up', false);
+      }
+
+      // Trailing max / min (math.max / math.min give na while max / min is na)
+      v.max = isNaN(v.max) ? NaN : Math.max(b.high, v.max);
+      v.min = isNaN(v.min) ? NaN : Math.min(b.low, v.min);
+      if (gt(v.max, maxBefore)) v.maxX1 = i;
+      if (lt(v.min, minBefore)) v.minX1 = i;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const v = s.vars;
+      const lines: Ln[] = [];
+      const labels: Lb[] = [];
+      if (n > 0) {
+        // Extensions: created on the first bar without coordinates, held by `var` variables (never deleted by the
+        // limit of max_lines_count / max_labels_count, but they count)
+        const extChoch: Ln = { x1: NaN, y1: NaN, x2: NaN, y2: NaN, color: DEFAULT_LINE, style: 'dashed' };
+        const extBos: Ln = { x1: NaN, y1: NaN, x2: NaN, y2: NaN, color: DEFAULT_LINE, style: 'solid' };
+        const extIdm: Ln = { x1: NaN, y1: NaN, x2: NaN, y2: NaN, color: idmCss, style: 'dotted' };
+        const extChochLbl: Lb = { x: NaN, y: NaN, text: 'CHoCH', textColor: DEFAULT_TEXT, style: 'label_down', size: 'tiny' };
+        const extBosLbl: Lb = { x: NaN, y: NaN, text: 'BOS', textColor: DEFAULT_TEXT, style: 'label_down', size: 'tiny' };
+        const extIdmLbl: Lb = { x: NaN, y: NaN, text: 'IDM', textColor: idmCss, style: 'label_down', size: 'tiny' };
+
+        // barstate.islast: the state at the end of the last bar
+        const i = n - 1;
+        const bull = v.os === 1;
+        if (cfg.showChoch) {
+          const [x, y, css] = bull ? [v.lBx, v.btmy, bearCss] : [v.lTx, v.topy, bullCss];
+          Object.assign(extChoch, { x1: x, y1: y, x2: i, y2: y, color: css });
+          Object.assign(extChochLbl, { x: i, y, style: bull ? 'label_up' : 'label_down', textColor: css });
+        }
+        if (cfg.showBos) {
+          const [x, y, css] = bull ? [v.maxX1, v.max, bullCss] : [v.minX1, v.min, bearCss];
+          Object.assign(extBos, { x1: x, y1: y, x2: i, y2: y, color: css });
+          Object.assign(extBosLbl, { x: i, y, style: bull ? 'label_down' : 'label_up', textColor: css });
+        }
+        if (!(bull ? v.sbtmCrossed : v.stopCrossed) && cfg.showIdm) {
+          const [x, y] = bull ? [v.sBx, v.sbtmy] : [v.sTx, v.stopy];
+          Object.assign(extIdm, { x1: x, y1: y, x2: i + 15, y2: y, color: idmCss });
+          Object.assign(extIdmLbl, { x: i + 15, y, style: bull ? 'label_up' : 'label_down', textColor: idmCss });
+        } else {
+          extIdm.color = null;
+          extIdmLbl.textColor = null;
+        }
+        // the held ones first, then the newest of the others
+        lines.push(extChoch, extBos, extIdm);
+        labels.push(extChochLbl, extBosLbl, extIdmLbl);
+        const keptLines = keptCount(3 + s.lines.length) - 3;
+        const keptLabels = keptCount(3 + s.labels.length) - 3;
+        for (let k = s.lines.length - keptLines; k < s.lines.length; k++) lines.push(s.lines[k]);
+        for (let k = s.labels.length - keptLabels; k < s.labels.length; k++) labels.push(s.labels[k]);
+      }
+
+      const interval = barInterval(bars);
+      const T = (index: number) => barTime(bars, index, interval);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        // an object with an na coordinate is not drawn
+        lines: lines.filter((l) => !isNaN(l.x1) && !isNaN(l.x2) && !isNaN(l.y1) && !isNaN(l.y2)).map((l) => ({
+          time1: T(l.x1), price1: l.y1, time2: T(l.x2), price2: l.y2, color: l.color ?? 'transparent',
+          ...(l.style !== 'solid' ? { style: l.style } : {}),
+        })),
+        labels: labels.filter((l) => !isNaN(l.x) && !isNaN(l.y)).map((l) => ({
+          time: T(l.x), price: l.y, text: l.text, color: 'transparent', textColor: l.textColor ?? 'transparent', style: l.style,
+          ...(l.size ? { size: l.size } : {}),
+        })),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MarketStructureWithInducementsSweepsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(
   bars: Bar[],
   inputs: Partial<MarketStructureWithInducementsSweepsInputs> = {},
-): Omit<IndicatorResult, 'labels' | 'lines'> & { labels: LabelData[]; lines: LineDrawingData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const len = Math.trunc(cfg.len);
-  const shortLen = Math.trunc(cfg.shortLen);
-  const { bullCss, bearCss, idmCss, sweepsCss } = cfg;
-
-  const long = swings(bars, len);
-  const short = swings(bars, shortLen);
-
-  // Live drawings in creation order: when a creation brings the count above max + 5, the oldest are deleted until
-  // max remain. The three lines and three labels of the last-bar levels are held by `var` variables: they are never
-  // deleted by this limit, but they count.
-  const held = new Set<object>();
-  const limit = <T extends object>(list: T[]) => {
-    if (list.length <= MAX_OBJECTS + 5) return;
-    for (let k = 0; k < list.length && list.length > MAX_OBJECTS; ) {
-      if (held.has(list[k])) k++;
-      else list.splice(k, 1);
-    }
-  };
-  const lines: Ln[] = [];
-  const labels: Lb[] = [];
-  const newLine = (l: Ln): Ln => {
-    lines.push(l);
-    limit(lines);
-    return l;
-  };
-  const newLabel = (l: Lb): Lb => {
-    labels.push(l);
-    limit(labels);
-    return l;
-  };
-  /** A level line from bar x to the current bar with its label in the middle */
-  const level = (
-    i: number, x: number, y: number, css: string, style: Ln['style'], text: string, labelStyle: Lb['style'], tiny = true,
-  ) => {
-    newLine({ x1: x, y1: y, x2: i, y2: y, color: css, style });
-    // int(math.avg(n, x))
-    newLabel({ x: Math.trunc((i + x) / 2), y, text, textColor: css, style: labelStyle, ...(tiny ? { size: 'tiny' as const } : {}) });
-  };
-
-  let os = 0;
-  let topCrossed = false;
-  let btmCrossed = false;
-  let max = NaN;
-  let min = NaN;
-  let maxX1 = NaN;
-  let minX1 = NaN;
-  let topy = NaN;
-  let btmy = NaN;
-  let stopCrossed = false;
-  let sbtmCrossed = false;
-  let stopy = NaN; // fixnan(stop)
-  let sbtmy = NaN; // fixnan(sbtm)
-
-  let extChoch: Ln | null = null;
-  let extBos: Ln | null = null;
-  let extIdm: Ln | null = null;
-  let extChochLbl: Lb | null = null;
-  let extBosLbl: Lb | null = null;
-  let extIdmLbl: Lb | null = null;
-
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const osBefore = i > 0 ? os : NaN;
-    const maxBefore = max;
-    const minBefore = min;
-    const topx = long.topx[i];
-    const btmx = long.btmx[i];
-    const stopx = short.topx[i];
-    const sbtmx = short.btmx[i];
-
-    // CHoCH detection
-    if (truthy(long.top[i])) {
-      topy = long.top[i];
-      topCrossed = false;
-    }
-    if (truthy(long.btm[i])) {
-      btmy = long.btm[i];
-      btmCrossed = false;
-    }
-    if (gt(b.close, topy) && !topCrossed) {
-      os = 1;
-      topCrossed = true;
-    }
-    if (lt(b.close, btmy) && !btmCrossed) {
-      os = 0;
-      btmCrossed = true;
-    }
-
-    // os != os[1]
-    if (!isNaN(osBefore) && os !== osBefore) {
-      max = b.high;
-      min = b.low;
-      maxX1 = i;
-      minX1 = i;
-      stopCrossed = false;
-      sbtmCrossed = false;
-      if (os === 1 && cfg.showChoch) level(i, topx, topy, bullCss, 'dashed', 'CHoCH', 'label_down');
-      else if (cfg.showChoch) level(i, btmx, btmy, bearCss, 'dashed', 'CHoCH', 'label_up');
-    }
-
-    if (!isNaN(short.top[i])) stopy = short.top[i];
-    if (!isNaN(short.btm[i])) sbtmy = short.btm[i];
-
-    // Bullish IDM and BOS
-    if (lt(b.low, sbtmy) && !sbtmCrossed && os === 1 && ne(sbtmy, btmy)) {
-      if (cfg.showIdm) level(i, sbtmx, sbtmy, idmCss, 'dotted', 'IDM', 'label_up');
-      sbtmCrossed = true;
-    }
-    if (gt(b.close, max) && sbtmCrossed && os === 1) {
-      if (cfg.showBos) level(i, maxX1, max, bullCss, 'solid', 'BOS', 'label_down');
-      sbtmCrossed = false;
-    }
-
-    // Bearish IDM (always gray) and BOS
-    if (gt(b.high, stopy) && !stopCrossed && os === 0 && ne(stopy, topy)) {
-      if (cfg.showIdm) level(i, stopx, stopy, GRAY, 'dotted', 'IDM', 'label_down');
-      stopCrossed = true;
-    }
-    if (lt(b.close, min) && stopCrossed && os === 0) {
-      if (cfg.showBos) level(i, minX1, min, bearCss, 'solid', 'BOS', 'label_up');
-      stopCrossed = false;
-    }
-
-    // Sweeps
-    if (gt(b.high, max) && lt(b.close, max) && os === 1 && i - maxX1 > 1 && cfg.showSweeps) {
-      level(i, maxX1, max, sweepsCss, 'dotted', 'x', 'label_down', false);
-    }
-    if (lt(b.low, min) && gt(b.close, min) && os === 0 && i - minX1 > 1 && cfg.showSweeps) {
-      level(i, minX1, min, sweepsCss, 'dotted', 'x', 'label_up', false);
-    }
-
-    // Trailing max / min (math.max / math.min give na while max / min is na)
-    max = isNaN(max) ? NaN : Math.max(b.high, max);
-    min = isNaN(min) ? NaN : Math.min(b.low, min);
-    if (gt(max, maxBefore)) maxX1 = i;
-    if (lt(min, minBefore)) minX1 = i;
-
-    // Extensions: created on the first bar without coordinates
-    if (i === 0) {
-      extChoch = newLine({ x1: NaN, y1: NaN, x2: NaN, y2: NaN, color: DEFAULT_LINE, style: 'dashed' });
-      extBos = newLine({ x1: NaN, y1: NaN, x2: NaN, y2: NaN, color: DEFAULT_LINE, style: 'solid' });
-      extIdm = newLine({ x1: NaN, y1: NaN, x2: NaN, y2: NaN, color: idmCss, style: 'dotted' });
-      extChochLbl = newLabel({ x: NaN, y: NaN, text: 'CHoCH', textColor: DEFAULT_TEXT, style: 'label_down', size: 'tiny' });
-      extBosLbl = newLabel({ x: NaN, y: NaN, text: 'BOS', textColor: DEFAULT_TEXT, style: 'label_down', size: 'tiny' });
-      extIdmLbl = newLabel({ x: NaN, y: NaN, text: 'IDM', textColor: idmCss, style: 'label_down', size: 'tiny' });
-      for (const o of [extChoch, extBos, extIdm, extChochLbl, extBosLbl, extIdmLbl]) held.add(o);
-    }
-
-    // barstate.islast
-    if (i === n - 1 && extChoch && extBos && extIdm && extChochLbl && extBosLbl && extIdmLbl) {
-      const bull = os === 1;
-      if (cfg.showChoch) {
-        const [x, y, css] = bull ? [btmx, btmy, bearCss] : [topx, topy, bullCss];
-        Object.assign(extChoch, { x1: x, y1: y, x2: i, y2: y, color: css });
-        Object.assign(extChochLbl, { x: i, y, style: bull ? 'label_up' : 'label_down', textColor: css });
-      }
-      if (cfg.showBos) {
-        const [x, y, css] = bull ? [maxX1, max, bullCss] : [minX1, min, bearCss];
-        Object.assign(extBos, { x1: x, y1: y, x2: i, y2: y, color: css });
-        Object.assign(extBosLbl, { x: i, y, style: bull ? 'label_down' : 'label_up', textColor: css });
-      }
-      if (!(bull ? sbtmCrossed : stopCrossed) && cfg.showIdm) {
-        const [x, y] = bull ? [sbtmx, sbtmy] : [stopx, stopy];
-        Object.assign(extIdm, { x1: x, y1: y, x2: i + 15, y2: y, color: idmCss });
-        Object.assign(extIdmLbl, { x: i + 15, y, style: bull ? 'label_up' : 'label_down', textColor: idmCss });
-      } else {
-        extIdm.color = null;
-        extIdmLbl.textColor = null;
-      }
-    }
-  }
-
-  // plot(showCircles ? top : na, offset = -len): the swing confirmed on bar i is drawn on bar i - len
-  const highCss = String(color.new(bearCss, 50));
-  const lowCss = String(color.new(bullCss, 50));
-  const shifted = (values: number[], css: string) => bars.map((b, j) => ({
-    time: b.time,
-    value: cfg.showCircles && j + len >= 0 && j + len < n ? values[j + len] : NaN,
-    color: css,
-  }));
-
-  const interval = barInterval(bars);
-  const T = (index: number) => barTime(bars, index, interval);
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: shifted(long.top, highCss), plot1: shifted(long.btm, lowCss) },
-    // an object with an na coordinate is not drawn
-    lines: lines.filter((l) => !isNaN(l.x1) && !isNaN(l.x2) && !isNaN(l.y1) && !isNaN(l.y2)).map((l) => ({
-      time1: T(l.x1), price1: l.y1, time2: T(l.x2), price2: l.y2, color: l.color ?? 'transparent',
-      ...(l.style !== 'solid' ? { style: l.style } : {}),
-    })),
-    labels: labels.filter((l) => !isNaN(l.x) && !isNaN(l.y)).map((l) => ({
-      time: T(l.x), price: l.y, text: l.text, color: 'transparent', textColor: l.textColor ?? 'transparent', style: l.style,
-      ...(l.size ? { size: l.size } : {}),
-    })),
-  };
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MarketStructureWithInducementsSweeps = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

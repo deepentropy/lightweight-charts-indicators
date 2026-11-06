@@ -11,9 +11,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 const PRESETS = ['Default', 'Fast Response', 'Smooth Trend'];
 const COLOR_PRESETS = ['Classic', 'Aqua', 'Cosmic', 'Cyber', 'Neon', 'Custom'];
@@ -83,10 +85,26 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<VolumeWeightedTrendInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface TrendVars {
+  /** var int trend_direction = 0 */
+  dir: number;
+}
+
+interface TrendRun extends BarRunState<TrendVars> {
+  num: WindowSum;
+  den: WindowSum;
+  atr: ReturnType<typeof taStep.atr>;
+  plots: Point[][];
+  ribbons: string[][];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<VolumeWeightedTrendInputs>): BarStudy<TrendRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   let { vwmaLength, atrMultiplier } = cfg;
   if (cfg.presetConfig === 'Fast Response') {
@@ -97,67 +115,95 @@ export function calculate(
     atrMultiplier = 2.0;
   }
   const [bullish, bearish] = COLOR_PAIRS[cfg.colorPreset] ?? [cfg.bullishColor, cfg.bearishColor];
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const vwma = A(ta.vwma(new Series(bars, (b) => b.close), vwmaLength, new Series(bars, (b) => b.volume ?? NaN)));
-  const atr = A(ta.atr(bars, vwmaLength));
-  const upper = vwma.map((v, i) => v + atr[i] * atrMultiplier);
-  const lower = vwma.map((v, i) => v - atr[i] * atrMultiplier);
-
+  const len = Math.floor(vwmaLength);
   const c = (col: string, transp: number) => String(color.new(col, transp));
-  const names = ['plot0', 'plot1', 'plot2', 'plot3', 'plot4', 'plot5', 'plot6'] as const;
-  const plots: Record<string, { time: number; value: number; color: string }[]> = Object.fromEntries(names.map((k) => [k, []]));
-  const ribbons: string[][] = [[], [], [], []];
-  const barColors: BarColorData[] = [];
-  let dir = 0; // var int trend_direction = 0
-  const turnedBullish: boolean[] = [];
-  const turnedBearish: boolean[] = [];
-  const changed: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const prevDir = dir; // trend_direction[1] (na on the first bar: no turn there)
-    if (bars[i].close > upper[i]) dir = 1;
-    else if (bars[i].close < lower[i]) dir = -1;
-    // trend_turned_bullish = trend_direction == 1 and trend_direction[1] != 1 (bearish: the mirror)
-    const up = i > 0 && dir === 1 && prevDir !== 1;
-    const down = i > 0 && dir === -1 && prevDir !== -1;
-    turnedBullish.push(up);
-    turnedBearish.push(down);
-    changed.push(up || down);
-    const trend = dir === 1 ? bullish : bearish;
-    const upperMid = (upper[i] + vwma[i]) / 2;
-    const lowerMid = (lower[i] + vwma[i]) / 2;
-    plots.plot0.push({ time: t, value: cfg.enableGlow ? vwma[i] : NaN, color: c(trend, 80) });
-    plots.plot1.push({ time: t, value: cfg.enableGlow ? vwma[i] : NaN, color: c(trend, 50) });
-    plots.plot2.push({ time: t, value: vwma[i], color: c(trend, 0) });
-    plots.plot3.push({ time: t, value: upper[i], color: c(trend, cfg.bandTransparency) });
-    plots.plot4.push({ time: t, value: upperMid, color: c(trend, 95) });
-    plots.plot5.push({ time: t, value: lower[i], color: c(trend, cfg.bandTransparency) });
-    plots.plot6.push({ time: t, value: lowerMid, color: c(trend, 95) });
-    // fills: outer ribbons transparency 85, inner ribbons 70; na colour when the ribbons are off
-    const outer = cfg.enableRibbons ? c(trend, 85) : 'transparent';
-    const inner = cfg.enableRibbons ? c(trend, 70) : 'transparent';
-    ribbons[0].push(outer);
-    ribbons[1].push(inner);
-    ribbons[2].push(outer);
-    ribbons[3].push(inner);
-    // barcolor(enable_barcolor ? color.new(trend_direction == 1 ? bullish : bearish, 20) : na)
-    if (cfg.enableBarcolor) barColors.push({ time: t, color: c(dir === 1 ? bullish : bearish, 20) });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills: [
-      { plot1: 'plot3', plot2: 'plot4', colors: ribbons[0] },
-      { plot1: 'plot4', plot2: 'plot2', colors: ribbons[1] },
-      { plot1: 'plot5', plot2: 'plot6', colors: ribbons[2] },
-      { plot1: 'plot6', plot2: 'plot2', colors: ribbons[3] },
-    ],
-    barColors,
-    alerts: alertStates(alertConditions, bars, [turnedBullish, turnedBearish, changed]),
+    init() {
+      const s: TrendRun = {
+        num: new WindowSum(vwmaLength), den: new WindowSum(vwmaLength), atr: taStep.atr(vwmaLength),
+        plots: Array.from({ length: 7 }, () => []), ribbons: [[], [], [], []], barColors: [],
+        flags: [[], [], []], times: [[], [], []], steps: [], vars: { dir: 0 }, lists: [], series: [],
+      };
+      s.steps = [s.num, s.den, s.atr];
+      s.lists = [s.barColors, ...s.times];
+      s.series = [...s.plots, ...s.ribbons, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      const volume = b.volume ?? NaN;
+      // ta.vwma(close, vwma_length): ta.sma(close * volume) / ta.sma(volume), na when the volume average is 0
+      const num = s.num.step(b.close * volume) / len;
+      const den = s.den.step(volume) / len;
+      const vwma = den === 0 || Number.isNaN(den) ? NaN : num / den;
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const upper = vwma + atr * atrMultiplier;
+      const lower = vwma - atr * atrMultiplier;
+
+      const prevDir = v.dir; // trend_direction[1] (na on the first bar: no turn there)
+      if (b.close > upper) v.dir = 1;
+      else if (b.close < lower) v.dir = -1;
+      const dir = v.dir;
+      // trend_turned_bullish = trend_direction == 1 and trend_direction[1] != 1 (bearish: the mirror)
+      const up = i > 0 && dir === 1 && prevDir !== 1;
+      const down = i > 0 && dir === -1 && prevDir !== -1;
+      const flags = [up, down, up || down];
+      for (let k = 0; k < 3; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+      const trend = dir === 1 ? bullish : bearish;
+      const upperMid = (upper + vwma) / 2;
+      const lowerMid = (lower + vwma) / 2;
+      const p = s.plots;
+      p[0][i] = { time: t, value: cfg.enableGlow ? vwma : NaN, color: c(trend, 80) };
+      p[1][i] = { time: t, value: cfg.enableGlow ? vwma : NaN, color: c(trend, 50) };
+      p[2][i] = { time: t, value: vwma, color: c(trend, 0) };
+      p[3][i] = { time: t, value: upper, color: c(trend, cfg.bandTransparency) };
+      p[4][i] = { time: t, value: upperMid, color: c(trend, 95) };
+      p[5][i] = { time: t, value: lower, color: c(trend, cfg.bandTransparency) };
+      p[6][i] = { time: t, value: lowerMid, color: c(trend, 95) };
+      // fills: outer ribbons transparency 85, inner ribbons 70; na colour when the ribbons are off
+      const outer = cfg.enableRibbons ? c(trend, 85) : 'transparent';
+      const inner = cfg.enableRibbons ? c(trend, 70) : 'transparent';
+      s.ribbons[0][i] = outer;
+      s.ribbons[1][i] = inner;
+      s.ribbons[2][i] = outer;
+      s.ribbons[3][i] = inner;
+      // barcolor(enable_barcolor ? color.new(trend_direction == 1 ? bullish : bearish, 20) : na)
+      if (cfg.enableBarcolor) s.barColors.push({ time: t, color: c(dir === 1 ? bullish : bearish, 20) });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(), plot6: p[6].slice(),
+        },
+        fills: [
+          { plot1: 'plot3', plot2: 'plot4', colors: s.ribbons[0].slice() },
+          { plot1: 'plot4', plot2: 'plot2', colors: s.ribbons[1].slice() },
+          { plot1: 'plot5', plot2: 'plot6', colors: s.ribbons[2].slice() },
+          { plot1: 'plot6', plot2: 'plot2', colors: s.ribbons[3].slice() },
+        ],
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeWeightedTrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolumeWeightedTrendInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -169,7 +215,9 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const VolumeWeightedTrend = {
   calculate,
+  createRun,
   metadata,
+
   defaultInputs,
   inputConfig,
   plotConfig,
