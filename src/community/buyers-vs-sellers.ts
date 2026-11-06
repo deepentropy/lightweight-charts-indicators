@@ -13,8 +13,11 @@
  * Original notice: © davorloncarpetrovic
  */
 
-import { ta, Series, math, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, math, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+
 
 export interface BuyersVsSellersInputs {
   /** Number of bars in the sums */
@@ -76,77 +79,94 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
 
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+
+interface BuyersVsSellersRun extends BarRunState<Record<string, never>> {
+  atr: ReturnType<typeof taStep.atr>;
+  ema: ReturnType<typeof taStep.ema>;
+  plots: Point[][];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<BuyersVsSellersInputs>): BarStudy<BuyersVsSellersRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { length, bullishtreshold, bearishtreshold } = cfg;
+  return {
+    init() {
+      const atr = taStep.atr(cfg.atrlength);
+      const ema = taStep.ema(cfg.netmovelength);
+      const plots: Point[][] = [[], [], [], [], [], []];
+      const bgColors: BgColorData[] = [];
+      return { atr, ema, plots, bgColors, steps: [atr, ema], vars: {}, lists: [], series: [...plots, bgColors] };
+    },
+    bar(s, k, bars) {
+      const b = bars[k];
+      const atr = s.atr.step(b.high, b.low, b.close);
+      let bullishsum = 0.0;
+      let bearishsum = 0.0;
+      for (let i = 0; i <= length - 1; i++) {
+        // open[i] - close[i]: na before the first bar; `na < 0` is false, so an na difference goes to the bearish sum
+        const difference = k - i >= 0 ? bars[k - i].open - bars[k - i].close : NaN;
+        if (lt(difference, 0)) bullishsum = bullishsum + difference;
+        else bearishsum = bearishsum + difference;
+      }
+      const bullishsumcorrect = bullishsum * -1;
+      const bearishsumcorrect = bearishsum * -1;
+      // plain divisions: x / 0 is +-infinity, 0 / 0 is na (Pine)
+      const bullishatr = bullishsumcorrect / (atr / 100);
+      const bearishatr = bearishsumcorrect / (atr / 100);
+      const bullishaverage = bullishatr / length;
+      const bearishaverage = bearishatr / length;
+      const bearishaveragepositive = bearishaverage * -1;
+      const netmove = bullishaverage + bearishaverage;
+      const bias = math.log(bullishaverage / bearishaveragepositive) as number;
+      const netmoveaverage = s.ema.step(netmove);
+
+      const time = b.time;
+      const bullishbias = gt(bias, bullishtreshold);
+      const bearishbias = lt(bias, bearishtreshold);
+      const p = s.plots;
+      p[0][k] = { time, value: fin(atr), color: INVISIBLE };
+      p[1][k] = { time, value: fin(bias), color: bullishbias ? BIAS_BULL : bearishbias ? BIAS_BEAR : INVISIBLE };
+      p[2][k] = { time, value: 0, color: color.gray };
+      p[3][k] = { time, value: fin(bullishaverage), color: '#3179f5' };
+      p[4][k] = { time, value: fin(bearishaverage), color: '#ec407a' };
+      p[5][k] = { time, value: fin(netmoveaverage), color: '#d58a0a' };
+      // bgcolor(bullishbias ? color.new(#1848cc, 80) : bearishbias ? color.new(#c2185b, 80) : color.new(color.white, 100))
+      s.bgColors[k] = { time, color: bullishbias ? BULL_BG : bearishbias ? BEAR_BG : INVISIBLE };
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: [
+          { plot1: 'plot2', plot2: 'plot3', options: { title: 'Bullish Move Fill', color: BULL_FILL } },
+          { plot1: 'plot2', plot2: 'plot4', options: { title: 'Bearish Move Fill', color: BEAR_FILL } },
+        ],
+        bgColors: s.bgColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BuyersVsSellersInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<BuyersVsSellersInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const { length, bullishtreshold, bearishtreshold } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const atr = A(ta.atr(bars, cfg.atrlength));
-
-  const bullishaverage: number[] = new Array(n);
-  const bearishaverage: number[] = new Array(n);
-  const netmove: number[] = new Array(n);
-  const bias: number[] = new Array(n);
-  for (let k = 0; k < n; k++) {
-    let bullishsum = 0.0;
-    let bearishsum = 0.0;
-    for (let i = 0; i <= length - 1; i++) {
-      // open[i] - close[i]: na before the first bar; `na < 0` is false, so an na difference goes to the bearish sum
-      const difference = k - i >= 0 ? bars[k - i].open - bars[k - i].close : NaN;
-      if (lt(difference, 0)) bullishsum = bullishsum + difference;
-      else bearishsum = bearishsum + difference;
-    }
-    const bullishsumcorrect = bullishsum * -1;
-    const bearishsumcorrect = bearishsum * -1;
-    // plain divisions: x / 0 is +-infinity, 0 / 0 is na (Pine)
-    const bullishatr = bullishsumcorrect / (atr[k] / 100);
-    const bearishatr = bearishsumcorrect / (atr[k] / 100);
-    bullishaverage[k] = bullishatr / length;
-    bearishaverage[k] = bearishatr / length;
-    const bearishaveragepositive = bearishaverage[k] * -1;
-    netmove[k] = bullishaverage[k] + bearishaverage[k];
-    bias[k] = math.log(bullishaverage[k] / bearishaveragepositive) as number;
-  }
-  const netmoveaverage = A(ta.ema(Series.fromArray(bars, netmove), cfg.netmovelength));
-
-  const plot0 = [];
-  const plot1 = [];
-  const plot2 = [];
-  const plot3 = [];
-  const plot4 = [];
-  const plot5 = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    const bullishbias = gt(bias[i], bullishtreshold);
-    const bearishbias = lt(bias[i], bearishtreshold);
-    plot0.push({ time, value: fin(atr[i]), color: INVISIBLE });
-    plot1.push({ time, value: fin(bias[i]), color: bullishbias ? BIAS_BULL : bearishbias ? BIAS_BEAR : INVISIBLE });
-    plot2.push({ time, value: 0, color: color.gray });
-    plot3.push({ time, value: fin(bullishaverage[i]), color: '#3179f5' });
-    plot4.push({ time, value: fin(bearishaverage[i]), color: '#ec407a' });
-    plot5.push({ time, value: fin(netmoveaverage[i]), color: '#d58a0a' });
-    // bgcolor(bullishbias ? color.new(#1848cc, 80) : bearishbias ? color.new(#c2185b, 80) : color.new(color.white, 100))
-    bgColors.push({ time, color: bullishbias ? BULL_BG : bearishbias ? BEAR_BG : INVISIBLE });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3, plot4, plot5 },
-    fills: [
-      { plot1: 'plot2', plot2: 'plot3', options: { title: 'Bullish Move Fill', color: BULL_FILL } },
-      { plot1: 'plot2', plot2: 'plot4', options: { title: 'Bearish Move Fill', color: BEAR_FILL } },
-    ],
-    bgColors,
-  };
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const BuyersVsSellers = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -14,9 +14,11 @@
  * Original notice: © ExpertTraderASK
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData, MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface LiquidityFlowZonesInputs {
   /** Pivot length on each side of a swing */
@@ -62,60 +64,96 @@ const lt = (a: number, b: number) => b - a > EPS;
 /** Pine default plotshape text colour */
 const PINE_TEXT = '#2962FF';
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<LiquidityFlowZonesInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface LfzVars {
+  /** var float lastHigh = na */
+  lastHigh: number;
+  lastLow: number;
+}
+
+interface LfzRun extends BarRunState<LfzVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  ph: PivotStep;
+  pl: PivotStep;
+  plot0: Point[];
+  plot1: Point[];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<LiquidityFlowZonesInputs>): BarStudy<LfzRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const atr = A(ta.atr(bars, cfg.atrLen));
-  const ph = A(ta.pivothigh(S(bars.map((b) => b.high)), cfg.pivotLen, cfg.pivotLen));
-  const pl = A(ta.pivotlow(S(bars.map((b) => b.low)), cfg.pivotLen, cfg.pivotLen));
-
   const bullBg = String(color.new(color.green, 90));
   const bearBg = String(color.new(color.red, 90));
-  const plot0 = [];
-  const plot1 = [];
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  let lastHigh = NaN; // var float lastHigh = na
-  let lastLow = NaN;
-  const bullFlags: boolean[] = [], bearFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const time = b.time;
-    if (!isNaN(ph[i])) lastHigh = ph[i];
-    if (!isNaN(pl[i])) lastLow = pl[i];
-    plot0.push({ time, value: cfg.showZones ? lastHigh : NaN, color: color.red });
-    plot1.push({ time, value: cfg.showZones ? lastLow : NaN, color: color.lime });
-
-    const bearSweep = !isNaN(lastHigh) && gt(b.high, lastHigh + atr[i] * cfg.atrMult) && lt(b.close, lastHigh);
-    const bullSweep = !isNaN(lastLow) && lt(b.low, lastLow - atr[i] * cfg.atrMult) && gt(b.close, lastLow);
-    bullFlags.push(bullSweep);
-    bearFlags.push(bearSweep);
-    if (bullSweep) {
-      markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: color.lime, size: 'small', text: 'BUY',
-        textColor: PINE_TEXT });
-    }
-    if (bearSweep) {
-      markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'small', text: 'SELL',
-        textColor: PINE_TEXT });
-    }
-    if (bullSweep) bgColors.push({ time, color: bullBg });
-    else if (bearSweep) bgColors.push({ time, color: bearBg });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    markers,
-    bgColors,
-    // alertcondition(bullSweep, "Bullish Liquidity Sweep") / alertcondition(bearSweep, "Bearish Liquidity Sweep")
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags]),
+    init() {
+      const atr = taStep.atr(cfg.atrLen);
+      const ph = new PivotStep(cfg.pivotLen, cfg.pivotLen, true);
+      const pl = new PivotStep(cfg.pivotLen, cfg.pivotLen, false);
+      const s: LfzRun = {
+        atr, ph, pl, plot0: [], plot1: [], flags: [[], []], times: [[], []], markers: [], bgColors: [],
+        steps: [atr, ph, pl], vars: { lastHigh: NaN, lastLow: NaN }, lists: [], series: [],
+      };
+      s.lists = [...s.times, s.markers, s.bgColors];
+      s.series = [s.plot0, s.plot1, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const v = s.vars;
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const ph = s.ph.step(i, b.high);
+      const pl = s.pl.step(i, b.low);
+      if (!isNaN(ph)) v.lastHigh = ph;
+      if (!isNaN(pl)) v.lastLow = pl;
+      const lastHigh = v.lastHigh;
+      const lastLow = v.lastLow;
+      s.plot0[i] = { time, value: cfg.showZones ? lastHigh : NaN, color: color.red };
+      s.plot1[i] = { time, value: cfg.showZones ? lastLow : NaN, color: color.lime };
+
+      const bearSweep = !isNaN(lastHigh) && gt(b.high, lastHigh + atr * cfg.atrMult) && lt(b.close, lastHigh);
+      const bullSweep = !isNaN(lastLow) && lt(b.low, lastLow - atr * cfg.atrMult) && gt(b.close, lastLow);
+      s.flags[0][i] = bullSweep;
+      s.flags[1][i] = bearSweep;
+      if (bullSweep) s.times[0].push(time as number);
+      if (bearSweep) s.times[1].push(time as number);
+      if (bullSweep) {
+        s.markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: color.lime, size: 'small', text: 'BUY',
+          textColor: PINE_TEXT });
+      }
+      if (bearSweep) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'small', text: 'SELL',
+          textColor: PINE_TEXT });
+      }
+      if (bullSweep) s.bgColors.push({ time, color: bullBg });
+      else if (bearSweep) s.bgColors.push({ time, color: bearBg });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        // alertcondition(bullSweep, "Bullish Liquidity Sweep") / alertcondition(bearSweep, "Bearish Liquidity Sweep")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<LiquidityFlowZonesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<LiquidityFlowZonesInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -126,6 +164,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const LiquidityFlowZones = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

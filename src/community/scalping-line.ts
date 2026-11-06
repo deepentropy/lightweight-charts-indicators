@@ -12,8 +12,10 @@
  * Reference: "Scalping Line Indicator" by KivancOzbilgic
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
 
 export interface ScalpingLineInputs {
   src: SourceType;
@@ -47,72 +49,93 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ScalpingLineInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface SlRun extends BarRunState<Record<string, never>> {
+  sma1: WindowSma;
+  sma2: WindowSma;
+  signal: WindowSma;
+  scalpArr: number[];
+  plot0: Point[];
+  plot1: Point[];
+  fillColors: string[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<ScalpingLineInputs>): BarStudy<SlRun, Result> {
   const { src, percent, mainPeriod, signalPeriod } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const source = getSourceSeries(bars, src);
-  const closeSeries = getSourceSeries(bars, 'close');
-  const closeArr = closeSeries.toArray();
-
+  const value = barSource(src);
   // MA = sma(sma(src, ceil(mainPeriod/2)), floor(mainPeriod/2) + 1)
   const halfUp = Math.ceil(mainPeriod / 2);
   const halfDown = Math.floor(mainPeriod / 2) + 1;
-  const sma1 = ta.sma(source, halfUp);
-  const smaArr = ta.sma(sma1, halfDown).toArray();
-
-  // ssMA = MA > close + MA * percent / 100 ? MA : MA < close - MA * percent / 100 ? MA : close
-  // (na MA: both tests false, ssMA = close)
-  const ssMAArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const ma = smaArr[i];
-    const c = closeArr[i] ?? NaN;
-    if (ma == null || isNaN(ma)) {
-      ssMAArr[i] = c;
-      continue;
-    }
-    const band = ma * percent / 100;
-    if (ma > c + band) {
-      ssMAArr[i] = ma;
-    } else if (ma < c - band) {
-      ssMAArr[i] = ma;
-    } else {
-      ssMAArr[i] = c;
-    }
-  }
-
-  // signalline = sma(close, signalPeriod)
-  const signalArr = ta.sma(closeSeries, signalPeriod).toArray();
-
-  // ScalpLine = signalline - ssMA
-  const scalpArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const sig = signalArr[i];
-    const ss = ssMAArr[i];
-    scalpArr[i] = (sig != null && !isNaN(sig) && !isNaN(ss)) ? sig - ss : NaN;
-  }
-
-  const plot0 = scalpArr.map((v, i) => ({ time: bars[i].time, value: v }));
-
-  // plot(0, "") on every bar
-  const plot1 = bars.map((b) => ({ time: b.time, value: 0 }));
-
-  // Fill colour: ScalpLine >= 0 ? green : red (transp 80); no fill where ScalpLine is na
-  const fillColors = scalpArr.map((v) => {
-    if (isNaN(v)) return 'transparent';
-    return v >= 0 ? 'rgba(0,128,0,0.2)' : 'rgba(255,0,0,0.2)';
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(0,128,0,0.2)' }, colors: fillColors }],
-    // alertcondition(crossover(ScalpLine, 0), "BUY ALARM!") / alertcondition(crossunder(ScalpLine, 0), "SELL ALARM!")
-    alerts: alertStates(alertConditions, bars, [crossedOver(scalpArr, 0), crossedUnder(scalpArr, 0)]),
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const sma1 = new WindowSma(halfUp);
+      const sma2 = new WindowSma(halfDown);
+      const signal = new WindowSma(signalPeriod);
+      const s: SlRun = {
+        sma1, sma2, signal, scalpArr: [], plot0: [], plot1: [], fillColors: [], flags: [[], []], times: [[], []],
+        steps: [sma1, sma2, signal], vars: {}, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.scalpArr, s.plot0, s.plot1, s.fillColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const ma = s.sma2.step(s.sma1.step(value(b)));
+      const c = b.close ?? NaN;
+      // ssMA = MA > close + MA * percent / 100 ? MA : MA < close - MA * percent / 100 ? MA : close
+      // (na MA: both tests false, ssMA = close)
+      let ss: number;
+      if (ma == null || isNaN(ma)) {
+        ss = c;
+      } else {
+        const band = ma * percent / 100;
+        if (ma > c + band) ss = ma;
+        else if (ma < c - band) ss = ma;
+        else ss = c;
+      }
+      // signalline = sma(close, signalPeriod)
+      const sig = s.signal.step(b.close);
+      // ScalpLine = signalline - ssMA
+      const v = (sig != null && !isNaN(sig) && !isNaN(ss)) ? sig - ss : NaN;
+      s.scalpArr[i] = v;
+      s.plot0[i] = { time: b.time, value: v };
+      // plot(0, "") on every bar
+      s.plot1[i] = { time: b.time, value: 0 };
+      // Fill colour: ScalpLine >= 0 ? green : red (transp 80); no fill where ScalpLine is na
+      s.fillColors[i] = isNaN(v) ? 'transparent' : v >= 0 ? 'rgba(0,128,0,0.2)' : 'rgba(255,0,0,0.2)';
+      // alertcondition(crossover(ScalpLine, 0), "BUY ALARM!") / alertcondition(crossunder(ScalpLine, 0), "SELL ALARM!")
+      const pv = i > 0 ? s.scalpArr[i - 1] ?? NaN : NaN;
+      const flags = [v > 0 && pv <= 0, v < 0 && pv >= 0];
+      for (let k = 0; k < 2; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(b.time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice() },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(0,128,0,0.2)' }, colors: s.fillColors.slice() }],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ScalpingLineInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ScalpingLineInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -121,4 +144,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'SELL ALARM!', message: 'SLI SELL Signal!' },
 ];
 
-export const ScalpingLine = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const ScalpingLine = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

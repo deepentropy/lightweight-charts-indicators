@@ -25,9 +25,11 @@
  * Original notice: © ChartPrime
  */
 
-import { ta, str, array, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { str, array, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { LabelData, LineDrawingData, PolylineData } from '../types';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeProfilePivotLevelsInputs {
   /** Period */
@@ -117,154 +119,180 @@ class Live<T extends { dead: boolean }> {
   }
 }
 
+type Result = IndicatorResult & { lines: LineDrawingData[]; labels: LabelData[]; polylines: PolylineData[] };
+
+interface VpRun extends BarRunState<{ pivots: Pivot[] }> {
+  ph: PivotStep;
+  pl: PivotStep;
+}
+
+const isValue = (v: number | null | undefined): v is number => v !== null && v !== undefined && !Number.isNaN(v);
+
+function study(inputs: Partial<VolumeProfilePivotLevelsInputs>): BarStudy<VpRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { start, bins, pivotLength } = cfg;
+  return {
+    init() {
+      const ph = new PivotStep(pivotLength, pivotLength, true);
+      const pl = new PivotStep(pivotLength, pivotLength, false);
+      return { ph, pl, steps: [ph, pl], vars: { pivots: [] }, lists: [], series: [] };
+    },
+    copyVars: (v) => ({ pivots: v.pivots.slice() }),
+    bar(s, i, bars) {
+      // Pivots of the period (ta.pivothigh(high, pivotLength, pivotLength), ta.pivotlow(low, ...))
+      const pivots = s.vars.pivots;
+      const b = bars[i];
+      const ph = s.ph.step(i, b.high);
+      const pl = s.pl.step(i, b.low);
+      if (isValue(ph)) pivots.push({ value: bars[i - pivotLength].high, index: i - pivotLength, isHigh: true });
+      if (isValue(pl)) pivots.push({ value: bars[i - pivotLength].low, index: i - pivotLength, isHigh: false });
+      // for p in pivots, with a removal inside: the element after a removed one is skipped
+      for (let k = 0; k < pivots.length; k++) {
+        if (pivots[k].index <= i - start) pivots.splice(k, 1);
+      }
+    },
+    result(s, bars) {
+      const pivots = s.vars.pivots;
+      const n = bars.length;
+      const last = n - 1;
+      const lines = new Live<Ln>();
+      const labels = new Live<Lb>();
+      const polylines: PolylineData[] = [];
+      const interval = barInterval(bars);
+      // a bar before the first bar (a period longer than the bars) is placed with the bar interval
+      const timeOf = (x: number) => (x < 0 && n > 0 ? bars[0].time + x * interval : barTime(bars, x, interval));
+
+      if (n > 0) {
+        // barstate.islast
+        const H = (j: number) => (last - j >= 0 ? bars[last - j].high : NaN);
+        const L = (j: number) => (last - j >= 0 ? bars[last - j].low : NaN);
+        const C = (j: number) => (last - j >= 0 ? bars[last - j].close : NaN);
+        const O = (j: number) => (last - j >= 0 ? bars[last - j].open : NaN);
+        const V = (j: number) => (last - j >= 0 ? bars[last - j].volume ?? NaN : NaN);
+
+        const hl: number[] = [];
+        for (let j = 0; j <= start - 1; j++) hl.push(H(j), L(j));
+        const top = array.max(hl);
+        const bottom = array.min(hl);
+        const binSize = (top - bottom) / bins;
+
+        // Volume of each bin; Delta adds the volume of the last bar for a rising bar and subtracts it for the others
+        const binVol: number[] = new Array(bins).fill(0);
+        const delta: number[] = new Array(bins).fill(0);
+        for (let b = 0; b <= bins - 1; b++) {
+          const binLow = bottom + binSize * b;
+          const binHigh = binLow + binSize;
+          for (let j = 0; j <= start - 1; j++) {
+            if (ge(C(j), binLow - binSize) && lt(C(j), binHigh + binSize)) binVol[b] += V(j);
+            delta[b] += gt(C(j), O(j)) ? V(0) : -V(0);
+          }
+        }
+
+        const points: Array<{ x: number; y: number }> = [];
+        const pivotLevels: Ln[] = [];
+        const binMax = array.max(binVol);
+        for (let b = 0; b <= bins - 1; b++) {
+          const binLow = bottom + binSize * b;
+          const binHigh = binLow + binSize;
+          const mid = (binLow + binHigh) / 2;
+          const binValue = binVol[b];
+          const left = last - start;
+          const right = left + Math.round(binValue / binMax * 50);
+          const volPercent = binValue / binMax * 100;
+
+          if (b === 0) points.push({ x: left, y: binLow });
+          points.push({ x: right + 4, y: mid });
+          if (b === bins - 1) points.push({ x: left, y: binHigh });
+
+          if (eq(volPercent, 100) && cfg.poc) {
+            lines.keep = lines.add({
+              x1: right + 4, y1: mid, x2: last, y2: mid, color: BLUE, width: 2, dotted: false, overlay: false, dead: false,
+            });
+            labels.keep = labels.add({
+              x: last, y: mid, text: str.tostring(binValue, 'volume'), style: 'label_left', color: BLUE, overlay: false,
+              dead: false,
+            });
+          }
+
+          if (pivots.length > 0 && cfg.pivots) {
+            for (const p of pivots) {
+              if (le(Math.abs(mid - p.value), binSize) && ge(volPercent, cfg.pivotFilter) && last - start + 54 <= p.index) {
+                const css = p.isHigh ? MAROON : TEAL;
+                const vol = str.tostring(binValue, 'volume');
+                const pct = str.tostring(volPercent, 'percent');
+                labels.add({
+                  x: p.index, y: p.value, text: p.isHigh ? `${vol}\n${pct}` : `${pct}\n${vol}`,
+                  style: p.isHigh ? 'label_down' : 'label_up', color: css, overlay: true, dead: false,
+                });
+                lines.add({
+                  x1: p.index - pivotLength, y1: p.value, x2: p.index + pivotLength, y2: p.value, color: css, width: 2,
+                  dotted: false, overlay: true, dead: false,
+                });
+                pivotLevels.push(lines.add({
+                  x1: p.index, y1: p.value, x2: p.index, y2: p.value, color: css, width: 1, dotted: true, overlay: false,
+                  dead: false,
+                }));
+              }
+            }
+          }
+        }
+
+        // A level ends on the first bar after its pivot that crosses its price (bars read from the oldest)
+        for (let j = start - 1; j >= 0; j--) {
+          // for p in pivotLevels, with a removal inside: the element after a removed one is skipped
+          for (let k = 0; k < pivotLevels.length; k++) {
+            const p = pivotLevels[k];
+            // a deleted line has no price: the test is false
+            const priceVal = p.dead ? NaN : p.y1;
+            if (gt(H(j), priceVal) && lt(L(j), priceVal) && last - j > p.x1) {
+              p.x2 = last - j;
+              pivotLevels.splice(k, 1);
+            } else if (!p.dead) {
+              p.x2 = last;
+            }
+          }
+        }
+
+        const mColor = gt(array.sum(delta), 0) ? TEAL : MAROON;
+        if (lines.keep && !lines.keep.dead) lines.keep.color = mColor;
+        if (labels.keep && !labels.keep.dead) labels.keep.color = mColor;
+        polylines.push({
+          points: points.filter((p) => !Number.isNaN(p.x)).map((p) => ({ time: timeOf(p.x), price: p.y })),
+          curved: true, closed: false, lineColor: mColor, lineWidth: 4, forceOverlay: true,
+        });
+      }
+
+      const outLines: LineDrawingData[] = lines.list.filter((l) => !Number.isNaN(l.x1)).map((l) => ({
+        time1: timeOf(l.x1), price1: l.y1, time2: timeOf(l.x2), price2: l.y2, color: l.color, width: l.width,
+        ...(l.dotted ? { style: 'dotted' as const } : {}),
+        ...(l.overlay ? { forceOverlay: true } : {}),
+      }));
+      const outLabels: LabelData[] = labels.list.map((l) => ({
+        time: timeOf(l.x), price: l.y, text: l.text, color: l.color, textColor: '#FFFFFF', style: l.style,
+        ...(l.overlay ? { forceOverlay: true } : {}),
+      }));
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        lines: outLines,
+        labels: outLabels,
+        polylines,
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeProfilePivotLevelsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<VolumeProfilePivotLevelsInputs> = {},
 ): IndicatorResult & { lines: LineDrawingData[]; labels: LabelData[]; polylines: PolylineData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const { start, bins, pivotLength } = cfg;
-  const n = bars.length;
-  const last = n - 1;
-
-  const phArr = ta.pivothigh(new Series(bars, (b) => b.high), pivotLength, pivotLength).toArray();
-  const plArr = ta.pivotlow(new Series(bars, (b) => b.low), pivotLength, pivotLength).toArray();
-  const isValue = (v: number | null | undefined): v is number => v !== null && v !== undefined && !Number.isNaN(v);
-
-  // Pivots of the period
-  const pivots: Pivot[] = [];
-  for (let i = 0; i < n; i++) {
-    if (isValue(phArr[i])) pivots.push({ value: bars[i - pivotLength].high, index: i - pivotLength, isHigh: true });
-    if (isValue(plArr[i])) pivots.push({ value: bars[i - pivotLength].low, index: i - pivotLength, isHigh: false });
-    // for p in pivots, with a removal inside: the element after a removed one is skipped
-    for (let k = 0; k < pivots.length; k++) {
-      if (pivots[k].index <= i - start) pivots.splice(k, 1);
-    }
-  }
-
-  const lines = new Live<Ln>();
-  const labels = new Live<Lb>();
-  const polylines: PolylineData[] = [];
-  const interval = barInterval(bars);
-  // a bar before the first bar (a period longer than the bars) is placed with the bar interval
-  const timeOf = (x: number) => (x < 0 && n > 0 ? bars[0].time + x * interval : barTime(bars, x, interval));
-
-  if (n > 0) {
-    // barstate.islast
-    const H = (j: number) => (last - j >= 0 ? bars[last - j].high : NaN);
-    const L = (j: number) => (last - j >= 0 ? bars[last - j].low : NaN);
-    const C = (j: number) => (last - j >= 0 ? bars[last - j].close : NaN);
-    const O = (j: number) => (last - j >= 0 ? bars[last - j].open : NaN);
-    const V = (j: number) => (last - j >= 0 ? bars[last - j].volume ?? NaN : NaN);
-
-    const hl: number[] = [];
-    for (let j = 0; j <= start - 1; j++) hl.push(H(j), L(j));
-    const top = array.max(hl);
-    const bottom = array.min(hl);
-    const binSize = (top - bottom) / bins;
-
-    // Volume of each bin; Delta adds the volume of the last bar for a rising bar and subtracts it for the others
-    const binVol: number[] = new Array(bins).fill(0);
-    const delta: number[] = new Array(bins).fill(0);
-    for (let b = 0; b <= bins - 1; b++) {
-      const binLow = bottom + binSize * b;
-      const binHigh = binLow + binSize;
-      for (let j = 0; j <= start - 1; j++) {
-        if (ge(C(j), binLow - binSize) && lt(C(j), binHigh + binSize)) binVol[b] += V(j);
-        delta[b] += gt(C(j), O(j)) ? V(0) : -V(0);
-      }
-    }
-
-    const points: Array<{ x: number; y: number }> = [];
-    const pivotLevels: Ln[] = [];
-    const binMax = array.max(binVol);
-    for (let b = 0; b <= bins - 1; b++) {
-      const binLow = bottom + binSize * b;
-      const binHigh = binLow + binSize;
-      const mid = (binLow + binHigh) / 2;
-      const binValue = binVol[b];
-      const left = last - start;
-      const right = left + Math.round(binValue / binMax * 50);
-      const volPercent = binValue / binMax * 100;
-
-      if (b === 0) points.push({ x: left, y: binLow });
-      points.push({ x: right + 4, y: mid });
-      if (b === bins - 1) points.push({ x: left, y: binHigh });
-
-      if (eq(volPercent, 100) && cfg.poc) {
-        lines.keep = lines.add({
-          x1: right + 4, y1: mid, x2: last, y2: mid, color: BLUE, width: 2, dotted: false, overlay: false, dead: false,
-        });
-        labels.keep = labels.add({
-          x: last, y: mid, text: str.tostring(binValue, 'volume'), style: 'label_left', color: BLUE, overlay: false,
-          dead: false,
-        });
-      }
-
-      if (pivots.length > 0 && cfg.pivots) {
-        for (const p of pivots) {
-          if (le(Math.abs(mid - p.value), binSize) && ge(volPercent, cfg.pivotFilter) && last - start + 54 <= p.index) {
-            const css = p.isHigh ? MAROON : TEAL;
-            const vol = str.tostring(binValue, 'volume');
-            const pct = str.tostring(volPercent, 'percent');
-            labels.add({
-              x: p.index, y: p.value, text: p.isHigh ? `${vol}\n${pct}` : `${pct}\n${vol}`,
-              style: p.isHigh ? 'label_down' : 'label_up', color: css, overlay: true, dead: false,
-            });
-            lines.add({
-              x1: p.index - pivotLength, y1: p.value, x2: p.index + pivotLength, y2: p.value, color: css, width: 2,
-              dotted: false, overlay: true, dead: false,
-            });
-            pivotLevels.push(lines.add({
-              x1: p.index, y1: p.value, x2: p.index, y2: p.value, color: css, width: 1, dotted: true, overlay: false,
-              dead: false,
-            }));
-          }
-        }
-      }
-    }
-
-    // A level ends on the first bar after its pivot that crosses its price (bars read from the oldest)
-    for (let j = start - 1; j >= 0; j--) {
-      // for p in pivotLevels, with a removal inside: the element after a removed one is skipped
-      for (let k = 0; k < pivotLevels.length; k++) {
-        const p = pivotLevels[k];
-        // a deleted line has no price: the test is false
-        const priceVal = p.dead ? NaN : p.y1;
-        if (gt(H(j), priceVal) && lt(L(j), priceVal) && last - j > p.x1) {
-          p.x2 = last - j;
-          pivotLevels.splice(k, 1);
-        } else if (!p.dead) {
-          p.x2 = last;
-        }
-      }
-    }
-
-    const mColor = gt(array.sum(delta), 0) ? TEAL : MAROON;
-    if (lines.keep && !lines.keep.dead) lines.keep.color = mColor;
-    if (labels.keep && !labels.keep.dead) labels.keep.color = mColor;
-    polylines.push({
-      points: points.filter((p) => !Number.isNaN(p.x)).map((p) => ({ time: timeOf(p.x), price: p.y })),
-      curved: true, closed: false, lineColor: mColor, lineWidth: 4, forceOverlay: true,
-    });
-  }
-
-  const outLines: LineDrawingData[] = lines.list.filter((l) => !Number.isNaN(l.x1)).map((l) => ({
-    time1: timeOf(l.x1), price1: l.y1, time2: timeOf(l.x2), price2: l.y2, color: l.color, width: l.width,
-    ...(l.dotted ? { style: 'dotted' as const } : {}),
-    ...(l.overlay ? { forceOverlay: true } : {}),
-  }));
-  const outLabels: LabelData[] = labels.list.map((l) => ({
-    time: timeOf(l.x), price: l.y, text: l.text, color: l.color, textColor: '#FFFFFF', style: l.style,
-    ...(l.overlay ? { forceOverlay: true } : {}),
-  }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    lines: outLines,
-    labels: outLabels,
-    polylines,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
-export const VolumeProfilePivotLevels = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+export const VolumeProfilePivotLevels = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

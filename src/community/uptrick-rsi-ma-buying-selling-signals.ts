@@ -12,8 +12,10 @@
  * Original notice: © Uptrick
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData, MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface UptrickRsiMaSignalsInputs {
   showRsiMa: boolean;
@@ -62,18 +64,22 @@ export const metadata = {
 const EPS = 1e-10;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<UptrickRsiMaSignalsInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
+type Point = { time: number; value: number; color?: string };
+
+interface UptrickRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  rma: ReturnType<typeof taStep.rma>;
+  rsiMa: number[];
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<UptrickRsiMaSignalsInputs>): BarStudy<UptrickRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: { toArray(): Array<number | null | undefined> }) => s.toArray().map((v) => v ?? NaN);
-
-  const src = getSourceSeries(bars, cfg.src);
-  const rsi = ta.rsi(src, cfg.length);
-  const rsiMa = A(ta.rma(rsi, cfg.length));
-
+  const value = barSource(cfg.src);
   // calc_heat_color(value): ovr = 70, ovs = 30, mid = 50
   const heat = (value: number): string => {
     if (cfg.normalRsi) return ge(value, 50) ? AQUA : PURPLE;
@@ -84,45 +90,68 @@ export function calculate(
     // alphaAqua = math.round(100 - (mid - value) / (mid - ovs) * 100)
     return String(color.new(AQUA, Math.round(100 - ((50 - value) / 20) * 100)));
   };
-  // na RSI MA (warm-up): color.new(#5CF0D7, na), no colour (normal mode: #B32AC3, as na >= 50 is false)
-  const heatColor = rsiMa.map((v) => heat(v));
-
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    // barcolor(color_candles ? calc_heat_color(rsi_ma) : na)
-    if (cfg.colorCandles) barColors.push({ time: bars[i].time, color: heatColor[i] });
-    // ta.crossover / ta.crossunder(rsi_ma, 50): exact comparisons, na on the previous bar gives false
-    if (i === 0) continue;
-    const cur = rsiMa[i];
-    const prev = rsiMa[i - 1];
-    if (cur > 50 && prev <= 50) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: AQUA, size: 'small',
-        forceOverlay: true });
-    }
-    if (cur < 50 && prev >= 50) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: PURPLE, size: 'small',
-        forceOverlay: true });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(show_rsi_ma ? rsi_ma : na, "RSI MA", color = heat_color)
-      plot0: bars.map((b, i) => ({ time: b.time, value: cfg.showRsiMa ? rsiMa[i] : NaN, color: heatColor[i] })),
-      // plot(show_histogram ? rsi_ma : na, style = plot.style_histogram, color = heat_color, linewidth = 1)
-      plot1: bars.map((b, i) => ({ time: b.time, value: cfg.showHistogram ? rsiMa[i] : NaN, color: heatColor[i] })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const rsi = taStep.rsi(cfg.length);
+      const rma = taStep.rma(cfg.length);
+      const s: UptrickRun = {
+        rsi, rma, rsiMa: [], plot0: [], plot1: [], markers: [], barColors: [],
+        steps: [rsi, rma], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.barColors];
+      s.series = [s.rsiMa, s.plot0, s.plot1];
+      return s;
     },
-    // hline(50, "Y = 50", color = color.white)
-    hlines: [{ value: 50, options: { title: 'Y = 50', color: color.white, linestyle: 'dashed' } }],
-    markers,
-    barColors,
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const cur = s.rma.step(s.rsi.step(value(b))) ?? NaN;
+      s.rsiMa[i] = cur;
+      // na RSI MA (warm-up): color.new(#5CF0D7, na), no colour (normal mode: #B32AC3, as na >= 50 is false)
+      const heatColor = heat(cur);
+      // plot(show_rsi_ma ? rsi_ma : na, "RSI MA", color = heat_color)
+      s.plot0[i] = { time: b.time, value: cfg.showRsiMa ? cur : NaN, color: heatColor };
+      // plot(show_histogram ? rsi_ma : na, style = plot.style_histogram, color = heat_color, linewidth = 1)
+      s.plot1[i] = { time: b.time, value: cfg.showHistogram ? cur : NaN, color: heatColor };
+      // barcolor(color_candles ? calc_heat_color(rsi_ma) : na)
+      if (cfg.colorCandles) s.barColors.push({ time: b.time, color: heatColor });
+      // ta.crossover / ta.crossunder(rsi_ma, 50): exact comparisons, na on the previous bar gives false
+      if (i === 0) return;
+      const prev = s.rsiMa[i - 1]!;
+      if (cur > 50 && prev <= 50) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: AQUA, size: 'small',
+          forceOverlay: true });
+      }
+      if (cur < 50 && prev >= 50) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: PURPLE, size: 'small',
+          forceOverlay: true });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        // hline(50, "Y = 50", color = color.white)
+        hlines: [{ value: 50, options: { title: 'Y = 50', color: color.white, linestyle: 'dashed' } }],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<UptrickRsiMaSignalsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<UptrickRsiMaSignalsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const UptrickRsiMaSignals = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -10,7 +10,9 @@
  * Original notice: @author LazyBear. If you use this code in its original/modified form, do drop me a note.
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface WavetrendOscillatorWtInputs {
   /** Channel length (EMA of the price and of the absolute deviation) */
@@ -65,43 +67,68 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<WavetrendOscillatorWtInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface WtRun extends BarRunState<Record<string, never>> {
+  esa: ReturnType<typeof taStep.ema>;
+  d: ReturnType<typeof taStep.ema>;
+  wt1: ReturnType<typeof taStep.ema>;
+  wt2: WindowSma;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<WavetrendOscillatorWtInputs>): BarStudy<WtRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const { n1, n2, obLevel1, obLevel2, osLevel1, osLevel2 } = cfg;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const ap = bars.map((b) => (b.high + b.low + b.close) / 3);
-  const esa = A(ta.ema(S(ap), n1));
-  const d = A(ta.ema(S(ap.map((v, i) => Math.abs(v - esa[i]))), n1));
-  // A plain division, as Pine: x / 0 is +-infinity, 0 / 0 is na (the EMA skips both)
-  const ci = ap.map((v, i) => (v - esa[i]) / (0.015 * d[i]));
-  const wt1 = A(ta.ema(S(ci), n2));
-  const wt2 = A(ta.sma(S(wt1), 4));
-
-  const out = (f: (i: number) => number) =>
-    bars.map((b, i) => {
-      const v = f(i);
-      return { time: b.time, value: Number.isFinite(v) ? v : NaN };
-    });
-
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: out(() => 0),
-      plot1: out(() => obLevel1),
-      plot2: out(() => osLevel1),
-      plot3: out(() => obLevel2),
-      plot4: out(() => osLevel2),
-      plot5: out((i) => wt1[i]),
-      plot6: out((i) => wt2[i]),
-      plot7: out((i) => wt1[i] - wt2[i]),
+    init() {
+      const esa = taStep.ema(n1);
+      const d = taStep.ema(n1);
+      const wt1 = taStep.ema(n2);
+      const wt2 = new WindowSma(4);
+      const s: WtRun = {
+        esa, d, wt1, wt2, plots: [[], [], [], [], [], [], [], []],
+        steps: [esa, d, wt1, wt2], vars: {}, lists: [], series: [],
+      };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const time = b.time;
+      const ap = (b.high + b.low + b.close) / 3;
+      const esa = s.esa.step(ap) ?? NaN;
+      const d = s.d.step(Math.abs(ap - esa)) ?? NaN;
+      // A plain division, as Pine: x / 0 is +-infinity, 0 / 0 is na (the EMA skips both)
+      const ci = (ap - esa) / (0.015 * d);
+      const wt1 = s.wt1.step(ci) ?? NaN;
+      const wt2 = s.wt2.step(wt1) ?? NaN;
+      const values = [0, obLevel1, osLevel1, obLevel2, osLevel2, wt1, wt2, wt1 - wt2];
+      for (let k = 0; k < 8; k++) s.plots[k]![i] = { time, value: fin(values[k]!) };
+    },
+    result(s) {
+      const p = s.plots.map((x) => x.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0]!, plot1: p[1]!, plot2: p[2]!, plot3: p[3]!, plot4: p[4]!, plot5: p[5]!, plot6: p[6]!, plot7: p[7]! },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WavetrendOscillatorWtInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<WavetrendOscillatorWtInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const WavetrendOscillatorWt = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

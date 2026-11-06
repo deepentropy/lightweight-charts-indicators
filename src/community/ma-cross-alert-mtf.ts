@@ -27,12 +27,13 @@
  */
 
 import {
-  ta, Series, color, timeframe, getSourceSeries, resample, mapToChart, type IndicatorResult, type InputConfig,
+  taStep, Series, color, timeframe, getSourceSeries, resample, mapToChart, type IndicatorResult, type InputConfig,
   type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { MarkerData, BarColorData, BgColorData } from '../types';
 import { periodStarts, chartTimeframe, securityBars } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MaCrossAlertMtfInputs {
   /** Price source of the moving averages (the original also offers the volume) */
@@ -117,79 +118,122 @@ function timeframeBars(bars: Bar[], tf: string, context?: ChartContext): { htf: 
   return { htf, toChart: (values) => mapToChart(values, group, group, true, false) };
 }
 
-export function calculate(bars: Bar[], inputs: Partial<MaCrossAlertMtfInputs> = {}, chart?: ChartContext): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+type Ma = { step(v: number): number; commit(): void };
+
+interface MaCrossRun extends BarRunState<Record<string, never>> {
+  /** The price of each chart bar from another timeframe (null: the price of the bar itself) */
+  price: number[] | null;
+  short: Ma | null;
+  long: Ma | null;
+  cross: ReturnType<typeof taStep.cross>;
+  shortArr: number[];
+  longArr: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Array<{ time: number; value: number }>;
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<MaCrossAlertMtfInputs>): BarStudy<MaCrossRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  // price = security(tickerid, res, pricetype), res = useCurrentRes ? period : resCustom
-  const { htf, toChart } = timeframeBars(bars, cfg.useCurrentRes ? '' : cfg.resCustom, chart);
-  const source = cfg.pricetype === 'volume' ? htf.map((b) => b.volume ?? NaN) : A(getSourceSeries(htf, cfg.pricetype));
-  const price = Series.fromArray(bars, toChart(source));
-
-  // The averages run on the chart bars
-  const average = (len: number): number[] => {
-    switch (cfg.smoothinput) {
-      case 1: return A(ta.sma(price, len));
-      case 2: return A(ta.ema(price, len));
-      case 3: return A(ta.wma(price, len));
-      case 4: return A(ta.linreg(price, len, 0));
-      default: return new Array(n).fill(NaN);
-    }
-  };
-  const short = average(cfg.shortperiod);
-  const long = average(cfg.longperiod);
-  const crossed = ta.cross(Series.fromArray(bars, short), Series.fromArray(bars, long)).toArray();
-
+  const value = barSource(cfg.pricetype);
   const green50 = String(color.new(GREEN_HEX, 50));
   const red50 = String(color.new(RED_HEX, 50));
-  const direction = (a: number[], i: number) => {
-    const prev = i > 0 ? a[i - 1] : NaN;
-    return gt(a[i], prev) ? LIME : lt(a[i], prev) ? RED : BLUE;
+  // The averages run on the chart bars
+  const average = (len: number): Ma | null => {
+    switch (cfg.smoothinput) {
+      case 1: return new WindowSma(len);
+      case 2: return taStep.ema(len);
+      case 3: { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+      case 4: return taStep.linreg(len, 0);
+      default: return null;
+    }
   };
-
-  const plot0: Array<{ time: number; value: number; color: string }> = [];
-  const plot1: typeof plot0 = [];
-  const plot2: Array<{ time: number; value: number }> = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    plot0.push({ time, value: short[i], color: direction(short, i) });
-    plot1.push({ time, value: long[i], color: direction(long, i) });
-    // MAcrossing = cross(short, long) ? short : na
-    plot2.push({ time, value: crossed[i] ? short[i] : NaN });
-
-    const trendingUp = gt(short[i], long[i]);
-    const trendingDown = lt(short[i], long[i]);
-    barColors.push({ time, color: trendingUp ? GREEN_HEX : trendingDown ? RED_HEX : BLUE_HEX });
-
-    // Uptrend = TrendingUp() and TrendingDown()[1]; Downtrend = TrendingDown() and TrendingUp()[1]
-    const uptrend = trendingUp && i > 0 && lt(short[i - 1], long[i - 1]);
-    const downtrend = trendingDown && i > 0 && gt(short[i - 1], long[i - 1]);
-    if (uptrend) bgColors.push({ time, color: green50 });
-    else if (downtrend) bgColors.push({ time, color: red50 });
-
-    // Buy = Uptrend() and close > close[1]; Sell = Downtrend() and close < close[1]
-    const prevClose = i > 0 ? bars[i - 1].close : NaN;
-    if (uptrend && gt(bars[i].close, prevClose)) {
-      markers.push({ time, position: 'bottom', shape: 'arrowUp', color: BLACK, text: 'Buy' });
-    }
-    if (downtrend && lt(bars[i].close, prevClose)) {
-      markers.push({ time, position: 'top', shape: 'arrowDown', color: BLACK, text: 'Sell' });
-    }
-  }
-
+  const direction = (a: number[], i: number) => {
+    const prev = i > 0 ? a[i - 1]! : NaN;
+    return gt(a[i]!, prev) ? LIME : lt(a[i]!, prev) ? RED : BLUE;
+  };
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    // fill(MA1, MA2, color = silver, transp = 50)
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: String(color.new('#C0C0C0', 50)) } }],
-    barColors,
-    bgColors,
-    markers,
+    fullRunReason: () => (!cfg.useCurrentRes ? 'price of another timeframe (each bar of a period shows its last price)'
+      : isBarSource(cfg.pricetype) ? null : 'source of another study'),
+    init(bars, chart) {
+      let price: number[] | null = null;
+      if (!cfg.useCurrentRes) {
+        // price = security(tickerid, res, pricetype), res = useCurrentRes ? period : resCustom
+        const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
+        const { htf, toChart } = timeframeBars(bars, cfg.resCustom, chart);
+        const source = cfg.pricetype === 'volume' ? htf.map((b) => b.volume ?? NaN) : A(getSourceSeries(htf, cfg.pricetype));
+        price = toChart(source);
+      }
+      const short = average(cfg.shortperiod);
+      const long = average(cfg.longperiod);
+      const cross = taStep.cross();
+      const s: MaCrossRun = {
+        price, short, long, cross, shortArr: [], longArr: [], plot0: [], plot1: [], plot2: [], barColors: [],
+        bgColors: [], markers: [],
+        steps: [...(short ? [short] : []), ...(long ? [long] : []), cross], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.bgColors, s.markers];
+      s.series = [s.shortArr, s.longArr, s.plot0, s.plot1, s.plot2, s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const time = b.time;
+      const p = s.price ? s.price[i]! : value(b);
+      const short = s.short ? s.short.step(p) ?? NaN : NaN;
+      const long = s.long ? s.long.step(p) ?? NaN : NaN;
+      s.shortArr[i] = short;
+      s.longArr[i] = long;
+      const crossed = s.cross.step(short, long);
+      s.plot0[i] = { time, value: short, color: direction(s.shortArr, i) };
+      s.plot1[i] = { time, value: long, color: direction(s.longArr, i) };
+      // MAcrossing = cross(short, long) ? short : na
+      s.plot2[i] = { time, value: crossed ? short : NaN };
+
+      const trendingUp = gt(short, long);
+      const trendingDown = lt(short, long);
+      s.barColors[i] = { time, color: trendingUp ? GREEN_HEX : trendingDown ? RED_HEX : BLUE_HEX };
+
+      // Uptrend = TrendingUp() and TrendingDown()[1]; Downtrend = TrendingDown() and TrendingUp()[1]
+      const uptrend = trendingUp && i > 0 && lt(s.shortArr[i - 1]!, s.longArr[i - 1]!);
+      const downtrend = trendingDown && i > 0 && gt(s.shortArr[i - 1]!, s.longArr[i - 1]!);
+      if (uptrend) s.bgColors.push({ time, color: green50 });
+      else if (downtrend) s.bgColors.push({ time, color: red50 });
+
+      // Buy = Uptrend() and close > close[1]; Sell = Downtrend() and close < close[1]
+      const prevClose = i > 0 ? bars[i - 1]!.close : NaN;
+      if (uptrend && gt(b.close, prevClose)) {
+        s.markers.push({ time, position: 'bottom', shape: 'arrowUp', color: BLACK, text: 'Buy' });
+      }
+      if (downtrend && lt(b.close, prevClose)) {
+        s.markers.push({ time, position: 'top', shape: 'arrowDown', color: BLACK, text: 'Sell' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        // fill(MA1, MA2, color = silver, transp = 50)
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: String(color.new('#C0C0C0', 50)) } }],
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const MaCrossAlertMtf = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MaCrossAlertMtfInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MaCrossAlertMtfInputs> = {}, chart?: ChartContext): IndicatorResult {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const MaCrossAlertMtf = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

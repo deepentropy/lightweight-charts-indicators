@@ -28,10 +28,11 @@
  * Based on the standard "Volume Weighted Average Price" indicator.
  */
 
-import { Series, ta, getSourceSeries, barInterval, barTime, time as pineTime, timeframe as pineTimeframe, type FillData, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { barInterval, barTime, chartSessions, periodTime, time as pineTime, timeframe as pineTimeframe, type SessionContext, type FillData, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 
 import { hasCalendar, periodStarts, chartTimeframe } from '../anchor-period';
 import { timezoneOf, type ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type VWAPAnchor = 'Session' | 'Week' | 'Month' | 'Quarter' | 'Year' | 'Decade' | 'Century' | 'Earnings' | 'Dividends' | 'Splits';
 
@@ -122,107 +123,206 @@ function periodKey(d: Date, anchor: VWAPAnchor): number {
   }
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<VWAPInputs> = {},
-  chart?: ChartContext,
-): IndicatorResult & { visibility: Record<string, boolean> } {
+/**
+ * The exchange calendar of `periodStarts` (anchor-period.ts): the session context of the chart timeframe, the time zone
+ * and the session of the chart context, or null when the context has no calendar, the chart timeframe is not known or
+ * the library cannot read the time zone or the session (then periodStarts gives the UTC periods of periodKey)
+ */
+function exchangeCalendar(bars: Bar[], chart?: ChartContext): { ctx: SessionContext; unit: number } | null {
+  if (!chart || !hasCalendar(chart) || bars.length === 0) return null;
+  const tf = chartTimeframe(bars, chart);
+  if (tf === '') return null;
+  const ms = bars[0].time >= 1e12;
+  const ctx: SessionContext = {
+    timeframe: tf, timezone: chart.timezone, session: chart.session, regularSession: chart.regularSession,
+    timeUnit: ms ? 'ms' : 's',
+  };
+  try {
+    chartSessions(ctx);
+    periodTime(bars[0].time, '1D', ctx);
+  } catch {
+    return null;
+  }
+  return { ctx, unit: ms ? 1 : 1000 };
+}
+
+type Point = { time: number; value: number };
+type Result = IndicatorResult & { visibility: Record<string, boolean> };
+
+interface VwapVars {
+  /** Period key of the previous bar */
+  prevKey: number;
+  /** Sums of ta.vwap since the last anchor bar */
+  sumPV: number;
+  sumV: number;
+  sumPPV: number;
+}
+
+interface VwapRun extends BarRunState<VwapVars> {
+  /** VWAP and the six bands of each bar */
+  values: number[][];
+  /** Their points (offset 0) */
+  points: Point[][];
+}
+
+function study(inputs: Partial<VWAPInputs>): BarStudy<VwapRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { anchor, offset } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const source = getSourceSeries(bars, cfg.src);
-  const srcArr = A(source);
-  const volume = new Series(bars, (bar) => bar.volume ?? NaN);
-
-  // isNewPeriod: timeframe.change(...) per anchor; Earnings / Dividends / Splits: no event data (never)
+  const value = barSource(cfg.src);
   const isEsdAnchor = anchor === 'Earnings' || anchor === 'Dividends' || anchor === 'Splits';
-  const isNewPeriod: number[] = new Array(n).fill(0);
-  // With the exchange calendar of the chart context: timeframe.change(tf) of the anchor timeframe, and the year in
-  // the exchange time zone. Else the UTC calendar of the bar times.
-  const exchange = !isEsdAnchor && hasCalendar(chart) ? periodStarts(bars, ANCHOR_TIMEFRAME[anchor] ?? '12M', chart) : null;
-  const timezone = timezoneOf(chart);
-  let prevKey = NaN;
-  for (let i = 0; i < n; i++) {
-    if (isEsdAnchor) break;
-    const d = utcDate(bars[i].time);
-    const key = exchange ? exchange[i] : periodKey(d, anchor);
-    const change = i > 0 && key !== prevKey;
-    prevKey = key;
-    let isNew = change;
-    const year = exchange ? pineTime.year(d.getTime(), timezone) : d.getUTCFullYear();
-    if (anchor === 'Decade') isNew = change && year % 10 === 0;
-    else if (anchor === 'Century') isNew = change && year % 100 === 0;
-    // if na(src[1]) and not isEsdAnchor: isNewPeriod := true
-    if (i === 0 || Number.isNaN(srcArr[i - 1])) isNew = true;
-    isNewPeriod[i] = isNew ? 1 : 0;
-  }
-
-  // timeframe.isdwm: the chart timeframe of the context, else the bar interval is one day or more
-  const interval = barInterval(bars);
-  const day = n > 0 && bars[0].time < 1e12 ? 86400 : 86400000;
-  const isDwm = chart?.timeframe ? pineTimeframe.info(chartTimeframe(bars, chart)).isdwm : interval >= day;
-  const hidden = cfg.hideOnDWM && isDwm;
-
-  const nan = () => new Array<number>(n).fill(NaN);
-  const vwapValue = nan();
-  const bands = [nan(), nan(), nan(), nan(), nan(), nan()];
-  if (!hidden) {
-    // [_vwap, _stdevUpper, _] = ta.vwap(src, isNewPeriod, 1)
-    const [vw, stdevUpper] = ta.vwapBands(source, volume, Series.fromArray(bars, isNewPeriod), 1).map(A);
-    const mults = [cfg.bandMult1, cfg.bandMult2, cfg.bandMult3];
-    for (let i = 0; i < n; i++) {
-      const v = vw[i];
-      const stdevAbs = stdevUpper[i] - v;
-      const bandBasis = cfg.calcMode === 'Standard Deviation' ? stdevAbs : v * 0.01;
-      vwapValue[i] = v;
-      for (let k = 0; k < 3; k++) {
-        bands[2 * k][i] = v + bandBasis * mults[k];
-        bands[2 * k + 1][i] = v - bandBasis * mults[k];
-      }
-    }
-  }
-
-  // plot(..., offset = offset): the value of bar i is drawn on bar i + offset
-  const shifted = (values: number[]) => {
-    const out: { time: number; value: number }[] = [];
-    for (let i = 0; i < n; i++) {
-      if (i + offset < 0) continue;
-      out.push({ time: barTime(bars, i + offset, interval), value: values[i] });
-    }
-    return out;
-  };
-
-  const show = [cfg.showBand1, cfg.showBand2, cfg.showBand3];
-  // fill(upperBand_k, lowerBand_k, color.new(<band colour>, 95), display = displayBandK)
-  const fills: FillData[] = [
-    { plot1: 'plot1', plot2: 'plot2', options: { color: '#4CAF50', transp: 95, title: 'Bands Fill #1' } },
-    { plot1: 'plot3', plot2: 'plot4', options: { color: '#808000', transp: 95, title: 'Bands Fill #2' } },
-    { plot1: 'plot5', plot2: 'plot6', options: { color: '#089981', transp: 95, title: 'Bands Fill #3' } },
-  ].filter((_f, k) => show[k]);
-
+  const tf = ANCHOR_TIMEFRAME[anchor] ?? '12M';
+  const mults = [cfg.bandMult1, cfg.bandMult2, cfg.bandMult3];
+  /** Set by init: the exchange calendar, the time zone and the hidden state (they read the chart and the bars) */
+  let calendar: { ctx: SessionContext; unit: number } | null = null;
+  let timezone = timezoneOf({});
+  /** The year in the exchange time zone with the calendar of the context */
+  let exchangeYear = false;
+  let hidden = false;
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    key: (bars, c) => {
+      const n = bars.length;
+      return `${n > 0}|${n > 0 && bars[0].time < 1e12}|${barInterval(bars)}|${hasCalendar(c) ? chartTimeframe(bars, c) : ''}`;
     },
-    plots: {
-      'plot0': shifted(vwapValue),
-      'plot1': shifted(bands[0]),
-      'plot2': shifted(bands[1]),
-      'plot3': shifted(bands[2]),
-      'plot4': shifted(bands[3]),
-      'plot5': shifted(bands[4]),
-      'plot6': shifted(bands[5]),
+    init(bars, c) {
+      calendar = isEsdAnchor ? null : exchangeCalendar(bars, c);
+      timezone = timezoneOf(c);
+      exchangeYear = !isEsdAnchor && hasCalendar(c);
+      // timeframe.isdwm: the chart timeframe of the context, else the bar interval is one day or more
+      const n = bars.length;
+      const interval = barInterval(bars);
+      const day = n > 0 && bars[0].time < 1e12 ? 86400 : 86400000;
+      const isDwm = c?.timeframe ? pineTimeframe.info(chartTimeframe(bars, c)).isdwm : interval >= day;
+      hidden = cfg.hideOnDWM && isDwm;
+      const s: VwapRun = {
+        values: [[], [], [], [], [], [], []], points: offset === 0 ? [[], [], [], [], [], [], []] : [],
+        // na until the first anchor
+        vars: { prevKey: NaN, sumPV: NaN, sumV: NaN, sumPPV: NaN },
+        steps: [], lists: [], series: [],
+      };
+      s.series = [...s.values, ...s.points];
+      return s;
     },
-    fills,
-    visibility: { showBand1: cfg.showBand1, showBand2: cfg.showBand2, showBand3: cfg.showBand3 },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const src = value(b);
+      // isNewPeriod: timeframe.change(...) per anchor; Earnings / Dividends / Splits: no event data (never)
+      let isNew = false;
+      if (!isEsdAnchor) {
+        // With the exchange calendar of the chart context: timeframe.change(tf) of the anchor timeframe, and the year
+        // in the exchange time zone. Else the UTC calendar of the bar times.
+        const d = utcDate(b.time);
+        let key: number;
+        if (calendar) {
+          // periodStarts: time(tf) of the bar; na after an early close: the period of the bar before it
+          const t = periodTime(b.time, tf, calendar.ctx);
+          if (!Number.isNaN(t)) key = t / calendar.unit;
+          else key = i > 0 && chartSessions(calendar.ctx).bars.stray(b.time * calendar.unit) ? v.prevKey : b.time;
+        } else {
+          key = periodKey(d, anchor);
+        }
+        const change = i > 0 && key !== v.prevKey;
+        v.prevKey = key;
+        isNew = change;
+        const year = exchangeYear ? pineTime.year(d.getTime(), timezone) : d.getUTCFullYear();
+        if (anchor === 'Decade') isNew = change && year % 10 === 0;
+        else if (anchor === 'Century') isNew = change && year % 100 === 0;
+        // if na(src[1]) and not isEsdAnchor: isNewPeriod := true
+        if (i === 0 || Number.isNaN(value(bars[i - 1]))) isNew = true;
+      }
+
+      let vw = NaN;
+      const bands = [NaN, NaN, NaN, NaN, NaN, NaN];
+      if (!hidden) {
+        // [_vwap, _stdevUpper, _] = ta.vwap(src, isNewPeriod, 1)
+        const vol = b.volume ?? NaN;
+        if (isNew) {
+          v.sumPV = src * vol;
+          v.sumV = vol;
+          v.sumPPV = src * src * vol;
+        } else {
+          // An na source or volume makes the sums na until the next anchor
+          v.sumPV += src * vol;
+          v.sumV += vol;
+          v.sumPPV += src * src * vol;
+        }
+        vw = v.sumV === 0 ? NaN : v.sumPV / v.sumV;
+        const sd = Math.sqrt(Math.max(0, v.sumPPV / v.sumV - vw * vw));
+        const stdevUpper = vw + 1 * sd;
+        const stdevAbs = stdevUpper - vw;
+        const bandBasis = cfg.calcMode === 'Standard Deviation' ? stdevAbs : vw * 0.01;
+        for (let k = 0; k < 3; k++) {
+          bands[2 * k] = vw + bandBasis * mults[k];
+          bands[2 * k + 1] = vw - bandBasis * mults[k];
+        }
+      }
+      s.values[0][i] = vw;
+      for (let k = 0; k < 6; k++) s.values[k + 1][i] = bands[k];
+      if (offset === 0) {
+        for (let k = 0; k < 7; k++) s.points[k][i] = { time: b.time, value: s.values[k][i] };
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // plot(..., offset = offset): the value of bar i is drawn on bar i + offset
+      let plots: Point[][];
+      if (offset === 0) {
+        plots = s.points.map((p) => p.slice());
+      } else {
+        const interval = barInterval(bars);
+        plots = s.values.map((values) => {
+          const out: Point[] = [];
+          for (let i = 0; i < n; i++) {
+            if (i + offset < 0) continue;
+            out.push({ time: barTime(bars, i + offset, interval), value: values[i] });
+          }
+          return out;
+        });
+      }
+
+      const show = [cfg.showBand1, cfg.showBand2, cfg.showBand3];
+      // fill(upperBand_k, lowerBand_k, color.new(<band colour>, 95), display = displayBandK)
+      const fills: FillData[] = [
+        { plot1: 'plot1', plot2: 'plot2', options: { color: '#4CAF50', transp: 95, title: 'Bands Fill #1' } },
+        { plot1: 'plot3', plot2: 'plot4', options: { color: '#808000', transp: 95, title: 'Bands Fill #2' } },
+        { plot1: 'plot5', plot2: 'plot6', options: { color: '#089981', transp: 95, title: 'Bands Fill #3' } },
+      ].filter((_f, k) => show[k]);
+
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': plots[0],
+          'plot1': plots[1],
+          'plot2': plots[2],
+          'plot3': plots[3],
+          'plot4': plots[4],
+          'plot5': plots[5],
+          'plot6': plots[6],
+        },
+        fills,
+        visibility: { showBand1: cfg.showBand1, showBand2: cfg.showBand2, showBand3: cfg.showBand3 },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VWAPInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VWAPInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 export const VWAP = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

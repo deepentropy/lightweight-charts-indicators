@@ -13,7 +13,9 @@
  * Original notice: © Quantora
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taCore, taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface QWaveInputs {
   /** Bars used to detect the dominant price structure */
@@ -80,90 +82,117 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<QWaveInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface QWaveVars {
+  lastHighBar: number;
+  lastLowBar: number;
+  wFast: number;
+  wSlow: number;
+  counter: number;
+  slowDir: number;
+}
+
+interface QWaveRun extends BarRunState<QWaveVars> {
+  hiExt: WindowExtreme;
+  loExt: WindowExtreme;
+  atr: ReturnType<typeof taStep.atr>;
+  volSma: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+  zoneColors: string[];
+}
+
+function study(inputs: Partial<QWaveInputs>): BarStudy<QWaveRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const { structLen, fastLen, slowLen, regimeInertia, baseLen, useVol } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const hiBars = A(ta.highestbars(S(bars.map((b) => b.high)), structLen));
-  const loBars = A(ta.lowestbars(S(bars.map((b) => b.low)), structLen));
-  const atrArr = A(ta.atr(bars, baseLen));
-  const volArr = bars.map((b) => b.volume ?? NaN);
-  const volSma = A(ta.sma(S(volArr), baseLen));
-
-  const fast: number[] = new Array(n);
-  const slow: number[] = new Array(n);
-  const structDirs: number[] = new Array(n);
-  const slowDirs: number[] = new Array(n);
-
-  // var int lastHighBar = bar_index / lastLowBar = bar_index: equal on the first bar (only their order counts)
-  let lastHighBar = 0;
-  let lastLowBar = 0;
-  let wFast = NaN;
-  let wSlow = NaN;
-  let counter = 0;
-  let slowDir = 0;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    if (hiBars[i] === 0) lastHighBar = i;
-    if (loBars[i] === 0) lastLowBar = i;
-    const structDir = lastHighBar > lastLowBar ? 1 : lastHighBar < lastLowBar ? -1 : 0;
-
-    const atr = Number.isNaN(atrArr[i]) ? 0.0 : atrArr[i];
-    const volMA = Number.isNaN(volSma[i]) ? 0.0 : volSma[i];
-    const volRatio = useVol && gt(volMA, 0) ? Math.min(volArr[i] / volMA, 3.0) : 1.0;
-    const pressure = gt(atr, 0) ? Math.abs((b.close - b.open) / atr) * volRatio : 1.0;
-
-    const boost = 1.0 + Math.min(pressure * 0.15, 1.0);
-    const alphaFast = Math.max(0.05, Math.min(0.60, (2.0 / (fastLen + 1)) * boost));
-    const alphaSlow = Math.max(0.02, Math.min(0.30, (2.0 / (slowLen + 1)) * boost * 0.5));
-
-    const hlc3 = (b.high + b.low + b.close) / 3;
-    if (i === 0) {
-      // var float wFast = hlc3 / wSlow = hlc3
-      wFast = hlc3;
-      wSlow = hlc3;
-    }
-    wFast = (1.0 - alphaFast) * wFast + alphaFast * hlc3;
-    wSlow = (1.0 - alphaSlow) * wSlow + alphaSlow * hlc3;
-
-    counter = structDir === 1 ? Math.min(counter + 1, regimeInertia * 2)
-      : structDir === -1 ? Math.max(counter - 1, -regimeInertia * 2)
-        : counter;
-    slowDir = counter >= regimeInertia ? 1 : counter <= -regimeInertia ? -1 : slowDir;
-
-    fast[i] = wFast;
-    slow[i] = wSlow;
-    structDirs[i] = structDir;
-    slowDirs[i] = slowDir;
-  }
-
   const dirColor = (d: number) => (d === 1 ? cfg.bullColor : d === -1 ? cfg.bearColor : cfg.neutralColor);
   const neutTransp = Math.min(cfg.zoneTransp + 5, 100);
   const zoneBull = String(color.new(cfg.bullColor, cfg.zoneTransp));
   const zoneBear = String(color.new(cfg.bearColor, cfg.zoneTransp));
   const zoneNeut = String(color.new(cfg.neutralColor, neutTransp));
   const val = (v: number) => (Number.isFinite(v) ? v : NaN);
-
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: val(fast[i]), color: dirColor(structDirs[i]) }));
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: val(slow[i]), color: dirColor(slowDirs[i]) }));
-  const zoneColors = bars.map((_b, i) => {
-    const s = structDirs[i];
-    const r = slowDirs[i];
-    return s === 1 && r === 1 ? zoneBull : s === -1 && r === -1 ? zoneBear : zoneNeut;
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Wave Zone' }, colors: zoneColors }],
+    init() {
+      // ta.highestbars(high, structLen) == 0 / ta.lowestbars(low, structLen) == 0: the bar's own value is the extreme
+      // of the window (the newest of equal values wins); the length checks of highestbars / lowestbars first
+      taCore.highestbars([], structLen);
+      const hiExt = new WindowExtreme(false, structLen);
+      taCore.lowestbars([], structLen);
+      const loExt = new WindowExtreme(true, structLen);
+      const atr = taStep.atr(baseLen);
+      const volSma = new WindowSma(baseLen);
+      const s: QWaveRun = {
+        hiExt, loExt, atr, volSma, plot0: [], plot1: [], zoneColors: [],
+        steps: [hiExt, loExt, atr, volSma],
+        // var int lastHighBar = bar_index / lastLowBar = bar_index: equal on the first bar (only their order counts)
+        vars: { lastHighBar: 0, lastLowBar: 0, wFast: NaN, wSlow: NaN, counter: 0, slowDir: 0 },
+        lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1, s.zoneColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const v = s.vars;
+      const hiMax = s.hiExt.step(b.high);
+      const loMin = s.loExt.step(b.low);
+      if (Number.isFinite(b.high) && hiMax === b.high) v.lastHighBar = i;
+      if (Number.isFinite(b.low) && loMin === b.low) v.lastLowBar = i;
+      const structDir = v.lastHighBar > v.lastLowBar ? 1 : v.lastHighBar < v.lastLowBar ? -1 : 0;
+
+      const atrV = s.atr.step(b.high, b.low, b.close) ?? NaN;
+      const volume = b.volume ?? NaN;
+      const volSmaV = s.volSma.step(volume) ?? NaN;
+      const atr = Number.isNaN(atrV) ? 0.0 : atrV;
+      const volMA = Number.isNaN(volSmaV) ? 0.0 : volSmaV;
+      const volRatio = useVol && gt(volMA, 0) ? Math.min(volume / volMA, 3.0) : 1.0;
+      const pressure = gt(atr, 0) ? Math.abs((b.close - b.open) / atr) * volRatio : 1.0;
+
+      const boost = 1.0 + Math.min(pressure * 0.15, 1.0);
+      const alphaFast = Math.max(0.05, Math.min(0.60, (2.0 / (fastLen + 1)) * boost));
+      const alphaSlow = Math.max(0.02, Math.min(0.30, (2.0 / (slowLen + 1)) * boost * 0.5));
+
+      const hlc3 = (b.high + b.low + b.close) / 3;
+      if (i === 0) {
+        // var float wFast = hlc3 / wSlow = hlc3
+        v.wFast = hlc3;
+        v.wSlow = hlc3;
+      }
+      v.wFast = (1.0 - alphaFast) * v.wFast + alphaFast * hlc3;
+      v.wSlow = (1.0 - alphaSlow) * v.wSlow + alphaSlow * hlc3;
+
+      v.counter = structDir === 1 ? Math.min(v.counter + 1, regimeInertia * 2)
+        : structDir === -1 ? Math.max(v.counter - 1, -regimeInertia * 2)
+          : v.counter;
+      v.slowDir = v.counter >= regimeInertia ? 1 : v.counter <= -regimeInertia ? -1 : v.slowDir;
+
+      s.plot0[i] = { time: b.time, value: val(v.wFast), color: dirColor(structDir) };
+      s.plot1[i] = { time: b.time, value: val(v.wSlow), color: dirColor(v.slowDir) };
+      s.zoneColors[i] = structDir === 1 && v.slowDir === 1 ? zoneBull : structDir === -1 && v.slowDir === -1 ? zoneBear : zoneNeut;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Wave Zone' }, colors: s.zoneColors.slice() }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<QWaveInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<QWaveInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const QWave = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

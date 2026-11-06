@@ -7,8 +7,10 @@
  * Reference: "Premier RSI Oscillator [LazyBear]"
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PremierRSIInputs {
   source: SourceType;
@@ -42,71 +44,98 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<PremierRSIInputs> = {}): IndicatorResult {
-  const { source, rsiLength, stochLength, smoothLength } = { ...defaultInputs, ...inputs };
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
 
-  const src = getSourceSeries(bars, source);
-  const r = ta.rsi(src, rsiLength);
-  // stoch(r, r, r, stochLength) - stochastic of RSI with itself as H/L/C
-  const sk = ta.stoch(r, r, r, stochLength);
-  const len = Math.round(Math.sqrt(smoothLength));
-
-  // nsk = 0.1 * (sk - 50)
-  const nsk = sk.sub(50).mul(0.1);
-  // ss = ema(ema(nsk, len), len)
-  const ss = ta.ema(ta.ema(nsk, len), len);
-
-  // pro = (exp(ss) - 1) / (exp(ss) + 1) - tanh sigmoid
-  const ssArr = ss.toArray();
-  const warmup = rsiLength + stochLength + len * 2;
-
-  const barColors: BarColorData[] = [];
-  const proValues: number[] = new Array(bars.length).fill(NaN);
-  for (let i = 0; i < bars.length; i++) {
-    const v = ssArr[i];
-    if (i < warmup || v == null) continue;
-    const expss = Math.exp(v);
-    proValues[i] = (expss - 1) / (expss + 1);
-  }
-
-  // Pine: plot(pro, title="Premier RSI Stoch", color=black, linewidth=2) - line plot
-  const plot0 = proValues.map((v, i) => ({
-    time: bars[i].time,
-    value: isNaN(v) ? NaN : v,
-  }));
-
-  // Pine: plot(pro, color=iff(pro<0,red,green), style=histogram, title="PROHisto") - colored histogram
-  const plot1 = proValues.map((v, i) => {
-    if (isNaN(v)) return { time: bars[i].time, value: NaN };
-    return { time: bars[i].time, value: v, color: v < 0 ? '#FF0000' : '#00FF00' };
-  });
-
-  // barcolor: pro<0 ? (pro<pro[1]?red:orange) : (pro>pro[1]?lime:green)
-  for (let i = warmup; i < bars.length; i++) {
-    const pro = proValues[i];
-    const prevPro = i > 0 ? proValues[i - 1] : NaN;
-    if (isNaN(pro)) continue;
-    let color: string;
-    if (pro < 0) {
-      color = pro < prevPro ? '#FF0000' : '#FFA500';
-    } else {
-      color = pro > prevPro ? '#00FF00' : '#008000';
-    }
-    barColors.push({ time: bars[i].time as number, color });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
-    hlines: [
-      { value: 0, options: { color: '#787B86', linestyle: 'dotted', title: 'Zero' } },
-      { value: 0.9, options: { color: '#26A69A', linestyle: 'solid', title: 'Overbought' } },
-      { value: -0.9, options: { color: '#EF5350', linestyle: 'solid', title: 'Oversold' } },
-      { value: 0.2, options: { color: '#787B86', linestyle: 'dashed' } },
-      { value: -0.2, options: { color: '#787B86', linestyle: 'dashed' } },
-    ],
-    barColors,
-  } as Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
+interface ProRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  stoch: ReturnType<typeof taStep.stoch>;
+  ema1: ReturnType<typeof taStep.ema>;
+  ema2: ReturnType<typeof taStep.ema>;
+  pro: number[];
+  plot0: { time: number; value: number }[];
+  plot1: { time: number; value: number; color?: string }[];
+  barColors: BarColorData[];
 }
 
-export const PremierRSI = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+function study(inputs: Partial<PremierRSIInputs>): BarStudy<ProRun, Result> {
+  const { source, rsiLength, stochLength, smoothLength } = { ...defaultInputs, ...inputs };
+  const value = barSource(source);
+  const len = Math.round(Math.sqrt(smoothLength));
+  const warmup = rsiLength + stochLength + len * 2;
+  return {
+    fullRunReason: () => (isBarSource(source) ? null : 'source of another study'),
+    init() {
+      const rsi = taStep.rsi(rsiLength);
+      const stoch = taStep.stoch(stochLength);
+      const ema1 = taStep.ema(len);
+      const ema2 = taStep.ema(len);
+      const s: ProRun = {
+        rsi, stoch, ema1, ema2, pro: [], plot0: [], plot1: [], barColors: [],
+        steps: [rsi, stoch, ema1, ema2], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.barColors];
+      s.series = [s.pro, s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      const r = s.rsi.step(value(bars[i]));
+      // stoch(r, r, r, stochLength) - stochastic of RSI with itself as H/L/C
+      const sk = s.stoch.step(r, r, r);
+      // nsk = 0.1 * (sk - 50)
+      const nsk = (sk - 50) * 0.1;
+      // ss = ema(ema(nsk, len), len)
+      const v = s.ema2.step(s.ema1.step(nsk));
+
+      // pro = (exp(ss) - 1) / (exp(ss) + 1) - tanh sigmoid
+      let pro = NaN;
+      if (!(i < warmup || v == null)) {
+        const expss = Math.exp(v);
+        pro = (expss - 1) / (expss + 1);
+      }
+      s.pro[i] = pro;
+
+      // Pine: plot(pro, title="Premier RSI Stoch", color=black, linewidth=2) - line plot
+      s.plot0[i] = { time, value: isNaN(pro) ? NaN : pro };
+      // Pine: plot(pro, color=iff(pro<0,red,green), style=histogram, title="PROHisto") - colored histogram
+      s.plot1[i] = isNaN(pro) ? { time, value: NaN } : { time, value: pro, color: pro < 0 ? '#FF0000' : '#00FF00' };
+
+      // barcolor: pro<0 ? (pro<pro[1]?red:orange) : (pro>pro[1]?lime:green)
+      if (i >= warmup && !isNaN(pro)) {
+        const prevPro = i > 0 ? s.pro[i - 1] : NaN;
+        let color: string;
+        if (pro < 0) {
+          color = pro < prevPro ? '#FF0000' : '#FFA500';
+        } else {
+          color = pro > prevPro ? '#00FF00' : '#008000';
+        }
+        s.barColors.push({ time: time as number, color });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice() },
+        hlines: [
+          { value: 0, options: { color: '#787B86', linestyle: 'dotted', title: 'Zero' } },
+          { value: 0.9, options: { color: '#26A69A', linestyle: 'solid', title: 'Overbought' } },
+          { value: -0.9, options: { color: '#EF5350', linestyle: 'solid', title: 'Oversold' } },
+          { value: 0.2, options: { color: '#787B86', linestyle: 'dashed' } },
+          { value: -0.2, options: { color: '#787B86', linestyle: 'dashed' } },
+        ],
+        barColors: s.barColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PremierRSIInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PremierRSIInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars)) as IndicatorResult;
+}
+
+export const PremierRSI = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

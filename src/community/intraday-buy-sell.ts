@@ -14,9 +14,11 @@
  * Reference: "Intraday BUY_SELL" (community) by nicks1008
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface IntradayBuySellInputs {
   rsiLength: number;
@@ -49,88 +51,122 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<IntradayBuySellInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface IbsRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  sma: WindowSma;
+  rsArr: number[];
+  smaArr: number[];
+  smaPlot: { time: number; value: number; color?: string }[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+// Pine float comparisons: a > b only when a - b > 1e-10 (na compares false)
+const EPS = 1e-10;
+const gt = (a: number, b: number) => a - b > EPS;
+const lt = (a: number, b: number) => b - a > EPS;
+
+function study(inputs: Partial<IntradayBuySellInputs>): BarStudy<IbsRun, Result> {
   const { rsiLength, rsiHL, rsiLL, smaLength } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const closeSeries = getSourceSeries(bars, 'close');
-  const rsiArr = ta.rsi(closeSeries, rsiLength).toArray();
-  const smaArr = ta.sma(closeSeries, smaLength).toArray();
-
-  // Pine float comparisons: a > b only when a - b > 1e-10 (na compares false)
-  const EPS = 1e-10;
-  const gt = (a: number, b: number) => a - b > EPS;
-  const lt = (a: number, b: number) => b - a > EPS;
-
   // plot(sma1, 'SMA', color = mycolor), all at transparency 30:
   // iff_1 = high < sma1 ? red : yellow; iff_2 = low > sma1 ? lime : iff_1; mycolor = rs >= hl or rs <= ll ? yellow : iff_2
   const YELLOW = 'rgba(255,235,59,0.7)'; // color.new(color.yellow, 30)
   const LIME = 'rgba(0,230,118,0.7)'; // color.new(color.lime, 30)
   const RED = 'rgba(255,82,82,0.7)'; // color.new(color.red, 30)
-  const smaPlot = bars.map((b, i) => {
-    const sma = smaArr[i] ?? NaN;
-    const rs = rsiArr[i] ?? NaN;
-    if (isNaN(sma)) return { time: b.time, value: NaN };
-    const rsOut = (!isNaN(rs) && !lt(rs, rsiHL)) || (!isNaN(rs) && !gt(rs, rsiLL));
-    const color = rsOut ? YELLOW : gt(b.low, sma) ? LIME : lt(b.high, sma) ? RED : YELLOW;
-    return { time: b.time, value: sma, color };
-  });
-
-  // Alert conditions, the original's expressions (na compares false):
-  // hlrev_s = ta.crossunder(rs, hl); llrev_b = ta.crossover(rs, ll) and open < close
-  // BUY = ta.crossover(close[1], sma1) and close[1] > open[1] and high > high[1] and close > open
-  // SELL = ta.crossunder(low[1], sma1) and close[1] < open[1] and low < low[1] and close < open
-  const rsN = rsiArr.map((v) => v ?? NaN);
-  const smaN = smaArr.map((v) => v ?? NaN);
-  const close1 = bars.map((_b, i) => (i > 0 ? bars[i - 1].close : NaN));
-  const low1 = bars.map((_b, i) => (i > 0 ? bars[i - 1].low : NaN));
-  const closeUp = crossedOver(close1, smaN);
-  const lowDown = crossedUnder(low1, smaN);
-  const rsDown = crossedUnder(rsN, rsiHL);
-  const rsUp = crossedOver(rsN, rsiLL);
-  const buyA: boolean[] = [];
-  const sellA: boolean[] = [];
-  const hlrevA: boolean[] = [];
-  const llrevA: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const p = i > 0 ? bars[i - 1] : undefined;
-    buyA.push(!!p && closeUp[i] && gt(p.close, p.open) && gt(b.high, p.high) && gt(b.close, b.open));
-    sellA.push(!!p && lowDown[i] && lt(p.close, p.open) && lt(b.low, p.low) && lt(b.close, b.open));
-    hlrevA.push(rsDown[i]);
-    llrevA.push(rsUp[i] && lt(b.open, b.close));
-  }
-
-  // Markers and bar colours on every bar where the original's expressions are true (no warm-up of their own:
-  // the crosses compare false while the SMA / RSI are na)
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    if (sellA[i]) markers.push({ id: 'shape0', time: t, position: 'aboveBar', shape: 'labelDown', color: 'rgba(255,82,82,0.7)', text: 'S', textColor: 'rgba(0,0,0,0.7)' });
-    if (buyA[i]) markers.push({ id: 'shape1', time: t, position: 'belowBar', shape: 'labelUp', color: 'rgba(0,188,212,0.7)', text: 'B', textColor: 'rgba(0,0,0,0.7)' });
-    if (hlrevA[i]) markers.push({ id: 'shape2', time: t, position: 'aboveBar', shape: 'labelDown', color: 'rgba(255,235,59,0.8)', text: '!', textColor: 'rgba(0,0,0,0.8)' });
-    if (llrevA[i]) markers.push({ id: 'shape3', time: t, position: 'belowBar', shape: 'labelUp', color: 'rgba(255,235,59,0.8)', text: '!', textColor: 'rgba(0,0,0,0.8)' });
-    // barcolor(BUY ? green : SELL ? maroon(30) : hlrev_s or llrev_b ? yellow : na)
-    if (buyA[i]) barColors.push({ id: 'barcolor0', time: t, color: '#4CAF50' });
-    else if (sellA[i]) barColors.push({ id: 'barcolor0', time: t, color: 'rgba(136,14,79,0.7)' });
-    else if (hlrevA[i] || llrevA[i]) barColors.push({ id: 'barcolor0', time: t, color: '#FFEB3B' });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'sma': smaPlot },
-    markers,
-    barColors,
-    alerts: alertStates(alertConditions, bars, [
-      hlrevA.map((h, i) => h || llrevA[i]),
-      sellA.map((s, i) => s || buyA[i]),
-      buyA,
-      sellA,
-      hlrevA,
-      llrevA,
-    ]),
+    init() {
+      const rsi = taStep.rsi(rsiLength);
+      const sma = new WindowSma(smaLength);
+      const s: IbsRun = {
+        rsi, sma, rsArr: [], smaArr: [], smaPlot: [], markers: [], barColors: [],
+        flags: [[], [], [], [], [], []], times: [[], [], [], [], [], []],
+        steps: [rsi, sma], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.rsArr, s.smaArr, s.smaPlot, ...s.flags];
+      s.lists = [s.markers, s.barColors, ...s.times];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const rs = s.rsi.step(b.close) ?? NaN;
+      const sma = s.sma.step(b.close) ?? NaN;
+      s.rsArr[i] = rs;
+      s.smaArr[i] = sma;
+      if (isNaN(sma)) {
+        s.smaPlot[i] = { time: t, value: NaN };
+      } else {
+        const rsOut = (!isNaN(rs) && !lt(rs, rsiHL)) || (!isNaN(rs) && !gt(rs, rsiLL));
+        const color = rsOut ? YELLOW : gt(b.low, sma) ? LIME : lt(b.high, sma) ? RED : YELLOW;
+        s.smaPlot[i] = { time: t, value: sma, color };
+      }
+
+      // Alert conditions, the original's expressions (na compares false):
+      // hlrev_s = ta.crossunder(rs, hl); llrev_b = ta.crossover(rs, ll) and open < close
+      // BUY = ta.crossover(close[1], sma1) and close[1] > open[1] and high > high[1] and close > open
+      // SELL = ta.crossunder(low[1], sma1) and close[1] < open[1] and low < low[1] and close < open
+      // (crosses with the bar before: a > b now and a <= b on the bar before)
+      const p = i > 0 ? bars[i - 1] : undefined;
+      const pp = i > 1 ? bars[i - 2] : undefined;
+      const close1 = p ? p.close : NaN;
+      const low1 = p ? p.low : NaN;
+      const prevClose1 = pp ? pp.close : NaN;
+      const prevLow1 = pp ? pp.low : NaN;
+      const prevSma = i > 0 ? s.smaArr[i - 1] : NaN;
+      const prevRs = i > 0 ? s.rsArr[i - 1] : NaN;
+      const closeUp = close1 > sma && prevClose1 <= prevSma;
+      const lowDown = low1 < sma && prevLow1 >= prevSma;
+      const rsDown = rs < rsiHL && prevRs >= (i > 0 ? rsiHL : NaN);
+      const rsUp = rs > rsiLL && prevRs <= (i > 0 ? rsiLL : NaN);
+      const buy = !!p && closeUp && gt(p.close, p.open) && gt(b.high, p.high) && gt(b.close, b.open);
+      const sell = !!p && lowDown && lt(p.close, p.open) && lt(b.low, p.low) && lt(b.close, b.open);
+      const hlrev = rsDown;
+      const llrev = rsUp && lt(b.open, b.close);
+
+      // Markers and bar colours on every bar where the original's expressions are true (no warm-up of their own:
+      // the crosses compare false while the SMA / RSI are na)
+      if (sell) s.markers.push({ id: 'shape0', time: t, position: 'aboveBar', shape: 'labelDown', color: 'rgba(255,82,82,0.7)', text: 'S', textColor: 'rgba(0,0,0,0.7)' });
+      if (buy) s.markers.push({ id: 'shape1', time: t, position: 'belowBar', shape: 'labelUp', color: 'rgba(0,188,212,0.7)', text: 'B', textColor: 'rgba(0,0,0,0.7)' });
+      if (hlrev) s.markers.push({ id: 'shape2', time: t, position: 'aboveBar', shape: 'labelDown', color: 'rgba(255,235,59,0.8)', text: '!', textColor: 'rgba(0,0,0,0.8)' });
+      if (llrev) s.markers.push({ id: 'shape3', time: t, position: 'belowBar', shape: 'labelUp', color: 'rgba(255,235,59,0.8)', text: '!', textColor: 'rgba(0,0,0,0.8)' });
+      // barcolor(BUY ? green : SELL ? maroon(30) : hlrev_s or llrev_b ? yellow : na)
+      if (buy) s.barColors.push({ id: 'barcolor0', time: t, color: '#4CAF50' });
+      else if (sell) s.barColors.push({ id: 'barcolor0', time: t, color: 'rgba(136,14,79,0.7)' });
+      else if (hlrev || llrev) s.barColors.push({ id: 'barcolor0', time: t, color: '#FFEB3B' });
+
+      const f = s.flags;
+      f[0][i] = hlrev || llrev;
+      f[1][i] = sell || buy;
+      f[2][i] = buy;
+      f[3][i] = sell;
+      f[4][i] = hlrev;
+      f[5][i] = llrev;
+      for (let k = 0; k < 6; k++) if (f[k][i]) s.times[k].push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'sma': s.smaPlot.slice() },
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IntradayBuySellInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<IntradayBuySellInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -143,4 +179,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert5', title: 'Reversal from Down', message: 'Up Reversal Alert' },
 ];
 
-export const IntradayBuySell = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const IntradayBuySell = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

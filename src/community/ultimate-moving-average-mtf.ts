@@ -26,9 +26,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, timeframe, resample, mapToChart, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { ta, taStep, Series, color, timeframe, resample, mapToChart, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import { periodStarts, chartTimeframe, securityBars } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface UltimateMovingAverageMtfInputs {
   /** Use the chart timeframe (the timeframe input is ignored) */
@@ -137,65 +138,155 @@ function timeframeBars(bars: Bar[], tf: string, context?: ChartContext): { htf: 
   return { htf, toChart: (values) => mapToChart(values, group, group, true, false) };
 }
 
-export function calculate(bars: Bar[], inputs: Partial<UltimateMovingAverageMtfInputs> = {}, chart?: ChartContext): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
+type Point = { time: number; value: number; color?: string };
+type Ma = { step(close: number, volume: number): number; commit(): void };
 
-  // res = useCurrentRes ? period : resCustom
-  const { htf, toChart } = timeframeBars(bars, cfg.useCurrentRes ? '' : cfg.resCustom, chart);
-  const S = (a: number[]) => Series.fromArray(htf, a);
-  const src = S(htf.map((b) => b.close));
-  const volume = S(htf.map((b) => b.volume ?? NaN));
-
-  // tema = 3 * (ema1 - ema2) + ema3, with the first length (type 7 of the second average uses it too)
-  const tema = (): number[] => {
-    const ema1 = ta.ema(src, cfg.len);
-    const ema2 = ta.ema(ema1, cfg.len);
-    const e1 = A(ema1);
-    const e2 = A(ema2);
-    const e3 = A(ta.ema(ema2, cfg.len));
-    return e1.map((v, i) => 3 * (v - e2[i]) + e3[i]);
-  };
-  const average = (type: number, len: number): number[] => {
-    switch (type) {
-      case 1: return A(ta.sma(src, len));
-      case 2: return A(ta.ema(src, len));
-      case 3: return A(ta.wma(src, len));
-      case 4: {
-        // hullma = wma(2 * wma(src, len / 2) - wma(src, len), round(sqrt(len))); len / 2 is an integer division
-        const half = A(ta.wma(src, Math.trunc(len / 2)));
-        const full = A(ta.wma(src, len));
-        return A(ta.wma(S(half.map((v, i) => 2 * v - full[i])), Math.round(Math.sqrt(len))));
-      }
-      case 5: return A(ta.vwma(src, len, volume));
-      case 6: return A(ta.rma(src, len));
-      default: return tema();
+/** One moving average of the close on the chart bars, stepped bar by bar */
+function maStep(type: number, len: number, temaLen: number): Ma {
+  switch (type) {
+    case 1: { const m = new WindowSma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 2: { const m = taStep.ema(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 3: { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+    case 4: {
+      // hullma = wma(2 * wma(src, len / 2) - wma(src, len), round(sqrt(len))); len / 2 is an integer division
+      const half = taStep.wma();
+      const full = taStep.wma();
+      const hull = taStep.wma();
+      const halfLen = Math.trunc(len / 2);
+      const hullLen = Math.round(Math.sqrt(len));
+      return {
+        step: (v) => {
+          const h = half.step(v, halfLen);
+          const f = full.step(v, len);
+          return hull.step(2 * h - f, hullLen);
+        },
+        commit: () => { half.commit(); full.commit(); hull.commit(); },
+      };
     }
-  };
-  const out1 = toChart(average(cfg.atype, cfg.len));
-  const out2 = toChart(average(cfg.atype2, cfg.len2));
-  const crossed = ta.cross(Series.fromArray(bars, out1), Series.fromArray(bars, out2)).toArray();
-
-  const plot0: Array<{ time: number; value: number; color: string }> = [];
-  const plot1: typeof plot0 = [];
-  const plot2: Array<{ time: number; value: number }> = [];
-  for (let i = 0; i < n; i++) {
-    const prev = i - cfg.smoothe >= 0 ? out1[i - cfg.smoothe] : NaN;
-    const maUp = ge(out1[i], prev);
-    const maDown = lt(out1[i], prev);
-    const direction = maUp ? LIME : maDown ? RED : AQUA;
-    const time = bars[i].time;
-    plot0.push({ time, value: out1[i], color: cfg.cc ? direction : AQUA });
-    // plot(doma2 and out2 ? out2 : na): a value of 0 or na is not drawn
-    plot1.push({ time, value: cfg.doma2 && truthy(out2[i]) ? out2[i] : NaN, color: cfg.cc2 ? direction : AQUA });
-    plot2.push({ time, value: cfg.sd && crossed[i] ? out2[i] : NaN });
+    case 5: { const m = new WindowVwma(len); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+    case 6: { const m = taStep.rma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    default: {
+      // tema = 3 * (ema1 - ema2) + ema3, with the first length (type 7 of the second average uses it too)
+      const ema1 = taStep.ema(temaLen);
+      const ema2 = taStep.ema(temaLen);
+      const ema3 = taStep.ema(temaLen);
+      return {
+        step: (v) => {
+          const e1 = ema1.step(v);
+          const e2 = ema2.step(e1);
+          const e3 = ema3.step(e2);
+          return 3 * (e1 - e2) + e3;
+        },
+        commit: () => { ema1.commit(); ema2.commit(); ema3.commit(); },
+      };
+    }
   }
+}
 
+interface UmaRun extends BarRunState<Record<string, never>> {
+  /** Chart timeframe: the average machines; another timeframe: the values on the chart bars, calculated by init */
+  ma1: Ma | null;
+  ma2: Ma | null;
+  pre: { out1: number[]; out2: number[] } | null;
+  cross: ReturnType<typeof taStep.cross>;
+  out1: number[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<UltimateMovingAverageMtfInputs>): BarStudy<UmaRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  // res = useCurrentRes ? period : resCustom
+  const tf = cfg.useCurrentRes ? '' : cfg.resCustom;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
+    // another timeframe: every chart bar of a period shows the value of the period at its end (from the later bars)
+    fullRunReason: () => (tf.trim() === '' ? null : 'another timeframe, calculated on the whole bar set'),
+    init(bars, chart) {
+      const { htf, toChart } = timeframeBars(bars, tf, chart);
+      let pre: UmaRun['pre'] = null;
+      if (htf !== bars) {
+        const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
+        const S = (a: number[]) => Series.fromArray(htf, a);
+        const src = S(htf.map((b) => b.close));
+        const volume = S(htf.map((b) => b.volume ?? NaN));
+
+        // tema = 3 * (ema1 - ema2) + ema3, with the first length (type 7 of the second average uses it too)
+        const tema = (): number[] => {
+          const ema1 = ta.ema(src, cfg.len);
+          const ema2 = ta.ema(ema1, cfg.len);
+          const e1 = A(ema1);
+          const e2 = A(ema2);
+          const e3 = A(ta.ema(ema2, cfg.len));
+          return e1.map((v, i) => 3 * (v - e2[i]) + e3[i]);
+        };
+        const average = (type: number, len: number): number[] => {
+          switch (type) {
+            case 1: return A(ta.sma(src, len));
+            case 2: return A(ta.ema(src, len));
+            case 3: return A(ta.wma(src, len));
+            case 4: {
+              // hullma = wma(2 * wma(src, len / 2) - wma(src, len), round(sqrt(len))); len / 2 is an integer division
+              const half = A(ta.wma(src, Math.trunc(len / 2)));
+              const full = A(ta.wma(src, len));
+              return A(ta.wma(S(half.map((v, i) => 2 * v - full[i])), Math.round(Math.sqrt(len))));
+            }
+            case 5: return A(ta.vwma(src, len, volume));
+            case 6: return A(ta.rma(src, len));
+            default: return tema();
+          }
+        };
+        pre = { out1: toChart(average(cfg.atype, cfg.len)), out2: toChart(average(cfg.atype2, cfg.len2)) };
+      }
+      const ma1 = pre ? null : maStep(cfg.atype, cfg.len, cfg.len);
+      const ma2 = pre ? null : maStep(cfg.atype2, cfg.len2, cfg.len);
+      const s: UmaRun = {
+        ma1, ma2, pre, cross: taStep.cross(), out1: [], plots: [[], [], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [...(ma1 ? [ma1, ma2!] : []), s.cross];
+      s.series = [s.out1, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      let out1: number;
+      let out2: number;
+      if (s.pre) {
+        out1 = s.pre.out1[i];
+        out2 = s.pre.out2[i];
+      } else {
+        const vol = b.volume ?? NaN;
+        out1 = s.ma1!.step(b.close, vol);
+        out2 = s.ma2!.step(b.close, vol);
+      }
+      s.out1[i] = out1;
+      const crossed = s.cross.step(out1, out2);
+
+      const prev = i - cfg.smoothe >= 0 ? s.out1[i - cfg.smoothe] : NaN;
+      const maUp = ge(out1, prev);
+      const maDown = lt(out1, prev);
+      const direction = maUp ? LIME : maDown ? RED : AQUA;
+      const time = b.time;
+      s.plots[0][i] = { time, value: out1, color: cfg.cc ? direction : AQUA };
+      // plot(doma2 and out2 ? out2 : na): a value of 0 or na is not drawn
+      s.plots[1][i] = { time, value: cfg.doma2 && truthy(out2) ? out2 : NaN, color: cfg.cc2 ? direction : AQUA };
+      s.plots[2][i] = { time, value: cfg.sd && crossed ? out2 : NaN };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+      };
+    },
   };
 }
 
-export const UltimateMovingAverageMtf = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<UltimateMovingAverageMtfInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<UltimateMovingAverageMtfInputs> = {}, chart?: ChartContext): IndicatorResult {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const UltimateMovingAverageMtf = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

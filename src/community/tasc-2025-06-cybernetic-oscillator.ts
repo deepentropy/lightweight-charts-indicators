@@ -10,7 +10,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TascCyberneticOscillatorInputs {
   /** Source series */
@@ -74,69 +76,95 @@ function coefs(period: number, isHp: boolean): [number, number, number] {
   return [c1, c2, c3];
 }
 
-export function calculate(bars: Bar[], inputs: Partial<TascCyberneticOscillatorInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface CoVars {
+  /** co(): var result = 0.0 */
+  res: number;
+}
+
+interface CoRun extends BarRunState<CoVars> {
+  ms: WindowSma;
+  src: number[];
+  hp: number[];
+  lp: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  upperFill: string[];
+  lowerFill: string[];
+}
+
+function study(inputs: Partial<TascCyberneticOscillatorInputs>): BarStudy<CoRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  if (cfg.hpPeriod < cfg.lpPeriod) {
-    // runtime.error in Pine
-    throw new Error('The highpass period cannot be less than the lowpass period.');
-  }
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
+  const value = barSource(cfg.src);
   const isThresh = cfg.style === 'Threshold';
-
-  // hp(): var result = 0.0; from bar_index 4: c1 * (src - 2 * src[1] + src[2]) + c2 * nz(result[1]) + c3 * nz(result[2])
   const [h1, h2, h3] = coefs(cfg.hpPeriod, true);
-  const hp: number[] = new Array(n).fill(0);
-  for (let i = 4; i < n; i++) {
-    hp[i] = h1 * (src[i] - 2.0 * src[i - 1] + src[i - 2]) + h2 * nz(hp[i - 1]) + h3 * nz(hp[i - 2]);
-  }
-  // ss(): var result = source (hp of the first bar); from bar_index 4:
-  // c1 * 0.5 * (src + src[1]) + c2 * nz(result[1]) + c3 * nz(result[2])
   const [s1, s2, s3] = coefs(cfg.lpPeriod, false);
-  const lp: number[] = new Array(n).fill(n > 0 ? hp[0] : NaN);
-  for (let i = 4; i < n; i++) {
-    lp[i] = s1 * 0.5 * (hp[i] + hp[i - 1]) + s2 * nz(lp[i - 1]) + s3 * nz(lp[i - 2]);
-  }
-  // rms = math.sqrt(ta.sma(lp * lp, rmsLength))
-  const ms = ta.sma(Series.fromArray(bars, lp.map((v) => v * v)), cfg.rmsLength).toArray().map((v) => v ?? NaN);
-  // co(): var result = 0.0; if rms != 0.0: result := lp / rms
-  const osc: number[] = new Array(n);
-  let res = 0.0;
-  for (let i = 0; i < n; i++) {
-    const rms = Math.sqrt(ms[i]);
-    if (ne(rms, 0.0)) res = lp[i] / rms;
-    osc[i] = res;
-  }
-
-  const t = (i: number) => bars[i].time;
-  const idx = bars.map((_b, i) => i);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: idx.map((i) => ({
-        time: t(i), value: osc[i], color: isThresh ? '#aa9b9b' : gt(osc[i], 0.0) ? '#4caf4f' : '#af4e4c',
-      })),
-      plot1: idx.map((i) => ({ time: t(i), value: isThresh ? cfg.threshold : NaN, color: '#b2b5be80' })),
-      plot2: idx.map((i) => ({ time: t(i), value: isThresh ? -cfg.threshold : NaN, color: '#b2b5be80' })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      if (cfg.hpPeriod < cfg.lpPeriod) {
+        // runtime.error in Pine
+        throw new Error('The highpass period cannot be less than the lowpass period.');
+      }
+      // rms = math.sqrt(ta.sma(lp * lp, rmsLength))
+      const ms = new WindowSma(cfg.rmsLength);
+      const s: CoRun = {
+        ms, src: [], hp: [], lp: [], plot0: [], plot1: [], plot2: [], upperFill: [], lowerFill: [],
+        steps: [ms], vars: { res: 0.0 }, lists: [], series: [],
+      };
+      s.series = [s.src, s.hp, s.lp, s.plot0, s.plot1, s.plot2, s.upperFill, s.lowerFill];
+      return s;
     },
-    hlines: [{ value: 0, options: { title: 'Zero Line', color: '#787B86', linestyle: 'dashed' } }],
-    fills: [
-      // fill(p0, pu, isThresh and osc > thInput ? #af4e4c93 : na, title = "Upper fill")
-      {
-        plot1: 'plot0', plot2: 'plot1', options: { title: 'Upper fill' },
-        colors: idx.map((i) => (isThresh && gt(osc[i], cfg.threshold) ? '#af4e4c93' : 'transparent')),
-      },
-      // fill(p0, pl, isThresh and osc < -thInput ? #4caf4f93 : na, title = "Lower fill")
-      {
-        plot1: 'plot0', plot2: 'plot2', options: { title: 'Lower fill' },
-        colors: idx.map((i) => (isThresh && lt(osc[i], -cfg.threshold) ? '#4caf4f93' : 'transparent')),
-      },
-    ],
+    bar(s, i, bars) {
+      const { src, hp, lp } = s;
+      src[i] = value(bars[i]);
+      // hp(): var result = 0.0; from bar_index 4: c1 * (src - 2 * src[1] + src[2]) + c2 * nz(result[1]) + c3 * nz(result[2])
+      hp[i] = i >= 4 ? h1 * (src[i] - 2.0 * src[i - 1] + src[i - 2]) + h2 * nz(hp[i - 1]) + h3 * nz(hp[i - 2]) : 0;
+      // ss(): var result = source (hp of the first bar); from bar_index 4:
+      // c1 * 0.5 * (src + src[1]) + c2 * nz(result[1]) + c3 * nz(result[2])
+      lp[i] = i >= 4 ? s1 * 0.5 * (hp[i] + hp[i - 1]) + s2 * nz(lp[i - 1]) + s3 * nz(lp[i - 2]) : hp[0];
+      const ms = s.ms.step(lp[i] * lp[i]);
+      // co(): var result = 0.0; if rms != 0.0: result := lp / rms
+      const rms = Math.sqrt(ms);
+      if (ne(rms, 0.0)) s.vars.res = lp[i] / rms;
+      const osc = s.vars.res;
+      const time = bars[i].time;
+      s.plot0[i] = { time, value: osc, color: isThresh ? '#aa9b9b' : gt(osc, 0.0) ? '#4caf4f' : '#af4e4c' };
+      s.plot1[i] = { time, value: isThresh ? cfg.threshold : NaN, color: '#b2b5be80' };
+      s.plot2[i] = { time, value: isThresh ? -cfg.threshold : NaN, color: '#b2b5be80' };
+      s.upperFill[i] = isThresh && gt(osc, cfg.threshold) ? '#af4e4c93' : 'transparent';
+      s.lowerFill[i] = isThresh && lt(osc, -cfg.threshold) ? '#4caf4f93' : 'transparent';
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        hlines: [{ value: 0, options: { title: 'Zero Line', color: '#787B86', linestyle: 'dashed' } }],
+        fills: [
+          // fill(p0, pu, isThresh and osc > thInput ? #af4e4c93 : na, title = "Upper fill")
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Upper fill' }, colors: s.upperFill.slice() },
+          // fill(p0, pl, isThresh and osc < -thInput ? #4caf4f93 : na, title = "Lower fill")
+          { plot1: 'plot0', plot2: 'plot2', options: { title: 'Lower fill' }, colors: s.lowerFill.slice() },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TascCyberneticOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TascCyberneticOscillatorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const TascCyberneticOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

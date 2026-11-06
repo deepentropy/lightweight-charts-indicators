@@ -9,7 +9,9 @@
  * Reference: "_CM_RSI_2_Strat_Low" by ChrisMoody
  */
 
-import { ta, color, compare, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, compare, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original has no inputs */
 export type CMRSI2LowerInputs = Record<string, never>;
@@ -38,47 +40,69 @@ export const metadata = {
   overlay: false,
 };
 
-/**
- * up = rma(max(change(src), 0), 2); down = rma(-min(change(src), 0), 2);
- * rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
- */
-function rsi2(bars: Bar[]): number[] {
-  const change = bars.map((b, i) => (i > 0 ? b.close - bars[i - 1].close : NaN));
-  // max(na, 0) / min(na, 0) are na
-  const up = ta.rma(Series.fromArray(bars, change.map((c) => (Number.isNaN(c) ? NaN : Math.max(c, 0)))), 2).toArray();
-  const down = ta.rma(Series.fromArray(bars, change.map((c) => (Number.isNaN(c) ? NaN : -Math.min(c, 0)))), 2).toArray();
-  return bars.map((_, i) => {
-    const u = up[i] ?? NaN;
-    const d = down[i] ?? NaN;
-    if (compare.eq(d, 0)) return 100;
-    if (compare.eq(u, 0)) return 0;
-    return 100 - 100 / (1 + u / d);
-  });
+interface Point { time: number; value: number; color?: string }
+
+interface Rsi2Run extends BarRunState<Record<string, never>> {
+  change: ReturnType<typeof taStep.change>;
+  up: ReturnType<typeof taStep.rma>;
+  down: ReturnType<typeof taStep.rma>;
+  ma5: WindowSma;
+  ma200: WindowSma;
+  plot0: Point[];
+  levels: Point[][];
 }
 
-export function calculate(bars: Bar[], _inputs: Partial<CMRSI2LowerInputs> = {}): IndicatorResult {
-  const rsi = rsi2(bars);
-  const close = new Series(bars, (b) => b.close);
-  const ma5 = ta.sma(close, 5).toArray().map((v) => v ?? NaN);
-  const ma200 = ta.sma(close, 200).toArray().map((v) => v ?? NaN);
-
-  // col = close > ma200 and close < ma5 and rsi < 10 ? lime : close < ma200 and close > ma5 and rsi > 90 ? red : silver
-  const plot0 = bars.map((b, i) => {
-    const c = b.close;
-    const col = compare.gt(c, ma200[i]) && compare.lt(c, ma5[i]) && compare.lt(rsi[i], 10) ? LIME
-      : compare.lt(c, ma200[i]) && compare.gt(c, ma5[i]) && compare.gt(rsi[i], 90) ? RED : SILVER;
-    return { time: b.time, value: rsi[i], color: col };
-  });
-  const level = (v: number) => bars.map((b) => ({ time: b.time, value: v }));
-
+function study(): BarStudy<Rsi2Run, IndicatorResult> {
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1: level(100), plot2: level(0), plot3: level(90), plot4: level(10) },
-    // fill(band1, band0, color=silver, transp=90)
-    fills: [
-      { plot1: 'plot3', plot2: 'plot4', options: { title: 'Plots Background', color: String(color.new(SILVER, 90)) } },
-    ],
+    init() {
+      const s: Rsi2Run = {
+        change: taStep.change(), up: taStep.rma(2), down: taStep.rma(2), ma5: new WindowSma(5), ma200: new WindowSma(200),
+        plot0: [], levels: [[], [], [], []], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.change, s.up, s.down, s.ma5, s.ma200];
+      s.series = [s.plot0, ...s.levels];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const c = b.close;
+      /**
+       * up = rma(max(change(src), 0), 2); down = rma(-min(change(src), 0), 2);
+       * rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+       */
+      const ch = s.change.step(c);
+      // max(na, 0) / min(na, 0) are na
+      const u = s.up.step(Number.isNaN(ch) ? NaN : Math.max(ch, 0));
+      const d = s.down.step(Number.isNaN(ch) ? NaN : -Math.min(ch, 0));
+      const rsi = compare.eq(d, 0) ? 100 : compare.eq(u, 0) ? 0 : 100 - 100 / (1 + u / d);
+      const ma5 = s.ma5.step(c);
+      const ma200 = s.ma200.step(c);
+      // col = close > ma200 and close < ma5 and rsi < 10 ? lime : close < ma200 and close > ma5 and rsi > 90 ? red : silver
+      const col = compare.gt(c, ma200) && compare.lt(c, ma5) && compare.lt(rsi, 10) ? LIME
+        : compare.lt(c, ma200) && compare.gt(c, ma5) && compare.gt(rsi, 90) ? RED : SILVER;
+      s.plot0[i] = { time: b.time as number, value: rsi, color: col };
+      [100, 0, 90, 10].forEach((v, k) => { s.levels[k][i] = { time: b.time as number, value: v }; });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.levels[0].slice(), plot2: s.levels[1].slice(), plot3: s.levels[2].slice(), plot4: s.levels[3].slice() },
+        // fill(band1, band0, color=silver, transp=90)
+        fills: [
+          { plot1: 'plot3', plot2: 'plot4', options: { title: 'Plots Background', color: String(color.new(SILVER, 90)) } },
+        ],
+      };
+    },
   };
 }
 
-export const CMRSI2Lower = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<CMRSI2LowerInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CMRSI2LowerInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const CMRSI2Lower = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

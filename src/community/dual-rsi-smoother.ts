@@ -14,9 +14,11 @@
  * Original notice: © TheUltimator5
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DualRsiSmootherInputs {
   rsiLength1: number;
@@ -76,62 +78,90 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DualRsiSmootherInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+
+interface DrsRun extends BarRunState<Record<string, never>> {
+  rsi1: ReturnType<typeof taStep.rsi>;
+  rsi2: ReturnType<typeof taStep.rsi>;
+  sma1: WindowSma;
+  sma2: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<DualRsiSmootherInputs>): BarStudy<DrsRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-
-  const smoothed1 = A(ta.sma(ta.rsi(close, cfg.rsiLength1), cfg.rsiSmoothLen1));
-  const smoothed2 = A(ta.sma(ta.rsi(close, cfg.rsiLength2), cfg.rsiSmoothLen2));
-  // math.min(100, math.max(0, (x - 50) * k + 50)): na stays na
-  const amp1 = smoothed1.map((x) => Math.min(100, Math.max(0, (x - 50) * 1.25 + 50)));
-  const amp2 = smoothed2.map((x) => Math.min(100, Math.max(0, (x - 50) * 1.3 + 50)));
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const markers: MarkerData[] = [];
-  const greenFlags: boolean[] = [], redFlags: boolean[] = [];
-  // plotchar(series, location = location.absolute, char = "•", size = size.tiny, color = c): the 4 plotchar
-  // outputs are char0..char3 in declaration order
-  const dot = (time: number, price: number, c: string, id: string) => {
-    markers.push({ time, position: 'atPriceMiddle', price, shape: 'circle', color: 'transparent', text: '•',
-      textColor: c, size: 'tiny', id });
-  };
-  for (let i = 0; i < n; i++) {
-    const a1 = amp1[i];
-    const a2 = amp2[i];
-    const t = bars[i].time;
-    const sum = a1 + a2;
-    // rsi2Color = sum < 55 ? highlightColor : sum >= 50 ? line1Color : color.blue (na sum: color.blue)
-    const rsi2Color = lt(sum, 55) ? cfg.highlightColor : ge(sum, 50) ? cfg.line1Color : color.blue;
-    plot0.push({ time: t, value: a1, color: cfg.line2Color });
-    plot1.push({ time: t, value: a2, color: rsi2Color });
-
-    const highlightCondition1 = lt(a1, 30) && lt(a2, 35);
-    const highlightCondition2 = gt(a2 - a1, 30);
-    const highlightCondition3 = lt(a2, 25) && lt(a1, 22);
-    const highlightBackground = highlightCondition1 || highlightCondition2;
-    if (highlightBackground) dot(t, a1 - 5, cfg.buyDotColor, 'char0');
-    if (highlightCondition3) dot(t, a1 - 5, cfg.buyDotColor, 'char1');
-    const top1 = gt(a1, 75) && gt(a1 - a2, 12);
-    const top2 = gt(a1, 95);
-    if (top1) dot(t, a1 + 5, cfg.sellDotColor, 'char2');
-    if (top2) dot(t, a1 + 5, cfg.sellDotColor, 'char3');
-    greenFlags.push(highlightBackground || highlightCondition3);
-    redFlags.push(top1 || top2);
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    markers,
-    // alertcondition(highlightBackground or highlightCondition3) / alertcondition(highlightConditionTop1 or ...Top2)
-    alerts: alertStates(alertConditions, bars, [greenFlags, redFlags]),
+    init() {
+      const s: DrsRun = {
+        rsi1: taStep.rsi(cfg.rsiLength1), rsi2: taStep.rsi(cfg.rsiLength2), sma1: new WindowSma(cfg.rsiSmoothLen1),
+        sma2: new WindowSma(cfg.rsiSmoothLen2), plot0: [], plot1: [], markers: [], flags: [[], []], times: [[], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.rsi1, s.sma1, s.rsi2, s.sma2];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.plot0, s.plot1, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time as number;
+      const close = bars[i].close;
+      const smoothed1 = s.sma1.step(s.rsi1.step(close));
+      const smoothed2 = s.sma2.step(s.rsi2.step(close));
+      // math.min(100, math.max(0, (x - 50) * k + 50)): na stays na
+      const a1 = Math.min(100, Math.max(0, (smoothed1 - 50) * 1.25 + 50));
+      const a2 = Math.min(100, Math.max(0, (smoothed2 - 50) * 1.3 + 50));
+      // plotchar(series, location = location.absolute, char = "•", size = size.tiny, color = c): the 4 plotchar
+      // outputs are char0..char3 in declaration order
+      const dot = (time: number, price: number, c: string, id: string) => {
+        s.markers.push({ time, position: 'atPriceMiddle', price, shape: 'circle', color: 'transparent', text: '•',
+          textColor: c, size: 'tiny', id });
+      };
+      const sum = a1 + a2;
+      // rsi2Color = sum < 55 ? highlightColor : sum >= 50 ? line1Color : color.blue (na sum: color.blue)
+      const rsi2Color = lt(sum, 55) ? cfg.highlightColor : ge(sum, 50) ? cfg.line1Color : color.blue;
+      s.plot0[i] = { time: t, value: a1, color: cfg.line2Color };
+      s.plot1[i] = { time: t, value: a2, color: rsi2Color };
+
+      const highlightCondition1 = lt(a1, 30) && lt(a2, 35);
+      const highlightCondition2 = gt(a2 - a1, 30);
+      const highlightCondition3 = lt(a2, 25) && lt(a1, 22);
+      const highlightBackground = highlightCondition1 || highlightCondition2;
+      if (highlightBackground) dot(t, a1 - 5, cfg.buyDotColor, 'char0');
+      if (highlightCondition3) dot(t, a1 - 5, cfg.buyDotColor, 'char1');
+      const top1 = gt(a1, 75) && gt(a1 - a2, 12);
+      const top2 = gt(a1, 95);
+      if (top1) dot(t, a1 + 5, cfg.sellDotColor, 'char2');
+      if (top2) dot(t, a1 + 5, cfg.sellDotColor, 'char3');
+      // alertcondition(highlightBackground or highlightCondition3) / alertcondition(highlightConditionTop1 or ...Top2)
+      [highlightBackground || highlightCondition3, top1 || top2].forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(t);
+      });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DualRsiSmootherInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DualRsiSmootherInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -142,6 +172,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const DualRsiSmoother = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

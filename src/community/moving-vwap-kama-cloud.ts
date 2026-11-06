@@ -24,10 +24,12 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, math, Series, color, timeframe, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, timeframe, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import { barInterval } from '../bar-time';
 import type { ChartContext } from '../chart-context';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import { createBarRun, fullResult, liveAlertStates, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+
 import { executeScript, ta as scriptTa, hlc3 as scriptHlc3 } from 'oakscriptjs/script';
 
 export interface MovingVwapKamaCloudInputs {
@@ -109,82 +111,144 @@ function intradayVwap(bars: Bar[], chart: ChartContext): number[] {
   return vwap;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<MovingVwapKamaCloudInputs> = {}, chart?: ChartContext): IndicatorResult & { alerts: AlertConditionState[] } {
+/** The exchange time zone and session of the chart context, read by the intraday ta.vwap */
+const hasSessionContext = (chart?: ChartContext) => chart?.timezone !== undefined && chart.session !== undefined;
+
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface MvkVars {
+  /** var float kama = na */
+  kama: number;
+}
+
+interface MvkRun extends BarRunState<MvkVars> {
+  /** ta.vwap of the intraday bars (from the script API, on every bar: a full run) */
+  vwap: number[] | null;
+  mvwap: ReturnType<typeof taStep.ema>;
+  smooth: ReturnType<typeof taStep.ema>;
+  vol: WindowSum;
+  sm: number[];
+  kama: number[];
+  plot0: Point[];
+  plot1: Point[];
+  cloud: string[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<MovingVwapKamaCloudInputs>): BarStudy<MvkRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const interval = barInterval(bars);
-  const intraday = interval > 0 && interval < DAY_SECONDS;
-  if (intraday && (chart?.timezone === undefined || chart.session === undefined)) {
-    throw new Error(
-      'Moving VWAP-KAMA Cloud supports daily and higher timeframes only: on intraday bars ta.vwap resets on each '
-      + 'trading day, which needs the exchange time zone and session.',
-    );
-  }
-
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const at = (a: number[], i: number) => (i >= 0 && i < n ? a[i] : NaN);
-
-  // ta.vwap (hlc3, anchor timeframe.change("1D")). Intraday bars: the sums restart on each trading day of the
-  // exchange. Daily or higher bars: a new anchor on every bar, so sum(hlc3 * volume) / sum(volume) over the bar
-  // alone (0 / 0 = na when the volume is 0, na when it is na)
-  const vwap = intraday && chart ? intradayVwap(bars, chart) : bars.map((b) => {
-    const v = b.volume ?? NaN;
-    const hlc3 = (b.high + b.low + b.close) / 3;
-    return (hlc3 * v) / v;
-  });
-  // MVWAP = ta.ema(ta.vwap, mvwap_length); MVWAP_smoothed = ta.ema(MVWAP, mvwap_smooth)
-  const mvwap = A(ta.ema(S(vwap), cfg.mvwapLength));
-  const sm = A(ta.ema(S(mvwap), cfg.mvwapSmooth));
-
-  // kama_volatility = math.sum(math.abs(MVWAP_smoothed - MVWAP_smoothed[1]), kama_length)
-  const absDiff = sm.map((v, i) => Math.abs(v - at(sm, i - 1)));
-  const vol = A(math.sum(S(absDiff), cfg.kamaLength) as Series);
   const fastestSc = 2.0 / (cfg.kamaFastest + 1);
   const slowestSc = 2.0 / (cfg.kamaSlowest + 1);
-
-  const kama: number[] = new Array(n);
-  let prev = NaN; // var float kama = na
-  for (let i = 0; i < n; i++) {
-    const change = Math.abs(sm[i] - at(sm, i - cfg.kamaLength));
-    // er = kama_volatility != 0 ? kama_change / kama_volatility : 0 (na != 0 is false)
-    const er = !isNaN(vol[i]) && Math.abs(vol[i]) > EPS ? change / vol[i] : 0;
-    const sc = Math.pow(er * (fastestSc - slowestSc) + slowestSc, 2);
-    // kama := nz(kama[1], MVWAP_smoothed) + sc * (MVWAP_smoothed - nz(kama[1], MVWAP_smoothed))
-    const base = isNaN(prev) ? sm[i] : prev;
-    prev = base + sc * (sm[i] - base);
-    kama[i] = prev;
-  }
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const cloud: string[] = [];
-  const close = bars.map((b) => b.close);
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // color = show_lines ? (MVWAP_smoothed >= MVWAP_smoothed[1] ? color.olive : color.maroon) : na
-    const mCol = cfg.showLines ? (ge(sm[i], at(sm, i - 1)) ? color.olive : color.maroon) : 'transparent';
-    // color = show_lines ? (kama >= kama[1] ? color.green : color.red) : na
-    const kCol = cfg.showLines ? (ge(kama[i], at(kama, i - 1)) ? color.green : color.red) : 'transparent';
-    plot0.push({ time: t, value: Number.isFinite(sm[i]) ? sm[i] : NaN, color: mCol });
-    plot1.push({ time: t, value: Number.isFinite(kama[i]) ? kama[i] : NaN, color: kCol });
-    // cloud_color = MVWAP_smoothed >= kama ? bullish_cloud_color : bearish_cloud_color
-    const c = ge(sm[i], kama[i]) ? cfg.bullishCloudColor : cfg.bearishCloudColor;
-    cloud.push(String(color.new(c, cfg.cloudTransparency)));
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'VWAP-KAMA Cloud' }, colors: cloud }],
-    // alertcondition(ta.crossover / ta.crossunder of (close, MVWAP_smoothed), (MVWAP_smoothed, kama), (close, kama))
-    alerts: alertStates(alertConditions, bars, [
-      crossedOver(close, sm), crossedUnder(close, sm),
-      crossedOver(sm, kama), crossedUnder(sm, kama),
-      crossedOver(close, kama), crossedUnder(close, kama),
-    ]),
+  const isIntraday = (bars: Bar[]) => {
+    const interval = barInterval(bars);
+    return interval > 0 && interval < DAY_SECONDS;
   };
+  return {
+    // the chart timeframe from the bar gaps (intraday or not)
+    key: (bars) => String(isIntraday(bars)),
+    // the trading days of the intraday ta.vwap come from the exchange calendar of the whole bar set
+    fullRunReason: (chart) => (hasSessionContext(chart) ? 'exchange calendar trading days' : null),
+    init(bars, chart) {
+      const intraday = isIntraday(bars);
+      if (intraday && !hasSessionContext(chart)) {
+        throw new Error(
+          'Moving VWAP-KAMA Cloud supports daily and higher timeframes only: on intraday bars ta.vwap resets on each '
+          + 'trading day, which needs the exchange time zone and session.',
+        );
+      }
+      // MVWAP = ta.ema(ta.vwap, mvwap_length); MVWAP_smoothed = ta.ema(MVWAP, mvwap_smooth)
+      const mvwap = taStep.ema(cfg.mvwapLength);
+      const smooth = taStep.ema(cfg.mvwapSmooth);
+      // kama_volatility = math.sum(math.abs(MVWAP_smoothed - MVWAP_smoothed[1]), kama_length)
+      const vol = new WindowSum(cfg.kamaLength);
+      const s: MvkRun = {
+        vwap: intraday ? intradayVwap(bars, chart) : null,
+        mvwap, smooth, vol, sm: [], kama: [], plot0: [], plot1: [], cloud: [],
+        flags: [[], [], [], [], [], []], times: [[], [], [], [], [], []],
+        steps: [mvwap, smooth, vol], vars: { kama: NaN }, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.sm, s.kama, s.plot0, s.plot1, s.cloud, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const at = (a: number[], k: number) => (k >= 0 ? a[k] : NaN);
+      // ta.vwap (hlc3, anchor timeframe.change("1D")). Intraday bars: the sums restart on each trading day of the
+      // exchange. Daily or higher bars: a new anchor on every bar, so sum(hlc3 * volume) / sum(volume) over the bar
+      // alone (0 / 0 = na when the volume is 0, na when it is na)
+      let vwap: number;
+      if (s.vwap) {
+        vwap = s.vwap[i];
+      } else {
+        const v = b.volume ?? NaN;
+        const hlc3 = (b.high + b.low + b.close) / 3;
+        vwap = (hlc3 * v) / v;
+      }
+      const sm = s.smooth.step(s.mvwap.step(vwap));
+      s.sm[i] = sm;
+
+      const vol = s.vol.step(Math.abs(sm - at(s.sm, i - 1)));
+      const change = Math.abs(sm - at(s.sm, i - cfg.kamaLength));
+      // er = kama_volatility != 0 ? kama_change / kama_volatility : 0 (na != 0 is false)
+      const er = !isNaN(vol) && Math.abs(vol) > EPS ? change / vol : 0;
+      const sc = Math.pow(er * (fastestSc - slowestSc) + slowestSc, 2);
+      // kama := nz(kama[1], MVWAP_smoothed) + sc * (MVWAP_smoothed - nz(kama[1], MVWAP_smoothed))
+      const v = s.vars;
+      const base = isNaN(v.kama) ? sm : v.kama;
+      v.kama = base + sc * (sm - base);
+      const kama = v.kama;
+      s.kama[i] = kama;
+
+      const t = b.time;
+      // color = show_lines ? (MVWAP_smoothed >= MVWAP_smoothed[1] ? color.olive : color.maroon) : na
+      const mCol = cfg.showLines ? (ge(sm, at(s.sm, i - 1)) ? color.olive : color.maroon) : 'transparent';
+      // color = show_lines ? (kama >= kama[1] ? color.green : color.red) : na
+      const kCol = cfg.showLines ? (ge(kama, at(s.kama, i - 1)) ? color.green : color.red) : 'transparent';
+      s.plot0[i] = { time: t, value: Number.isFinite(sm) ? sm : NaN, color: mCol };
+      s.plot1[i] = { time: t, value: Number.isFinite(kama) ? kama : NaN, color: kCol };
+      // cloud_color = MVWAP_smoothed >= kama ? bullish_cloud_color : bearish_cloud_color
+      const c = ge(sm, kama) ? cfg.bullishCloudColor : cfg.bearishCloudColor;
+      s.cloud[i] = String(color.new(c, cfg.cloudTransparency));
+
+      // alertcondition(ta.crossover / ta.crossunder of (close, MVWAP_smoothed), (MVWAP_smoothed, kama), (close, kama)):
+      // a > b now and a <= b on the bar before (crossedOver / crossedUnder of the alert states)
+      const close = b.close;
+      const pc = i > 0 ? bars[i - 1].close : NaN;
+      const psm = at(s.sm, i - 1);
+      const pk = at(s.kama, i - 1);
+      const flag = (k: number, f: boolean) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(t as number);
+      };
+      flag(0, close > sm && pc <= psm);
+      flag(1, close < sm && pc >= psm);
+      flag(2, sm > kama && psm <= pk);
+      flag(3, sm < kama && psm >= pk);
+      flag(4, close > kama && pc <= pk);
+      flag(5, close < kama && pc >= pk);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'VWAP-KAMA Cloud' }, colors: s.cloud.slice() }],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MovingVwapKamaCloudInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MovingVwapKamaCloudInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 /** The original's alertconditions */
@@ -199,6 +263,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const MovingVwapKamaCloud = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

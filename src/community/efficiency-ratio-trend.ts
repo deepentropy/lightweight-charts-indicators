@@ -11,7 +11,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, math, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowStdev, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EfficiencyRatioTrendInputs {
   /** Sensitivity input of the Pine script (not used by its computation) */
@@ -62,60 +64,89 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 /** Pine a != b: false when a value is na */
 const ne = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<EfficiencyRatioTrendInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface ErtRun extends BarRunState<{ trend: number }> {
+  chgLen: ReturnType<typeof taStep.change>;
+  chg: ReturnType<typeof taStep.change>;
+  sumAbs: WindowSum;
+  sdFast: WindowStdev;
+  sdSlow: WindowStdev;
+  atr: ReturnType<typeof taStep.atr>;
+  aArr: number[];
+  plot: Point[];
+}
+
+function study(inputs: Partial<EfficiencyRatioTrendInputs>): BarStudy<ErtRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const srcS = getSourceSeries(bars, cfg.src);
-  const src = A(srcS);
-
-  // er = math.abs(ta.change(src, length)) / math.sum(math.abs(ta.change(src)), length)
-  const chgLen = A(ta.change(srcS, cfg.length));
-  const absChg = A(ta.change(srcS)).map((v) => Math.abs(v));
-  const sumAbs = A(math.sum(S(absChg), cfg.length) as Series);
-  const src2 = S(src.map((v) => v * 2));
-  const sdFast = A(ta.stdev(src2, cfg.fastLen));
-  const sdSlow = A(ta.stdev(src2, cfg.slowLen));
-  const atr = A(ta.atr(bars, 14));
-
-  const aArr: number[] = new Array(n);
-  const isBull: boolean[] = new Array(n);
-  let trend = 0; // var int trend = 0
-  for (let i = 0; i < n; i++) {
-    const er = Math.abs(chgLen[i]) / sumAbs[i];
-    const dev = er * sdFast[i] + (1 - er) * sdSlow[i];
-    // a := src > nz(a[1], src) + dev ? src : src < nz(a[1], src) - dev ? src : nz(a[1], src)
-    const prevA = i > 0 && !isNaN(aArr[i - 1]) ? aArr[i - 1] : src[i];
-    const a = gt(src[i], prevA + dev) ? src[i] : lt(src[i], prevA - dev) ? src[i] : prevA;
-    aArr[i] = a;
-
-    // delta = (a - a[1]) / a[1]
-    const a1 = i > 0 ? aArr[i - 1] : NaN;
-    const delta = (a - a1) / a1;
-    // price_scale = a != 0 ? a : close; volatility_pct = atr / price_scale; threshold = volatility_pct * 0.01
-    const priceScale = ne(a, 0) ? a : bars[i].close;
-    const threshold = (atr[i] / priceScale) * 0.01;
-    // if math.abs(delta) >= threshold: trend := delta > 0 ? 1 : 0 (else unchanged)
-    if (ge(Math.abs(delta), threshold)) trend = gt(delta, 0) ? 1 : 0;
-    isBull[i] = trend === 1;
-  }
-
+  const value = barSource(cfg.src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const chgLen = taStep.change(cfg.length);
+      const chg = taStep.change();
+      const sumAbs = new WindowSum(cfg.length);
+      const sdFast = new WindowStdev(cfg.fastLen);
+      const sdSlow = new WindowStdev(cfg.slowLen);
+      const atr = taStep.atr(14);
+      const s: ErtRun = {
+        chgLen, chg, sumAbs, sdFast, sdSlow, atr, aArr: [], plot: [],
+        steps: [chgLen, chg, sumAbs, sdFast, sdSlow, atr],
+        vars: { trend: 0 }, // var int trend = 0
+        lists: [], series: [],
+      };
+      s.series = [s.aArr, s.plot];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const src = value(b);
+      // er = math.abs(ta.change(src, length)) / math.sum(math.abs(ta.change(src)), length)
+      const chgLen = s.chgLen.step(src);
+      const sumAbs = s.sumAbs.step(Math.abs(s.chg.step(src)));
+      const sdFast = s.sdFast.step(src * 2);
+      const sdSlow = s.sdSlow.step(src * 2);
+      const atr = s.atr.step(b.high, b.low, b.close);
+
+      const er = Math.abs(chgLen) / sumAbs;
+      const dev = er * sdFast + (1 - er) * sdSlow;
+      // a := src > nz(a[1], src) + dev ? src : src < nz(a[1], src) - dev ? src : nz(a[1], src)
+      const prevA = i > 0 && !isNaN(s.aArr[i - 1]) ? s.aArr[i - 1] : src;
+      const a = gt(src, prevA + dev) ? src : lt(src, prevA - dev) ? src : prevA;
+      s.aArr[i] = a;
+
+      // delta = (a - a[1]) / a[1]
+      const a1 = i > 0 ? s.aArr[i - 1] : NaN;
+      const delta = (a - a1) / a1;
+      // price_scale = a != 0 ? a : close; volatility_pct = atr / price_scale; threshold = volatility_pct * 0.01
+      const priceScale = ne(a, 0) ? a : b.close;
+      const threshold = (atr / priceScale) * 0.01;
+      // if math.abs(delta) >= threshold: trend := delta > 0 ? 1 : 0 (else unchanged)
+      if (ge(Math.abs(delta), threshold)) s.vars.trend = gt(delta, 0) ? 1 : 0;
       // plot(a, color = isBullms ? bullCol : bearCol, linewidth = 3, style = plot.style_stepline_diamond, editable = false)
-      plot0: bars.map((b, i) => ({
-        time: b.time,
-        value: Number.isFinite(aArr[i]) ? aArr[i] : NaN,
-        color: isBull[i] ? BULL_COL : BEAR_COL,
-      })),
+      s.plot[i] = { time: b.time as number, value: Number.isFinite(a) ? a : NaN, color: s.vars.trend === 1 ? BULL_COL : BEAR_COL };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot.slice() },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EfficiencyRatioTrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EfficiencyRatioTrendInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const EfficiencyRatioTrend = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

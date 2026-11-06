@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PullbackScalpTradeV2Inputs {
   /** ATR length of the Supertrend */
@@ -53,65 +55,91 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface PullbackRun extends BarRunState<Record<string, never>> {
+  ma50: WindowSma;
+  ma200: WindowSma;
+  st: ReturnType<typeof taStep.supertrend>;
+  dir: number[];
+  plots: Point[][];
+  fillColors: string[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<PullbackScalpTradeV2Inputs>): BarStudy<PullbackRun, Result> {
+  const { atrPeriod, factor } = { ...defaultInputs, ...inputs };
+  const trendUp = String(color.new(color.green, 90));
+  const trendDown = String(color.new(color.red, 90));
+  return {
+    init() {
+      const ma50 = new WindowSma(50);
+      const ma200 = new WindowSma(200);
+      const st = taStep.supertrend(factor, atrPeriod);
+      const s: PullbackRun = {
+        ma50, ma200, st, dir: [], plots: [[], [], [], []], fillColors: [], markers: [],
+        steps: [ma50, ma200, st], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.dir, ...s.plots, s.fillColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const ma50 = s.ma50.step(b.close);
+      const ma200 = s.ma200.step(b.close);
+      const [st, dir] = s.st.step(b.high, b.low, b.close);
+      s.dir[i] = dir;
+      // trendColor = close > ma200 ? color.green : color.red
+      s.fillColors[i] = gt(b.close, ma200) ? trendUp : trendDown;
+      s.plots[0][i] = { time: b.time, value: ma50, color: MA50_COLOR };
+      s.plots[1][i] = { time: b.time, value: ma200, color: MA200_COLOR };
+      // supertrend2 := barstate.isfirst ? na : supertrend2
+      const st2 = i === 0 ? NaN : st;
+      s.plots[2][i] = { time: b.time, value: lt(dir, 0) ? st2 : NaN, color: UP_COLOR };
+      s.plots[3][i] = { time: b.time, value: lt(dir, 0) ? NaN : st2, color: DOWN_COLOR };
+
+      const prevDir = i > 0 ? s.dir[i - 1] : NaN;
+      const buySignal = lt(dir, 0) && gt(prevDir, 0) && gt(b.close, ma200);
+      const sellSignal = gt(dir, 0) && lt(prevDir, 0) && lt(b.close, ma200);
+      if (buySignal) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.lime, size: 'tiny',
+          text: 'Buy', textColor: color.lime });
+      }
+      if (sellSignal) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.orange, size: 'tiny',
+          text: 'Sell', textColor: color.orange });
+      }
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice() },
+        // fill(ma50Plot, ma200Plot, color = color.new(trendColor, 90), title = "Trend Zone")
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Trend Zone' }, colors: s.fillColors.slice() }],
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PullbackScalpTradeV2Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<PullbackScalpTradeV2Inputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const { atrPeriod, factor } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const closeS = Series.fromArray(bars, bars.map((b) => b.close));
-
-  const ma50 = A(ta.sma(closeS, 50));
-  const ma200 = A(ta.sma(closeS, 200));
-  const [stS, dirS] = ta.supertrend(bars, factor, atrPeriod);
-  const st = A(stS);
-  const dir = A(dirS);
-
-  const trendUp = String(color.new(color.green, 90));
-  const trendDown = String(color.new(color.red, 90));
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const plot2: { time: number; value: number; color: string }[] = [];
-  const plot3: { time: number; value: number; color: string }[] = [];
-  const fillColors: string[] = new Array(n);
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    // trendColor = close > ma200 ? color.green : color.red
-    fillColors[i] = gt(b.close, ma200[i]) ? trendUp : trendDown;
-    plot0.push({ time: b.time, value: ma50[i], color: MA50_COLOR });
-    plot1.push({ time: b.time, value: ma200[i], color: MA200_COLOR });
-    // supertrend2 := barstate.isfirst ? na : supertrend2
-    const st2 = i === 0 ? NaN : st[i];
-    plot2.push({ time: b.time, value: lt(dir[i], 0) ? st2 : NaN, color: UP_COLOR });
-    plot3.push({ time: b.time, value: lt(dir[i], 0) ? NaN : st2, color: DOWN_COLOR });
-
-    const prevDir = i > 0 ? dir[i - 1] : NaN;
-    const buySignal = lt(dir[i], 0) && gt(prevDir, 0) && gt(b.close, ma200[i]);
-    const sellSignal = gt(dir[i], 0) && lt(prevDir, 0) && lt(b.close, ma200[i]);
-    if (buySignal) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.lime, size: 'tiny',
-        text: 'Buy', textColor: color.lime });
-    }
-    if (sellSignal) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.orange, size: 'tiny',
-        text: 'Sell', textColor: color.orange });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
-    // fill(ma50Plot, ma200Plot, color = color.new(trendColor, 90), title = "Trend Zone")
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Trend Zone' }, colors: fillColors }],
-    markers,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PullbackScalpTradeV2 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -8,7 +8,9 @@
  * Reference: "Ripster EMA Clouds" by ripster47
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RipsterEMACloudsInputs {
   source: SourceType;
@@ -61,10 +63,29 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RipsterEMACloudsInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const src = getSourceSeries(bars, cfg.source);
+type Point = { time: number; value: number; color?: string };
 
+// Bullish/bearish fill colors per cloud pair
+const bullishFillColors = ['#036103', '#4caf50', '#2196f3', '#009688', '#05bed5'];
+const bearishFillColors = ['#880e4f', '#f44336', '#ffb74d', '#f06292', '#e65100'];
+// Transparency: 45%, 65%, 70%, 65%, 65% mapped to hex alpha
+const fillAlphas = ['73', 'A6', 'B3', 'A6', 'A6'];
+
+interface RipsterVars {
+  /** Short and long EMA of each pair on the bar before */
+  prev: number[];
+}
+
+interface RipsterRun extends BarRunState<RipsterVars> {
+  emas: Array<ReturnType<typeof taStep.ema>>;
+  ext: number[] | null;
+  plots: Point[][];
+  cloudColors: string[][];
+}
+
+function study(inputs: Partial<RipsterEMACloudsInputs>): BarStudy<RipsterRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const barValue = barSource(cfg.source);
   const pairs = [
     [cfg.shortLen1, cfg.longLen1],
     [cfg.shortLen2, cfg.longLen2],
@@ -72,54 +93,77 @@ export function calculate(bars: Bar[], inputs: Partial<RipsterEMACloudsInputs> =
     [cfg.shortLen4, cfg.longLen4],
     [cfg.shortLen5, cfg.longLen5],
   ];
-
-  // Bullish/bearish fill colors per cloud pair
-  const bullishFillColors = ['#036103', '#4caf50', '#2196f3', '#009688', '#05bed5'];
-  const bearishFillColors = ['#880e4f', '#f44336', '#ffb74d', '#f06292', '#e65100'];
-  // Transparency: 45%, 65%, 70%, 65%, 65% mapped to hex alpha
-  const fillAlphas = ['73', 'A6', 'B3', 'A6', 'A6'];
-
-  const plots: Record<string, Array<{ time: number; value: number; color?: string }>> = {};
-  const fills: Array<{ plot1: string; plot2: string; colors: string[] }> = [];
-
-  pairs.forEach(([sLen, lLen], idx) => {
-    const shortEma = ta.ema(src, sLen).toArray();
-    const longEma = ta.ema(src, lLen).toArray();
-    const warmup = Math.max(sLen, lLen);
-
-    // Short EMA: olive if rising, maroon if falling
-    plots[`plot${idx * 2}`] = shortEma.map((v, i) => {
-      if (i < warmup) return { time: bars[i].time, value: NaN };
-      const val = v ?? NaN;
-      const prev = i > 0 ? (shortEma[i - 1] ?? val) : val;
-      const color = val >= prev ? '#808000' : '#800000';
-      return { time: bars[i].time, value: val, color };
-    });
-    // Long EMA: green if rising, red if falling
-    plots[`plot${idx * 2 + 1}`] = longEma.map((v, i) => {
-      if (i < warmup) return { time: bars[i].time, value: NaN };
-      const val = v ?? NaN;
-      const prev = i > 0 ? (longEma[i - 1] ?? val) : val;
-      const color = val >= prev ? '#008000' : '#FF0000';
-      return { time: bars[i].time, value: val, color };
-    });
-
-    // Dynamic fill colors per bar
-    const cloudColors = shortEma.map((sv, i) => {
-      if (i < warmup) return 'transparent';
-      const s = sv ?? 0;
-      const l = longEma[i] ?? 0;
-      const baseColor = s >= l ? bullishFillColors[idx] : bearishFillColors[idx];
-      return baseColor + fillAlphas[idx];
-    });
-    fills.push({ plot1: `plot${idx * 2}`, plot2: `plot${idx * 2 + 1}`, colors: cloudColors });
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init(bars) {
+      const emas: Array<ReturnType<typeof taStep.ema>> = [];
+      for (const [sLen, lLen] of pairs) emas.push(taStep.ema(sLen), taStep.ema(lLen));
+      const s: RipsterRun = {
+        emas,
+        ext: isBarSource(cfg.source) ? null : getSourceSeries(bars, cfg.source).toArray().map((v) => v ?? NaN),
+        plots: Array.from({ length: 10 }, () => []),
+        cloudColors: Array.from({ length: 5 }, () => []),
+        steps: emas,
+        vars: { prev: new Array<number>(10).fill(NaN) },
+        lists: [], series: [],
+      };
+      s.series = [...s.plots, ...s.cloudColors];
+      return s;
+    },
+    copyVars: (v) => ({ prev: v.prev.slice() }),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const src = s.ext ? s.ext[i] : barValue(b);
+      const prevs = s.vars.prev;
+      for (let idx = 0; idx < 5; idx++) {
+        const [sLen, lLen] = pairs[idx];
+        const shortEma = s.emas[idx * 2].step(src);
+        const longEma = s.emas[idx * 2 + 1].step(src);
+        const warmup = Math.max(sLen, lLen);
+        if (i < warmup) {
+          s.plots[idx * 2][i] = { time, value: NaN };
+          s.plots[idx * 2 + 1][i] = { time, value: NaN };
+          s.cloudColors[idx][i] = 'transparent';
+        } else {
+          // Short EMA: olive if rising, maroon if falling
+          const sPrev = i > 0 ? prevs[idx * 2] : shortEma;
+          s.plots[idx * 2][i] = { time, value: shortEma, color: shortEma >= sPrev ? '#808000' : '#800000' };
+          // Long EMA: green if rising, red if falling
+          const lPrev = i > 0 ? prevs[idx * 2 + 1] : longEma;
+          s.plots[idx * 2 + 1][i] = { time, value: longEma, color: longEma >= lPrev ? '#008000' : '#FF0000' };
+          // Dynamic fill colors per bar
+          const baseColor = shortEma >= longEma ? bullishFillColors[idx] : bearishFillColors[idx];
+          s.cloudColors[idx][i] = baseColor + fillAlphas[idx];
+        }
+        prevs[idx * 2] = shortEma;
+        prevs[idx * 2 + 1] = longEma;
+      }
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      const fills: Array<{ plot1: string; plot2: string; colors: string[] }> = [];
+      for (let idx = 0; idx < 5; idx++) {
+        plots[`plot${idx * 2}`] = s.plots[idx * 2].slice();
+        plots[`plot${idx * 2 + 1}`] = s.plots[idx * 2 + 1].slice();
+        fills.push({ plot1: `plot${idx * 2}`, plot2: `plot${idx * 2 + 1}`, colors: s.cloudColors[idx].slice() });
+      }
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+      };
+    },
   };
 }
 
-export const RipsterEMAClouds = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RipsterEMACloudsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RipsterEMACloudsInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const RipsterEMAClouds = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

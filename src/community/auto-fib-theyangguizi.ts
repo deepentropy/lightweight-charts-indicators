@@ -8,7 +8,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+
 
 export interface AutoFibTheyangguiziInputs {
   /** Number of bars of the range */
@@ -55,28 +58,57 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<AutoFibTheyangguiziInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface AutoFibRun extends BarRunState<Record<string, never>> {
+  maxr: WindowExtreme;
+  minr: WindowExtreme;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<AutoFibTheyangguiziInputs>): BarStudy<AutoFibRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-  const maxr = ta.highest(close, cfg.fiblength).toArray();
-  const minr = ta.lowest(close, cfg.fiblength).toArray();
-
-  const plots: Record<string, Array<{ time: number; value: number }>> = {
-    plot0: [], plot1: [], plot2: [], plot3: [], plot4: [], plot5: [], plot6: [],
-  };
-  bars.forEach((b, i) => {
-    const hi = maxr[i] ?? NaN;
-    const lo = minr[i] ?? NaN;
-    const ranr = hi - lo;
-    const levels = [hi, hi - 0.236 * ranr, hi - 0.382 * ranr, hi - 0.5 * ranr, lo + 0.382 * ranr, lo + 0.236 * ranr, lo];
-    levels.forEach((value, k) => plots[`plot${k}`].push({ time: b.time, value }));
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills: fillConfig.map((f) => ({ plot1: f.plot1, plot2: f.plot2, options: { color: f.color, title: f.title } })),
+    init() {
+      // ta.highest(close, fiblength) / ta.lowest(close, fiblength)
+      const maxr = new WindowExtreme(false, cfg.fiblength);
+      const minr = new WindowExtreme(true, cfg.fiblength);
+      const plots: Point[][] = [[], [], [], [], [], [], []];
+      return { maxr, minr, plots, steps: [maxr, minr], vars: {}, lists: [], series: plots };
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const hi = s.maxr.step(b.close);
+      const lo = s.minr.step(b.close);
+      const ranr = hi - lo;
+      const p = s.plots;
+      p[0][i] = { time: b.time, value: hi };
+      p[1][i] = { time: b.time, value: hi - 0.236 * ranr };
+      p[2][i] = { time: b.time, value: hi - 0.382 * ranr };
+      p[3][i] = { time: b.time, value: hi - 0.5 * ranr };
+      p[4][i] = { time: b.time, value: lo + 0.382 * ranr };
+      p[5][i] = { time: b.time, value: lo + 0.236 * ranr };
+      p[6][i] = { time: b.time, value: lo };
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: fillConfig.map((f) => ({ plot1: f.plot1, plot2: f.plot2, options: { color: f.color, title: f.title } })),
+      };
+    },
   };
 }
 
-export const AutoFibTheyangguizi = { calculate, metadata, defaultInputs, inputConfig, plotConfig, fillConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AutoFibTheyangguiziInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AutoFibTheyangguiziInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const AutoFibTheyangguizi = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, fillConfig };

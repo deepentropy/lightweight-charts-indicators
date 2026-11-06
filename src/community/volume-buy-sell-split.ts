@@ -10,7 +10,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeBuySellSplitInputs {
   buyingColor: string;
@@ -57,43 +59,66 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const ne = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<VolumeBuySellSplitInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface SplitRun extends BarRunState<Record<string, never>> {
+  avg: WindowSma;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<VolumeBuySellSplitInputs>): BarStudy<SplitRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const vol = bars.map((b) => b.volume ?? NaN);
-  const avgVol = ta.sma(Series.fromArray(bars, vol), cfg.maLength).toArray().map((v) => v ?? NaN);
   const totalCol = String(color.new(cfg.totalVolColor, 50));
   const v = (x: number) => (Number.isFinite(x) ? x : NaN);
-
-  const plot0 = [];
-  const plot1 = [];
-  const plot2 = [];
-  const plot3 = [];
-  for (let i = 0; i < bars.length; i++) {
-    const { time, high, low, close } = bars[i];
-    // pr = high != low ? high - low : 0.0001
-    const pr = ne(high, low) ? high - low : 0.0001;
-    const buyingVol = (vol[i] * (close - low)) / pr;
-    const sellingVol = (vol[i] * (high - close)) / pr;
-    // math.max / math.min: na when an argument is na
-    const majorityVol = Math.max(buyingVol, sellingVol);
-    const minorityVol = Math.min(buyingVol, sellingVol);
-    const majorityColor = ge(buyingVol, sellingVol) ? cfg.buyingColor : cfg.sellingColor;
-    const minorityColor = lt(buyingVol, sellingVol) ? cfg.buyingColor : cfg.sellingColor;
-    plot0.push({ time, value: v(vol[i]), color: totalCol });
-    plot1.push({ time, value: v(majorityVol), color: majorityColor });
-    plot2.push({ time, value: v(minorityVol), color: minorityColor });
-    // aboveAvgLine = volume > avgVol ? avgVol : na
-    plot3.push({ time, value: gt(vol[i], avgVol[i]) ? avgVol[i] : NaN, color: cfg.avgLineColor });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
+    init() {
+      const avg = new WindowSma(cfg.maLength);
+      const s: SplitRun = { avg, plots: [[], [], [], []], steps: [avg], vars: {}, lists: [], series: [] };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const { time, high, low, close } = bars[i];
+      const vol = bars[i].volume ?? NaN;
+      const avgVol = s.avg.step(vol) ?? NaN;
+      // pr = high != low ? high - low : 0.0001
+      const pr = ne(high, low) ? high - low : 0.0001;
+      const buyingVol = (vol * (close - low)) / pr;
+      const sellingVol = (vol * (high - close)) / pr;
+      // math.max / math.min: na when an argument is na
+      const majorityVol = Math.max(buyingVol, sellingVol);
+      const minorityVol = Math.min(buyingVol, sellingVol);
+      const majorityColor = ge(buyingVol, sellingVol) ? cfg.buyingColor : cfg.sellingColor;
+      const minorityColor = lt(buyingVol, sellingVol) ? cfg.buyingColor : cfg.sellingColor;
+      const p = s.plots;
+      p[0][i] = { time, value: v(vol), color: totalCol };
+      p[1][i] = { time, value: v(majorityVol), color: majorityColor };
+      p[2][i] = { time, value: v(minorityVol), color: minorityColor };
+      // aboveAvgLine = volume > avgVol ? avgVol : na
+      p[3][i] = { time, value: gt(vol, avgVol) ? avgVol : NaN, color: cfg.avgLineColor };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeBuySellSplitInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolumeBuySellSplitInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const VolumeBuySellSplit = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

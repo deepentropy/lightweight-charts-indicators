@@ -16,9 +16,11 @@
  * Reference: "Bjorgum Triple EMA Strategy"
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -56,143 +58,155 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<BjorgumTripleEmaInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+type Ema = ReturnType<typeof taStep.ema>;
+
+interface BjorgumRun extends BarRunState<Record<string, never>> {
+  fast: Ema;
+  med: Ema;
+  slow: Ema;
+  hiddenFast: Ema;
+  haOpen: number[];
+  haClose: number[];
+  fastArr: number[];
+  medArr: number[];
+  slowArr: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  fillCol1: string[];
+  fillCol2: string[];
+  fillCol3: string[];
+  barColors: BarColorData[];
+  signal: boolean[];
+  times: number[];
+}
+
+function study(inputs: Partial<BjorgumTripleEmaInputs>): BarStudy<BjorgumRun, Result> {
   const { fastLen, medLen, slowLen } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  // Heiken Ashi values
-  const haClose = new Array<number>(n);
-  const haOpen = new Array<number>(n);
-  for (let i = 0; i < n; i++) {
-    haClose[i] = (bars[i].open + bars[i].high + bars[i].low + bars[i].close) / 4;
-    if (i === 0) {
-      haOpen[i] = (bars[i].open + bars[i].close) / 2;
-    } else {
-      haOpen[i] = (haOpen[i - 1] + haClose[i - 1]) / 2;
-    }
-  }
-
-  const haOpenSeries = new Series(bars, (_b, i) => haOpen[i]);
-
-  // Three EMAs on haOpen
-  const fastArr = ta.ema(haOpenSeries, fastLen).toArray();
-  const medArr = ta.ema(haOpenSeries, medLen).toArray();
-  const slowArr = ta.ema(haOpenSeries, slowLen).toArray();
-
-  // Hidden fast EMA: ema(hl2, 1) -- plotted with transp=100 (invisible line)
-  const hl2Series = new Series(bars, (b) => (b.high + b.low) / 2);
-  const hiddenFastArr = ta.ema(hl2Series, 1).toArray();
-
   const warmup = slowLen;
-
-  // Build plot data with directional colors
-  // Pine: mycolor = up ? #64b5f6 : down ? #d32f2f : na
-  // up = ema > ema[1], down = ema < ema[1]
-  const plot0: Array<{ time: number; value: number; color?: string }> = new Array(n);
-  const plot1: Array<{ time: number; value: number }> = new Array(n);
-  const plot2: Array<{ time: number; value: number; color?: string }> = new Array(n);
-  const plot3: Array<{ time: number; value: number; color?: string }> = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    if (i < warmup) {
-      plot0[i] = { time: t, value: NaN };
-      plot1[i] = { time: t, value: NaN };
-      plot2[i] = { time: t, value: NaN };
-      plot3[i] = { time: t, value: NaN };
-      continue;
-    }
-
-    const f = fastArr[i] ?? NaN;
-    const m = medArr[i] ?? NaN;
-    const s = slowArr[i] ?? NaN;
-    const hf = hiddenFastArr[i] ?? NaN;
-
-    // EMA-5 directional color (transp=55 -> alpha ~0.45)
-    const fPrev = fastArr[i - 1] ?? NaN;
-    const fColor = f > fPrev ? 'rgba(100, 181, 246, 0.45)' : f < fPrev ? 'rgba(211, 47, 47, 0.45)' : undefined;
-    plot0[i] = { time: t, value: f, color: fColor };
-
-    // Hidden fast EMA (transp=100 -> invisible)
-    plot1[i] = { time: t, value: hf };
-
-    // EMA-9 directional color (transp=45 -> alpha ~0.55)
-    const mPrev = medArr[i - 1] ?? NaN;
-    const mColor = m > mPrev ? 'rgba(100, 181, 246, 0.55)' : m < mPrev ? 'rgba(211, 47, 47, 0.55)' : undefined;
-    plot2[i] = { time: t, value: m, color: mColor };
-
-    // EMA-21 directional color (transp=35 -> alpha ~0.65)
-    const sPrev = slowArr[i - 1] ?? NaN;
-    const sColor = s > sPrev ? 'rgba(100, 181, 246, 0.65)' : s < sPrev ? 'rgba(211, 47, 47, 0.65)' : undefined;
-    plot3[i] = { time: t, value: s, color: sColor };
-  }
-
-  // Fill colors
-  // fill1: EMA-5 vs hidden fast EMA (Pine transp=85 -> alpha ~0.15)
-  // fillCol1 = bjemaslow > bjemafast ? #ef5350 : bjemaslow < bjemafast ? #64b5f6 : na
-  const fillCol1: string[] = new Array(n);
-  // fill2: EMA-5 vs EMA-9 (Pine transp=80 -> alpha ~0.20)
-  // fillCol2 = bjemaslow2 > bjemaslow ? #ef5350 : bjemaslow2 < bjemaslow ? #64b5f6 : na
-  const fillCol2: string[] = new Array(n);
-  // fill3: EMA-9 vs EMA-21 (Pine transp=75 -> alpha ~0.25)
-  // fillCol3 = bjemaslow3 > bjemaslow2 ? #ef5350 : bjemaslow3 < bjemaslow2 ? #64b5f6 : na
-  const fillCol3: string[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    if (i < warmup) {
-      fillCol1[i] = 'transparent';
-      fillCol2[i] = 'transparent';
-      fillCol3[i] = 'transparent';
-      continue;
-    }
-    const f = fastArr[i] ?? NaN;
-    const m = medArr[i] ?? NaN;
-    const s = slowArr[i] ?? NaN;
-    const hf = hiddenFastArr[i] ?? NaN;
-
-    fillCol1[i] = f > hf ? 'rgba(239, 83, 80, 0.15)' : f < hf ? 'rgba(100, 181, 246, 0.15)' : 'transparent';
-    fillCol2[i] = m > f ? 'rgba(239, 83, 80, 0.20)' : m < f ? 'rgba(100, 181, 246, 0.20)' : 'transparent';
-    fillCol3[i] = s > m ? 'rgba(239, 83, 80, 0.25)' : s < m ? 'rgba(100, 181, 246, 0.25)' : 'transparent';
-  }
-
-  // barcolor: uc = close > fast AND close > med -> #64b5f6
-  //           dc = close < fast AND close < med -> #e91e63
-  //           else -> #b2b5be
-  const barColors: BarColorData[] = [];
-  for (let i = warmup; i < n; i++) {
-    const f = fastArr[i] ?? NaN;
-    const m = medArr[i] ?? NaN;
-    if (isNaN(f) || isNaN(m)) continue;
-    const c = bars[i].close;
-    const color = (c > f && c > m) ? '#64B5F6' : (c < f && c < m) ? '#E91E63' : '#B2B5BE';
-    barColors.push({ time: bars[i].time, color });
-  }
-
-  // c = cross(close, bjemaslow) and cross(close, bjemaslow2)
-  const close = bars.map((b) => b.close);
-  const cross = (a: number[], b: Array<number | null | undefined>) => {
-    const o = crossedOver(a, b);
-    const u = crossedUnder(a, b);
-    return o.map((v, i) => v || u[i]);
-  };
-  const crossFast = cross(close, fastArr);
-  const crossMed = cross(close, medArr);
-  const signal = crossFast.map((v, i) => v && crossMed[i]);
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(100, 181, 246, 0.15)' }, colors: fillCol1 },
-      { plot1: 'plot0', plot2: 'plot2', options: { color: 'rgba(100, 181, 246, 0.20)' }, colors: fillCol2 },
-      { plot1: 'plot2', plot2: 'plot3', options: { color: 'rgba(100, 181, 246, 0.25)' }, colors: fillCol3 },
-    ],
-    barColors,
-    alerts: alertStates(alertConditions, bars, [signal]),
+    init() {
+      const fast = taStep.ema(fastLen);
+      const med = taStep.ema(medLen);
+      const slow = taStep.ema(slowLen);
+      const hiddenFast = taStep.ema(1);
+      const s: BjorgumRun = {
+        fast, med, slow, hiddenFast, haOpen: [], haClose: [], fastArr: [], medArr: [], slowArr: [], plot0: [], plot1: [],
+        plot2: [], plot3: [], fillCol1: [], fillCol2: [], fillCol3: [], barColors: [], signal: [], times: [],
+        steps: [fast, med, slow, hiddenFast], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.barColors, s.times];
+      s.series = [
+        s.haOpen, s.haClose, s.fastArr, s.medArr, s.slowArr, s.plot0, s.plot1, s.plot2, s.plot3, s.fillCol1, s.fillCol2,
+        s.fillCol3, s.signal,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      // Heiken Ashi values
+      const haClose = (b.open + b.high + b.low + b.close) / 4;
+      const haOpen = i === 0 ? (b.open + b.close) / 2 : (s.haOpen[i - 1] + s.haClose[i - 1]) / 2;
+      s.haClose[i] = haClose;
+      s.haOpen[i] = haOpen;
+
+      // Three EMAs on haOpen
+      const f = s.fast.step(haOpen);
+      const m = s.med.step(haOpen);
+      const sl = s.slow.step(haOpen);
+      // Hidden fast EMA: ema(hl2, 1) -- plotted with transp=100 (invisible line)
+      const hf = s.hiddenFast.step((b.high + b.low) / 2);
+      s.fastArr[i] = f;
+      s.medArr[i] = m;
+      s.slowArr[i] = sl;
+
+      // c = cross(close, bjemaslow) and cross(close, bjemaslow2)
+      const c = b.close;
+      const pc = i > 0 ? bars[i - 1].close : NaN;
+      const fPrev = i > 0 ? s.fastArr[i - 1] : NaN;
+      const mPrev = i > 0 ? s.medArr[i - 1] : NaN;
+      const sPrev = i > 0 ? s.slowArr[i - 1] : NaN;
+      const crossFast = (c > f && pc <= fPrev) || (c < f && pc >= fPrev);
+      const crossMed = (c > m && pc <= mPrev) || (c < m && pc >= mPrev);
+      const signal = crossFast && crossMed;
+      s.signal[i] = signal;
+      if (signal) s.times.push(t as number);
+
+      // Build plot data with directional colors
+      // Pine: mycolor = up ? #64b5f6 : down ? #d32f2f : na
+      // up = ema > ema[1], down = ema < ema[1]
+      if (i < warmup) {
+        s.plot0[i] = { time: t, value: NaN };
+        s.plot1[i] = { time: t, value: NaN };
+        s.plot2[i] = { time: t, value: NaN };
+        s.plot3[i] = { time: t, value: NaN };
+        s.fillCol1[i] = 'transparent';
+        s.fillCol2[i] = 'transparent';
+        s.fillCol3[i] = 'transparent';
+        return;
+      }
+
+      // EMA-5 directional color (transp=55 -> alpha ~0.45)
+      const fColor = f > fPrev ? 'rgba(100, 181, 246, 0.45)' : f < fPrev ? 'rgba(211, 47, 47, 0.45)' : undefined;
+      s.plot0[i] = { time: t, value: f, color: fColor };
+
+      // Hidden fast EMA (transp=100 -> invisible)
+      s.plot1[i] = { time: t, value: hf };
+
+      // EMA-9 directional color (transp=45 -> alpha ~0.55)
+      const mColor = m > mPrev ? 'rgba(100, 181, 246, 0.55)' : m < mPrev ? 'rgba(211, 47, 47, 0.55)' : undefined;
+      s.plot2[i] = { time: t, value: m, color: mColor };
+
+      // EMA-21 directional color (transp=35 -> alpha ~0.65)
+      const sColor = sl > sPrev ? 'rgba(100, 181, 246, 0.65)' : sl < sPrev ? 'rgba(211, 47, 47, 0.65)' : undefined;
+      s.plot3[i] = { time: t, value: sl, color: sColor };
+
+      // Fill colors
+      // fill1: EMA-5 vs hidden fast EMA (Pine transp=85 -> alpha ~0.15)
+      // fillCol1 = bjemaslow > bjemafast ? #ef5350 : bjemaslow < bjemafast ? #64b5f6 : na
+      s.fillCol1[i] = f > hf ? 'rgba(239, 83, 80, 0.15)' : f < hf ? 'rgba(100, 181, 246, 0.15)' : 'transparent';
+      // fill2: EMA-5 vs EMA-9 (Pine transp=80 -> alpha ~0.20)
+      // fillCol2 = bjemaslow2 > bjemaslow ? #ef5350 : bjemaslow2 < bjemaslow ? #64b5f6 : na
+      s.fillCol2[i] = m > f ? 'rgba(239, 83, 80, 0.20)' : m < f ? 'rgba(100, 181, 246, 0.20)' : 'transparent';
+      // fill3: EMA-9 vs EMA-21 (Pine transp=75 -> alpha ~0.25)
+      // fillCol3 = bjemaslow3 > bjemaslow2 ? #ef5350 : bjemaslow3 < bjemaslow2 ? #64b5f6 : na
+      s.fillCol3[i] = sl > m ? 'rgba(239, 83, 80, 0.25)' : sl < m ? 'rgba(100, 181, 246, 0.25)' : 'transparent';
+
+      // barcolor: uc = close > fast AND close > med -> #64b5f6
+      //           dc = close < fast AND close < med -> #e91e63
+      //           else -> #b2b5be
+      if (isNaN(f) || isNaN(m)) return;
+      const color = (c > f && c > m) ? '#64B5F6' : (c < f && c < m) ? '#E91E63' : '#B2B5BE';
+      s.barColors.push({ time: t, color });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice(), 'plot2': s.plot2.slice(), 'plot3': s.plot3.slice() },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(100, 181, 246, 0.15)' }, colors: s.fillCol1.slice() },
+          { plot1: 'plot0', plot2: 'plot2', options: { color: 'rgba(100, 181, 246, 0.20)' }, colors: s.fillCol2.slice() },
+          { plot1: 'plot2', plot2: 'plot3', options: { color: 'rgba(100, 181, 246, 0.25)' }, colors: s.fillCol3.slice() },
+        ],
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, [s.times], [n > 0 && s.signal[n - 1]]),
+      };
+    },
   };
 }
 
-export const BjorgumTripleEma = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BjorgumTripleEmaInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BjorgumTripleEmaInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const BjorgumTripleEma = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

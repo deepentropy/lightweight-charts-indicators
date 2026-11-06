@@ -16,9 +16,11 @@
  * be freely distributed under the terms of the GPL-3.0 license.
  */
 
-import { getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData, BgColorData, PlotCandleData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface HendersonWeightedMovingAverageInputs {
   /** Number of filter terms */
@@ -92,14 +94,23 @@ function hwmaWeight(m: number, j: number): number {
   return ne(denominator, 0) ? numerator / denominator : 0;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<HendersonWeightedMovingAverageInputs> = {},
-): IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[]; plotCandles: Record<string, PlotCandleData[]> }
-  & { alerts: AlertConditionState[] } {
+type Result = IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[]; plotCandles: Record<string, PlotCandleData[]> }
+  & { alerts: AlertConditionState[] };
+
+interface HwmaRun extends BarRunState<Record<string, never>> {
+  src: number[];
+  ma: number[];
+  plot0: { time: number; value: number; color: string }[];
+  candles: PlotCandleData[];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<HendersonWeightedMovingAverageInputs>): BarStudy<HwmaRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
+  const value = barSource(cfg.src);
 
   // The kernel is built once (var array, filled on the first bar). termMult = (length - 1) / 2 keeps the
   // fractional part for an even length (Pine v6 int division)
@@ -112,56 +123,81 @@ export function calculate(
     weightSum += weight;
   }
 
-  const ma: number[] = new Array(n);
-  for (let b = 0; b < n; b++) {
-    let sum = 0.0;
-    for (let i = 0; i <= cfg.length - 1; i++) {
-      // nz(src[i], src): na (before the first bar, or an na source) is replaced by the current source
-      const v = b - i >= 0 ? src[b - i] : NaN;
-      sum += (isNaN(v) ? src[b] : v) * weights[i];
-    }
-    // ma = weightSum != 0 ? sum / weightSum : src
-    ma[b] = ne(weightSum, 0) ? sum / weightSum : src[b];
-  }
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  const candles: PlotCandleData[] = [];
-  for (let b = 0; b < n; b++) {
-    const t = bars[b].time;
-    const bull = b > 0 && gt(ma[b], ma[b - 1]); // isBullishSlope = ma > ma[1]
-    const maColor = cfg.highlightDirection ? (bull ? BULLISH : BEARISH) : NEUTRAL;
-    plot0.push({ time: t, value: Number.isFinite(ma[b]) ? ma[b] : NaN, color: maColor });
-    // barcolor(title = 'Bar Color', color = applyBarColors ? (bull ? bullishBarColor : bearishBarColor) : na)
-    if (cfg.applyBarColors) barColors.push({ time: t, color: bull ? BULLISH_BAR : BEARISH_BAR });
-    // plotcandle(open, high, low, close, 'Bar Color', color = na, wickcolor = maWickColor, bordercolor = na,
-    //   display = display.pane): only the wicks are drawn (none when Apply Bar Colors is off)
-    const bar = bars[b];
-    candles.push({
-      time: t, open: bar.open, high: bar.high, low: bar.low, close: bar.close,
-      color: 'transparent', borderColor: 'transparent',
-      wickColor: cfg.applyBarColors ? (bull ? BULLISH : BEARISH) : 'transparent',
-    });
-    // bgcolor(title = 'Background Color', color = applyBgColors ? ... : na)
-    if (cfg.applyBgColors) bgColors.push({ time: t, color: bull ? BULLISH_BG : BEARISH_BG });
-  }
-
-  // bullishColorChangeAlert = maColor[1] != bullishColor and maColor == bullishColor; bearish: the same with
-  // bearishColor; anyColorChangeAlert = maColor != maColor[1] (no history on the first bar: false)
-  const col = plot0.map((p) => p.color);
-  const bullFlags = col.map((c, b) => b > 0 && col[b - 1] !== BULLISH && c === BULLISH);
-  const bearFlags = col.map((c, b) => b > 0 && col[b - 1] !== BEARISH && c === BEARISH);
-  const anyFlags = col.map((c, b) => b > 0 && c !== col[b - 1]);
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    barColors,
-    bgColors,
-    plotCandles: { wickCandles: candles },
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags, anyFlags]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: HwmaRun = {
+        src: [], ma: [], plot0: [], candles: [], barColors: [], bgColors: [], flags: [[], [], []], times: [[], [], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.src, s.ma, s.plot0, s.candles, ...s.flags];
+      s.lists = [s.barColors, s.bgColors, ...s.times];
+      return s;
+    },
+    bar(s, b, bars) {
+      const src = s.src;
+      src[b] = value(bars[b]);
+      let sum = 0.0;
+      for (let i = 0; i <= cfg.length - 1; i++) {
+        // nz(src[i], src): na (before the first bar, or an na source) is replaced by the current source
+        const v = b - i >= 0 ? src[b - i] : NaN;
+        sum += (isNaN(v) ? src[b] : v) * weights[i];
+      }
+      // ma = weightSum != 0 ? sum / weightSum : src
+      const ma = ne(weightSum, 0) ? sum / weightSum : src[b];
+      s.ma[b] = ma;
+
+      const t = bars[b].time;
+      const bull = b > 0 && gt(ma, s.ma[b - 1]); // isBullishSlope = ma > ma[1]
+      const maColor = cfg.highlightDirection ? (bull ? BULLISH : BEARISH) : NEUTRAL;
+      s.plot0[b] = { time: t, value: Number.isFinite(ma) ? ma : NaN, color: maColor };
+      // barcolor(title = 'Bar Color', color = applyBarColors ? (bull ? bullishBarColor : bearishBarColor) : na)
+      if (cfg.applyBarColors) s.barColors.push({ time: t, color: bull ? BULLISH_BAR : BEARISH_BAR });
+      // plotcandle(open, high, low, close, 'Bar Color', color = na, wickcolor = maWickColor, bordercolor = na,
+      //   display = display.pane): only the wicks are drawn (none when Apply Bar Colors is off)
+      const bar = bars[b];
+      s.candles[b] = {
+        time: t, open: bar.open, high: bar.high, low: bar.low, close: bar.close,
+        color: 'transparent', borderColor: 'transparent',
+        wickColor: cfg.applyBarColors ? (bull ? BULLISH : BEARISH) : 'transparent',
+      };
+      // bgcolor(title = 'Background Color', color = applyBgColors ? ... : na)
+      if (cfg.applyBgColors) s.bgColors.push({ time: t, color: bull ? BULLISH_BG : BEARISH_BG });
+
+      // bullishColorChangeAlert = maColor[1] != bullishColor and maColor == bullishColor; bearish: the same with
+      // bearishColor; anyColorChangeAlert = maColor != maColor[1] (no history on the first bar: false)
+      const prev = b > 0 ? s.plot0[b - 1].color : '';
+      const flags = [
+        b > 0 && prev !== BULLISH && maColor === BULLISH,
+        b > 0 && prev !== BEARISH && maColor === BEARISH,
+        b > 0 && maColor !== prev,
+      ];
+      for (let k = 0; k < 3; k++) {
+        s.flags[k][b] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+        plotCandles: { wickCandles: s.candles.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HendersonWeightedMovingAverageInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<HendersonWeightedMovingAverageInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -173,6 +209,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const HendersonWeightedMovingAverage = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

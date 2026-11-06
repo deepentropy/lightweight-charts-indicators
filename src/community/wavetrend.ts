@@ -10,7 +10,9 @@
  * Reference: "WaveTrend with Crosses" by LazyBear
  */
 
-import { Series, ta, getSourceSeries, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { MarkerData, BarColorData } from '../types';
 
 export interface WaveTrendInputs {
@@ -48,59 +50,95 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<WaveTrendInputs> = {}): Omit<IndicatorResult, 'markers'> {
-  const { channelLength, averageLength } = { ...defaultInputs, ...inputs };
+type Point = { time: number; value: number };
+type ColorPoint = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
 
-  const ap = getSourceSeries(bars, 'hlc3');
-  const esa = ta.ema(ap, channelLength);
-  const d = ta.ema(math.abs(ap.sub(esa)) as Series, channelLength);
-  const ci = ap.sub(esa).div(d.mul(0.015));
-  const wt1 = ta.ema(ci, averageLength);
-  const wt2 = ta.sma(wt1, 4);
-  const diff = wt1.sub(wt2);
-
-  const toPlot = (s: Series) =>
-    s.toArray().map((value, i) => ({ time: bars[i].time, value: value ?? NaN }));
-
-  // Cross circles and barcolor at WT1/WT2 crossover points
-  const wt1Arr = wt1.toArray();
-  const wt2Arr = wt2.toArray();
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  // plot(cross(wt1, wt2) ? wt2 : na, color = black, style = circles, linewidth = 3)
-  // plot(cross(wt1, wt2) ? wt2 : na, color = (wt2 - wt1 > 0 ? red : lime), style = circles, linewidth = 2)
-  const crossBlack: { time: number; value: number; color: string }[] = [];
-  const crossColor: { time: number; value: number; color: string }[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const t = bars[i].time as number;
-    const w1 = wt1Arr[i]; const w2 = wt2Arr[i];
-    const pw1 = i > 0 ? wt1Arr[i - 1] : null; const pw2 = i > 0 ? wt2Arr[i - 1] : null;
-    const cross = w1 != null && w2 != null && pw1 != null && pw2 != null
-      && ((pw1 <= pw2 && w1 > w2) || (pw1 >= pw2 && w1 < w2));
-    const bearish = cross && (w2 as number) > (w1 as number);
-    crossBlack.push({ time: t, value: cross ? (w2 as number) : NaN, color: '#000000' });
-    crossColor.push({ time: t, value: cross ? (w2 as number) : NaN, color: bearish ? '#FF0000' : '#00FF00' });
-    if (cross) {
-      barColors.push({
-        time: t,
-        color: bearish ? '#00FFFF' : '#FFFF00',
-      });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(wt1), 'plot1': toPlot(wt2), 'plot2': toPlot(diff), 'plot3': crossBlack, 'plot4': crossColor },
-    hlines: [
-      { value: 0, options: { color: '#787B86', linestyle: 'solid', title: 'Zero' } },
-      { value: 60, options: { color: '#EF5350', linestyle: 'dashed', title: 'OB1' } },
-      { value: -60, options: { color: '#26A69A', linestyle: 'dashed', title: 'OS1' } },
-      { value: 53, options: { color: '#EF5350', linestyle: 'dotted', title: 'OB2' } },
-      { value: -53, options: { color: '#26A69A', linestyle: 'dotted', title: 'OS2' } },
-    ],
-    markers,
-    barColors,
-  } as Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
+interface WtRun extends BarRunState<Record<string, never>> {
+  esa: ReturnType<typeof taStep.ema>;
+  d: ReturnType<typeof taStep.ema>;
+  wt1: ReturnType<typeof taStep.ema>;
+  wt2: WindowSma;
+  wt1Arr: number[];
+  wt2Arr: number[];
+  wt1Data: Point[];
+  wt2Data: Point[];
+  diffData: Point[];
+  crossBlack: ColorPoint[];
+  crossColor: ColorPoint[];
+  barColors: BarColorData[];
 }
 
-export const WaveTrend = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+function study(inputs: Partial<WaveTrendInputs>): BarStudy<WtRun, Result> {
+  const { channelLength, averageLength } = { ...defaultInputs, ...inputs };
+  const hlc3 = barSource('hlc3');
+  return {
+    init() {
+      const s: WtRun = {
+        esa: taStep.ema(channelLength), d: taStep.ema(channelLength), wt1: taStep.ema(averageLength), wt2: new WindowSma(4),
+        wt1Arr: [], wt2Arr: [], wt1Data: [], wt2Data: [], diffData: [], crossBlack: [], crossColor: [], barColors: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.esa, s.d, s.wt1, s.wt2];
+      s.lists = [s.barColors];
+      s.series = [s.wt1Arr, s.wt2Arr, s.wt1Data, s.wt2Data, s.diffData, s.crossBlack, s.crossColor];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time as number;
+      const ap = hlc3(bars[i]);
+      const esa = s.esa.step(ap);
+      const d = s.d.step(Math.abs(ap - esa));
+      const ci = (ap - esa) / (d * 0.015);
+      const w1 = s.wt1.step(ci);
+      const w2 = s.wt2.step(w1);
+      s.wt1Arr[i] = w1;
+      s.wt2Arr[i] = w2;
+      s.wt1Data[i] = { time: t, value: w1 };
+      s.wt2Data[i] = { time: t, value: w2 };
+      s.diffData[i] = { time: t, value: w1 - w2 };
+
+      // Cross circles and barcolor at WT1/WT2 crossover points
+      // plot(cross(wt1, wt2) ? wt2 : na, color = black, style = circles, linewidth = 3)
+      // plot(cross(wt1, wt2) ? wt2 : na, color = (wt2 - wt1 > 0 ? red : lime), style = circles, linewidth = 2)
+      const pw1 = i > 0 ? s.wt1Arr[i - 1] : NaN;
+      const pw2 = i > 0 ? s.wt2Arr[i - 1] : NaN;
+      const cross = (pw1 <= pw2 && w1 > w2) || (pw1 >= pw2 && w1 < w2);
+      const bearish = cross && w2 > w1;
+      s.crossBlack[i] = { time: t, value: cross ? w2 : NaN, color: '#000000' };
+      s.crossColor[i] = { time: t, value: cross ? w2 : NaN, color: bearish ? '#FF0000' : '#00FF00' };
+      if (cross) {
+        s.barColors.push({
+          time: t,
+          color: bearish ? '#00FFFF' : '#FFFF00',
+        });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.wt1Data.slice(), 'plot1': s.wt2Data.slice(), 'plot2': s.diffData.slice(), 'plot3': s.crossBlack.slice(), 'plot4': s.crossColor.slice() },
+        hlines: [
+          { value: 0, options: { color: '#787B86', linestyle: 'solid', title: 'Zero' } },
+          { value: 60, options: { color: '#EF5350', linestyle: 'dashed', title: 'OB1' } },
+          { value: -60, options: { color: '#26A69A', linestyle: 'dashed', title: 'OS1' } },
+          { value: 53, options: { color: '#EF5350', linestyle: 'dotted', title: 'OB2' } },
+          { value: -53, options: { color: '#26A69A', linestyle: 'dotted', title: 'OS2' } },
+        ],
+        markers: [],
+        barColors: s.barColors.slice(),
+      } as Result;
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WaveTrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<WaveTrendInputs> = {}): Omit<IndicatorResult, 'markers'> {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const WaveTrend = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

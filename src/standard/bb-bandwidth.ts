@@ -6,7 +6,9 @@
  * Useful for identifying squeezes (low values) and expansions (high values).
  */
 
-import { ta, Series, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowExtreme, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BBBandWidthInputs {
   /** Period length */
@@ -49,62 +51,88 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<BBBandWidthInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface BbwRun extends BarRunState<Record<string, never>> {
+  basis: WindowSma;
+  dev: WindowStdev;
+  high: WindowExtreme;
+  low: WindowExtreme;
+  bbwData: Point[];
+  highData: Point[];
+  lowData: Point[];
+}
+
+// Plots treat infinity as na
+const plotValue = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? NaN : v);
+
+function study(inputs: Partial<BBBandWidthInputs>): BarStudy<BbwRun, IndicatorResult> {
   const { length, src, mult, expansionLength, contractionLength } = { ...defaultInputs, ...inputs };
-
-  const source = getSourceSeries(bars, src);
-  const basis = ta.sma(source, length);
-  const dev = ta.stdev(source, length).mul(mult);
-  const upper = basis.add(dev);
-  const lower = basis.sub(dev);
-
-  // BBW = ((upper - lower) / basis) * 100
-  const basisArr = basis.toArray();
-  const upperArr = upper.toArray();
-  const lowerArr = lower.toArray();
-
-  // Pine division: non-zero / 0 is +-infinity, 0 / 0 is na
-  const bbw: number[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const u = upperArr[i];
-    const l = lowerArr[i];
-    const b = basisArr[i];
-    if (u == null || l == null || b == null || isNaN(u) || isNaN(l) || isNaN(b)) {
-      bbw.push(NaN);
-    } else {
-      const w = u - l;
-      bbw.push(b === 0 ? (w === 0 ? NaN : (w > 0 ? Infinity : -Infinity)) : (w / b) * 100);
-    }
-  }
-
-  // ta.highest / ta.lowest: na on the first length - 1 bars
-  const bbwSeries = Series.fromArray(bars, bbw);
-  const highestExpansion = ta.highest(bbwSeries, expansionLength).toArray();
-  const lowestContraction = ta.lowest(bbwSeries, contractionLength).toArray();
-
-  // Plots treat infinity as na
-  const plotValue = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? NaN : v);
-
-  const bbwData = bbw.map((value, i) => ({ time: bars[i].time, value: plotValue(value) }));
-  const highData = highestExpansion.map((value, i) => ({ time: bars[i].time, value: plotValue(value) }));
-  const lowData = lowestContraction.map((value, i) => ({ time: bars[i].time, value: plotValue(value) }));
-
+  const value = barSource(src);
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const basis = new WindowSma(length);
+      const dev = new WindowStdev(length);
+      // ta.highest / ta.lowest: na on the first length - 1 bars
+      const high = new WindowExtreme(false, expansionLength);
+      const low = new WindowExtreme(true, contractionLength);
+      const s: BbwRun = {
+        basis, dev, high, low, bbwData: [], highData: [], lowData: [],
+        steps: [basis, dev, high, low], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.bbwData, s.highData, s.lowData];
+      return s;
     },
-    plots: {
-      'plot0': bbwData,
-      'plot1': highData,
-      'plot2': lowData,
+    bar(s, i, bars) {
+      const t = bars[i].time;
+      const v = value(bars[i]);
+      const b = s.basis.step(v);
+      const d = s.dev.step(v) * mult;
+      const u = b + d;
+      const l = b - d;
+      // BBW = ((upper - lower) / basis) * 100
+      // Pine division: non-zero / 0 is +-infinity, 0 / 0 is na
+      let bbw: number;
+      if (u == null || l == null || b == null || isNaN(u) || isNaN(l) || isNaN(b)) {
+        bbw = NaN;
+      } else {
+        const w = u - l;
+        bbw = b === 0 ? (w === 0 ? NaN : (w > 0 ? Infinity : -Infinity)) : (w / b) * 100;
+      }
+      s.bbwData[i] = { time: t, value: plotValue(bbw) };
+      s.highData[i] = { time: t, value: plotValue(s.high.step(bbw)) };
+      s.lowData[i] = { time: t, value: plotValue(s.low.step(bbw)) };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.bbwData.slice(),
+          'plot1': s.highData.slice(),
+          'plot2': s.lowData.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BBBandWidthInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BBBandWidthInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const BBBandWidth = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

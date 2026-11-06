@@ -10,7 +10,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RsiModifiedInputs {
   /** Length of the SMAs of the gains and losses */
@@ -65,63 +67,93 @@ const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <= EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<RsiModifiedInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface RsiModRun extends BarRunState<Record<string, never>> {
+  up: WindowSma;
+  down: WindowSma;
+  ma: WindowSma;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<RsiModifiedInputs>): BarStudy<RsiModRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // diff = close - close[1]; up = math.max(diff, 0); down = math.max(-diff, 0) (na on the first bar)
-  const diff = bars.map((b, i) => (i > 0 ? b.close - bars[i - 1].close : NaN));
-  const avgUp = A(ta.sma(S(diff.map((d) => (isNaN(d) ? NaN : Math.max(d, 0)))), cfg.period));
-  const avgDown = A(ta.sma(S(diff.map((d) => (isNaN(d) ? NaN : Math.max(-d, 0)))), cfg.period));
-  const rsi = bars.map((_b, i) => {
-    const total = avgUp[i] + avgDown[i];
-    // avgTotal == 0.0 ? 50.0 : avgUp / avgTotal * 100.0
-    return eq(total, 0) ? 50.0 : (avgUp[i] / total) * 100.0;
-  });
-  const rsiMa = A(ta.sma(S(rsi), cfg.maPeriod));
-
   const upperRangeValue = 50.0 + cfg.rsiRange / 2.0;
   const lowerRangeValue = 50.0 - cfg.rsiRange / 2.0;
   const ob = cfg.overboughtLevel;
   const os = cfg.oversoldLevel;
   const rsiColor = (v: number) => (ge(v, ob) ? OB_COLOR : ge(os, v) ? OS_COLOR : MID_COLOR);
-
-  const t = (i: number) => bars[i].time;
-  const plots = {
-    // plot(rsi > overboughtLevel ? rsi : na, color = na, display = display.none)
-    plot0: bars.map((_b, i) => ({ time: t(i), value: gt(rsi[i], ob) ? rsi[i] : NaN })),
-    // plot(rsi < oversoldLevel ? rsi : na, color = na, display = display.none)
-    plot1: bars.map((_b, i) => ({ time: t(i), value: gt(os, rsi[i]) ? rsi[i] : NaN })),
-    plot2: bars.map((_b, i) => ({ time: t(i), value: ob })),
-    plot3: bars.map((_b, i) => ({ time: t(i), value: os })),
-    plot4: bars.map((_b, i) => ({ time: t(i), value: rsi[i], color: rsiColor(rsi[i]) })),
-    plot5: bars.map((_b, i) => ({ time: t(i), value: rsiMa[i], color: MA_COLOR })),
-  };
-
-  const gray = color.gray;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    hlines: [
-      { value: upperRangeValue, options: { title: 'Upper Range', color: String(color.new(gray, 70)), linestyle: 'dashed' } },
-      { value: ob, options: { title: 'Overbought', color: String(color.new(gray, 25)), linestyle: 'dashed' } },
-      { value: 50, options: { title: 'Midpoint', color: String(color.new(gray, 45)), linestyle: 'dotted' } },
-      { value: os, options: { title: 'Oversold', color: String(color.new(gray, 25)), linestyle: 'dashed' } },
-      { value: lowerRangeValue, options: { title: 'Lower Range', color: String(color.new(gray, 70)), linestyle: 'dashed' } },
-    ],
-    fills: [
-      { plot1: 'plot0', plot2: 'plot2', options: { title: 'Overbought Solid Fill' },
-        colors: new Array<string>(n).fill(String(color.new(OB_COLOR, 70))) },
-      { plot1: 'plot1', plot2: 'plot3', options: { title: 'Oversold Solid Fill' },
-        colors: new Array<string>(n).fill(String(color.new(OS_COLOR, 70))) },
-    ],
+    init() {
+      const up = new WindowSma(cfg.period);
+      const down = new WindowSma(cfg.period);
+      const ma = new WindowSma(cfg.maPeriod);
+      const s: RsiModRun = {
+        up, down, ma, plots: Array.from({ length: 6 }, () => []), steps: [up, down, ma], vars: {}, lists: [], series: [],
+      };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      // diff = close - close[1]; up = math.max(diff, 0); down = math.max(-diff, 0) (na on the first bar)
+      const d = i > 0 ? bars[i].close - bars[i - 1].close : NaN;
+      const avgUp = s.up.step(isNaN(d) ? NaN : Math.max(d, 0));
+      const avgDown = s.down.step(isNaN(d) ? NaN : Math.max(-d, 0));
+      const total = avgUp + avgDown;
+      // avgTotal == 0.0 ? 50.0 : avgUp / avgTotal * 100.0
+      const rsi = eq(total, 0) ? 50.0 : (avgUp / total) * 100.0;
+      const rsiMa = s.ma.step(rsi);
+      const p = s.plots;
+      // plot(rsi > overboughtLevel ? rsi : na, color = na, display = display.none)
+      p[0][i] = { time, value: gt(rsi, ob) ? rsi : NaN };
+      // plot(rsi < oversoldLevel ? rsi : na, color = na, display = display.none)
+      p[1][i] = { time, value: gt(os, rsi) ? rsi : NaN };
+      p[2][i] = { time, value: ob };
+      p[3][i] = { time, value: os };
+      p[4][i] = { time, value: rsi, color: rsiColor(rsi) };
+      p[5][i] = { time, value: rsiMa, color: MA_COLOR };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      const gray = color.gray;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(),
+        },
+        hlines: [
+          { value: upperRangeValue, options: { title: 'Upper Range', color: String(color.new(gray, 70)), linestyle: 'dashed' } },
+          { value: ob, options: { title: 'Overbought', color: String(color.new(gray, 25)), linestyle: 'dashed' } },
+          { value: 50, options: { title: 'Midpoint', color: String(color.new(gray, 45)), linestyle: 'dotted' } },
+          { value: os, options: { title: 'Oversold', color: String(color.new(gray, 25)), linestyle: 'dashed' } },
+          { value: lowerRangeValue, options: { title: 'Lower Range', color: String(color.new(gray, 70)), linestyle: 'dashed' } },
+        ],
+        fills: [
+          { plot1: 'plot0', plot2: 'plot2', options: { title: 'Overbought Solid Fill' },
+            colors: new Array<string>(n).fill(String(color.new(OB_COLOR, 70))) },
+          { plot1: 'plot1', plot2: 'plot3', options: { title: 'Oversold Solid Fill' },
+            colors: new Array<string>(n).fill(String(color.new(OS_COLOR, 70))) },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RsiModifiedInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RsiModifiedInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RsiModified = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

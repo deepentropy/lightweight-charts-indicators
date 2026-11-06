@@ -13,9 +13,11 @@
  * Original notice: © svmstellarvisionmedia
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface IctFvgBuySellSignalsInputs {
   /** Swing length of the dealing range pivots */
@@ -67,108 +69,142 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'ICT Sell', message: 'ICT Sell Signal' },
 ];
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<IctFvgBuySellSignalsInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+
+interface IctVars {
+  drHigh: number;
+  drLow: number;
+  lastBullTop: number;
+  lastBullBottom: number;
+  lastBullCE: number;
+  lastBearTop: number;
+  lastBearBottom: number;
+  lastBearCE: number;
+}
+
+interface IctRun extends BarRunState<IctVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  ph: PivotStep;
+  pl: PivotStep;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  bgColors: BgColorData[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<IctFvgBuySellSignalsInputs>): BarStudy<IctRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const atr = A(ta.atr(bars, cfg.atrLen));
-  const ph = A(ta.pivothigh(S(bars.map((b) => b.high)), cfg.lenSwing, cfg.lenSwing));
-  const pl = A(ta.pivotlow(S(bars.map((b) => b.low)), cfg.lenSwing, cfg.lenSwing));
-
   const premiumBg = String(color.new(color.red, 92));
   const discountBg = String(color.new(color.teal, 92));
-  const eqArr: number[] = new Array(n);
-  const bullCeArr: number[] = new Array(n);
-  const bearCeArr: number[] = new Array(n);
-  const bgColors: BgColorData[] = [];
-  const markers: MarkerData[] = [];
-  const longFlags: boolean[] = new Array(n).fill(false);
-  const shortFlags: boolean[] = new Array(n).fill(false);
-
-  let drHigh = NaN; // var float drHigh = na
-  let drLow = NaN; // var float drLow = na
-  // ta.valuewhen(cond, x, 0): x on the last bar where cond was true
-  let lastBullTop = NaN;
-  let lastBullBottom = NaN;
-  let lastBullCE = NaN;
-  let lastBearTop = NaN;
-  let lastBearBottom = NaN;
-  let lastBearCE = NaN;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const body = Math.abs(b.close - b.open);
-    // body / atr: atr is 0 only when every true range is 0, then body is 0 too and Pine 0 / 0 is NaN
-    const ratio = atr[i] === 0 ? NaN : body / atr[i];
-    const isBullDisp = ge(ratio, cfg.displATR) && gt(b.close, b.open);
-    const isBearDisp = ge(ratio, cfg.displATR) && lt(b.close, b.open);
-
-    if (!isNaN(ph[i])) drHigh = ph[i];
-    if (!isNaN(pl[i])) drLow = pl[i];
-    const rangeReady = !isNaN(drHigh) && !isNaN(drLow);
-    const eq = rangeReady ? (drHigh + drLow) / 2.0 : NaN;
-    const inPremium = rangeReady && gt(b.close, eq);
-    const inDiscount = rangeReady && lt(b.close, eq);
-    eqArr[i] = eq;
-    if (rangeReady) bgColors.push({ time: b.time, color: inPremium ? premiumBg : discountBg });
-
-    // 3-bar fair value gaps
-    const high2 = i >= 2 ? bars[i - 2].high : NaN;
-    const low2 = i >= 2 ? bars[i - 2].low : NaN;
-    const bullFVG = gt(b.low, high2);
-    const bearFVG = lt(b.high, low2);
-    if (bullFVG) {
-      lastBullTop = b.low;
-      lastBullBottom = high2;
-      lastBullCE = (lastBullTop + lastBullBottom) / 2.0;
-    }
-    if (bearFVG) {
-      lastBearTop = low2;
-      lastBearBottom = b.high;
-      lastBearCE = (lastBearTop + lastBearBottom) / 2.0;
-    }
-    bullCeArr[i] = lastBullCE;
-    bearCeArr[i] = lastBearCE;
-
-    const inBullZone = !isNaN(lastBullTop) && !isNaN(lastBullBottom) && le(b.low, lastBullTop) && ge(b.high, lastBullBottom);
-    const inBearZone = !isNaN(lastBearTop) && !isNaN(lastBearBottom) && ge(b.high, lastBearBottom) && le(b.low, lastBearTop);
-    const longOkPD = !cfg.usePDFilter || inDiscount;
-    const shortOkPD = !cfg.usePDFilter || inPremium;
-    // close > nz(lastBullCE, close)
-    const longSignal = inBullZone && longOkPD && isBullDisp && gt(b.close, isNaN(lastBullCE) ? b.close : lastBullCE);
-    const shortSignal = inBearZone && shortOkPD && isBearDisp && lt(b.close, isNaN(lastBearCE) ? b.close : lastBearCE);
-    longFlags[i] = longSignal;
-    shortFlags[i] = shortSignal;
-    if (longSignal) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY',
-        textColor: color.white, size: 'small' });
-    }
-    if (shortSignal) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
-        textColor: color.white, size: 'small' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: eqArr[i], color: color.yellow })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: bullCeArr[i], color: color.teal })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: bearCeArr[i], color: color.red })),
+    init() {
+      const s: IctRun = {
+        atr: taStep.atr(cfg.atrLen), ph: new PivotStep(cfg.lenSwing, cfg.lenSwing, true),
+        pl: new PivotStep(cfg.lenSwing, cfg.lenSwing, false), plot0: [], plot1: [], plot2: [], bgColors: [], markers: [],
+        flags: [[], []], times: [[], []], steps: [],
+        vars: {
+          drHigh: NaN, // var float drHigh = na
+          drLow: NaN, // var float drLow = na
+          // ta.valuewhen(cond, x, 0): x on the last bar where cond was true
+          lastBullTop: NaN, lastBullBottom: NaN, lastBullCE: NaN, lastBearTop: NaN, lastBearBottom: NaN, lastBearCE: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.atr, s.ph, s.pl];
+      s.lists = [s.bgColors, s.markers, ...s.times];
+      s.series = [s.plot0, s.plot1, s.plot2, ...s.flags];
+      return s;
     },
-    markers,
-    bgColors,
-    // alertcondition(longSignal, "ICT Buy") / alertcondition(shortSignal, "ICT Sell")
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags]),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const ph = s.ph.step(i, b.high);
+      const pl = s.pl.step(i, b.low);
+      const body = Math.abs(b.close - b.open);
+      // body / atr: atr is 0 only when every true range is 0, then body is 0 too and Pine 0 / 0 is NaN
+      const ratio = atr === 0 ? NaN : body / atr;
+      const isBullDisp = ge(ratio, cfg.displATR) && gt(b.close, b.open);
+      const isBearDisp = ge(ratio, cfg.displATR) && lt(b.close, b.open);
+
+      if (!isNaN(ph)) v.drHigh = ph;
+      if (!isNaN(pl)) v.drLow = pl;
+      const rangeReady = !isNaN(v.drHigh) && !isNaN(v.drLow);
+      const eq = rangeReady ? (v.drHigh + v.drLow) / 2.0 : NaN;
+      const inPremium = rangeReady && gt(b.close, eq);
+      const inDiscount = rangeReady && lt(b.close, eq);
+      if (rangeReady) s.bgColors.push({ time: b.time, color: inPremium ? premiumBg : discountBg });
+
+      // 3-bar fair value gaps
+      const high2 = i >= 2 ? bars[i - 2].high : NaN;
+      const low2 = i >= 2 ? bars[i - 2].low : NaN;
+      const bullFVG = gt(b.low, high2);
+      const bearFVG = lt(b.high, low2);
+      if (bullFVG) {
+        v.lastBullTop = b.low;
+        v.lastBullBottom = high2;
+        v.lastBullCE = (v.lastBullTop + v.lastBullBottom) / 2.0;
+      }
+      if (bearFVG) {
+        v.lastBearTop = low2;
+        v.lastBearBottom = b.high;
+        v.lastBearCE = (v.lastBearTop + v.lastBearBottom) / 2.0;
+      }
+      s.plot0[i] = { time: b.time as number, value: eq, color: color.yellow };
+      s.plot1[i] = { time: b.time as number, value: v.lastBullCE, color: color.teal };
+      s.plot2[i] = { time: b.time as number, value: v.lastBearCE, color: color.red };
+
+      const inBullZone = !isNaN(v.lastBullTop) && !isNaN(v.lastBullBottom) && le(b.low, v.lastBullTop) && ge(b.high, v.lastBullBottom);
+      const inBearZone = !isNaN(v.lastBearTop) && !isNaN(v.lastBearBottom) && ge(b.high, v.lastBearBottom) && le(b.low, v.lastBearTop);
+      const longOkPD = !cfg.usePDFilter || inDiscount;
+      const shortOkPD = !cfg.usePDFilter || inPremium;
+      // close > nz(lastBullCE, close)
+      const longSignal = inBullZone && longOkPD && isBullDisp && gt(b.close, isNaN(v.lastBullCE) ? b.close : v.lastBullCE);
+      const shortSignal = inBearZone && shortOkPD && isBearDisp && lt(b.close, isNaN(v.lastBearCE) ? b.close : v.lastBearCE);
+      // alertcondition(longSignal, "ICT Buy") / alertcondition(shortSignal, "ICT Sell")
+      s.flags[0][i] = longSignal;
+      s.flags[1][i] = shortSignal;
+      if (longSignal) s.times[0].push(b.time as number);
+      if (shortSignal) s.times[1].push(b.time as number);
+      if (longSignal) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY',
+          textColor: color.white, size: 'small' });
+      }
+      if (shortSignal) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
+          textColor: color.white, size: 'small' });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IctFvgBuySellSignalsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<IctFvgBuySellSignalsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const IctFvgBuySellSignals = {
   calculate,
+  createRun,
+
   metadata,
   defaultInputs,
   inputConfig,

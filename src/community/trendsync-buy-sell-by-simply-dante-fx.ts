@@ -13,9 +13,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrendsyncBuySellInputs {
   smaLength: number;
@@ -56,74 +58,112 @@ export const metadata = {
 /** Pine float comparisons: a > b only when a - b > 1e-10 (na compares false) */
 const gt = (a: number, b: number) => a - b > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TrendsyncBuySellInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface TsVars {
+  prevBuy: boolean;
+  prevSell: boolean;
+  prevBuyDown: boolean;
+  prevSellDown: boolean;
+}
+
+interface TsRun extends BarRunState<TsVars> {
+  sma: WindowSma;
+  atr: ReturnType<typeof taStep.atr>;
+  rsi: ReturnType<typeof taStep.rsi>;
+  prevHigh: WindowExtreme;
+  prevLow: WindowExtreme;
+  plot0: { time: number; value: number; color: string }[];
+  markers: MarkerData[];
+  unified: boolean[];
+  times: number[];
+}
+
+function study(inputs: Partial<TrendsyncBuySellInputs>): BarStudy<TsRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const close = S(bars.map((b) => b.close));
-  const sma = A(ta.sma(close, cfg.smaLength));
-  const atr = A(ta.atr(bars, cfg.atrLength));
-  const rsi = A(ta.rsi(close, cfg.rsiLength));
-  // ta.highest(high[1], 3) / ta.lowest(low[1], 3)
-  const prevHigh = A(ta.highest(S(bars.map((_b, i) => (i > 0 ? bars[i - 1].high : NaN))), 3));
-  const prevLow = A(ta.lowest(S(bars.map((_b, i) => (i > 0 ? bars[i - 1].low : NaN))), 3));
-
-  const markers: MarkerData[] = [];
-  const unifiedFlags: boolean[] = [];
-  let prevBuy = false;
-  let prevSell = false;
-  let prevBuyDown = false;
-  let prevSellDown = false;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const higherHigh = gt(b.high, prevHigh[i]);
-    const higherLow = gt(b.low, prevLow[i]);
-    const lowerHigh = gt(prevHigh[i], b.high);
-    const lowerLow = gt(prevLow[i], b.low);
-    const uptrend = gt(b.close, sma[i]);
-    const downtrend = gt(sma[i], b.close);
-    const rangeFilter = gt(b.high - b.low, atr[i] * cfg.rangeThreshold);
-    const momentumFilterUp = gt(rsi[i], cfg.rsiThreshold);
-    const momentumFilterDown = gt(100 - cfg.rsiThreshold, rsi[i]);
-
-    const buySignal = uptrend && higherLow && rangeFilter && momentumFilterUp;
-    const sellSignal = uptrend && higherHigh && rangeFilter && momentumFilterDown;
-    const buySignalDown = downtrend && lowerLow && rangeFilter && momentumFilterUp;
-    const sellSignalDown = downtrend && lowerHigh && rangeFilter && momentumFilterDown;
-
-    // x and not x[1] (x[1] is false on the first bar)
-    const finalBuy = (buySignal && !prevBuy) || (buySignalDown && !prevBuyDown);
-    const finalSell = (sellSignal && !prevSell) || (sellSignalDown && !prevSellDown);
-    // unifiedSignal = finalBuySignal or finalSellSignal
-    unifiedFlags.push(finalBuy || finalSell);
-    prevBuy = buySignal;
-    prevSell = sellSignal;
-    prevBuyDown = buySignalDown;
-    prevSellDown = sellSignalDown;
-
-    // plotshape(..., location.belowbar / abovebar, shape.labelup / labeldown, text = "BUY" / "SELL"); the Pine
-    // default text colour is blue
-    if (finalBuy) {
-      markers.push({ time: b.time as number, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY', textColor: color.blue });
-    }
-    if (finalSell) {
-      markers.push({ time: b.time as number, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL', textColor: color.blue });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time as number, value: sma[i], color: color.purple })),
+    init() {
+      const sma = new WindowSma(cfg.smaLength);
+      const atr = taStep.atr(cfg.atrLength);
+      const rsi = taStep.rsi(cfg.rsiLength);
+      // ta.highest(high[1], 3) / ta.lowest(low[1], 3)
+      const prevHigh = new WindowExtreme(false, 3);
+      const prevLow = new WindowExtreme(true, 3);
+      const s: TsRun = {
+        sma, atr, rsi, prevHigh, prevLow, plot0: [], markers: [], unified: [], times: [],
+        steps: [sma, atr, rsi, prevHigh, prevLow],
+        vars: { prevBuy: false, prevSell: false, prevBuyDown: false, prevSellDown: false },
+        lists: [], series: [],
+      };
+      s.series = [s.plot0, s.unified];
+      s.lists = [s.markers, s.times];
+      return s;
     },
-    markers,
-    alerts: alertStates(alertConditions, bars, [unifiedFlags]),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const sma = s.sma.step(b.close);
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const rsi = s.rsi.step(b.close);
+      const prevHigh = s.prevHigh.step(i > 0 ? bars[i - 1].high : NaN);
+      const prevLow = s.prevLow.step(i > 0 ? bars[i - 1].low : NaN);
+
+      const higherHigh = gt(b.high, prevHigh);
+      const higherLow = gt(b.low, prevLow);
+      const lowerHigh = gt(prevHigh, b.high);
+      const lowerLow = gt(prevLow, b.low);
+      const uptrend = gt(b.close, sma);
+      const downtrend = gt(sma, b.close);
+      const rangeFilter = gt(b.high - b.low, atr * cfg.rangeThreshold);
+      const momentumFilterUp = gt(rsi, cfg.rsiThreshold);
+      const momentumFilterDown = gt(100 - cfg.rsiThreshold, rsi);
+
+      const buySignal = uptrend && higherLow && rangeFilter && momentumFilterUp;
+      const sellSignal = uptrend && higherHigh && rangeFilter && momentumFilterDown;
+      const buySignalDown = downtrend && lowerLow && rangeFilter && momentumFilterUp;
+      const sellSignalDown = downtrend && lowerHigh && rangeFilter && momentumFilterDown;
+
+      // x and not x[1] (x[1] is false on the first bar)
+      const finalBuy = (buySignal && !v.prevBuy) || (buySignalDown && !v.prevBuyDown);
+      const finalSell = (sellSignal && !v.prevSell) || (sellSignalDown && !v.prevSellDown);
+      // unifiedSignal = finalBuySignal or finalSellSignal
+      const unified = finalBuy || finalSell;
+      s.unified[i] = unified;
+      if (unified) s.times.push(b.time as number);
+      v.prevBuy = buySignal;
+      v.prevSell = sellSignal;
+      v.prevBuyDown = buySignalDown;
+      v.prevSellDown = sellSignalDown;
+
+      // plotshape(..., location.belowbar / abovebar, shape.labelup / labeldown, text = "BUY" / "SELL"); the Pine
+      // default text colour is blue
+      if (finalBuy) {
+        s.markers.push({ time: b.time as number, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY', textColor: color.blue });
+      }
+      if (finalSell) {
+        s.markers.push({ time: b.time as number, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL', textColor: color.blue });
+      }
+      s.plot0[i] = { time: b.time as number, value: sma, color: color.purple };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, [s.times], [n > 0 && s.unified[n - 1]]),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrendsyncBuySellInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TrendsyncBuySellInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -133,6 +173,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const TrendsyncBuySell = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

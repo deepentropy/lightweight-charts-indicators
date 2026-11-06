@@ -12,7 +12,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { WindowSma, createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DemandIndexInputs {
   /** EMA length of the volume normalisation */
@@ -60,67 +62,98 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 /** Pine math.max: na when an argument is na */
 const max = (a: number, b: number) => Math.max(a, b);
 
-export function calculate(bars: Bar[], inputs: Partial<DemandIndexInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface DemandIndexVars {
+  /** max(|H0 - L0|, 1e-10) of the first bar */
+  denHL0: number;
+  /** hl2c of the bar before */
+  hl2c1: number;
+}
+
+interface DemandIndexRun extends BarRunState<DemandIndexVars> {
+  emaVol: ReturnType<typeof taStep.ema>;
+  bp: ReturnType<typeof taStep.ema>;
+  sp: ReturnType<typeof taStep.ema>;
+  diSma: WindowSma;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<DemandIndexInputs>): BarStudy<DemandIndexRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // HL2C per Sibbet: H + L + 2C
-  const hl2c = bars.map((b) => b.high + b.low + 2.0 * b.close);
-  // var H0 / L0: high / low of the first bar
-  const H0 = n > 0 ? bars[0].high : NaN;
-  const L0 = n > 0 ? bars[0].low : NaN;
-  const denHL0 = max(Math.abs(H0 - L0), EPS);
-
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const emaVol = A(ta.ema(S(volume), cfg.bsLength));
-
-  const bpRaw: number[] = new Array(n);
-  const spRaw: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const volNorm = volume[i] / max(emaVol[i], EPS);
-    const cur = hl2c[i];
-    // hl2cPrev = nz(hl2c[1], hl2c)
-    const prev = i > 0 && !isNaN(hl2c[i - 1]) ? hl2c[i - 1] : cur;
-    const bpExpArg = 0.375 * ((cur + prev) / denHL0) * ((prev - cur) / max(cur, EPS));
-    const spExpArg = 0.375 * ((cur + prev) / denHL0) * ((cur - prev) / max(prev, EPS));
-    bpRaw[i] = lt(cur, prev) ? volNorm / Math.exp(bpExpArg) : volNorm;
-    spRaw[i] = gt(cur, prev) ? volNorm / Math.exp(spExpArg) : volNorm;
-  }
-
-  const bp = A(ta.ema(S(bpRaw), cfg.bsSmooth));
-  const sp = A(ta.ema(S(spRaw), cfg.bsSmooth));
-
-  const di: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const greaterBP = gt(bp[i], sp[i]);
-    const equalBP = le(Math.abs(bp[i] - sp[i]), EPS);
-    const q = greaterBP ? sp[i] / max(bp[i], EPS) : equalBP ? 1.0 : bp[i] / max(sp[i], EPS);
-    const d = le(sp[i], bp[i]) ? 100.0 * (1.0 - q) : 100.0 * (q - 1.0);
-    di[i] = Number.isFinite(d) ? d : NaN;
-  }
-  const diSma = A(ta.sma(S(di), cfg.diSmaLength));
-
   const zeroColor = String(color.new(color.gray, 70));
   const up = String(color.new(color.green, 0));
   const down = String(color.new(color.red, 0));
   const white = String(color.new(color.white, 0));
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b) => ({ time: b.time, value: 0, color: zeroColor })),
+    init() {
+      const emaVol = taStep.ema(cfg.bsLength);
+      const bp = taStep.ema(cfg.bsSmooth);
+      const sp = taStep.ema(cfg.bsSmooth);
+      const diSma = new WindowSma(cfg.diSmaLength);
+      const s: DemandIndexRun = {
+        emaVol, bp, sp, diSma, plots: [[], [], []],
+        steps: [emaVol, bp, sp, diSma],
+        vars: { denHL0: NaN, hl2c1: NaN },
+        lists: [], series: [],
+      };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      // var H0 / L0: high / low of the first bar
+      if (i === 0) v.denHL0 = max(Math.abs(b.high - b.low), EPS);
+      const denHL0 = v.denHL0;
+      // HL2C per Sibbet: H + L + 2C
+      const cur = b.high + b.low + 2.0 * b.close;
+      const volume = b.volume ?? NaN;
+      const volNorm = volume / max(s.emaVol.step(volume), EPS);
+      // hl2cPrev = nz(hl2c[1], hl2c)
+      const prev = i > 0 && !isNaN(v.hl2c1) ? v.hl2c1 : cur;
+      const bpExpArg = 0.375 * ((cur + prev) / denHL0) * ((prev - cur) / max(cur, EPS));
+      const spExpArg = 0.375 * ((cur + prev) / denHL0) * ((cur - prev) / max(prev, EPS));
+      const bpRaw = lt(cur, prev) ? volNorm / Math.exp(bpExpArg) : volNorm;
+      const spRaw = gt(cur, prev) ? volNorm / Math.exp(spExpArg) : volNorm;
+      v.hl2c1 = cur;
+
+      const bp = s.bp.step(bpRaw);
+      const sp = s.sp.step(spRaw);
+      const greaterBP = gt(bp, sp);
+      const equalBP = le(Math.abs(bp - sp), EPS);
+      const q = greaterBP ? sp / max(bp, EPS) : equalBP ? 1.0 : bp / max(sp, EPS);
+      const d = le(sp, bp) ? 100.0 * (1.0 - q) : 100.0 * (q - 1.0);
+      const di = Number.isFinite(d) ? d : NaN;
+      const diSma = s.diSma.step(di);
+
+      s.plots[0][i] = { time: b.time, value: 0, color: zeroColor };
       // color = di >= 0 ? green : red
-      plot1: bars.map((b, i) => ({ time: b.time, value: di[i], color: ge(di[i], 0) ? up : down })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: cfg.showDiSma ? fin(diSma[i]) : NaN, color: white })),
+      s.plots[1][i] = { time: b.time, value: di, color: ge(di, 0) ? up : down };
+      s.plots[2][i] = { time: b.time, value: cfg.showDiSma ? fin(diSma) : NaN, color: white };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DemandIndexInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DemandIndexInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const DemandIndex = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

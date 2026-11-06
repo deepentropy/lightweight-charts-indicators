@@ -15,8 +15,10 @@
  * Original notice: © Guillaume46
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RsiMulticolorEditableInputs {
   /** RSI length */
@@ -94,68 +96,107 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RsiMulticolorEditableInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color?: string };
+
+interface RsiMcRun extends BarRunState<Record<string, never>> {
+  up: ReturnType<typeof taStep.rma>;
+  down: ReturnType<typeof taStep.rma>;
+  rsi: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  plot4: Point[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<RsiMulticolorEditableInputs>): BarStudy<RsiMcRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // ta.change(close): na on the first bar; math.max / math.min of na is na
-  const ch = bars.map((b, i) => (i > 0 ? b.close - bars[i - 1].close : NaN));
-  const up = A(ta.rma(S(ch.map((c) => Math.max(c, 0))), cfg.len));
-  const down = A(ta.rma(S(ch.map((c) => -Math.min(c, 0))), cfg.len));
-  // rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - 100 / (1 + up / down)
-  const rsi = up.map((u, i) => {
-    const d = down[i];
-    if (d === 0) return 100;
-    if (u === 0) return 0;
-    return 100 - 100 / (1 + u / d);
-  });
-
-  const t = (i: number) => bars[i].time;
-  const constant = (c: string) => new Array<string>(n).fill(c);
-  // coben = ta.crossover(ob, rv), cobex = ta.crossunder(ob, rv), cosen = ta.crossover(os, rv),
-  // cosex = ta.crossunder(ob, rv), cnt = ta.cross(nt, rv): the levels are the first series
-  const level = (v: number) => new Array<number>(n).fill(v);
-  const ntOver = crossedOver(level(cfg.nt), rsi);
-  const ntUnder = crossedUnder(level(cfg.nt), rsi);
-  const coben = crossedOver(level(cfg.ob), rsi);
-  const cobex = crossedUnder(level(cfg.ob), rsi);
-  const cnt = ntOver.map((v, i) => v || ntUnder[i]);
-  const cosen = crossedOver(level(cfg.os), rsi);
-  const cosex = crossedUnder(level(cfg.ob), rsi);
+  // ta.crossover(level, rsi) / ta.crossunder(level, rsi) with the values of the bar before (na compares false)
+  const over = (l: number, v: number, pv: number) => l > v && l <= pv;
+  const under = (l: number, v: number, pv: number) => l < v && l >= pv;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: rsi.map((v, i) => ({ time: t(i), value: v, color: RSI_COLOR })),
-      // plot(ob, display = display.none) / plot(os, display = display.none)
-      plot1: bars.map((b) => ({ time: b.time, value: cfg.ob })),
-      plot2: bars.map((b) => ({ time: b.time, value: cfg.os })),
-      // plot(rv > ob ? rv : ob) / plot(rv < os ? rv : os), display.none
-      plot3: rsi.map((v, i) => ({ time: t(i), value: gt(v, cfg.ob) ? v : cfg.ob })),
-      plot4: rsi.map((v, i) => ({ time: t(i), value: lt(v, cfg.os) ? v : cfg.os })),
+    init() {
+      const up = taStep.rma(cfg.len);
+      const down = taStep.rma(cfg.len);
+      const s: RsiMcRun = {
+        up, down, rsi: [], plot0: [], plot1: [], plot2: [], plot3: [], plot4: [],
+        flags: [[], [], [], [], []], times: [[], [], [], [], []],
+        steps: [up, down], vars: {}, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.rsi, s.plot0, s.plot1, s.plot2, s.plot3, s.plot4, ...s.flags];
+      return s;
     },
-    hlines: [
-      { value: cfg.ob, options: { title: 'Overbought', color: LEVEL_COLOR, linestyle: 'dotted' } },
-      { value: cfg.onl, options: { title: 'Overbought Noise Level', color: LEVEL_COLOR, linestyle: 'dotted' } },
-      { value: cfg.nt, options: { title: 'Neutral', color: color.black, linestyle: 'dashed' } },
-      { value: cfg.osdl, options: { title: 'Oversold Noise Level', color: LEVEL_COLOR, linestyle: 'dotted' } },
-      { value: cfg.os, options: { title: 'Oversold', color: LEVEL_COLOR, linestyle: 'dotted' } },
-    ],
-    fills: [
-      { plot1: 'hline_ob', plot2: 'hline_onl', options: { title: 'Bg Overbought Noise Level' }, colors: constant(NOISE_FILL) },
-      { plot1: 'hline_onl', plot2: 'hline_nt', options: { title: 'Background Neutral Top' }, colors: constant(NEUTRAL_FILL) },
-      { plot1: 'hline_nt', plot2: 'hline_osdl', options: { title: 'Background Neutral Bottom' }, colors: constant(NEUTRAL_FILL) },
-      { plot1: 'hline_os', plot2: 'hline_osdl', options: { title: 'Bg Oversold Noise Level' }, colors: constant(NOISE_FILL) },
-      // fill(oblv, obl, color.new(color.red, 50)) / fill(osl, oslv, color.new(color.green, 50))
-      { plot1: 'plot3', plot2: 'plot1', options: { title: 'Overbought' }, colors: constant(OB_FILL) },
-      { plot1: 'plot2', plot2: 'plot4', options: { title: 'Oversold' }, colors: constant(OS_FILL) },
-    ],
-    alerts: alertStates(alertConditions, bars, [coben, cobex, cnt, cosen, cosex]),
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const time = b.time;
+      // ta.change(close): na on the first bar; math.max / math.min of na is na
+      const ch = i > 0 ? b.close - bars[i - 1]!.close : NaN;
+      const u = s.up.step(Math.max(ch, 0)) ?? NaN;
+      const d = s.down.step(-Math.min(ch, 0)) ?? NaN;
+      // rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - 100 / (1 + up / down)
+      const v = d === 0 ? 100 : u === 0 ? 0 : 100 - 100 / (1 + u / d);
+      s.rsi[i] = v;
+      s.plot0[i] = { time, value: v, color: RSI_COLOR };
+      // plot(ob, display = display.none) / plot(os, display = display.none)
+      s.plot1[i] = { time, value: cfg.ob };
+      s.plot2[i] = { time, value: cfg.os };
+      // plot(rv > ob ? rv : ob) / plot(rv < os ? rv : os), display.none
+      s.plot3[i] = { time, value: gt(v, cfg.ob) ? v : cfg.ob };
+      s.plot4[i] = { time, value: lt(v, cfg.os) ? v : cfg.os };
+      // coben = ta.crossover(ob, rv), cobex = ta.crossunder(ob, rv), cosen = ta.crossover(os, rv),
+      // cosex = ta.crossunder(ob, rv), cnt = ta.cross(nt, rv): the levels are the first series
+      const pv = i > 0 ? s.rsi[i - 1]! : NaN;
+      const flags = [
+        over(cfg.ob, v, pv),
+        under(cfg.ob, v, pv),
+        over(cfg.nt, v, pv) || under(cfg.nt, v, pv),
+        over(cfg.os, v, pv),
+        under(cfg.ob, v, pv),
+      ];
+      for (let k = 0; k < 5; k++) {
+        s.flags[k]![i] = flags[k]!;
+        if (flags[k]) s.times[k]!.push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const constant = (c: string) => new Array<string>(n).fill(c);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice(), plot4: s.plot4.slice() },
+        hlines: [
+          { value: cfg.ob, options: { title: 'Overbought', color: LEVEL_COLOR, linestyle: 'dotted' } },
+          { value: cfg.onl, options: { title: 'Overbought Noise Level', color: LEVEL_COLOR, linestyle: 'dotted' } },
+          { value: cfg.nt, options: { title: 'Neutral', color: color.black, linestyle: 'dashed' } },
+          { value: cfg.osdl, options: { title: 'Oversold Noise Level', color: LEVEL_COLOR, linestyle: 'dotted' } },
+          { value: cfg.os, options: { title: 'Oversold', color: LEVEL_COLOR, linestyle: 'dotted' } },
+        ],
+        fills: [
+          { plot1: 'hline_ob', plot2: 'hline_onl', options: { title: 'Bg Overbought Noise Level' }, colors: constant(NOISE_FILL) },
+          { plot1: 'hline_onl', plot2: 'hline_nt', options: { title: 'Background Neutral Top' }, colors: constant(NEUTRAL_FILL) },
+          { plot1: 'hline_nt', plot2: 'hline_osdl', options: { title: 'Background Neutral Bottom' }, colors: constant(NEUTRAL_FILL) },
+          { plot1: 'hline_os', plot2: 'hline_osdl', options: { title: 'Bg Oversold Noise Level' }, colors: constant(NOISE_FILL) },
+          // fill(oblv, obl, color.new(color.red, 50)) / fill(osl, oslv, color.new(color.green, 50))
+          { plot1: 'plot3', plot2: 'plot1', options: { title: 'Overbought' }, colors: constant(OB_FILL) },
+          { plot1: 'plot2', plot2: 'plot4', options: { title: 'Oversold' }, colors: constant(OS_FILL) },
+        ],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RsiMulticolorEditableInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RsiMulticolorEditableInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -169,6 +210,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const RsiMulticolorEditable = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -11,7 +11,9 @@
  * Reference: "vdubus BinaryPro - Indicators 1 & 2" (community)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VdubusBinaryProInputs {
   upperChannelLen: number;
@@ -51,81 +53,85 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VdubusBinaryProInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface VdubusRun extends BarRunState<Record<string, never>> {
+  upper: WindowExtreme;
+  lower: WindowExtreme;
+  sma50: WindowSma;
+  stdev: WindowStdev;
+  upperPlot: Point[];
+  lowerPlot: Point[];
+  ma50Plot: Point[];
+  bbUpperPlot: Point[];
+  bbLowerPlot: Point[];
+}
+
+function study(inputs: Partial<VdubusBinaryProInputs>): BarStudy<VdubusRun, IndicatorResult> {
   const { upperChannelLen, lowerChannelLen, maPeriod, bbLength, bbMult } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const closeSeries = new Series(bars, (b) => b.close);
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-
-  // Pine: upper = highest(length1), lower = lowest(length2)
-  const upperArr = ta.highest(highSeries, upperChannelLen).toArray();
-  const lowerArr = ta.lowest(lowSeries, lowerChannelLen).toArray();
-
-  // Pine: basis = avg(upper, lower)
-  // Pine: SMA 50
-  const sma50Arr = ta.sma(closeSeries, maPeriod).toArray();
-
-  // Pine: BB based on basis = avg(upper, lower), dev = mult * stdev(close, bbLength)
-  // basis for BB = avg(upper, lower)
-  const basisArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    basisArr[i] = ((upperArr[i] ?? 0) + (lowerArr[i] ?? 0)) / 2;
-  }
-
-  // Pine: bb1_dev = bb1_mult * stdev(close, bb1_l)
-  const stdevArr = ta.stdev(closeSeries, bbLength).toArray();
-
-  const bbUpperArr: number[] = new Array(n);
-  const bbLowerArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const basis = basisArr[i];
-    const dev = bbMult * (stdevArr[i] ?? 0);
-    bbUpperArr[i] = basis + dev;
-    bbLowerArr[i] = basis - dev;
-  }
-
   const warmup = Math.max(upperChannelLen, lowerChannelLen, bbLength);
-
-  const upperPlot = bars.map((b, i) => ({
-    time: b.time,
-    value: (i < warmup || upperArr[i] == null) ? NaN : upperArr[i]!,
-  }));
-
-  const lowerPlot = bars.map((b, i) => ({
-    time: b.time,
-    value: (i < warmup || lowerArr[i] == null) ? NaN : lowerArr[i]!,
-  }));
-
-  const ma50Plot = bars.map((b, i) => ({
-    time: b.time,
-    value: (i < maPeriod || sma50Arr[i] == null) ? NaN : sma50Arr[i]!,
-  }));
-
-  const bbUpperPlot = bars.map((b, i) => ({
-    time: b.time,
-    value: (i < warmup || isNaN(bbUpperArr[i])) ? NaN : bbUpperArr[i],
-  }));
-
-  const bbLowerPlot = bars.map((b, i) => ({
-    time: b.time,
-    value: (i < warmup || isNaN(bbLowerArr[i])) ? NaN : bbLowerArr[i],
-  }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      'upper': upperPlot,
-      'lower': lowerPlot,
-      'ma50': ma50Plot,
-      'bbUpper': bbUpperPlot,
-      'bbLower': bbLowerPlot,
+    init() {
+      // Pine: upper = highest(length1), lower = lowest(length2)
+      const upper = new WindowExtreme(false, upperChannelLen);
+      const lower = new WindowExtreme(true, lowerChannelLen);
+      // Pine: SMA 50
+      const sma50 = new WindowSma(maPeriod);
+      // Pine: bb1_dev = bb1_mult * stdev(close, bb1_l)
+      const stdev = new WindowStdev(bbLength);
+      const s: VdubusRun = {
+        upper, lower, sma50, stdev, upperPlot: [], lowerPlot: [], ma50Plot: [], bbUpperPlot: [], bbLowerPlot: [],
+        steps: [upper, lower, sma50, stdev], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.upperPlot, s.lowerPlot, s.ma50Plot, s.bbUpperPlot, s.bbLowerPlot];
+      return s;
     },
-    fills: [
-      { plot1: 'bbUpper', plot2: 'bbLower', options: { color: 'rgba(33,150,243,0.10)', title: 'BB Fill' } },
-    ],
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const upper = s.upper.step(b.high);
+      const lower = s.lower.step(b.low);
+      const sma50 = s.sma50.step(b.close);
+      const sd = s.stdev.step(b.close);
+
+      // Pine: BB based on basis = avg(upper, lower), dev = mult * stdev(close, bbLength)
+      // basis for BB = avg(upper, lower)
+      const basis = (upper + lower) / 2;
+      const dev = bbMult * sd;
+      const bbUpper = basis + dev;
+      const bbLower = basis - dev;
+
+      s.upperPlot[i] = { time, value: i < warmup ? NaN : upper };
+      s.lowerPlot[i] = { time, value: i < warmup ? NaN : lower };
+      s.ma50Plot[i] = { time, value: i < maPeriod ? NaN : sma50 };
+      s.bbUpperPlot[i] = { time, value: (i < warmup || isNaN(bbUpper)) ? NaN : bbUpper };
+      s.bbLowerPlot[i] = { time, value: (i < warmup || isNaN(bbLower)) ? NaN : bbLower };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          'upper': s.upperPlot.slice(),
+          'lower': s.lowerPlot.slice(),
+          'ma50': s.ma50Plot.slice(),
+          'bbUpper': s.bbUpperPlot.slice(),
+          'bbLower': s.bbLowerPlot.slice(),
+        },
+        fills: [
+          { plot1: 'bbUpper', plot2: 'bbLower', options: { color: 'rgba(33,150,243,0.10)', title: 'BB Fill' } },
+        ],
+      };
+    },
   };
 }
 
-export const VdubusBinaryPro = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VdubusBinaryProInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VdubusBinaryProInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const VdubusBinaryPro = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

@@ -8,8 +8,11 @@
  * Reference: "Linear Regression Candles" (community)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+
 
 export interface LinRegCandlesInputs {
   length: number;
@@ -48,95 +51,145 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<LinRegCandlesInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
-  const { length, smoothLen, signalLength, smaSignal } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
+/**
+ * `ta.linreg(source, length, 0)` one bar at a time: the loops and the operation order of taStep.linreg (the same
+ * doubles) on a plain window of the last values, without its per-bar closure.
+ */
+class LinregStep {
+  /** The committed values from position 0 to `count - 1`, the value of the bar stepped at `count` */
+  private values: number[] = [];
+  private count = 0;
+  private stepped = false;
+  private readonly len: number;
 
-  const openSeries = new Series(bars, (b) => b.open);
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-  const closeSeries = new Series(bars, (b) => b.close);
-
-  // LinReg on each OHLC component
-  const lrO = ta.linreg(openSeries, length, 0).toArray();
-  const lrH = ta.linreg(highSeries, length, 0).toArray();
-  const lrL = ta.linreg(lowSeries, length, 0).toArray();
-  const lrC = ta.linreg(closeSeries, length, 0).toArray();
-
-  // Optional SMA smoothing
-  let finalO: (number | null)[];
-  let finalH: (number | null)[];
-  let finalL: (number | null)[];
-  let finalC: (number | null)[];
-
-  if (smoothLen > 1) {
-    const lrOSeries = new Series(bars, (_b, i) => lrO[i] ?? NaN);
-    const lrHSeries = new Series(bars, (_b, i) => lrH[i] ?? NaN);
-    const lrLSeries = new Series(bars, (_b, i) => lrL[i] ?? NaN);
-    const lrCSeries = new Series(bars, (_b, i) => lrC[i] ?? NaN);
-
-    finalO = ta.sma(lrOSeries, smoothLen).toArray();
-    finalH = ta.sma(lrHSeries, smoothLen).toArray();
-    finalL = ta.sma(lrLSeries, smoothLen).toArray();
-    finalC = ta.sma(lrCSeries, smoothLen).toArray();
-  } else {
-    finalO = lrO;
-    finalH = lrH;
-    finalL = lrL;
-    finalC = lrC;
+  constructor(length: number) {
+    // the length check of ta.linreg (the same runtime error)
+    taStep.linreg(length, 0);
+    this.len = Math.floor(length);
   }
 
-  const warmup = length + smoothLen;
-  const candles: PlotCandleData[] = [];
-  const downCandles: PlotCandleData[] = [];
-  const none = (t: number): PlotCandleData => ({ time: t, open: NaN, high: NaN, low: NaN, close: NaN });
-
-  for (let i = 0; i < n; i++) {
-    if (i < warmup || finalO[i] == null || finalC[i] == null) {
-      candles.push(none(bars[i].time as number));
-      downCandles.push(none(bars[i].time as number));
-      continue;
+  step(value: number): number {
+    this.stepped = true;
+    const h = this.values;
+    const n = this.count;
+    h[n] = value;
+    const len = this.len;
+    if (n < len - 1) return NaN;
+    // window position j: h[base + j] (0 the oldest, len - 1 this bar)
+    const base = n - len + 1;
+    for (let j = 0; j < len; j++) if (isNaN(h[base + j]!)) return NaN;
+    let sumX = 0;
+    let sumY = 0;
+    let sumXY = 0;
+    let sumX2 = 0;
+    for (let j = 0; j < len; j++) {
+      const x = j + 1;
+      const y = h[base + j]!;
+      sumX += x;
+      sumY += y;
+      sumXY += x * y;
+      sumX2 += x * x;
     }
-
-    const o = finalO[i]!;
-    const h = finalH[i]!;
-    const l = finalL[i]!;
-    const c = finalC[i]!;
-    // r = bopen < bclose: the first plotcandle draws the candle when r, the second one otherwise
-    const r = o < c;
-    const col = r ? '#26A69A' : '#EF5350';
-    const candle: PlotCandleData = {
-      time: bars[i].time as number,
-      open: o,
-      high: h,
-      low: l,
-      close: c,
-      color: col,
-      borderColor: col,
-      wickColor: col,
-    };
-    candles.push(r ? candle : none(candle.time as number));
-    downCandles.push(r ? none(candle.time as number) : candle);
+    const slope = (len * sumXY - sumX * sumY) / (len * sumX2 - sumX * sumX);
+    const intercept = sumY / len - (slope * sumX) / len + slope;
+    return intercept + slope * (len - 1);
   }
 
-  // Pine: signal = sma_signal ? sma(bclose, signal_length) : ema(bclose, signal_length)
-  // Compute signal from the linreg close values (finalC)
-  const closeSeries2 = new Series(bars, (_b, i) => (finalC[i] != null && i >= warmup) ? finalC[i]! : NaN);
-  const signalArr = smaSignal
-    ? ta.sma(closeSeries2, signalLength).toArray()
-    : ta.ema(closeSeries2, signalLength).toArray();
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.count++;
+    if (this.count > this.len * 2 + 1024) {
+      // keep the last len values
+      this.values = this.values.slice(this.count - this.len, this.count);
+      this.count = this.len;
+    }
+  }
+}
 
+type Result = Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> };
+type Step = { step(v: number): number; commit(): void };
+
+interface LinRegCandlesRun extends BarRunState<Record<string, never>> {
+  lr: Step[];
+  smooth: Step[] | null;
+  sig: Step;
+  candles: PlotCandleData[];
+  downCandles: PlotCandleData[];
+  signalPlot: { time: number; value: number }[];
+}
+
+function study(inputs: Partial<LinRegCandlesInputs>): BarStudy<LinRegCandlesRun, Result> {
+  const { length, smoothLen, signalLength, smaSignal } = { ...defaultInputs, ...inputs };
+  const warmup = length + smoothLen;
   const signalWarmup = warmup + signalLength;
-  const signalPlot = signalArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < signalWarmup || v == null || isNaN(v)) ? NaN : v,
-  }));
-
+  const none = (t: number): PlotCandleData => ({ time: t, open: NaN, high: NaN, low: NaN, close: NaN });
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { signal: signalPlot },
-    plotCandles: { candle0: candles, candle1: downCandles },
+    init() {
+      // LinReg on each OHLC component
+      const lr: Step[] = [0, 1, 2, 3].map(() => new LinregStep(length));
+      // Optional SMA smoothing
+      const smooth = smoothLen > 1 ? [0, 1, 2, 3].map(() => new WindowSma(smoothLen)) : null;
+      // Pine: signal = sma_signal ? sma(bclose, signal_length) : ema(bclose, signal_length)
+      const sig: Step = smaSignal ? new WindowSma(signalLength) : taStep.ema(signalLength);
+      const s: LinRegCandlesRun = {
+        lr, smooth, sig, candles: [], downCandles: [], signalPlot: [],
+        steps: [...lr, ...(smooth ?? []), sig], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.candles, s.downCandles, s.signalPlot];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time as number;
+      const lrO = s.lr[0].step(b.open);
+      const lrH = s.lr[1].step(b.high);
+      const lrL = s.lr[2].step(b.low);
+      const lrC = s.lr[3].step(b.close);
+      let o: number | null = lrO;
+      let h: number | null = lrH;
+      let l: number | null = lrL;
+      let c: number | null = lrC;
+      if (s.smooth) {
+        o = s.smooth[0].step(lrO ?? NaN);
+        h = s.smooth[1].step(lrH ?? NaN);
+        l = s.smooth[2].step(lrL ?? NaN);
+        c = s.smooth[3].step(lrC ?? NaN);
+      }
+
+      if (i < warmup || o == null || c == null) {
+        s.candles[i] = none(time);
+        s.downCandles[i] = none(time);
+      } else {
+        // r = bopen < bclose: the first plotcandle draws the candle when r, the second one otherwise
+        const r = o < c;
+        const col = r ? '#26A69A' : '#EF5350';
+        const candle: PlotCandleData = { time, open: o, high: h!, low: l!, close: c, color: col, borderColor: col, wickColor: col };
+        s.candles[i] = r ? candle : none(time);
+        s.downCandles[i] = r ? none(time) : candle;
+      }
+
+      // Compute signal from the linreg close values (finalC)
+      const v = s.sig.step(c != null && i >= warmup ? c : NaN);
+      s.signalPlot[i] = { time: b.time, value: (i < signalWarmup || v == null || isNaN(v)) ? NaN : v };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { signal: s.signalPlot.slice() },
+        plotCandles: { candle0: s.candles.slice(), candle1: s.downCandles.slice() },
+      };
+    },
   };
 }
 
-export const LinRegCandles = { calculate, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<LinRegCandlesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<LinRegCandlesInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const LinRegCandles = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig };

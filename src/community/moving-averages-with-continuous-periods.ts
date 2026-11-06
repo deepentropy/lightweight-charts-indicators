@@ -14,6 +14,8 @@
  */
 
 import { color, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export interface MovingAveragesWithContinuousPeriodsInputs {
   /** Source input of the Pine script; the Pine script computes the MA of the close (this input is not used) */
@@ -84,111 +86,188 @@ function wmaKernel(length: number): number[] {
 /**
  * wma(source, length) of one Pine call site: `var first_value` (first non-na source) replaces the values before the
  * first bar; the `var` kernel is built on the first bar and again when the length changes (length != length[1]).
+ * One bar at a time: `source` holds the values of the bars up to `b`.
  */
-function wma(source: number[], length: number[]): number[] {
-  const n = source.length;
-  const out: number[] = new Array(n);
-  let firstValue = NaN;
-  let kernel: number[] = [];
-  for (let b = 0; b < n; b++) {
+class FloatWma implements Committable {
+  private firstValue = NaN;
+  private kernel: number[] = [];
+  private prevLength = NaN;
+  private nextFirst = NaN;
+  private nextKernel: number[] = [];
+  private nextLength = NaN;
+  private stepped = false;
+
+  step(source: number[], b: number, length: number): number {
+    this.stepped = true;
+    let firstValue = this.firstValue;
     if (isNaN(firstValue) && !isNaN(source[b])) firstValue = source[b];
-    const prevLength = b > 0 && !isNaN(length[b - 1]) ? length[b - 1] : length[b]; // nz(length[1], length)
-    if (b === 0 || ne(length[b], prevLength)) kernel = wmaKernel(length[b]);
+    const prevLength = b > 0 && !isNaN(this.prevLength) ? this.prevLength : length; // nz(length[1], length)
+    let kernel = this.kernel;
+    if (b === 0 || ne(length, prevLength)) kernel = wmaKernel(length);
     let sum = 0;
     for (let i = 0; i <= kernel.length - 1; i++) {
       const v = b - i >= 0 ? source[b - i] : NaN;
       sum += (isNaN(v) ? firstValue : v) * kernel[i];
     }
-    out[b] = sum;
+    this.nextFirst = firstValue;
+    this.nextKernel = kernel;
+    this.nextLength = length;
+    return sum;
   }
-  return out;
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.firstValue = this.nextFirst;
+    this.kernel = this.nextKernel;
+    this.prevLength = this.nextLength;
+  }
 }
 
-/** sma(source, length): the oldest of the ceil(length) values weighted by length % 1, sum / length */
-function sma(source: number[], length: number): number[] {
-  const n = source.length;
-  const out: number[] = new Array(n);
-  const realLength = Math.ceil(length);
-  const mantissa = length % 1;
-  let firstValue = NaN;
-  for (let b = 0; b < n; b++) {
+/** sma(source, length): the oldest of the ceil(length) values weighted by length % 1, sum / length (one bar at a time) */
+class FloatSma implements Committable {
+  private firstValue = NaN;
+  private nextFirst = NaN;
+  private stepped = false;
+  private readonly realLength: number;
+  private readonly mantissa: number;
+
+  constructor(private readonly length: number) {
+    this.realLength = Math.ceil(length);
+    this.mantissa = length % 1;
+  }
+
+  step(source: number[], b: number): number {
+    this.stepped = true;
+    let firstValue = this.firstValue;
     if (isNaN(firstValue) && !isNaN(source[b])) firstValue = source[b];
+    this.nextFirst = firstValue;
+    const realLength = this.realLength;
     let sum = 0;
     for (let i = 0; i <= realLength - 1; i++) {
       let w = 1;
-      if (ne(mantissa, 0) && i === realLength - 1) w = mantissa;
+      if (ne(this.mantissa, 0) && i === realLength - 1) w = this.mantissa;
       const v = b - i >= 0 ? source[b - i] : NaN;
       sum += (isNaN(v) ? firstValue : v) * w;
     }
-    out[b] = sum / length;
+    return sum / this.length;
   }
-  return out;
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.firstValue = this.nextFirst;
+  }
+}
+
+interface FpmaRun extends BarRunState<Record<string, never>> {
+  sma: FloatSma | null;
+  wma: FloatWma | null;
+  half: FloatWma | null;
+  full: FloatWma | null;
+  hma: FloatWma | null;
+  atr: FloatWma;
+  close: number[];
+  hmaSrc: number[];
+  ma: number[];
+  absDelta: number[];
+  plot0: Array<{ time: number; value: number; color: string }>;
+}
+
+function study(inputs: Partial<MovingAveragesWithContinuousPeriodsInputs>): BarStudy<FpmaRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const len = cfg.length;
+  // hma: period = length - 1
+  const period = len - 1;
+  // trend_gradient(ma, math.max(2, length / 1.5), ...): normal_angle(source, atr_length)
+  const atrLength = Math.max(2, len / 1.5);
+  return {
+    init() {
+      const isHma = cfg.style !== 'SMA' && cfg.style !== 'WMA';
+      const s: FpmaRun = {
+        sma: cfg.style === 'SMA' ? new FloatSma(len) : null,
+        wma: cfg.style === 'WMA' ? new FloatWma() : null,
+        half: isHma ? new FloatWma() : null,
+        full: isHma ? new FloatWma() : null,
+        hma: isHma ? new FloatWma() : null,
+        atr: new FloatWma(),
+        close: [], hmaSrc: [], ma: [], absDelta: [], plot0: [], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.sma, s.wma, s.half, s.full, s.hma, s.atr].filter((m): m is FloatSma | FloatWma => m !== null);
+      s.series = [s.close, s.hmaSrc, s.ma, s.absDelta, s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const bar = bars[i];
+      s.close[i] = bar.close;
+      // ma = ma_select(close, length, style): the Pine script uses close, not the Source input
+      let ma: number;
+      if (s.sma) {
+        ma = s.sma.step(s.close, i);
+      } else if (s.wma) {
+        ma = s.wma.step(s.close, i, len);
+      } else {
+        // hma: wma(2 * wma(source, period / 2) - wma(source, period), math.sqrt(period))
+        const half = s.half!.step(s.close, i, period / 2);
+        const full = s.full!.step(s.close, i, period);
+        s.hmaSrc[i] = 2 * half - full;
+        ma = s.hma!.step(s.hmaSrc, i, Math.sqrt(period));
+      }
+      s.ma[i] = ma;
+
+      const delta = ma - nz(i > 0 ? s.ma[i - 1] : NaN); // source - nz(source[1])
+      // atr(math.abs(delta), atr_length) = wma(source, math.min(bar_index + 1, length))
+      s.absDelta[i] = Math.abs(delta);
+      const atr = s.atr.step(s.absDelta, i, Math.min(i + 1, atrLength));
+
+      const atrNormalDelta = delta / atr;
+      const angle = math.todegrees(Math.atan(atrNormalDelta)) as number;
+      const v = (angle + 90) / 180;
+      let c: string;
+      switch (cfg.gradientType) {
+        case 'Solid':
+          c = cfg.neutralColor;
+          break;
+        case 'Two Tone':
+          c = String(color.from_gradient(v, 0, 1, cfg.downColor, cfg.upColor));
+          break;
+        case 'Polar':
+          c = lt(v, 0.5) ? cfg.downColor : cfg.upColor;
+          break;
+        default: {
+          // three_tone_gradient(value, 0, 1, ...): center 0.5, epsilon 0
+          const center = (1 + 0) / 2;
+          c = gt(v, center) ? String(color.from_gradient(v, center + 0, 1, cfg.neutralColor, cfg.upColor))
+            : lt(v, center) ? String(color.from_gradient(v, 0, center - 0, cfg.downColor, cfg.neutralColor))
+              : cfg.neutralColor;
+        }
+      }
+      s.plot0[i] = { time: bar.time as number, value: Number.isFinite(ma) ? ma : NaN, color: c };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MovingAveragesWithContinuousPeriodsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(
   bars: Bar[],
   inputs: Partial<MovingAveragesWithContinuousPeriodsInputs> = {},
 ): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const close = bars.map((b) => b.close);
-  const len = cfg.length;
-  const constant = (v: number) => new Array(n).fill(v);
-
-  // ma = ma_select(close, length, style): the Pine script uses close, not the Source input
-  let ma: number[];
-  if (cfg.style === 'SMA') {
-    ma = sma(close, len);
-  } else if (cfg.style === 'WMA') {
-    ma = wma(close, constant(len));
-  } else {
-    // hma: period = length - 1; wma(2 * wma(source, period / 2) - wma(source, period), math.sqrt(period))
-    const period = len - 1;
-    const half = wma(close, constant(period / 2));
-    const full = wma(close, constant(period));
-    ma = wma(half.map((h, i) => 2 * h - full[i]), constant(Math.sqrt(period)));
-  }
-
-  // trend_gradient(ma, math.max(2, length / 1.5), ...): normal_angle(source, atr_length)
-  const atrLength = Math.max(2, len / 1.5);
-  const delta = ma.map((v, i) => v - nz(i > 0 ? ma[i - 1] : NaN)); // source - nz(source[1])
-  // atr(math.abs(delta), atr_length) = wma(source, math.min(bar_index + 1, length))
-  const atr = wma(delta.map((d) => Math.abs(d)), bars.map((_b, i) => Math.min(i + 1, atrLength)));
-
-  const plot0 = bars.map((bar, i) => {
-    const atrNormalDelta = delta[i] / atr[i];
-    const angle = math.todegrees(Math.atan(atrNormalDelta)) as number;
-    const v = (angle + 90) / 180;
-    let c: string;
-    switch (cfg.gradientType) {
-      case 'Solid':
-        c = cfg.neutralColor;
-        break;
-      case 'Two Tone':
-        c = String(color.from_gradient(v, 0, 1, cfg.downColor, cfg.upColor));
-        break;
-      case 'Polar':
-        c = lt(v, 0.5) ? cfg.downColor : cfg.upColor;
-        break;
-      default: {
-        // three_tone_gradient(value, 0, 1, ...): center 0.5, epsilon 0
-        const center = (1 + 0) / 2;
-        c = gt(v, center) ? String(color.from_gradient(v, center + 0, 1, cfg.neutralColor, cfg.upColor))
-          : lt(v, center) ? String(color.from_gradient(v, 0, center - 0, cfg.downColor, cfg.neutralColor))
-            : cfg.neutralColor;
-      }
-    }
-    return { time: bar.time, value: Number.isFinite(ma[i]) ? ma[i] : NaN, color: c };
-  });
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MovingAveragesWithContinuousPeriods = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

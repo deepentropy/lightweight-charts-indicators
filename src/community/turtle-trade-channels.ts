@@ -8,8 +8,10 @@
  * Reference: "Turtle Trade Channels" by Richard Dennis / William Eckhardt
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TurtleTradeChannelsInputs {
   entryLength: number;
@@ -41,142 +43,171 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TurtleTradeChannelsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface TurtleVars {
+  /** Last bar where high >= up[1] / low <= down[1] */
+  lastHighBreak: number;
+  lastLowBreak: number;
+  /** Last bars of the long / short entries and exits (the markers and the fill colour) */
+  lastBuyEntry: number;
+  lastSellEntry: number;
+  lastBuyExit: number;
+  lastSellExit: number;
+}
+
+interface TurtleRun extends BarRunState<TurtleVars> {
+  entryHigh: WindowExtreme;
+  entryLow: WindowExtreme;
+  exitHigh: WindowExtreme;
+  exitLow: WindowExtreme;
+  entryHighArr: number[];
+  entryLowArr: number[];
+  exitHighArr: number[];
+  exitLowArr: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  trendLine: Point[];
+  exitLine: Point[];
+  fillColors: string[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<TurtleTradeChannelsInputs>): BarStudy<TurtleRun, Result> {
   const { entryLength, exitLength } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-
-  const entryHighArr = ta.highest(highSeries, entryLength).toArray();
-  const entryLowArr = ta.lowest(lowSeries, entryLength).toArray();
-  const exitHighArr = ta.highest(highSeries, exitLength).toArray();
-  const exitLowArr = ta.lowest(lowSeries, exitLength).toArray();
-
   const warmup = entryLength;
-
-  // Compute K1 (Trend Line) and K2 (Exit Line) per Pine:
-  // K1 = barssince(high>=up[1]) <= barssince(low<=down[1]) ? down : up
-  // K2 = barssince(high>=up[1]) <= barssince(low<=down[1]) ? sdown : sup
-  const k1Arr: number[] = new Array(n).fill(NaN);
-  const k2Arr: number[] = new Array(n).fill(NaN);
-  let lastHighBreak = -Infinity; // last bar where high >= up[1]
-  let lastLowBreak = -Infinity;  // last bar where low <= down[1]
-
-  for (let i = warmup + 1; i < n; i++) {
-    if (bars[i].high >= (entryHighArr[i - 1] ?? 0)) lastHighBreak = i;
-    if (bars[i].low <= (entryLowArr[i - 1] ?? Infinity)) lastLowBreak = i;
-
-    const bsHigh = lastHighBreak >= 0 ? i - lastHighBreak : Infinity;
-    const bsLow = lastLowBreak >= 0 ? i - lastLowBreak : Infinity;
-
-    if (bsHigh <= bsLow) {
-      // Long direction: trend line = entry low (down), exit line = exit low (sdown)
-      k1Arr[i] = entryLowArr[i] ?? NaN;
-      k2Arr[i] = exitLowArr[i] ?? NaN;
-    } else {
-      // Short direction: trend line = entry high (up), exit line = exit high (sup)
-      k1Arr[i] = entryHighArr[i] ?? NaN;
-      k2Arr[i] = exitHighArr[i] ?? NaN;
-    }
-  }
-
-  // Turtle signals with barssince logic:
-  // buySignal = high >= upper[1], sellSignal = low <= lower[1]
-  // buyExit = low <= exitLow[1], sellExit = high >= exitHigh[1]
-  // Simplified: track last signal times for entry/exit filtering
-  const markers: MarkerData[] = [];
-  let lastBuyEntry = -Infinity;
-  let lastSellEntry = -Infinity;
-  let lastBuyExit = -Infinity;
-  let lastSellExit = -Infinity;
-
-  for (let i = warmup + 1; i < n; i++) {
-    const buySignal = bars[i].high >= (entryHighArr[i - 1] ?? 0);
-    const sellSignal = bars[i].low <= (entryLowArr[i - 1] ?? Infinity);
-    const buyExit = bars[i].low <= (exitLowArr[i - 1] ?? Infinity);
-    const sellExit = bars[i].high >= (exitHighArr[i - 1] ?? 0);
-
-    // Pine: plotshape(buySignal and O3<O1[1] ? down : na) -- long entry if last buyExit before last buyEntry
-    if (buySignal && lastBuyExit > lastBuyEntry) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Long' });
-      lastBuyEntry = i;
-    }
-    if (sellSignal && lastSellExit > lastSellEntry) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Short' });
-      lastSellEntry = i;
-    }
-    if (buyExit && lastBuyEntry > lastBuyExit) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#2196F3', text: 'Exit L' });
-      lastBuyExit = i;
-    }
-    if (sellExit && lastSellEntry > lastSellExit) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#2196F3', text: 'Exit S' });
-      lastSellExit = i;
-    }
-  }
-
-  // Fill: Pine fills upper channel to exit line (green for long, red for short)
-  // Determine fill color based on which entry signal is most recent
-  const fillColors: string[] = [];
-  let lastBuyI = -Infinity;
-  let lastSellI = -Infinity;
-  let lastBuyExitI = -Infinity;
-  let lastSellExitI = -Infinity;
-  for (let i = 0; i < n; i++) {
-    if (i >= warmup + 1) {
-      if (bars[i].high >= (entryHighArr[i - 1] ?? 0) && lastBuyExitI > lastBuyI) { lastBuyI = i; }
-      if (bars[i].low <= (entryLowArr[i - 1] ?? Infinity) && lastSellExitI > lastSellI) { lastSellI = i; }
-      if (bars[i].low <= (exitLowArr[i - 1] ?? Infinity) && lastBuyI > lastBuyExitI) { lastBuyExitI = i; }
-      if (bars[i].high >= (exitHighArr[i - 1] ?? 0) && lastSellI > lastSellExitI) { lastSellExitI = i; }
-    }
-    if (i < warmup) {
-      fillColors.push('rgba(0,0,0,0)');
-    } else if (lastBuyI > lastSellI && lastBuyI > lastBuyExitI) {
-      fillColors.push('rgba(38,166,154,0.12)');
-    } else if (lastSellI > lastBuyI && lastSellI > lastSellExitI) {
-      fillColors.push('rgba(239,83,80,0.12)');
-    } else {
-      fillColors.push('rgba(0,0,0,0)');
-    }
-  }
-
-  const plot0 = entryHighArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup || isNaN(v) ? NaN : v,
-  }));
-  const plot1 = entryLowArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup || isNaN(v) ? NaN : v,
-  }));
-  const plot2 = exitHighArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup || isNaN(v) ? NaN : v,
-  }));
-  const plot3 = exitLowArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup || isNaN(v) ? NaN : v,
-  }));
-
-  const trendLine = k1Arr.map((v, i) => ({
-    time: bars[i].time,
-    value: isNaN(v) ? NaN : v,
-  }));
-
-  const exitLine = k2Arr.map((v, i) => ({
-    time: bars[i].time,
-    value: isNaN(v) ? NaN : v,
-  }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3, 'trendLine': trendLine, 'exitLine': exitLine },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot2', options: { color: 'rgba(38,166,154,0.12)' }, colors: fillColors },
-      { plot1: 'plot1', plot2: 'plot3', options: { color: 'rgba(239,83,80,0.12)' }, colors: fillColors },
-    ],
-    markers,
+    init() {
+      const s: TurtleRun = {
+        entryHigh: new WindowExtreme(false, entryLength), entryLow: new WindowExtreme(true, entryLength),
+        exitHigh: new WindowExtreme(false, exitLength), exitLow: new WindowExtreme(true, exitLength),
+        entryHighArr: [], entryLowArr: [], exitHighArr: [], exitLowArr: [], plot0: [], plot1: [], plot2: [], plot3: [],
+        trendLine: [], exitLine: [], fillColors: [], markers: [],
+        steps: [],
+        vars: {
+          lastHighBreak: -Infinity, lastLowBreak: -Infinity, lastBuyEntry: -Infinity, lastSellEntry: -Infinity,
+          lastBuyExit: -Infinity, lastSellExit: -Infinity,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.entryHigh, s.entryLow, s.exitHigh, s.exitLow];
+      s.lists = [s.markers];
+      s.series = [
+        s.entryHighArr, s.entryLowArr, s.exitHighArr, s.exitLowArr, s.plot0, s.plot1, s.plot2, s.plot3, s.trendLine,
+        s.exitLine, s.fillColors,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const time = b.time;
+      const entryHigh = s.entryHigh.step(b.high);
+      const entryLow = s.entryLow.step(b.low);
+      const exitHigh = s.exitHigh.step(b.high);
+      const exitLow = s.exitLow.step(b.low);
+      s.entryHighArr[i] = entryHigh;
+      s.entryLowArr[i] = entryLow;
+      s.exitHighArr[i] = exitHigh;
+      s.exitLowArr[i] = exitLow;
+
+      // Compute K1 (Trend Line) and K2 (Exit Line) per Pine:
+      // K1 = barssince(high>=up[1]) <= barssince(low<=down[1]) ? down : up
+      // K2 = barssince(high>=up[1]) <= barssince(low<=down[1]) ? sdown : sup
+      let k1 = NaN;
+      let k2 = NaN;
+      if (i >= warmup + 1) {
+        const up1 = s.entryHighArr[i - 1];
+        const down1 = s.entryLowArr[i - 1];
+        if (b.high >= up1) v.lastHighBreak = i;
+        if (b.low <= down1) v.lastLowBreak = i;
+        const bsHigh = v.lastHighBreak >= 0 ? i - v.lastHighBreak : Infinity;
+        const bsLow = v.lastLowBreak >= 0 ? i - v.lastLowBreak : Infinity;
+        if (bsHigh <= bsLow) {
+          // Long direction: trend line = entry low (down), exit line = exit low (sdown)
+          k1 = entryLow;
+          k2 = exitLow;
+        } else {
+          // Short direction: trend line = entry high (up), exit line = exit high (sup)
+          k1 = entryHigh;
+          k2 = exitHigh;
+        }
+
+        // Turtle signals with barssince logic:
+        // buySignal = high >= upper[1], sellSignal = low <= lower[1]
+        // buyExit = low <= exitLow[1], sellExit = high >= exitHigh[1]
+        // Simplified: track last signal times for entry/exit filtering
+        const buySignal = b.high >= up1;
+        const sellSignal = b.low <= down1;
+        const buyExit = b.low <= s.exitLowArr[i - 1];
+        const sellExit = b.high >= s.exitHighArr[i - 1];
+
+        // Pine: plotshape(buySignal and O3<O1[1] ? down : na) -- long entry if last buyExit before last buyEntry
+        if (buySignal && v.lastBuyExit > v.lastBuyEntry) {
+          s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Long' });
+          v.lastBuyEntry = i;
+        }
+        if (sellSignal && v.lastSellExit > v.lastSellEntry) {
+          s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Short' });
+          v.lastSellEntry = i;
+        }
+        if (buyExit && v.lastBuyEntry > v.lastBuyExit) {
+          s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: '#2196F3', text: 'Exit L' });
+          v.lastBuyExit = i;
+        }
+        if (sellExit && v.lastSellEntry > v.lastSellExit) {
+          s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: '#2196F3', text: 'Exit S' });
+          v.lastSellExit = i;
+        }
+      }
+
+      // Fill: Pine fills upper channel to exit line (green for long, red for short)
+      // Determine fill color based on which entry signal is most recent
+      if (i < warmup) {
+        s.fillColors[i] = 'rgba(0,0,0,0)';
+      } else if (v.lastBuyEntry > v.lastSellEntry && v.lastBuyEntry > v.lastBuyExit) {
+        s.fillColors[i] = 'rgba(38,166,154,0.12)';
+      } else if (v.lastSellEntry > v.lastBuyEntry && v.lastSellEntry > v.lastSellExit) {
+        s.fillColors[i] = 'rgba(239,83,80,0.12)';
+      } else {
+        s.fillColors[i] = 'rgba(0,0,0,0)';
+      }
+
+      s.plot0[i] = { time, value: i < warmup || isNaN(entryHigh) ? NaN : entryHigh };
+      s.plot1[i] = { time, value: i < warmup || isNaN(entryLow) ? NaN : entryLow };
+      s.plot2[i] = { time, value: i < warmup || isNaN(exitHigh) ? NaN : exitHigh };
+      s.plot3[i] = { time, value: i < warmup || isNaN(exitLow) ? NaN : exitLow };
+      s.trendLine[i] = { time, value: isNaN(k1) ? NaN : k1 };
+      s.exitLine[i] = { time, value: isNaN(k2) ? NaN : k2 };
+    },
+    result(s) {
+      const fillColors = s.fillColors.slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          'plot0': s.plot0.slice(), 'plot1': s.plot1.slice(), 'plot2': s.plot2.slice(), 'plot3': s.plot3.slice(),
+          'trendLine': s.trendLine.slice(), 'exitLine': s.exitLine.slice(),
+        },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot2', options: { color: 'rgba(38,166,154,0.12)' }, colors: fillColors },
+          { plot1: 'plot1', plot2: 'plot3', options: { color: 'rgba(239,83,80,0.12)' }, colors: fillColors },
+        ],
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const TurtleTradeChannels = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TurtleTradeChannelsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TurtleTradeChannelsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const TurtleTradeChannels = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

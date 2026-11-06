@@ -12,9 +12,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type Setup91Ema50MaType = 'EMA' | 'SMA';
 
@@ -73,98 +75,134 @@ export const metadata = {
 const gt = (a: number, b: number) => a - b > 1e-10;
 const lt = (a: number, b: number) => b - a > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<Setup91Ema50Inputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+type Ma = { step(v: number): number; commit(): void };
+
+interface SetupVars {
+  /** var float buyTrigger = na, buyStop, sellTrigger, sellStop */
+  buyTrigger: number;
+  buyStop: number;
+  sellTrigger: number;
+  sellStop: number;
+  /** ma1up[1] / ma1down[1] (false before bar 0) */
+  prevUp: boolean;
+  prevDown: boolean;
+}
+
+interface SetupRun extends BarRunState<SetupVars> {
+  ma1: Ma;
+  ma2: Ma;
+  ma1Arr: number[];
+  plots: Point[][];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<Setup91Ema50Inputs>): BarStudy<SetupRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const closeS = Series.fromArray(bars, bars.map((b) => b.close));
   // get_ma(type, src, length) = type == "EMA" ? ta.ema(src, length) : ta.sma(src, length)
-  const getMa = (type: Setup91Ema50MaType, length: number) => A(type === 'EMA' ? ta.ema(closeS, length) : ta.sma(closeS, length));
-  const ma1 = getMa(cfg.typeMa1, cfg.len);
-  const ma2 = getMa(cfg.typeMa2, cfg.len2);
-
-  const maColor: string[] = new Array(n);
-  const buyTrig: number[] = new Array(n);
-  const buyStp: number[] = new Array(n);
-  const sellTrig: number[] = new Array(n);
-  const sellStp: number[] = new Array(n);
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const buyFlags: boolean[] = [], sellFlags: boolean[] = [];
-  let buyTrigger = NaN; // var float buyTrigger = na
-  let buyStop = NaN;
-  let sellTrigger = NaN;
-  let sellStop = NaN;
-  let prevUp = false; // ma1up[1] (false before bar 0)
-  let prevDown = false;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const prevMa = i > 0 ? ma1[i - 1] : NaN;
-    const ma1up = gt(ma1[i], prevMa);
-    const ma1down = lt(ma1[i], prevMa);
-    maColor[i] = ma1up ? GREEN : ma1down ? RED : YELLOW;
-
-    const buySignal = ma1up && !prevUp;
-    const sellSignal = ma1down && !prevDown;
-    prevUp = ma1up;
-    prevDown = ma1down;
-    buyFlags.push(buySignal);
-    sellFlags.push(sellSignal);
-
-    if (buySignal) {
-      buyTrigger = b.high;
-      buyStop = b.low;
-    } else if (!ma1up) {
-      buyTrigger = NaN;
-      buyStop = NaN;
-    }
-    if (sellSignal) {
-      sellTrigger = b.low;
-      sellStop = b.high;
-    } else if (!ma1down) {
-      sellTrigger = NaN;
-      sellStop = NaN;
-    }
-    buyTrig[i] = buyTrigger;
-    buyStp[i] = buyStop;
-    sellTrig[i] = sellTrigger;
-    sellStp[i] = sellStop;
-
-    // barcolor(buySignal and close > open ? #1cff78 : na, "Buy Bar Color"),
-    // barcolor(sellSignal and close < open ? #FF0000 : na, "Sell Bar Color") (never both on one bar)
-    if (sellSignal && lt(b.close, b.open)) barColors.push({ time: b.time, color: RED });
-    else if (buySignal && gt(b.close, b.open)) barColors.push({ time: b.time, color: GREEN });
-
-    // plotshape(buySignal, "9.1 BUY Shape", shape.arrowup, location.belowbar, size.small, text = "BUY 9.1")
-    if (buySignal) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'arrowUp', color: GREEN, size: 'small', text: 'BUY 9.1',
-        textColor: GREEN });
-    }
-    // plotshape(sellSignal, "9.1 SELL Shape", shape.arrowdown, location.abovebar, size.small, text = "SELL 9.1")
-    if (sellSignal) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'arrowDown', color: RED, size: 'small', text: 'SELL 9.1',
-        textColor: RED });
-    }
-  }
-
+  const getMa = (type: Setup91Ema50MaType, length: number): Ma => (type === 'EMA' ? taStep.ema(length) : new WindowSma(length));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: ma1[i], color: maColor[i] })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: cfg.showMa2 ? ma2[i] : NaN, color: PURPLE })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: buyTrig[i], color: GREEN })),
-      plot3: bars.map((b, i) => ({ time: b.time, value: buyStp[i], color: GREEN_60 })),
-      plot4: bars.map((b, i) => ({ time: b.time, value: sellTrig[i], color: RED })),
-      plot5: bars.map((b, i) => ({ time: b.time, value: sellStp[i], color: RED_60 })),
+    init() {
+      const ma1 = getMa(cfg.typeMa1, cfg.len);
+      const ma2 = getMa(cfg.typeMa2, cfg.len2);
+      const s: SetupRun = {
+        ma1, ma2, ma1Arr: [], plots: [[], [], [], [], [], []], markers: [], barColors: [], flags: [[], []], times: [[], []],
+        steps: [ma1, ma2],
+        vars: { buyTrigger: NaN, buyStop: NaN, sellTrigger: NaN, sellStop: NaN, prevUp: false, prevDown: false },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, s.barColors, ...s.times];
+      s.series = [s.ma1Arr, ...s.plots, ...s.flags];
+      return s;
     },
-    markers,
-    barColors,
-    // alertcondition(buySignal, "9.1 Buy Alert") / alertcondition(sellSignal, "9.1 Sell Alert")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const ma1 = s.ma1.step(b.close);
+      const ma2 = s.ma2.step(b.close);
+      s.ma1Arr[i] = ma1;
+      const prevMa = i > 0 ? s.ma1Arr[i - 1] : NaN;
+      const ma1up = gt(ma1, prevMa);
+      const ma1down = lt(ma1, prevMa);
+      const maColor = ma1up ? GREEN : ma1down ? RED : YELLOW;
+
+      const buySignal = ma1up && !v.prevUp;
+      const sellSignal = ma1down && !v.prevDown;
+      v.prevUp = ma1up;
+      v.prevDown = ma1down;
+      s.flags[0][i] = buySignal;
+      s.flags[1][i] = sellSignal;
+      if (buySignal) s.times[0].push(b.time as number);
+      if (sellSignal) s.times[1].push(b.time as number);
+
+      if (buySignal) {
+        v.buyTrigger = b.high;
+        v.buyStop = b.low;
+      } else if (!ma1up) {
+        v.buyTrigger = NaN;
+        v.buyStop = NaN;
+      }
+      if (sellSignal) {
+        v.sellTrigger = b.low;
+        v.sellStop = b.high;
+      } else if (!ma1down) {
+        v.sellTrigger = NaN;
+        v.sellStop = NaN;
+      }
+
+      // barcolor(buySignal and close > open ? #1cff78 : na, "Buy Bar Color"),
+      // barcolor(sellSignal and close < open ? #FF0000 : na, "Sell Bar Color") (never both on one bar)
+      if (sellSignal && lt(b.close, b.open)) s.barColors.push({ time: b.time, color: RED });
+      else if (buySignal && gt(b.close, b.open)) s.barColors.push({ time: b.time, color: GREEN });
+
+      // plotshape(buySignal, "9.1 BUY Shape", shape.arrowup, location.belowbar, size.small, text = "BUY 9.1")
+      if (buySignal) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'arrowUp', color: GREEN, size: 'small', text: 'BUY 9.1',
+          textColor: GREEN });
+      }
+      // plotshape(sellSignal, "9.1 SELL Shape", shape.arrowdown, location.abovebar, size.small, text = "SELL 9.1")
+      if (sellSignal) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'arrowDown', color: RED, size: 'small', text: 'SELL 9.1',
+          textColor: RED });
+      }
+
+      const p = s.plots;
+      p[0][i] = { time: b.time, value: ma1, color: maColor };
+      p[1][i] = { time: b.time, value: cfg.showMa2 ? ma2 : NaN, color: PURPLE };
+      p[2][i] = { time: b.time, value: v.buyTrigger, color: GREEN };
+      p[3][i] = { time: b.time, value: v.buyStop, color: GREEN_60 };
+      p[4][i] = { time: b.time, value: v.sellTrigger, color: RED };
+      p[5][i] = { time: b.time, value: v.sellStop, color: RED_60 };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(),
+        },
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        // alertcondition(buySignal, "9.1 Buy Alert") / alertcondition(sellSignal, "9.1 Sell Alert")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<Setup91Ema50Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<Setup91Ema50Inputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -175,6 +213,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const Setup91Ema50 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

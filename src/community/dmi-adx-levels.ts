@@ -9,7 +9,9 @@
  * Reference: "Directional Movement Index + ADX + Ploted KEYLEVEL" by console
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DMIADXInputs {
   /** ADX smoothing (RMA length of the DX) */
@@ -45,44 +47,72 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<DMIADXInputs> = {}): IndicatorResult {
+interface Point { time: number; value: number }
+
+interface DmiRun extends BarRunState<{ lastPlus: number; lastMinus: number }> {
+  tr: ReturnType<typeof taStep.tr>;
+  truerange: ReturnType<typeof taStep.rma>;
+  rp: ReturnType<typeof taStep.rma>;
+  rm: ReturnType<typeof taStep.rma>;
+  adx: ReturnType<typeof taStep.rma>;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<DMIADXInputs>): BarStudy<DmiRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const fixnan = (x: number[]) => {
-    let last = NaN;
-    return x.map((v) => (isNaN(v) ? last : (last = v)));
-  };
-
-  // dirmov(len): up = change(high), down = -change(low); a comparison with na is false, so DM = 0 on bar 0
-  const up = bars.map((b, i) => (i > 0 ? b.high - bars[i - 1].high : NaN));
-  const down = bars.map((b, i) => (i > 0 ? -(b.low - bars[i - 1].low) : NaN));
-  const plusDM = up.map((u, i) => (u > down[i] && u > 0 ? u : 0));
-  const minusDM = down.map((d, i) => (d > up[i] && d > 0 ? d : 0));
-  // truerange = rma(tr, len): tr is na on bar 0
-  const truerange = A(ta.rma(ta.tr(bars), cfg.diLen));
-  const rp = A(ta.rma(S(plusDM), cfg.diLen));
-  const rm = A(ta.rma(S(minusDM), cfg.diLen));
-  // fixnan(100 * rma(dm, len) / truerange): a plain division (x / 0 is +-infinity, 0 / 0 is na)
-  const plus = fixnan(rp.map((v, i) => (100 * v) / truerange[i]));
-  const minus = fixnan(rm.map((v, i) => (100 * v) / truerange[i]));
-  // adx = 100 * rma(abs(plus - minus) / (sum == 0 ? 1 : sum), adxlen)
-  const dx = plus.map((p, i) => {
-    const sum = p + minus[i];
-    return Math.abs(p - minus[i]) / (sum === 0 ? 1 : sum);
-  });
-  const adx = A(ta.rma(S(dx), cfg.adxLen)).map((v) => 100 * v);
-
-  const line = (vals: number[]) => bars.map((b, i) => ({ time: b.time, value: vals[i] }));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(adx),
-      plot1: line(plus),
-      plot2: line(minus),
-      plot3: bars.map((b) => ({ time: b.time, value: cfg.keyLevel })),
+    init() {
+      const s: DmiRun = {
+        tr: taStep.tr(), truerange: taStep.rma(cfg.diLen), rp: taStep.rma(cfg.diLen), rm: taStep.rma(cfg.diLen),
+        adx: taStep.rma(cfg.adxLen), plots: [[], [], [], []],
+        steps: [], vars: { lastPlus: NaN, lastMinus: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.tr, s.truerange, s.rp, s.rm, s.adx];
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      // dirmov(len): up = change(high), down = -change(low); a comparison with na is false, so DM = 0 on bar 0
+      const up = i > 0 ? b.high - bars[i - 1].high : NaN;
+      const down = i > 0 ? -(b.low - bars[i - 1].low) : NaN;
+      const plusDM = up > down && up > 0 ? up : 0;
+      const minusDM = down > up && down > 0 ? down : 0;
+      // truerange = rma(tr, len): tr is na on bar 0
+      const truerange = s.truerange.step(s.tr.step(b.high, b.low, b.close));
+      const rp = s.rp.step(plusDM);
+      const rm = s.rm.step(minusDM);
+      // fixnan(100 * rma(dm, len) / truerange): a plain division (x / 0 is +-infinity, 0 / 0 is na)
+      const p0 = (100 * rp) / truerange;
+      const m0 = (100 * rm) / truerange;
+      const plus = isNaN(p0) ? v.lastPlus : (v.lastPlus = p0);
+      const minus = isNaN(m0) ? v.lastMinus : (v.lastMinus = m0);
+      // adx = 100 * rma(abs(plus - minus) / (sum == 0 ? 1 : sum), adxlen)
+      const sum = plus + minus;
+      const adx = 100 * s.adx.step(Math.abs(plus - minus) / (sum === 0 ? 1 : sum));
+      const t = b.time as number;
+      s.plots[0][i] = { time: t, value: adx };
+      s.plots[1][i] = { time: t, value: plus };
+      s.plots[2][i] = { time: t, value: minus };
+      s.plots[3][i] = { time: t, value: cfg.keyLevel };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice() },
+      };
     },
   };
 }
 
-export const DMIADX = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DMIADXInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DMIADXInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const DMIADX = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

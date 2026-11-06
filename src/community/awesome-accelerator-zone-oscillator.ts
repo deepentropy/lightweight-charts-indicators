@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { WindowSma, WindowVwma, createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type AoAcZoneMaType = 'SMA' | 'EMA' | 'RMA' | 'WMA' | 'VWMA';
 export type AoAcZonePriceType = 'close' | 'hl2' | 'hlc3' | 'ohlc4' | 'lhcc4' | 'open' | 'high' | 'low';
@@ -74,15 +76,43 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AwesomeAcceleratorZoneOscillatorInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
+type Result = IndicatorResult & { barColors: BarColorData[] };
+type Point = { time: number; value: number; color: string };
 
+/** ma(source, length) stepped bar by bar: step(value, volume) */
+interface MaStep {
+  step(value: number, volume: number): number;
+  commit(): void;
+}
+
+/** ma(source, length): the moving average of the selected type (na for an unknown type) */
+function maStep(maType: AoAcZoneMaType, length: number): MaStep {
+  switch (maType) {
+    case 'SMA': {
+      const m = new WindowSma(length);
+      return { step: (v) => m.step(v), commit: () => m.commit() };
+    }
+    case 'EMA': return taStep.ema(length);
+    case 'RMA': return taStep.rma(length);
+    case 'WMA': {
+      const m = taStep.wma();
+      return { step: (v) => m.step(v, length), commit: () => m.commit() };
+    }
+    case 'VWMA': return new WindowVwma(length);
+    default: return { step: () => NaN, commit: () => {} };
+  }
+}
+
+interface AoAcRun extends BarRunState<{ ao1: number; ac1: number }> {
+  fast: MaStep;
+  slow: MaStep;
+  acMa: MaStep;
+  plots: Point[][];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<AwesomeAcceleratorZoneOscillatorInputs>): BarStudy<AoAcRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const priceOf = (b: Bar): number => {
     switch (cfg.priceType) {
       case 'close': return b.close;
@@ -96,56 +126,66 @@ export function calculate(
       default: return NaN;
     }
   };
-  const volume = S(bars.map((b) => b.volume ?? NaN));
-  // ma(source, length): the moving average of the selected type (na for an unknown type)
-  const ma = (src: number[], length: number): number[] => {
-    const s = S(src);
-    switch (cfg.maType) {
-      case 'SMA': return A(ta.sma(s, length));
-      case 'EMA': return A(ta.ema(s, length));
-      case 'RMA': return A(ta.rma(s, length));
-      case 'WMA': return A(ta.wma(s, length));
-      case 'VWMA': return A(ta.vwma(s, length, volume));
-      default: return new Array(n).fill(NaN);
-    }
-  };
-
-  const price = bars.map(priceOf);
-  const fastMA = ma(price, cfg.fastLength);
-  const slowMA = ma(price, cfg.slowLength);
-  const ao = fastMA.map((f, i) => f - slowMA[i]);
-  const acMA = ma(ao, cfg.acLength);
-  const ac = ao.map((v, i) => v - acMA[i]);
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const plot2: { time: number; value: number; color: string }[] = [];
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const ao1 = i > 0 ? ao[i - 1] : NaN;
-    const ac1 = i > 0 ? ac[i - 1] : NaN;
-    const aoColor = gt(ao[i], ao1) ? color.aqua : color.navy;
-    const acColor = gt(ac[i], ac1) ? color.fuchsia : color.purple;
-    const zoneColor = gt(ao[i], ao1) && gt(ac[i], ac1) ? color.green
-      : lt(ao[i], ao1) && lt(ac[i], ac1) ? color.red : color.gray;
-    // barcolor(not hideZoneBarsColor ? zoneColor : na)
-    if (!cfg.hideZoneBarsColor) barColors.push({ time: t, color: zoneColor });
-    plot0.push({ time: t, value: !cfg.hideAwesome ? ao[i] : NaN, color: aoColor });
-    plot1.push({ time: t, value: !cfg.hideAccelerator ? ac[i] : NaN, color: acColor });
-    plot2.push({ time: t, value: !cfg.hideZone ? ao[i] : NaN, color: zoneColor });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    hlines: [{ value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dotted' } }],
-    barColors,
+    init() {
+      const fast = maStep(cfg.maType, cfg.fastLength);
+      const slow = maStep(cfg.maType, cfg.slowLength);
+      const acMa = maStep(cfg.maType, cfg.acLength);
+      const s: AoAcRun = {
+        fast, slow, acMa, plots: [[], [], []], barColors: [],
+        steps: [fast, slow, acMa],
+        vars: { ao1: NaN, ac1: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [s.barColors];
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      const volume = b.volume ?? NaN;
+      const price = priceOf(b);
+      const ao = s.fast.step(price, volume) - s.slow.step(price, volume);
+      const ac = ao - s.acMa.step(ao, volume);
+      const ao1 = i > 0 ? v.ao1 : NaN;
+      const ac1 = i > 0 ? v.ac1 : NaN;
+      const aoColor = gt(ao, ao1) ? color.aqua : color.navy;
+      const acColor = gt(ac, ac1) ? color.fuchsia : color.purple;
+      const zoneColor = gt(ao, ao1) && gt(ac, ac1) ? color.green
+        : lt(ao, ao1) && lt(ac, ac1) ? color.red : color.gray;
+      // barcolor(not hideZoneBarsColor ? zoneColor : na)
+      if (!cfg.hideZoneBarsColor) s.barColors.push({ time: t, color: zoneColor });
+      s.plots[0][i] = { time: t, value: !cfg.hideAwesome ? ao : NaN, color: aoColor };
+      s.plots[1][i] = { time: t, value: !cfg.hideAccelerator ? ac : NaN, color: acColor };
+      s.plots[2][i] = { time: t, value: !cfg.hideZone ? ao : NaN, color: zoneColor };
+      v.ao1 = ao;
+      v.ac1 = ac;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+        hlines: [{ value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dotted' } }],
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AwesomeAcceleratorZoneOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AwesomeAcceleratorZoneOscillatorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AwesomeAcceleratorZoneOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

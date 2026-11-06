@@ -10,7 +10,9 @@
  * Original notice: © Marx_Capital
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type MarxLineStyle = 'Solid' | 'Dotted' | 'Dashed';
 
@@ -117,53 +119,93 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RSIStochRSIMarxCapitalInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface MarxRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  rsi1: ReturnType<typeof taStep.rsi>;
+  stoch: ReturnType<typeof taStep.stoch>;
+  kSma: WindowSma;
+  dSma: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+}
+
+function study(inputs: Partial<RSIStochRSIMarxCapitalInputs>): BarStudy<MarxRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  // rsiVal = ta.rsi(srcRsi, lenRsi)
-  const rsiVal = A(ta.rsi(getSourceSeries(bars, cfg.srcRsi), cfg.lenRsi));
-  // rsi1 = ta.rsi(srcStoch, lengthRSI); k = ta.sma(ta.stoch(rsi1, rsi1, rsi1, lengthStoch), smoothK); d = ta.sma(k, smoothD)
-  const rsi1 = ta.rsi(getSourceSeries(bars, cfg.srcStoch), cfg.lengthRSI);
-  const kSeries = ta.sma(ta.stoch(rsi1, rsi1, rsi1, cfg.lengthStoch), cfg.smoothK);
-  const k = A(kSeries);
-  const d = A(ta.sma(kSeries, cfg.smoothD));
-
-  // lvlStyle: "Solid" -> solid, "Dashed" -> dashed, else dotted; display.none when the extra levels are off
-  const lvlStyle = cfg.styleInput === 'Solid' ? 'solid' : cfg.styleInput === 'Dashed' ? 'dashed' : 'dotted';
-  const extra = cfg.showExtra
-    ? [
-      { value: 0, options: { title: 'line 1', color: cfg.col1, linestyle: lvlStyle, linewidth: cfg.widthInput } },
-      { value: 50, options: { title: 'line 2', color: cfg.col2, linestyle: lvlStyle, linewidth: cfg.widthInput } },
-      { value: 100, options: { title: 'line 3', color: cfg.col3, linestyle: lvlStyle, linewidth: cfg.widthInput } },
-    ] as const
-    : [];
-
-  const t = (i: number) => bars[i].time;
+  const srcRsi = barSource(cfg.srcRsi);
+  const srcStoch = barSource(cfg.srcStoch);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: rsiVal.map((v, i) => ({ time: t(i), value: v, color: RSI_COLOR })),
-      plot1: k.map((v, i) => ({ time: t(i), value: v, color: color.white })),
-      plot2: d.map((v, i) => ({ time: t(i), value: v, color: color.orange })),
+    fullRunReason: () => (isBarSource(cfg.srcRsi) && isBarSource(cfg.srcStoch) ? null : 'source of another study'),
+    init() {
+      const rsi = taStep.rsi(cfg.lenRsi);
+      const rsi1 = taStep.rsi(cfg.lengthRSI);
+      const stoch = taStep.stoch(cfg.lengthStoch);
+      const kSma = new WindowSma(cfg.smoothK);
+      const dSma = new WindowSma(cfg.smoothD);
+      const s: MarxRun = {
+        rsi, rsi1, stoch, kSma, dSma, plot0: [], plot1: [], plot2: [],
+        steps: [rsi, rsi1, stoch, kSma, dSma], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1, s.plot2];
+      return s;
     },
-    hlines: [
-      { value: cfg.rsiOB, options: { title: 'RSI OB', color: HLINE_COLOR, linestyle: 'solid' } },
-      { value: cfg.rsiOS, options: { title: 'RSI OS', color: HLINE_COLOR, linestyle: 'solid' } },
-      { value: 80, options: { title: 'StochRSI OB', color: HLINE_COLOR, linestyle: 'dashed' } },
-      { value: 20, options: { title: 'StochRSI OS', color: HLINE_COLOR, linestyle: 'dashed' } },
-      ...extra,
-    ],
-    fills: [
-      { plot1: 'hline_rsi_ob', plot2: 'hline_rsi_os', options: { title: 'RSI Zone' }, colors: new Array<string>(n).fill(RSI_ZONE) },
-      { plot1: 'hline_stoch_ob', plot2: 'hline_stoch_os', options: { title: 'StochRSI Zone' }, colors: new Array<string>(n).fill(STOCH_ZONE) },
-    ],
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const time = b.time as number;
+      // rsiVal = ta.rsi(srcRsi, lenRsi)
+      const rsiVal = s.rsi.step(srcRsi(b));
+      // rsi1 = ta.rsi(srcStoch, lengthRSI); k = ta.sma(ta.stoch(rsi1, rsi1, rsi1, lengthStoch), smoothK); d = ta.sma(k, smoothD)
+      const rsi1 = s.rsi1.step(srcStoch(b));
+      const k = s.kSma.step(s.stoch.step(rsi1, rsi1, rsi1));
+      const d = s.dSma.step(k);
+      s.plot0[i] = { time, value: rsiVal ?? NaN, color: RSI_COLOR };
+      s.plot1[i] = { time, value: k ?? NaN, color: color.white };
+      s.plot2[i] = { time, value: d ?? NaN, color: color.orange };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // lvlStyle: "Solid" -> solid, "Dashed" -> dashed, else dotted; display.none when the extra levels are off
+      const lvlStyle = cfg.styleInput === 'Solid' ? 'solid' : cfg.styleInput === 'Dashed' ? 'dashed' : 'dotted';
+      const extra = cfg.showExtra
+        ? [
+          { value: 0, options: { title: 'line 1', color: cfg.col1, linestyle: lvlStyle, linewidth: cfg.widthInput } },
+          { value: 50, options: { title: 'line 2', color: cfg.col2, linestyle: lvlStyle, linewidth: cfg.widthInput } },
+          { value: 100, options: { title: 'line 3', color: cfg.col3, linestyle: lvlStyle, linewidth: cfg.widthInput } },
+        ] as const
+        : [];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        hlines: [
+          { value: cfg.rsiOB, options: { title: 'RSI OB', color: HLINE_COLOR, linestyle: 'solid' } },
+          { value: cfg.rsiOS, options: { title: 'RSI OS', color: HLINE_COLOR, linestyle: 'solid' } },
+          { value: 80, options: { title: 'StochRSI OB', color: HLINE_COLOR, linestyle: 'dashed' } },
+          { value: 20, options: { title: 'StochRSI OS', color: HLINE_COLOR, linestyle: 'dashed' } },
+          ...extra,
+        ],
+        fills: [
+          { plot1: 'hline_rsi_ob', plot2: 'hline_rsi_os', options: { title: 'RSI Zone' }, colors: new Array<string>(n).fill(RSI_ZONE) },
+          { plot1: 'hline_stoch_ob', plot2: 'hline_stoch_os', options: { title: 'StochRSI Zone' }, colors: new Array<string>(n).fill(STOCH_ZONE) },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RSIStochRSIMarxCapitalInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RSIStochRSIMarxCapitalInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RSIStochRSIMarxCapital = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

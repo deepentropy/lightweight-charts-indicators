@@ -17,9 +17,14 @@
  * Original notice: © Electrified (electrifiedtrading)
  */
 
-import { taCore, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import {
+  barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, WindowVwma,
+  type BarRunState, type BarStudy, type Committable, type IndicatorRun,
+} from '../live-run';
 
 export type AutoAvwapKMode = 'SMA' | 'EMA' | 'WMA' | 'VWMA' | 'VAWMA';
 
@@ -106,149 +111,214 @@ const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 /** Pine nz(): na and +-infinity give the replacement */
 const nz = (x: number, r: number) => (Number.isFinite(x) ? x : r);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AutoAvwapWithBreakoutScreenerInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+
+interface AvwapVars {
+  hi: number;
+  lo: number;
+  phi: number;
+  plo: number;
+  state: number;
+  hiS: number;
+  loS: number;
+  hiV: number;
+  loV: number;
+  hiSNext: number;
+  loSNext: number;
+  hiVNext: number;
+  loVNext: number;
+}
+
+interface AvwapRun extends BarRunState<AvwapVars> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  stoch: ReturnType<typeof taStep.stoch>;
+  /** K = getMA(stoch, kMode, smoothK) on bar i */
+  k: (x: number, volume: number, i: number) => number;
+  d: WindowSma;
+  volume: number[];
+  stochArr: number[];
+  hiAVWAP: number[];
+  plots: Point[][];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<AutoAvwapWithBreakoutScreenerInputs>): BarStudy<AvwapRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
-
-  // vawma(src, len): sum(src[len - m] * volume[len - m] * m) / sum(volume[len - m] * m), m = 1..len
-  const vawma = (x: number[], len: number): number[] => x.map((_v, bar) => {
-    let sum = 0;
-    let vol = 0;
-    for (let m = 1; m <= len; m++) {
-      const i = len - m;
-      const v = bar - i >= 0 ? volume[bar - i] * m : NaN;
-      vol = vol + v;
-      sum = sum + (bar - i >= 0 ? x[bar - i] : NaN) * v;
-    }
-    return sum / vol;
-  });
-  const getMA = (x: number[], mode: AutoAvwapKMode, len: number): number[] => {
-    switch (mode) {
-      case 'WMA': return taCore.wma(x, len);
-      case 'EMA': return taCore.ema(x, len);
-      case 'VWMA': return taCore.vwma(x, len, volume);
-      case 'VAWMA': return vawma(x, len);
-      default: return taCore.sma(x, len);
-    }
-  };
-
-  const rsi1 = taCore.rsi(src, cfg.lengthRSI);
-  const stoch = taCore.stoch(rsi1, rsi1, rsi1, cfg.lengthStoch);
-  const k = getMA(stoch, cfg.kMode, cfg.smoothK);
-  const d = taCore.sma(k, cfg.smoothD);
-
-  const hiAVWAP: number[] = new Array(n);
-  const loAVWAP: number[] = new Array(n);
-  const hiAVWAPNext: number[] = new Array(n);
-  const loAVWAPNext: number[] = new Array(n);
-  if (n > 0) {
-    let hi = bars[0].high;
-    let lo = bars[0].low;
-    let phi = bars[0].high;
-    let plo = bars[0].low;
-    let state = 0;
-    let hiS = 0;
-    let loS = 0;
-    let hiV = 0;
-    let loV = 0;
-    let hiSNext = 0;
-    let loSNext = 0;
-    let hiVNext = 0;
-    let loVNext = 0;
-    for (let i = 0; i < n; i++) {
-      const { high, low, close } = bars[i];
-      if (lt(d[i], cfg.lowerBand) || gt(high, phi)) {
-        phi = high;
-        hiSNext = 0;
-        hiVNext = 0;
+  const value = barSource(cfg.src);
+  const fin = (x: number) => (Number.isFinite(x) ? x : NaN);
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: AvwapRun = {
+        rsi: taStep.rsi(cfg.lengthRSI), stoch: taStep.stoch(cfg.lengthStoch), k: () => NaN, d: new WindowSma(1),
+        volume: [], stochArr: [], hiAVWAP: [], plots: [[], [], [], [], []], markers: [], flags: [[], [], []],
+        times: [[], [], []], steps: [],
+        vars: {
+          hi: NaN, lo: NaN, phi: NaN, plo: NaN, state: 0, hiS: 0, loS: 0, hiV: 0, loV: 0, hiSNext: 0, loSNext: 0,
+          hiVNext: 0, loVNext: 0,
+        },
+        lists: [], series: [],
+      };
+      const len = cfg.smoothK;
+      let kStep: Committable | null = null;
+      switch (cfg.kMode) {
+        case 'WMA': {
+          const m = taStep.wma();
+          kStep = m;
+          s.k = (x) => m.step(x, len);
+          break;
+        }
+        case 'EMA': {
+          const m = taStep.ema(len);
+          kStep = m;
+          s.k = (x) => m.step(x);
+          break;
+        }
+        case 'VWMA': {
+          const m = new WindowVwma(len);
+          kStep = m;
+          s.k = (x, vol) => m.step(x, vol);
+          break;
+        }
+        case 'VAWMA':
+          // vawma(src, len): sum(src[len - m] * volume[len - m] * m) / sum(volume[len - m] * m), m = 1..len
+          s.k = (_x, _vol, bar) => {
+            let sum = 0;
+            let vol = 0;
+            for (let m = 1; m <= len; m++) {
+              const i = len - m;
+              const v = bar - i >= 0 ? s.volume[bar - i] * m : NaN;
+              vol = vol + v;
+              sum = sum + (bar - i >= 0 ? s.stochArr[bar - i] : NaN) * v;
+            }
+            return sum / vol;
+          };
+          break;
+        default: {
+          const m = new WindowSma(len);
+          kStep = m;
+          s.k = (x) => m.step(x);
+        }
       }
-      if (gt(d[i], cfg.upperBand) || lt(low, plo)) {
-        plo = low;
-        loSNext = 0;
-        loVNext = 0;
+      s.d = new WindowSma(cfg.smoothD);
+      s.steps = [s.rsi, s.stoch, ...(kStep ? [kStep] : []), s.d];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.volume, s.stochArr, s.hiAVWAP, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const { high, low, close, time } = b;
+      const v = s.vars;
+      const volume = b.volume ?? NaN;
+      s.volume[i] = volume;
+      const rsi1 = s.rsi.step(value(b));
+      const stoch = s.stoch.step(rsi1, rsi1, rsi1);
+      s.stochArr[i] = stoch;
+      const k = s.k(stoch, volume, i);
+      const d = s.d.step(k);
+
+      if (i === 0) {
+        v.hi = bars[0].high;
+        v.lo = bars[0].low;
+        v.phi = bars[0].high;
+        v.plo = bars[0].low;
       }
-      if (gt(high, hi)) {
-        hi = high;
-        hiS = 0;
-        hiV = 0;
+      if (lt(d, cfg.lowerBand) || gt(high, v.phi)) {
+        v.phi = high;
+        v.hiSNext = 0;
+        v.hiVNext = 0;
       }
-      if (lt(low, lo)) {
-        lo = low;
-        loS = 0;
-        loV = 0;
+      if (gt(d, cfg.upperBand) || lt(low, v.plo)) {
+        v.plo = low;
+        v.loSNext = 0;
+        v.loVNext = 0;
+      }
+      if (gt(high, v.hi)) {
+        v.hi = high;
+        v.hiS = 0;
+        v.hiV = 0;
+      }
+      if (lt(low, v.lo)) {
+        v.lo = low;
+        v.loS = 0;
+        v.loV = 0;
       }
       const hlc3 = (high + low + close) / 3;
       const vwapHi = cfg.useHiLow ? high : hlc3;
       const vwapLo = cfg.useHiLow ? low : hlc3;
-      const vol = volume[i];
-      hiS += vwapHi * vol;
-      loS += vwapLo * vol;
-      hiV += vol;
-      loV += vol;
-      hiSNext += vwapHi * vol;
-      loSNext += vwapLo * vol;
-      hiVNext += vol;
-      loVNext += vol;
+      const vol = volume;
+      v.hiS += vwapHi * vol;
+      v.loS += vwapLo * vol;
+      v.hiV += vol;
+      v.loV += vol;
+      v.hiSNext += vwapHi * vol;
+      v.loSNext += vwapLo * vol;
+      v.hiVNext += vol;
+      v.loVNext += vol;
 
-      if (state !== -1 && lt(d[i], cfg.lowerBand)) state = -1;
-      else if (state !== 1 && gt(d[i], cfg.upperBand)) state = 1;
-      if (gt(hi, phi) && state === 1 && lt(k[i], d[i]) && lt(k[i], cfg.lowerReversal)) {
-        hi = phi;
-        hiS = hiSNext;
-        hiV = hiVNext;
+      if (v.state !== -1 && lt(d, cfg.lowerBand)) v.state = -1;
+      else if (v.state !== 1 && gt(d, cfg.upperBand)) v.state = 1;
+      if (gt(v.hi, v.phi) && v.state === 1 && lt(k, d) && lt(k, cfg.lowerReversal)) {
+        v.hi = v.phi;
+        v.hiS = v.hiSNext;
+        v.hiV = v.hiVNext;
       }
-      if (lt(lo, plo) && state === -1 && gt(k[i], d[i]) && gt(k[i], cfg.upperReversal)) {
-        lo = plo;
-        loS = loSNext;
-        loV = loVNext;
+      if (lt(v.lo, v.plo) && v.state === -1 && gt(k, d) && gt(k, cfg.upperReversal)) {
+        v.lo = v.plo;
+        v.loS = v.loSNext;
+        v.loV = v.loVNext;
       }
-      hiAVWAP[i] = hiS / hiV;
-      loAVWAP[i] = loS / loV;
-      hiAVWAPNext[i] = hiSNext / hiVNext;
-      loAVWAPNext[i] = loSNext / loVNext;
-    }
-  }
+      const hiAVWAP = v.hiS / v.hiV;
+      const loAVWAP = v.loS / v.loV;
+      s.hiAVWAP[i] = hiAVWAP;
 
-  // breakout_above_high = close > hiAVWAP and nz(close[1], close) <= nz(hiAVWAP[1], hiAVWAP)
-  const breakout = bars.map((b, i) => gt(b.close, hiAVWAP[i])
-    && le(nz(i > 0 ? bars[i - 1].close : NaN, b.close), nz(i > 0 ? hiAVWAP[i - 1] : NaN, hiAVWAP[i])));
+      // breakout_above_high = close > hiAVWAP and nz(close[1], close) <= nz(hiAVWAP[1], hiAVWAP)
+      const breakout = gt(close, hiAVWAP)
+        && le(nz(i > 0 ? bars[i - 1].close : NaN, close), nz(i > 0 ? s.hiAVWAP[i - 1] : NaN, hiAVWAP));
+      if (breakout) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'triangleUp', color: color.green, size: 'small' });
+      }
 
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    if (breakout[i]) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleUp', color: color.green, size: 'small' });
-    }
-  }
+      s.plots[0][i] = { time, value: fin(v.hiSNext / v.hiVNext), color: HIGH_NEXT };
+      s.plots[1][i] = { time, value: fin(v.loSNext / v.loVNext), color: LOW_NEXT };
+      s.plots[2][i] = { time, value: fin(hiAVWAP), color: HIGH };
+      s.plots[3][i] = { time, value: fin(loAVWAP), color: LOW };
+      s.plots[4][i] = { time, value: breakout ? (high + low) / 2 : NaN, color: BREAKOUT };
 
-  // alertValue = useOpen ? open : close; resistance = alertValue - hiAVWAP; support = alertValue - loAVWAP
-  const resistanceBroken = bars.map((b, i) => gt((cfg.useOpen ? b.open : b.close) - hiAVWAP[i], 0));
-  const supportBroken = bars.map((b, i) => lt((cfg.useOpen ? b.open : b.close) - loAVWAP[i], 0));
-
-  const fin = (x: number) => (Number.isFinite(x) ? x : NaN);
-  const line = (values: number[], c: string) => bars.map((b, i) => ({ time: b.time, value: fin(values[i]), color: c }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(hiAVWAPNext, HIGH_NEXT),
-      plot1: line(loAVWAPNext, LOW_NEXT),
-      plot2: line(hiAVWAP, HIGH),
-      plot3: line(loAVWAP, LOW),
-      plot4: bars.map((b, i) => ({ time: b.time, value: breakout[i] ? (b.high + b.low) / 2 : NaN, color: BREAKOUT })),
+      // alertValue = useOpen ? open : close; resistance = alertValue - hiAVWAP; support = alertValue - loAVWAP
+      const resistanceBroken = gt((cfg.useOpen ? b.open : close) - hiAVWAP, 0);
+      const supportBroken = lt((cfg.useOpen ? b.open : close) - loAVWAP, 0);
+      // alertcondition(resistance > 0 or support < 0) / (resistance > 0) / (support < 0)
+      const flags = [resistanceBroken || supportBroken, resistanceBroken, supportBroken];
+      for (let k2 = 0; k2 < 3; k2++) {
+        s.flags[k2][i] = flags[k2];
+        if (flags[k2]) s.times[k2].push(time as number);
+      }
     },
-    markers,
-    // alertcondition(resistance > 0 or support < 0) / (resistance > 0) / (support < 0)
-    alerts: alertStates(alertConditions, bars, [
-      resistanceBroken.map((r, i) => r || supportBroken[i]),
-      resistanceBroken,
-      supportBroken,
-    ]),
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice() },
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AutoAvwapWithBreakoutScreenerInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AutoAvwapWithBreakoutScreenerInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -260,6 +330,8 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const AutoAvwapWithBreakoutScreener = {
   calculate,
+  createRun,
+
   metadata,
   defaultInputs,
   inputConfig,

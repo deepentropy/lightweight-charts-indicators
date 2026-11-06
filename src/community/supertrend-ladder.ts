@@ -22,9 +22,11 @@
  * original Pine script (https://creativecommons.org/licenses/by-nc-sa/4.0/). Original notice: © Trendoscope Pty Ltd
  */
 
-import { ta, array, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, array, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -122,6 +124,16 @@ class LibMa {
 
   constructor(private readonly matype: LadderMaType, private readonly length: number) {}
 
+  /** A copy of the call site state (live runs) */
+  clone(): LibMa {
+    const c = new LibMa(this.matype, this.length);
+    c.ma = this.ma;
+    c.emaMa = this.emaMa;
+    c.rmaMa = this.rmaMa;
+    c.hmaRange = this.hmaRange.slice();
+    return c;
+  }
+
   next(source: number[], close: number): number {
     const length = this.length;
     if (source.length === length) {
@@ -153,101 +165,147 @@ class LibMa {
   }
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<SupertrendLadderInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[]; alertCalls: AlertCall[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const { malength, multiplier, waitForClose, delayed } = cfg;
+type Result = IndicatorResult & { alerts: AlertConditionState[]; alertCalls: AlertCall[] };
 
-  // ta.tr (handle_na false: na on the first bar)
-  const tr = ta.tr(bars, false).toArray().map((v) => v ?? NaN);
-
-  const positiveTrArray: number[] = [];
-  const negativeTrArray: number[] = [];
-  const posMa = new LibMa(cfg.matype, malength);
-  const negMa = new LibMa(cfg.matype, malength);
-
+interface LadderVars {
+  positiveTrArray: number[];
+  negativeTrArray: number[];
+  posMa: LibMa;
+  negMa: LibMa;
   // supertrend_atr state
-  let dir = 1; // var dir = 1
-  let buyStop = NaN; // var buyStop / sellStop (set on the first bar)
-  let sellStop = NaN;
-  let buyStopDiffPrev = NaN; // buyStopDiff[1] / sellStopDiff[1]
-  let sellStopDiffPrev = NaN;
-  let highConfPrev = NaN; // highConfirmation[1] / lowConfirmation[1]
-  let lowConfPrev = NaN;
+  dir: number;
+  buyStop: number;
+  sellStop: number;
+  buyStopDiffPrev: number;
+  sellStopDiffPrev: number;
+  highConfPrev: number;
+  lowConfPrev: number;
+}
 
-  const dirArr = new Array<number>(n);
-  const stArr = new Array<number>(n);
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    // if open < close: pa.push(positiveTrArray, ta.tr, malength) else pa.push(negativeTrArray, ta.tr, malength)
-    if (lt(b.open, b.close)) pushMax(positiveTrArray, tr[i], malength);
-    else pushMax(negativeTrArray, tr[i], malength);
-    const positiveAtr = posMa.next(positiveTrArray, b.close);
-    const negativeAtr = negMa.next(negativeTrArray, b.close);
+interface LadderRun extends BarRunState<LadderVars> {
+  tr: ReturnType<typeof taStep.tr>;
+  dirArr: number[];
+  plot0: Array<{ time: number; value: number; color: string }>;
+  plot1: Array<{ time: number; value: number }>;
+  flags: boolean[][];
+  times: number[][];
+  alertCalls: AlertCall[];
+}
 
-    let buyStopDiff = negativeAtr * multiplier;
-    let sellStopDiff = positiveAtr * multiplier;
-    buyStopDiff = dir === 1 ? min(buyStopDiff, isNaN(buyStopDiffPrev) ? buyStopDiff : buyStopDiffPrev) : buyStopDiff;
-    sellStopDiff = dir === -1 ? min(sellStopDiff, isNaN(sellStopDiffPrev) ? sellStopDiff : sellStopDiffPrev) : sellStopDiff;
-    if (i === 0) {
-      buyStop = b.low - buyStopDiff;
-      sellStop = b.high + sellStopDiff;
-    }
-    const buyStopCurrent = b.low - buyStopDiff;
-    const sellStopCurrent = b.high + sellStopDiff;
-    const buyStopInverse = b.low - buyStopDiff / 2;
-    const sellStopInverse = b.high + sellStopDiff / 2;
-    const highConfirmation = waitForClose ? b.close : b.high;
-    const lowConfirmation = waitForClose ? b.close : b.low;
-    // buyStop / sellStop hold the values of the bar before (buyStop[1] / sellStop[1]) on bars after the first
-    const buyStop1 = i > 0 ? buyStop : NaN;
-    const sellStop1 = i > 0 ? sellStop : NaN;
-    dir = dir === 1 && lt(lowConfPrev, buyStop1) ? -1 : dir === -1 && gt(highConfPrev, sellStop1) ? 1 : dir;
-    const targetReached = (dir === 1 && ge(nz(highConfPrev), nz(sellStop1)))
-      || (dir === -1 && le(nz(lowConfPrev), nz(buyStop1)))
-      || !delayed;
-    buyStop = dir === 1
-      ? (targetReached ? max(nz(buyStop, buyStopCurrent), buyStopCurrent) : buyStop)
-      : (targetReached ? buyStopCurrent : max(nz(buyStop, buyStopInverse), buyStopInverse));
-    sellStop = dir === -1
-      ? (targetReached ? min(nz(sellStop, sellStopCurrent), sellStopCurrent) : sellStop)
-      : (targetReached ? sellStopCurrent : min(nz(sellStop, sellStopInverse), sellStopInverse));
-
-    dirArr[i] = dir;
-    stArr[i] = dir > 0 ? buyStop : sellStop;
-    buyStopDiffPrev = buyStopDiff;
-    sellStopDiffPrev = sellStopDiff;
-    highConfPrev = highConfirmation;
-    lowConfPrev = lowConfirmation;
-  }
-
-  const bull: boolean[] = new Array(n).fill(false);
-  const bear: boolean[] = new Array(n).fill(false);
-  const alertCalls: AlertCall[] = [];
-  for (let i = 1; i < n; i++) {
-    // directionChange = ta.change(dir); if directionChange != 0: alert(alertMessage, alert.freq_once_per_bar_close)
-    const change = dirArr[i] - dirArr[i - 1];
-    bull[i] = change > 0;
-    bear[i] = change < 0;
-    if (change !== 0) {
-      alertCalls.push({ time: bars[i].time as number, message: change > 0 ? 'Supertrend Bullish' : 'Supertrend Bearish', freq: 'once_per_bar_close' });
-    }
-  }
-
+function study(inputs: Partial<SupertrendLadderInputs>): BarStudy<LadderRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { malength, multiplier, waitForClose, delayed } = cfg;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(supertrend, color = dir > 0 ? color.rgb(83, 195, 189) : color.fuchsia, title = 'Supertrend Stop')
-      plot0: bars.map((b, i) => ({ time: b.time, value: stArr[i], color: dirArr[i] > 0 ? UP_COLOR : DOWN_COLOR })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: dirArr[i] })),
+    init() {
+      const s: LadderRun = {
+        // ta.tr (handle_na false: na on the first bar)
+        tr: taStep.tr(false), dirArr: [], plot0: [], plot1: [], flags: [[], []], times: [[], []], alertCalls: [],
+        steps: [],
+        vars: {
+          positiveTrArray: [], negativeTrArray: [], posMa: new LibMa(cfg.matype, malength), negMa: new LibMa(cfg.matype, malength),
+          dir: 1, // var dir = 1
+          buyStop: NaN, // var buyStop / sellStop (set on the first bar)
+          sellStop: NaN,
+          buyStopDiffPrev: NaN, // buyStopDiff[1] / sellStopDiff[1]
+          sellStopDiffPrev: NaN,
+          highConfPrev: NaN, // highConfirmation[1] / lowConfirmation[1]
+          lowConfPrev: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.tr];
+      s.lists = [...s.times, s.alertCalls];
+      s.series = [s.dirArr, s.plot0, s.plot1, ...s.flags];
+      return s;
     },
-    // alertcondition(ta.change(dir) > 0, ...) / alertcondition(ta.change(dir) < 0, ...)
-    alerts: alertStates(alertConditions, bars, [bull, bear]),
-    alertCalls,
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const tr = s.tr.step(b.high, b.low, b.close);
+      // if open < close: pa.push(positiveTrArray, ta.tr, malength) else pa.push(negativeTrArray, ta.tr, malength)
+      if (lt(b.open, b.close)) pushMax(v.positiveTrArray, tr, malength);
+      else pushMax(v.negativeTrArray, tr, malength);
+      const positiveAtr = v.posMa.next(v.positiveTrArray, b.close);
+      const negativeAtr = v.negMa.next(v.negativeTrArray, b.close);
+
+      const dirPrev = v.dir;
+      let buyStopDiff = negativeAtr * multiplier;
+      let sellStopDiff = positiveAtr * multiplier;
+      buyStopDiff = v.dir === 1 ? min(buyStopDiff, isNaN(v.buyStopDiffPrev) ? buyStopDiff : v.buyStopDiffPrev) : buyStopDiff;
+      sellStopDiff = v.dir === -1 ? min(sellStopDiff, isNaN(v.sellStopDiffPrev) ? sellStopDiff : v.sellStopDiffPrev) : sellStopDiff;
+      if (i === 0) {
+        v.buyStop = b.low - buyStopDiff;
+        v.sellStop = b.high + sellStopDiff;
+      }
+      const buyStopCurrent = b.low - buyStopDiff;
+      const sellStopCurrent = b.high + sellStopDiff;
+      const buyStopInverse = b.low - buyStopDiff / 2;
+      const sellStopInverse = b.high + sellStopDiff / 2;
+      const highConfirmation = waitForClose ? b.close : b.high;
+      const lowConfirmation = waitForClose ? b.close : b.low;
+      // buyStop / sellStop hold the values of the bar before (buyStop[1] / sellStop[1]) on bars after the first
+      const buyStop1 = i > 0 ? v.buyStop : NaN;
+      const sellStop1 = i > 0 ? v.sellStop : NaN;
+      const dir = v.dir === 1 && lt(v.lowConfPrev, buyStop1) ? -1 : v.dir === -1 && gt(v.highConfPrev, sellStop1) ? 1 : v.dir;
+      v.dir = dir;
+      const targetReached = (dir === 1 && ge(nz(v.highConfPrev), nz(sellStop1)))
+        || (dir === -1 && le(nz(v.lowConfPrev), nz(buyStop1)))
+        || !delayed;
+      v.buyStop = dir === 1
+        ? (targetReached ? max(nz(v.buyStop, buyStopCurrent), buyStopCurrent) : v.buyStop)
+        : (targetReached ? buyStopCurrent : max(nz(v.buyStop, buyStopInverse), buyStopInverse));
+      v.sellStop = dir === -1
+        ? (targetReached ? min(nz(v.sellStop, sellStopCurrent), sellStopCurrent) : v.sellStop)
+        : (targetReached ? sellStopCurrent : min(nz(v.sellStop, sellStopInverse), sellStopInverse));
+
+      s.dirArr[i] = dir;
+      const st = dir > 0 ? v.buyStop : v.sellStop;
+      v.buyStopDiffPrev = buyStopDiff;
+      v.sellStopDiffPrev = sellStopDiff;
+      v.highConfPrev = highConfirmation;
+      v.lowConfPrev = lowConfirmation;
+
+      // plot(supertrend, color = dir > 0 ? color.rgb(83, 195, 189) : color.fuchsia, title = 'Supertrend Stop')
+      s.plot0[i] = { time: b.time as number, value: st, color: dir > 0 ? UP_COLOR : DOWN_COLOR };
+      s.plot1[i] = { time: b.time as number, value: dir };
+
+      // directionChange = ta.change(dir); if directionChange != 0: alert(alertMessage, alert.freq_once_per_bar_close)
+      const change = i > 0 ? dir - dirPrev : NaN;
+      const bull = change > 0;
+      const bear = change < 0;
+      s.flags[0][i] = bull;
+      s.flags[1][i] = bear;
+      if (bull) s.times[0].push(b.time as number);
+      if (bear) s.times[1].push(b.time as number);
+      if (i > 0 && change !== 0) {
+        s.alertCalls.push({ time: b.time as number, message: change > 0 ? 'Supertrend Bullish' : 'Supertrend Bearish', freq: 'once_per_bar_close' });
+      }
+    },
+    copyVars: (v) => ({
+      ...v, positiveTrArray: v.positiveTrArray.slice(), negativeTrArray: v.negativeTrArray.slice(),
+      posMa: v.posMa.clone(), negMa: v.negMa.clone(),
+    }),
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        // alertcondition(ta.change(dir) > 0, ...) / alertcondition(ta.change(dir) < 0, ...)
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
 }
 
-export const SupertrendLadder = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions, hasAlertFunction };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SupertrendLadderInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SupertrendLadderInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const SupertrendLadder = { calculate, createRun,
+ metadata, defaultInputs, inputConfig, plotConfig, alertConditions, hasAlertFunction };

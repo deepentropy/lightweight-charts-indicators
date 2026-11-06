@@ -12,9 +12,11 @@
  * Original notice: © JohnsonForexTrader
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DynamicTrendChannelInputs {
   /** EMA length of the trend line */
@@ -57,57 +59,90 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DynamicTrendChannelInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface DtcRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  atr: ReturnType<typeof taStep.atr>;
+  buy: ReturnType<typeof taStep.crossover>;
+  sell: ReturnType<typeof taStep.crossunder>;
+  plots: Point[][];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<DynamicTrendChannelInputs>): BarStudy<DtcRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-
-  const basis = A(ta.ema(S(close), cfg.length));
-  const atrValue = A(ta.atr(bars, cfg.atrLength));
-  const upperBand = basis.map((v, i) => v + atrValue[i] * cfg.atrMult);
-  const lowerBand = basis.map((v, i) => v - atrValue[i] * cfg.atrMult);
-
-  // ta.crossover(close, upperBand) / ta.crossunder(close, lowerBand): exact comparisons
-  const buySignal = A(ta.crossover(S(close), S(upperBand)));
-  const sellSignal = A(ta.crossunder(S(close), S(lowerBand)));
-
-  const plot0 = [];
-  const plot1 = [];
-  const plot2 = [];
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    const trendUp = gt(close[i], basis[i]);
-    const trendColor = trendUp ? color.lime : color.red;
-    plot0.push({ time, value: basis[i], color: trendColor });
-    plot1.push({ time, value: upperBand[i], color: UPPER_COLOR });
-    plot2.push({ time, value: lowerBand[i], color: LOWER_COLOR });
-    if (buySignal[i] === 1) {
-      markers.push({ time, position: 'belowBar', shape: 'labelUp', color: color.lime, text: 'BUY',
-        textColor: color.black, size: 'small' });
-    }
-    if (sellSignal[i] === 1) {
-      markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
-        textColor: color.white, size: 'small' });
-    }
-    barColors.push({ time, color: trendColor });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    fills: [{ plot1: 'plot1', plot2: 'plot2', options: { color: FILL_COLOR } }],
-    markers,
-    barColors,
-    // alertcondition(buySignal, "Buy Alert") / alertcondition(sellSignal, "Sell Alert")
-    alerts: alertStates(alertConditions, bars, [buySignal.map((v) => v === 1), sellSignal.map((v) => v === 1)]),
+    init() {
+      const ema = taStep.ema(cfg.length);
+      const atr = taStep.atr(cfg.atrLength);
+      // ta.crossover(close, upperBand) / ta.crossunder(close, lowerBand): exact comparisons
+      const buy = taStep.crossover();
+      const sell = taStep.crossunder();
+      const s: DtcRun = {
+        ema, atr, buy, sell, plots: [[], [], []], markers: [], barColors: [], flags: [[], []], times: [[], []],
+        steps: [ema, atr, buy, sell], vars: {}, lists: [], series: [],
+      };
+      s.series = [...s.plots, ...s.flags];
+      s.lists = [s.markers, s.barColors, ...s.times];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const close = b.close;
+      const basis = s.ema.step(close);
+      const atrValue = s.atr.step(b.high, b.low, b.close);
+      const upperBand = basis + atrValue * cfg.atrMult;
+      const lowerBand = basis - atrValue * cfg.atrMult;
+      const buySignal = s.buy.step(close, upperBand);
+      const sellSignal = s.sell.step(close, lowerBand);
+
+      const trendUp = gt(close, basis);
+      const trendColor = trendUp ? color.lime : color.red;
+      s.plots[0][i] = { time, value: basis, color: trendColor };
+      s.plots[1][i] = { time, value: upperBand, color: UPPER_COLOR };
+      s.plots[2][i] = { time, value: lowerBand, color: LOWER_COLOR };
+      if (buySignal) {
+        s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: color.lime, text: 'BUY',
+          textColor: color.black, size: 'small' });
+      }
+      if (sellSignal) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
+          textColor: color.white, size: 'small' });
+      }
+      s.barColors.push({ time, color: trendColor });
+      // alertcondition(buySignal, "Buy Alert") / alertcondition(sellSignal, "Sell Alert")
+      s.flags[0][i] = buySignal;
+      s.flags[1][i] = sellSignal;
+      if (buySignal) s.times[0].push(time as number);
+      if (sellSignal) s.times[1].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+        fills: [{ plot1: 'plot1', plot2: 'plot2', options: { color: FILL_COLOR } }],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DynamicTrendChannelInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DynamicTrendChannelInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -118,6 +153,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const DynamicTrendChannel = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

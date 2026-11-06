@@ -16,9 +16,11 @@
  * Original notice: © LyroRS
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, PlotCandleData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface KalmanFlowLyroRsInputs {
   /** Price series fed into the Kalman filter */
@@ -101,106 +103,146 @@ const PALETTES: Record<KalmanFlowLyroRsInputs['colMode'], [string, string]> = {
   Royal: ['#FFC107', '#673AB7'],
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<KalmanFlowLyroRsInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> }
-  & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
-  const [upC, dnC] = cfg.cpyn ? [cfg.cpUpC, cfg.cpDnC] : (PALETTES[cfg.colMode]);
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> }
+  & { alerts: AlertConditionState[] };
 
+interface KalmanVars {
+  kfLevel: number;
+  kfVeloc: number;
+  p11: number;
+  p12: number;
+  p21: number;
+  p22: number;
+  /** var int trend = 0 */
+  tr: number;
+}
+
+interface KalmanRun extends BarRunState<KalmanVars> {
+  sma: WindowSma;
+  trend: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  fillColors: string[];
+  candles: PlotCandleData[];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<KalmanFlowLyroRsInputs>): BarStudy<KalmanRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  const [upC, dnC] = cfg.cpyn ? [cfg.cpUpC, cfg.cpDnC] : (PALETTES[cfg.colMode]);
   // Two-state Kalman filter (level, velocity)
   const q = Math.pow(10, cfg.sensitivity / 2 - 6);
   const r = 1.0;
-  const level: number[] = new Array(n);
-  const veloc: number[] = new Array(n);
-  let kfLevel = NaN;
-  let kfVeloc = 0.0;
-  let p11 = 1.0;
-  let p12 = 0.0;
-  let p21 = 0.0;
-  let p22 = 1.0;
-  for (let i = 0; i < n; i++) {
-    if (isNaN(kfLevel)) {
-      kfLevel = src[i];
-    } else {
-      const predLevel = kfLevel + kfVeloc;
-      const predVeloc = kfVeloc;
-      const p11p = p11 + p12 + p21 + p22 + q;
-      const p12p = p12 + p22;
-      const p21p = p21 + p22;
-      const p22p = p22 + q;
-      const s = p11p + r;
-      const k1 = p11p / s;
-      const k2 = p21p / s;
-      const innov = src[i] - predLevel;
-      kfLevel = predLevel + k1 * innov;
-      kfVeloc = predVeloc + k2 * innov;
-      p11 = (1 - k1) * p11p;
-      p12 = (1 - k1) * p12p;
-      p21 = p21p - k2 * p11p;
-      p22 = p22p - k2 * p12p;
-    }
-    level[i] = kfLevel;
-    veloc[i] = kfVeloc;
-  }
-
-  // Trend engine
-  const trackErr = ta.sma(Series.fromArray(bars, src.map((s, i) => Math.abs(s - level[i]))), cfg.volLen)
-    .toArray().map((v) => v ?? NaN);
-  const upper = level.map((l, i) => l + cfg.madMultp * trackErr[i]);
-  const lower = level.map((l, i) => l - cfg.madMultn * trackErr[i]);
-  const trend: number[] = new Array(n);
-  let tr = 0; // var int trend = 0
-  for (let i = 0; i < n; i++) {
-    if (gt(bars[i].close, upper[i]) && gt(veloc[i], 0)) tr = 1;
-    else if (lt(bars[i].close, lower[i]) && lt(veloc[i], 0)) tr = -1;
-    trend[i] = tr;
-  }
-
-  const trendCol = trend.map((t) => (t === 1 ? upC : t === -1 ? dnC : color.gray));
-  const markers: MarkerData[] = [];
-  const candles: PlotCandleData[] = [];
-  // flipUp = trend == 1 and trend[1] != 1 (trend[1] is na on the first bar: the comparison is false)
-  const flipUp = trend.map((t, i) => i > 0 && t === 1 && trend[i - 1] !== 1);
-  const flipDown = trend.map((t, i) => i > 0 && t === -1 && trend[i - 1] !== -1);
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    if (cfg.showSignals && flipUp[i]) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: upC, text: '𝓛𝓸𝓷𝓰',
-        textColor: '#000000', size: 'small' });
-    }
-    if (cfg.showSignals && flipDown[i]) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: dnC, text: '𝓢𝓱𝓸𝓻𝓽',
-        textColor: '#000000', size: 'small' });
-    }
-    // plotcandle(open, high, low, close, "Candle Plot", trendCol, trendCol, bordercolor = trendCol)
-    candles.push({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
-      color: trendCol[i], wickColor: trendCol[i], borderColor: trendCol[i] });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: level[i], color: String(color.new(trendCol[i], 80)) })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: level[i], color: trendCol[i] })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: cfg.showBands ? upper[i] : NaN, color: String(color.new(trendCol[i], 70)) })),
-      plot3: bars.map((b, i) => ({ time: b.time, value: cfg.showBands ? lower[i] : NaN, color: String(color.new(trendCol[i], 70)) })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const sma = new WindowSma(cfg.volLen);
+      const s: KalmanRun = {
+        sma, trend: [], plot0: [], plot1: [], plot2: [], plot3: [], fillColors: [], candles: [], flags: [[], [], []],
+        times: [[], [], []], markers: [], steps: [sma],
+        vars: { kfLevel: NaN, kfVeloc: 0.0, p11: 1.0, p12: 0.0, p21: 0.0, p22: 1.0, tr: 0 },
+        lists: [], series: [],
+      };
+      s.lists = [...s.times, s.markers];
+      s.series = [s.trend, s.plot0, s.plot1, s.plot2, s.plot3, s.fillColors, s.candles, ...s.flags];
+      return s;
     },
-    // fill(pUp, pDn, color = showBands ? color.new(trendCol, 92) : na, title = "Band Fill")
-    fills: [{
-      plot1: 'plot2',
-      plot2: 'plot3',
-      options: { title: 'Band Fill' },
-      colors: trendCol.map((c) => (cfg.showBands ? String(color.new(c, 92)) : 'transparent')),
-    }],
-    markers,
-    plotCandles: { candlePlot: candles },
-    // alertcondition(flipUp), alertcondition(flipDown), alertcondition(flipUp or flipDown)
-    alerts: alertStates(alertConditions, bars, [flipUp, flipDown, flipUp.map((f, i) => f || flipDown[i])]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const src = value(b);
+      if (isNaN(v.kfLevel)) {
+        v.kfLevel = src;
+      } else {
+        const predLevel = v.kfLevel + v.kfVeloc;
+        const predVeloc = v.kfVeloc;
+        const p11p = v.p11 + v.p12 + v.p21 + v.p22 + q;
+        const p12p = v.p12 + v.p22;
+        const p21p = v.p21 + v.p22;
+        const p22p = v.p22 + q;
+        const sv = p11p + r;
+        const k1 = p11p / sv;
+        const k2 = p21p / sv;
+        const innov = src - predLevel;
+        v.kfLevel = predLevel + k1 * innov;
+        v.kfVeloc = predVeloc + k2 * innov;
+        v.p11 = (1 - k1) * p11p;
+        v.p12 = (1 - k1) * p12p;
+        v.p21 = p21p - k2 * p11p;
+        v.p22 = p22p - k2 * p12p;
+      }
+      const level = v.kfLevel;
+      const veloc = v.kfVeloc;
+
+      // Trend engine
+      const trackErr = s.sma.step(Math.abs(src - level));
+      const upper = level + cfg.madMultp * trackErr;
+      const lower = level - cfg.madMultn * trackErr;
+      if (gt(b.close, upper) && gt(veloc, 0)) v.tr = 1;
+      else if (lt(b.close, lower) && lt(veloc, 0)) v.tr = -1;
+      const t = v.tr;
+      s.trend[i] = t;
+
+      const trendCol = t === 1 ? upC : t === -1 ? dnC : color.gray;
+      // flipUp = trend == 1 and trend[1] != 1 (trend[1] is na on the first bar: the comparison is false)
+      const flipUp = i > 0 && t === 1 && s.trend[i - 1] !== 1;
+      const flipDown = i > 0 && t === -1 && s.trend[i - 1] !== -1;
+      if (cfg.showSignals && flipUp) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: upC, text: '𝓛𝓸𝓷𝓰',
+          textColor: '#000000', size: 'small' });
+      }
+      if (cfg.showSignals && flipDown) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: dnC, text: '𝓢𝓱𝓸𝓻𝓽',
+          textColor: '#000000', size: 'small' });
+      }
+      // plotcandle(open, high, low, close, "Candle Plot", trendCol, trendCol, bordercolor = trendCol)
+      s.candles[i] = { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
+        color: trendCol, wickColor: trendCol, borderColor: trendCol };
+      s.plot0[i] = { time: b.time, value: level, color: String(color.new(trendCol, 80)) };
+      s.plot1[i] = { time: b.time, value: level, color: trendCol };
+      s.plot2[i] = { time: b.time, value: cfg.showBands ? upper : NaN, color: String(color.new(trendCol, 70)) };
+      s.plot3[i] = { time: b.time, value: cfg.showBands ? lower : NaN, color: String(color.new(trendCol, 70)) };
+      s.fillColors[i] = cfg.showBands ? String(color.new(trendCol, 92)) : 'transparent';
+      // alertcondition(flipUp), alertcondition(flipDown), alertcondition(flipUp or flipDown)
+      const flags = [flipUp, flipDown, flipUp || flipDown];
+      for (let k = 0; k < 3; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(b.time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+        // fill(pUp, pDn, color = showBands ? color.new(trendCol, 92) : na, title = "Band Fill")
+        fills: [{
+          plot1: 'plot2',
+          plot2: 'plot3',
+          options: { title: 'Band Fill' },
+          colors: s.fillColors.slice(),
+        }],
+        markers: s.markers.slice(),
+        plotCandles: { candlePlot: s.candles.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<KalmanFlowLyroRsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<KalmanFlowLyroRsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -212,6 +254,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const KalmanFlowLyroRs = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

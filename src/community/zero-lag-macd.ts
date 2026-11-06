@@ -8,7 +8,9 @@
  * Reference: "Zero Lag MACD Enhanced - Version 1.2" by AC (based on Glaz)
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ZeroLagMACDInputs {
   fastLength: number;
@@ -49,78 +51,100 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ZeroLagMACDInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+type Ema = ReturnType<typeof taStep.ema>;
+
+interface ZlMacdRun extends BarRunState<Record<string, never>> {
+  emas: Ema[];
+  macdArr: number[];
+  sigArr: number[];
+  plots: Point[][];
+  fillColors: string[];
+}
+
+function study(inputs: Partial<ZeroLagMACDInputs>): BarStudy<ZlMacdRun, IndicatorResult> {
   const { fastLength, slowLength, signalLength, macdEmaLength, showDots } = { ...defaultInputs, ...inputs };
-
-  const src = getSourceSeries(bars, 'close');
-
-  // Zero-lag fast line: 2*EMA(src, fast) - EMA(EMA(src, fast), fast)
-  const ma1 = ta.ema(src, fastLength);
-  const ma2 = ta.ema(ma1, fastLength);
-  const zlFast = ma1.mul(2).sub(ma2);
-
-  // Zero-lag slow line
-  const mas1 = ta.ema(src, slowLength);
-  const mas2 = ta.ema(mas1, slowLength);
-  const zlSlow = mas1.mul(2).sub(mas2);
-
-  // MACD = zlFast - zlSlow
-  const macdLine = zlFast.sub(zlSlow);
-
-  // Zero-lag signal: 2*EMA(MACD, signal) - EMA(EMA(MACD, signal), signal)
-  const emasig1 = ta.ema(macdLine, signalLength);
-  const emasig2 = ta.ema(emasig1, signalLength);
-  const signal = emasig1.mul(2).sub(emasig2);
-
-  const hist = macdLine.sub(signal);
-  const macdEma = ta.ema(macdLine, macdEmaLength);
-
-  const histArr = hist.toArray();
-  const macdArr = macdLine.toArray();
-  const sigArr = signal.toArray();
-  const macdEmaArr = macdEma.toArray();
-
   const warmup = slowLength * 2;
-
-  // Separate positive and negative histograms
-  const upHist = histArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : ((v ?? 0) > 0 ? (v ?? NaN) : NaN),
-  }));
-  const downHist = histArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : ((v ?? 0) <= 0 ? (v ?? NaN) : NaN),
-  }));
-
-  const macdPlot = macdArr.map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : (v ?? NaN) }));
-  const sigPlot = sigArr.map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : (v ?? NaN) }));
-  const emaPlot = macdEmaArr.map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : (v ?? NaN) }));
-
-  // Cross dots at MACD/signal crossovers
-  const dotsPlot = macdArr.map((v, i) => {
-    if (!showDots || i < warmup + 1) return { time: bars[i].time, value: NaN };
-    const cur = v ?? 0;
-    const curSig = sigArr[i] ?? 0;
-    const prev = macdArr[i - 1] ?? 0;
-    const prevSig = sigArr[i - 1] ?? 0;
-    const cross = (prev <= prevSig && cur > curSig) || (prev >= prevSig && cur < curSig);
-    if (!cross) return { time: bars[i].time, value: NaN };
-    const h = histArr[i] ?? 0;
-    return { time: bars[i].time, value: cur, color: h > 0 ? '#008000' : '#800080' };
-  });
-
-  // Dynamic fill colors: green when MACD > signal, purple otherwise
-  const fillColors = histArr.map((v, i) => {
-    if (i < warmup) return 'transparent';
-    return (v ?? 0) > 0 ? 'rgba(0,128,0,0.25)' : 'rgba(128,0,128,0.25)';
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': upHist, 'plot1': downHist, 'plot2': macdPlot, 'plot3': sigPlot, 'plot4': emaPlot, 'plot5': dotsPlot },
-    fills: [{ plot1: 'plot2', plot2: 'plot3', colors: fillColors }],
-    hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dotted', title: 'Zero' } }],
+    init() {
+      const s: ZlMacdRun = {
+        emas: [
+          taStep.ema(fastLength), taStep.ema(fastLength), taStep.ema(slowLength), taStep.ema(slowLength),
+          taStep.ema(signalLength), taStep.ema(signalLength), taStep.ema(macdEmaLength),
+        ],
+        macdArr: [], sigArr: [], plots: [[], [], [], [], [], []], fillColors: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = s.emas;
+      s.series = [s.macdArr, s.sigArr, ...s.plots, s.fillColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      const src = bars[i].close;
+      const e = s.emas;
+      // Zero-lag fast line: 2*EMA(src, fast) - EMA(EMA(src, fast), fast)
+      const ma1 = e[0].step(src);
+      const ma2 = e[1].step(ma1);
+      const zlFast = ma1 * 2 - ma2;
+
+      // Zero-lag slow line
+      const mas1 = e[2].step(src);
+      const mas2 = e[3].step(mas1);
+      const zlSlow = mas1 * 2 - mas2;
+
+      // MACD = zlFast - zlSlow
+      const macd = zlFast - zlSlow;
+
+      // Zero-lag signal: 2*EMA(MACD, signal) - EMA(EMA(MACD, signal), signal)
+      const emasig1 = e[4].step(macd);
+      const emasig2 = e[5].step(emasig1);
+      const signal = emasig1 * 2 - emasig2;
+
+      const v = macd - signal;
+      const macdEma = e[6].step(macd);
+      s.macdArr[i] = macd;
+      s.sigArr[i] = signal;
+
+      // Separate positive and negative histograms
+      s.plots[0][i] = { time, value: i < warmup ? NaN : (v > 0 ? v : NaN) };
+      s.plots[1][i] = { time, value: i < warmup ? NaN : (v <= 0 ? v : NaN) };
+      s.plots[2][i] = { time, value: i < warmup ? NaN : macd };
+      s.plots[3][i] = { time, value: i < warmup ? NaN : signal };
+      s.plots[4][i] = { time, value: i < warmup ? NaN : macdEma };
+
+      // Cross dots at MACD/signal crossovers
+      let dot: Point = { time, value: NaN };
+      if (showDots && !(i < warmup + 1)) {
+        const prev = s.macdArr[i - 1];
+        const prevSig = s.sigArr[i - 1];
+        const cross = (prev <= prevSig && macd > signal) || (prev >= prevSig && macd < signal);
+        if (cross) dot = { time, value: macd, color: v > 0 ? '#008000' : '#800080' };
+      }
+      s.plots[5][i] = dot;
+
+      // Dynamic fill colors: green when MACD > signal, purple otherwise
+      s.fillColors[i] = i < warmup ? 'transparent' : v > 0 ? 'rgba(0,128,0,0.25)' : 'rgba(128,0,128,0.25)';
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': p[0].slice(), 'plot1': p[1].slice(), 'plot2': p[2].slice(), 'plot3': p[3].slice(), 'plot4': p[4].slice(), 'plot5': p[5].slice() },
+        fills: [{ plot1: 'plot2', plot2: 'plot3', colors: s.fillColors.slice() }],
+        hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dotted', title: 'Zero' } }],
+      };
+    },
   };
 }
 
-export const ZeroLagMACD = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ZeroLagMACDInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ZeroLagMACDInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const ZeroLagMACD = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

@@ -14,8 +14,10 @@
  * Reference: "CM_Gann Swing HighLow V2" by ChrisMoody (created with Glaz)
  */
 
-import { ta, color, compare, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, compare, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData, BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CMGannSwingInputs {
   /** Moving Average Period */
@@ -68,75 +70,106 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CMGannSwingInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const arr = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const smaHigh = arr(ta.sma(new Series(bars, (b) => b.high), cfg.length));
-  const smaLow = arr(ta.sma(new Series(bars, (b) => b.low), cfg.length));
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] };
 
+interface GannVars {
+  /** valuewhen(hld != 0, hld, 1): the hld of the last two non-zero bars */
+  lastHld: number;
+  prevHld: number;
+}
+
+interface GannRun extends BarRunState<GannVars> {
+  smaH: WindowSma;
+  smaL: WindowSma;
+  smaHigh: number[];
+  smaLow: number[];
+  plot0: { time: number; value: number }[];
+  plot1: { time: number; value: number }[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<CMGannSwingInputs>): BarStudy<GannRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const bgUp = String(color.new(GREEN, 60));
   const bgDown = String(color.new(RED, 60));
-  const plot0: { time: number; value: number }[] = [];
-  const plot1: { time: number; value: number }[] = [];
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-
-  // valuewhen(hld != 0, hld, 1): the hld of the non-zero bar before the last one (the current bar counts)
-  let lastHld = NaN;
-  let prevHld = NaN;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time as number;
-    // hld = iff(close > sma(high, periods)[1], 1, iff(close < sma(low, periods)[1], -1, 0))
-    const hld = i > 0 && compare.gt(b.close, smaHigh[i - 1]) ? 1 : i > 0 && compare.lt(b.close, smaLow[i - 1]) ? -1 : 0;
-    if (hld !== 0) {
-      prevHld = lastHld;
-      lastHld = hld;
-    }
-    const hlv = prevHld;
-    // hi = hlv == -1 ? sma(high, periods) : na; lo = hlv == 1 ? sma(low, periods) : na
-    const hi = hlv === -1 ? smaHigh[i] : NaN;
-    const lo = hlv === 1 ? smaLow[i] : NaN;
-    // A float as a condition: true when not na and not 0
-    const hiOn = !Number.isNaN(hi) && hi !== 0;
-    const loOn = !Number.isNaN(lo) && lo !== 0;
-
-    // close > hi and close[1] < hi (hi of this bar) / close < lo and close[1] > lo
-    const close1 = i > 0 ? bars[i - 1].close : NaN;
-    const crossAbove = compare.gt(b.close, hi) && compare.lt(close1, hi);
-    const crossBelow = compare.lt(b.close, lo) && compare.gt(close1, lo);
-
-    // barcolor(closeAbove() ? yellow : na) / barcolor(closeBelow() ? yellow : na)
-    if (cfg.shb && crossAbove) barColors.push({ id: 'barcolor0', time: t, color: YELLOW });
-    if (cfg.shb && crossBelow) barColors.push({ id: 'barcolor1', time: t, color: YELLOW });
-    // bgcolor(BHcloseAbove ? green : na, transp=60) / bgcolor(BHcloseBelow ? red : na, transp=60)
-    if (cfg.sbh && crossAbove) bgColors.push({ id: 'bgcolor0', time: t, color: bgUp });
-    if (cfg.sbh && crossBelow) bgColors.push({ id: 'bgcolor1', time: t, color: bgDown });
-
-    // plot(pc and hi ? hi : na, style=linebr, linewidth=4) / the same with lo
-    plot0.push({ time: t, value: cfg.pc && hiOn ? hi : NaN });
-    plot1.push({ time: t, value: cfg.pc && loOn ? lo : NaN });
-
-    // plotshape(pt and hi ? hi : na, location.abovebar, triangledown, fuchsia) / (pt and lo, belowbar, triangleup, lime)
-    if (cfg.pt && hiOn) markers.push({ id: 'shape0', time: t, position: 'aboveBar', shape: 'triangleDown', color: FUCHSIA });
-    if (cfg.pt && loOn) markers.push({ id: 'shape1', time: t, position: 'belowBar', shape: 'triangleUp', color: LIME });
-    // plotshape(pttb and hi ? hi : na, location.top, triangledown, red) / (pttb and lo, bottom, triangleup, lime)
-    if (cfg.pttb && hiOn) markers.push({ id: 'shape2', time: t, position: 'top', shape: 'triangleDown', color: RED });
-    if (cfg.pttb && loOn) markers.push({ id: 'shape3', time: t, position: 'bottom', shape: 'triangleUp', color: LIME });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    markers,
-    barColors,
-    bgColors,
+    init() {
+      const smaH = new WindowSma(cfg.length);
+      const smaL = new WindowSma(cfg.length);
+      const s: GannRun = {
+        smaH, smaL, smaHigh: [], smaLow: [], plot0: [], plot1: [], markers: [], barColors: [], bgColors: [],
+        steps: [smaH, smaL], vars: { lastHld: NaN, prevHld: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.barColors, s.bgColors];
+      s.series = [s.smaHigh, s.smaLow, s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const t = b.time as number;
+      const v = s.vars;
+      const smaHigh = s.smaH.step(b.high) ?? NaN;
+      const smaLow = s.smaL.step(b.low) ?? NaN;
+      s.smaHigh[i] = smaHigh;
+      s.smaLow[i] = smaLow;
+      // hld = iff(close > sma(high, periods)[1], 1, iff(close < sma(low, periods)[1], -1, 0))
+      const hld = i > 0 && compare.gt(b.close, s.smaHigh[i - 1]!) ? 1 : i > 0 && compare.lt(b.close, s.smaLow[i - 1]!) ? -1 : 0;
+      if (hld !== 0) {
+        v.prevHld = v.lastHld;
+        v.lastHld = hld;
+      }
+      const hlv = v.prevHld;
+      // hi = hlv == -1 ? sma(high, periods) : na; lo = hlv == 1 ? sma(low, periods) : na
+      const hi = hlv === -1 ? smaHigh : NaN;
+      const lo = hlv === 1 ? smaLow : NaN;
+      // A float as a condition: true when not na and not 0
+      const hiOn = !Number.isNaN(hi) && hi !== 0;
+      const loOn = !Number.isNaN(lo) && lo !== 0;
+
+      // close > hi and close[1] < hi (hi of this bar) / close < lo and close[1] > lo
+      const close1 = i > 0 ? bars[i - 1]!.close : NaN;
+      const crossAbove = compare.gt(b.close, hi) && compare.lt(close1, hi);
+      const crossBelow = compare.lt(b.close, lo) && compare.gt(close1, lo);
+
+      // barcolor(closeAbove() ? yellow : na) / barcolor(closeBelow() ? yellow : na)
+      if (cfg.shb && crossAbove) s.barColors.push({ id: 'barcolor0', time: t, color: YELLOW });
+      if (cfg.shb && crossBelow) s.barColors.push({ id: 'barcolor1', time: t, color: YELLOW });
+      // bgcolor(BHcloseAbove ? green : na, transp=60) / bgcolor(BHcloseBelow ? red : na, transp=60)
+      if (cfg.sbh && crossAbove) s.bgColors.push({ id: 'bgcolor0', time: t, color: bgUp });
+      if (cfg.sbh && crossBelow) s.bgColors.push({ id: 'bgcolor1', time: t, color: bgDown });
+
+      // plot(pc and hi ? hi : na, style=linebr, linewidth=4) / the same with lo
+      s.plot0[i] = { time: t, value: cfg.pc && hiOn ? hi : NaN };
+      s.plot1[i] = { time: t, value: cfg.pc && loOn ? lo : NaN };
+
+      // plotshape(pt and hi ? hi : na, location.abovebar, triangledown, fuchsia) / (pt and lo, belowbar, triangleup, lime)
+      if (cfg.pt && hiOn) s.markers.push({ id: 'shape0', time: t, position: 'aboveBar', shape: 'triangleDown', color: FUCHSIA });
+      if (cfg.pt && loOn) s.markers.push({ id: 'shape1', time: t, position: 'belowBar', shape: 'triangleUp', color: LIME });
+      // plotshape(pttb and hi ? hi : na, location.top, triangledown, red) / (pttb and lo, bottom, triangleup, lime)
+      if (cfg.pttb && hiOn) s.markers.push({ id: 'shape2', time: t, position: 'top', shape: 'triangleDown', color: RED });
+      if (cfg.pttb && loOn) s.markers.push({ id: 'shape3', time: t, position: 'bottom', shape: 'triangleUp', color: LIME });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
 }
 
-export const CMGannSwing = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CMGannSwingInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CMGannSwingInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const CMGannSwing = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

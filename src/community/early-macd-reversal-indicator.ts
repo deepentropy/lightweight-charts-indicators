@@ -11,8 +11,10 @@
  * Original notice: Created by Chris Guthrie © January 24, 2025
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EarlyMacdReversalIndicatorInputs {
   /** Fast EMA length */
@@ -63,58 +65,84 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<EarlyMacdReversalIndicatorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] };
+
+interface EmrRun extends BarRunState<Record<string, never>> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  sig: ReturnType<typeof taStep.ema>;
+  hist: number[];
+  plot0: Array<{ time: number; value: number; color: string }>;
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<EarlyMacdReversalIndicatorInputs>): BarStudy<EmrRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.src);
-
-  const fastMa = ta.ema(src, cfg.fastLength);
-  const slowMa = ta.ema(src, cfg.slowLength);
-  const macd = fastMa.sub(slowMa);
-  const signal = ta.ema(macd, cfg.signalLength);
-  const hist = macd.sub(signal).toArray().map((v) => v ?? NaN);
-  const h = (i: number, k: number) => (i - k >= 0 ? hist[i - k] : NaN);
-
-  const plot0: Array<{ time: number; value: number; color: string }> = [];
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const cur = hist[i];
-    const rising = lt(h(i, 1), cur); // hist[1] < hist
-    const col = ge(cur, 0) ? (rising ? GROW_ZONE : SELL_ZONE) : (rising ? BUY_ZONE : FALL_ZONE);
-    plot0.push({ time: t, value: Number.isFinite(cur) ? cur : NaN, color: col });
-
-    const buySig = lt(cur, 0) && lt(h(i, 1), cur) && lt(h(i, 1), 0) && lt(h(i, 2), 0) && lt(h(i, 3), 0)
-      && lt(h(i, 4), 0) && lt(h(i, 5), 0) && lt(h(i, 1), h(i, 2)) && lt(h(i, 2), h(i, 3))
-      && lt(h(i, 3), h(i, 4)) && lt(h(i, 4), h(i, 5));
-    const sellSig = gt(cur, 0) && gt(h(i, 1), cur) && gt(h(i, 1), 0) && gt(h(i, 2), 0) && gt(h(i, 3), 0)
-      && gt(h(i, 4), 0) && gt(h(i, 5), 0) && gt(h(i, 1), h(i, 2)) && gt(h(i, 2), h(i, 3))
-      && gt(h(i, 3), h(i, 4)) && gt(h(i, 4), h(i, 5));
-
-    // bgcolor(buySig ? #02b61d94 : na); bgcolor(sellSig ? #f4000083 : na): the later call is drawn on top
-    if (sellSig) bgColors.push({ time: t, color: SELL_BG });
-    else if (buySig) bgColors.push({ time: t, color: BUY_BG });
-
-    // plotshape(buySig ? 0.01 : na, "Buy Entry", shape.triangleup, location.top, size.small, white)
-    if (buySig) markers.push({ time: t, position: 'top', shape: 'triangleUp', color: SHAPE_COL, size: 'small' });
-    // plotshape(sellSig ? 0.01 : na, "Short Entry", shape.triangledown, location.bottom, size.small, white)
-    if (sellSig) markers.push({ time: t, position: 'bottom', shape: 'triangleDown', color: SHAPE_COL, size: 'small' });
-  }
-
+  const value = barSource(cfg.src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    markers,
-    bgColors,
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: EmrRun = {
+        fast: taStep.ema(cfg.fastLength), slow: taStep.ema(cfg.slowLength), sig: taStep.ema(cfg.signalLength),
+        hist: [], plot0: [], markers: [], bgColors: [], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.fast, s.slow, s.sig];
+      s.lists = [s.markers, s.bgColors];
+      s.series = [s.hist, s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time;
+      const v = value(bars[i]);
+      const macd = s.fast.step(v) - s.slow.step(v);
+      const cur = macd - s.sig.step(macd);
+      s.hist[i] = cur;
+      const hist = s.hist;
+      const h = (k: number) => (i - k >= 0 ? hist[i - k] : NaN);
+      const rising = lt(h(1), cur); // hist[1] < hist
+      const col = ge(cur, 0) ? (rising ? GROW_ZONE : SELL_ZONE) : (rising ? BUY_ZONE : FALL_ZONE);
+      s.plot0[i] = { time: t, value: Number.isFinite(cur) ? cur : NaN, color: col };
+
+      const buySig = lt(cur, 0) && lt(h(1), cur) && lt(h(1), 0) && lt(h(2), 0) && lt(h(3), 0)
+        && lt(h(4), 0) && lt(h(5), 0) && lt(h(1), h(2)) && lt(h(2), h(3))
+        && lt(h(3), h(4)) && lt(h(4), h(5));
+      const sellSig = gt(cur, 0) && gt(h(1), cur) && gt(h(1), 0) && gt(h(2), 0) && gt(h(3), 0)
+        && gt(h(4), 0) && gt(h(5), 0) && gt(h(1), h(2)) && gt(h(2), h(3))
+        && gt(h(3), h(4)) && gt(h(4), h(5));
+
+      // bgcolor(buySig ? #02b61d94 : na); bgcolor(sellSig ? #f4000083 : na): the later call is drawn on top
+      if (sellSig) s.bgColors.push({ time: t, color: SELL_BG });
+      else if (buySig) s.bgColors.push({ time: t, color: BUY_BG });
+
+      // plotshape(buySig ? 0.01 : na, "Buy Entry", shape.triangleup, location.top, size.small, white)
+      if (buySig) s.markers.push({ time: t, position: 'top', shape: 'triangleUp', color: SHAPE_COL, size: 'small' });
+      // plotshape(sellSig ? 0.01 : na, "Short Entry", shape.triangledown, location.bottom, size.small, white)
+      if (sellSig) s.markers.push({ time: t, position: 'bottom', shape: 'triangleDown', color: SHAPE_COL, size: 'small' });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EarlyMacdReversalIndicatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EarlyMacdReversalIndicatorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const EarlyMacdReversalIndicator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

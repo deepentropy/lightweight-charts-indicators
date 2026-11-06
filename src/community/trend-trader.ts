@@ -12,8 +12,10 @@
  * Reference: "Trend Trader Strategy" by HPotter
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall, BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { WindowExtreme, createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -50,53 +52,99 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TrendTraderInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[]; alertCalls: AlertCall[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[]; alertCalls: AlertCall[] };
+
+interface TrendTraderVars {
+  /** avgTR, highestC, lowestC of the bar before */
+  avgTR1: number;
+  highest1: number;
+  lowest1: number;
+  /** ret[1] and pos[1] (na on bar 0) */
+  ret1: number;
+  posPrev: number;
+}
+
+interface TrendTraderRun extends BarRunState<TrendTraderVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  wma: ReturnType<typeof taStep.wma>;
+  hi: WindowExtreme;
+  lo: WindowExtreme;
+  plot0: { time: number; value: number; color: string }[];
+  barColors: BarColorData[];
+  alertCalls: AlertCall[];
+}
+
+function study(inputs: Partial<TrendTraderInputs>): BarStudy<TrendTraderRun, Result> {
   const { length, multiplier } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  // avgTR = ta.wma(ta.atr(1), Length); highestC = ta.highest(Length) (high); lowestC = ta.lowest(Length) (low)
-  const avgTR = ta.wma(ta.atr(bars, 1), length).toArray().map((v) => v ?? NaN);
-  const highestC = ta.highest(new Series(bars, (b) => b.high), length).toArray().map((v) => v ?? NaN);
-  const lowestC = ta.lowest(new Series(bars, (b) => b.low), length).toArray().map((v) => v ?? NaN);
-
   const red = color.red;
   const green = color.green;
   const blue = color.blue;
-
-  const ret = new Array<number>(n);
-  const barColors: BarColorData[] = [];
-  const alertCalls: AlertCall[] = [];
-  let posPrev = NaN;
-  for (let i = 0; i < n; i++) {
-    const close = bars[i].close;
-    const hiLimit = i > 0 ? highestC[i - 1] - avgTR[i - 1] * multiplier : NaN;
-    const loLimit = i > 0 ? lowestC[i - 1] + avgTR[i - 1] * multiplier : NaN;
-    // ret := close > hiLimit and close > loLimit ? hiLimit : close < loLimit and close < hiLimit ? loLimit : nz(ret[1], close)
-    const ret1 = i > 0 ? ret[i - 1] : NaN;
-    ret[i] = gt(close, hiLimit) && gt(close, loLimit) ? hiLimit
-      : lt(close, loLimit) && lt(close, hiLimit) ? loLimit
-      : isNaN(ret1) ? close : ret1;
-    // pos := close > ret ? 1 : close < ret ? -1 : nz(pos[1], 0)
-    const pos = gt(close, ret[i]) ? 1 : lt(close, ret[i]) ? -1 : isNaN(posPrev) ? 0 : posPrev;
-    const t = bars[i].time as number;
-    // if pos != pos[1] and pos == 1: alert("Color changed - Buy", alert.freq_once_per_bar_close) (pos[1] na on bar 0)
-    if (!isNaN(posPrev) && pos !== posPrev && pos === 1) alertCalls.push({ time: t, message: 'Color changed - Buy', freq: 'once_per_bar_close' });
-    if (!isNaN(posPrev) && pos !== posPrev && pos === -1) alertCalls.push({ time: t, message: 'Color changed - Sell', freq: 'once_per_bar_close' });
-    // barcolor(pos == -1 ? color.red : pos == 1 ? color.green : color.blue)
-    barColors.push({ time: t, color: pos === -1 ? red : pos === 1 ? green : blue, id: 'barcolor0' });
-    posPrev = pos;
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    // plot(ret, color = color.new(color.blue, 0), title = 'Trend Trader Strategy')
-    plots: { plot0: bars.map((b, i) => ({ time: b.time, value: ret[i], color: blue })) },
-    barColors,
-    alertCalls,
+    init() {
+      // avgTR = ta.wma(ta.atr(1), Length); highestC = ta.highest(Length) (high); lowestC = ta.lowest(Length) (low)
+      const atr = taStep.atr(1);
+      const wma = taStep.wma();
+      const hi = new WindowExtreme(false, length);
+      const lo = new WindowExtreme(true, length);
+      const s: TrendTraderRun = {
+        atr, wma, hi, lo, plot0: [], barColors: [], alertCalls: [],
+        steps: [atr, wma, hi, lo],
+        vars: { avgTR1: NaN, highest1: NaN, lowest1: NaN, ret1: NaN, posPrev: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [s.barColors, s.alertCalls];
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const close = b.close;
+      const avgTR = s.wma.step(s.atr.step(b.high, b.low, b.close), length);
+      const highestC = s.hi.step(b.high);
+      const lowestC = s.lo.step(b.low);
+      const hiLimit = i > 0 ? v.highest1 - v.avgTR1 * multiplier : NaN;
+      const loLimit = i > 0 ? v.lowest1 + v.avgTR1 * multiplier : NaN;
+      // ret := close > hiLimit and close > loLimit ? hiLimit : close < loLimit and close < hiLimit ? loLimit : nz(ret[1], close)
+      const ret1 = v.ret1;
+      const ret = gt(close, hiLimit) && gt(close, loLimit) ? hiLimit
+        : lt(close, loLimit) && lt(close, hiLimit) ? loLimit
+        : isNaN(ret1) ? close : ret1;
+      // pos := close > ret ? 1 : close < ret ? -1 : nz(pos[1], 0)
+      const posPrev = v.posPrev;
+      const pos = gt(close, ret) ? 1 : lt(close, ret) ? -1 : isNaN(posPrev) ? 0 : posPrev;
+      const t = b.time as number;
+      // if pos != pos[1] and pos == 1: alert("Color changed - Buy", alert.freq_once_per_bar_close) (pos[1] na on bar 0)
+      if (!isNaN(posPrev) && pos !== posPrev && pos === 1) s.alertCalls.push({ time: t, message: 'Color changed - Buy', freq: 'once_per_bar_close' });
+      if (!isNaN(posPrev) && pos !== posPrev && pos === -1) s.alertCalls.push({ time: t, message: 'Color changed - Sell', freq: 'once_per_bar_close' });
+      // barcolor(pos == -1 ? color.red : pos == 1 ? color.green : color.blue)
+      s.barColors.push({ time: t, color: pos === -1 ? red : pos === 1 ? green : blue, id: 'barcolor0' });
+      // plot(ret, color = color.new(color.blue, 0), title = 'Trend Trader Strategy')
+      s.plot0[i] = { time: b.time, value: ret, color: blue };
+      v.avgTR1 = avgTR;
+      v.highest1 = highestC;
+      v.lowest1 = lowestC;
+      v.ret1 = ret;
+      v.posPrev = pos;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        barColors: s.barColors.slice(),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
 }
 
-export const TrendTrader = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hasAlertFunction };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrendTraderInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TrendTraderInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const TrendTrader = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hasAlertFunction };

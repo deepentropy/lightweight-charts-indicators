@@ -13,9 +13,11 @@
  * Original notice: @LUPEN
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface LiquiditySentimentProfileLupenInputs {
   /** Length of the volume weighted sums */
@@ -82,98 +84,120 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ne = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) > EPS;
 const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+
+interface LspRun extends BarRunState<Record<string, never>> {
+  smaBull: WindowSma;
+  smaBear: WindowSma;
+  ema: ReturnType<typeof taStep.ema>;
+  lspRaw: number[];
+  lspSignal: number[];
+  plots: Point[][];
+  coreColors: string[];
+  baseColors: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<LiquiditySentimentProfileLupenInputs>): BarStudy<LspRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const s: LspRun = {
+        smaBull: new WindowSma(cfg.length), smaBear: new WindowSma(cfg.length), ema: taStep.ema(cfg.smooth),
+        lspRaw: [], lspSignal: [], plots: [[], [], [], []], coreColors: [], baseColors: [], markers: [],
+        flags: [[], []], times: [[], []], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.smaBull, s.smaBear, s.ema];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.lspRaw, s.lspSignal, ...s.plots, s.coreColors, s.baseColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const { open, high, low, close, time } = bars[i];
+      const volume = bars[i].volume ?? NaN;
+      const bodySize = Math.abs(close - open);
+      const upperWick = high - Math.max(close, open);
+      const lowerWick = Math.min(close, open) - low;
+      const bullPressureRaw = (gt(close, open) ? bodySize : 0) + lowerWick;
+      const bearPressureRaw = (lt(close, open) ? bodySize : 0) + upperWick;
+      const sumBull = s.smaBull.step(bullPressureRaw * volume) * cfg.length;
+      const sumBear = s.smaBear.step(bearPressureRaw * volume) * cfg.length;
+      const totalFlow = sumBull + sumBear;
+      // total_flow != 0 ? ... : 0 (na != 0 is false: 0 during the warm-up)
+      const raw = ne(totalFlow, 0) ? ((sumBull - sumBear) / totalFlow) * 100 : 0;
+      const sig = s.ema.step(raw);
+      s.lspRaw[i] = raw;
+      s.lspSignal[i] = sig;
+      const prevRaw = i > 0 ? s.lspRaw[i - 1] : NaN;
+      const prevSig = i > 0 ? s.lspSignal[i - 1] : NaN;
+
+      const isBullish = gt(raw, 0);
+      const isGrowing = i > 0 && gt(raw, prevRaw);
+      const isAboveSignal = gt(raw, sig);
+      const colDynamic = isBullish ? (isGrowing ? cfg.bullStrong : cfg.bullWeak) : isGrowing ? cfg.bearWeak : cfg.bearStrong;
+      s.coreColors[i] = String(isAboveSignal
+        ? (isGrowing ? color.new(cfg.bullStrong, 40) : color.new(cfg.bullWeak, 60))
+        : (isGrowing ? color.new(cfg.bearWeak, 60) : color.new(cfg.bearStrong, 40)));
+      s.baseColors[i] = String(isBullish ? color.new(cfg.bullStrong, 90) : color.new(cfg.bearStrong, 90));
+
+      s.plots[0][i] = { time, value: 0, color: '#90A4AE' };
+      s.plots[1][i] = { time, value: fin(raw), color: String(color.new(colDynamic, 80)) };
+      s.plots[2][i] = { time, value: fin(raw), color: colDynamic };
+      s.plots[3][i] = { time, value: fin(sig), color: '#FFEB3B' };
+
+      // ta.crossover / ta.crossunder (exact comparisons)
+      if (cfg.showCrossings && i > 0) {
+        if (raw > sig && prevRaw <= prevSig) {
+          s.markers.push({ time, position: 'atPriceMiddle', price: -105, shape: 'triangleUp', color: '#00E676', size: 'small' });
+        }
+        if (raw < sig && prevRaw >= prevSig) {
+          s.markers.push({ time, position: 'atPriceMiddle', price: 105, shape: 'triangleDown', color: '#FF1744', size: 'small' });
+        }
+      }
+      // cross_up = ta.crossover(lsp_raw, lsp_signal), cross_down = ta.crossunder(lsp_raw, lsp_signal)
+      // alertcondition(cross_up, 'LSP Buy') / alertcondition(cross_down, 'LSP Sell')
+      const up = raw > sig && prevRaw <= prevSig;
+      const down = raw < sig && prevRaw >= prevSig;
+      s.flags[0][i] = up;
+      s.flags[1][i] = down;
+      if (up) s.times[0].push(time as number);
+      if (down) s.times[1].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 2 },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice() },
+        hlines: [
+          { value: 50, options: { title: 'Upper Zone', color: '#546E7A', linestyle: 'dotted' } },
+          { value: -50, options: { title: 'Lower Zone', color: '#546E7A', linestyle: 'dotted' } },
+        ],
+        fills: [
+          // fill(p_lsp, p_sig, color = fill_core_color, title = 'Trend Intensity Core')
+          { plot1: 'plot2', plot2: 'plot3', options: { title: 'Trend Intensity Core' }, colors: s.coreColors.slice() },
+          // fill(p_lsp, p_zero, color = fill_base_color, title = 'Volume Depth')
+          { plot1: 'plot2', plot2: 'plot0', options: { title: 'Volume Depth' }, colors: s.baseColors.slice() },
+        ],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<LiquiditySentimentProfileLupenInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<LiquiditySentimentProfileLupenInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const volBull: number[] = new Array(n);
-  const volBear: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const { open, high, low, close } = bars[i];
-    const volume = bars[i].volume ?? NaN;
-    const bodySize = Math.abs(close - open);
-    const upperWick = high - Math.max(close, open);
-    const lowerWick = Math.min(close, open) - low;
-    const bullPressureRaw = (gt(close, open) ? bodySize : 0) + lowerWick;
-    const bearPressureRaw = (lt(close, open) ? bodySize : 0) + upperWick;
-    volBull[i] = bullPressureRaw * volume;
-    volBear[i] = bearPressureRaw * volume;
-  }
-  const smaBull = A(ta.sma(S(volBull), cfg.length));
-  const smaBear = A(ta.sma(S(volBear), cfg.length));
-  const lspRaw = new Array<number>(n);
-  for (let i = 0; i < n; i++) {
-    const sumBull = smaBull[i] * cfg.length;
-    const sumBear = smaBear[i] * cfg.length;
-    const totalFlow = sumBull + sumBear;
-    // total_flow != 0 ? ... : 0 (na != 0 is false: 0 during the warm-up)
-    lspRaw[i] = ne(totalFlow, 0) ? ((sumBull - sumBear) / totalFlow) * 100 : 0;
-  }
-  const lspSignal = A(ta.ema(S(lspRaw), cfg.smooth));
-  // cross_up = ta.crossover(lsp_raw, lsp_signal), cross_down = ta.crossunder(lsp_raw, lsp_signal)
-  const crossUp = crossedOver(lspRaw, lspSignal);
-  const crossDown = crossedUnder(lspRaw, lspSignal);
-
-  const plot0 = [];
-  const plot1 = [];
-  const plot2 = [];
-  const plot3 = [];
-  const coreColors: string[] = new Array(n);
-  const baseColors: string[] = new Array(n);
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    const raw = lspRaw[i];
-    const sig = lspSignal[i];
-    const isBullish = gt(raw, 0);
-    const isGrowing = i > 0 && gt(raw, lspRaw[i - 1]);
-    const isAboveSignal = gt(raw, sig);
-    const colDynamic = isBullish ? (isGrowing ? cfg.bullStrong : cfg.bullWeak) : isGrowing ? cfg.bearWeak : cfg.bearStrong;
-    coreColors[i] = String(isAboveSignal
-      ? (isGrowing ? color.new(cfg.bullStrong, 40) : color.new(cfg.bullWeak, 60))
-      : (isGrowing ? color.new(cfg.bearWeak, 60) : color.new(cfg.bearStrong, 40)));
-    baseColors[i] = String(isBullish ? color.new(cfg.bullStrong, 90) : color.new(cfg.bearStrong, 90));
-
-    plot0.push({ time, value: 0, color: '#90A4AE' });
-    plot1.push({ time, value: fin(raw), color: String(color.new(colDynamic, 80)) });
-    plot2.push({ time, value: fin(raw), color: colDynamic });
-    plot3.push({ time, value: fin(sig), color: '#FFEB3B' });
-
-    // ta.crossover / ta.crossunder (exact comparisons)
-    if (cfg.showCrossings && i > 0) {
-      const prevRaw = lspRaw[i - 1];
-      const prevSig = lspSignal[i - 1];
-      if (raw > sig && prevRaw <= prevSig) {
-        markers.push({ time, position: 'atPriceMiddle', price: -105, shape: 'triangleUp', color: '#00E676', size: 'small' });
-      }
-      if (raw < sig && prevRaw >= prevSig) {
-        markers.push({ time, position: 'atPriceMiddle', price: 105, shape: 'triangleDown', color: '#FF1744', size: 'small' });
-      }
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 2 },
-    plots: { plot0, plot1, plot2, plot3 },
-    hlines: [
-      { value: 50, options: { title: 'Upper Zone', color: '#546E7A', linestyle: 'dotted' } },
-      { value: -50, options: { title: 'Lower Zone', color: '#546E7A', linestyle: 'dotted' } },
-    ],
-    fills: [
-      // fill(p_lsp, p_sig, color = fill_core_color, title = 'Trend Intensity Core')
-      { plot1: 'plot2', plot2: 'plot3', options: { title: 'Trend Intensity Core' }, colors: coreColors },
-      // fill(p_lsp, p_zero, color = fill_base_color, title = 'Volume Depth')
-      { plot1: 'plot2', plot2: 'plot0', options: { title: 'Volume Depth' }, colors: baseColors },
-    ],
-    markers,
-    // alertcondition(cross_up, 'LSP Buy') / alertcondition(cross_down, 'LSP Sell')
-    alerts: alertStates(alertConditions, bars, [crossUp, crossDown]),
-  };
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -184,6 +208,8 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const LiquiditySentimentProfileLupen = {
   calculate,
+  createRun,
+
   metadata,
   defaultInputs,
   inputConfig,

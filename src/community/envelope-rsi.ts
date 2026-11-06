@@ -10,9 +10,11 @@
  * Reference: "ENVELOPE - RSI - Buy Sell Signals" by Saleh_Toodarvari
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EnvelopeRSIInputs {
   envelopeLen: number;
@@ -68,193 +70,200 @@ function cross(prevA: number, curA: number, prevB: number, curB: number): boolea
   return (prevA <= prevB && curA > curB) || (prevA >= prevB && curA < curB);
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<EnvelopeRSIInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number };
+
+interface EnvRun extends BarRunState<Record<string, never>> {
+  basis: { step(v: number): number; commit(): void };
+  rsi: ReturnType<typeof taStep.rsi>;
+  upperArr: number[];
+  lowerArr: number[];
+  crossBuyArr: boolean[];
+  crossSellArr: boolean[];
+  basisPlot: Point[];
+  upperPlot: Point[];
+  lowerPlot: Point[];
+  sellSigPlot: Point[];
+  buySigPlot: Point[];
+  tpSigPlot: Point[];
+  slSigPlot: Point[];
+  sellSigFillColors: string[];
+  buySigFillColors: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+// Fill colors for TP/SL: visible for 2 bars after any cross_buy or cross_sell
+// Pine: tpColor = if(cross_sell[1] or cross_sell[2] or cross_buy[1] or cross_buy[2]) color.new(#1DBC60, 30) else transparent
+// slColor = same condition but color.new(#F74A58, 30)
+const tpFillColor = 'rgba(29, 188, 96, 0.70)';
+const slFillColor = 'rgba(247, 74, 88, 0.70)';
+const transparentColor = 'rgba(0, 0, 0, 0)';
+
+function study(inputs: Partial<EnvelopeRSIInputs>): BarStudy<EnvRun, Result> {
   const { envelopeLen, envelopePct, exponential, rsiLen, overboughtRSI, oversoldRSI, tpPercent, slPercent } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  // Envelope source = hl2
-  const hl2 = new Series(bars, (b) => (b.high + b.low) / 2);
-  const basisSeries = exponential ? ta.ema(hl2, envelopeLen) : ta.sma(hl2, envelopeLen);
-  const basisArr = basisSeries.toArray();
-
   const k = envelopePct / 100.0;
   const warmup = envelopeLen;
-
-  // RSI on hl2 (Pine default rsiSourceInput = hl2)
-  // Pine computes RSI manually: up = rma(max(change, 0), len), down = rma(-min(change, 0), len)
-  // rsi = down==0 ? 100 : up==0 ? 0 : 100 - 100/(1+up/down)
-  const rsiSeries = ta.rsi(hl2, rsiLen);
-  const rsiArr = rsiSeries.toArray();
-
-  // Precompute upper/lower arrays
-  const upperArr = new Array<number>(n);
-  const lowerArr = new Array<number>(n);
-  for (let i = 0; i < n; i++) {
-    const b = basisArr[i];
-    if (b != null) {
-      upperArr[i] = b * (1 + k);
-      lowerArr[i] = b * (1 - k);
-    } else {
-      upperArr[i] = NaN;
-      lowerArr[i] = NaN;
-    }
-  }
-
-  // Per-bar signal detection
-  const crossBuyArr = new Array<boolean>(n).fill(false);
-  const crossSellArr = new Array<boolean>(n).fill(false);
-  const condBuyArr = new Array<boolean>(n).fill(false);
-  const condSellArr = new Array<boolean>(n).fill(false);
-
-  for (let i = 1; i < n; i++) {
-    if (basisArr[i] == null || basisArr[i - 1] == null) continue;
-
-    const curClose = bars[i].close;
-    const prevClose = bars[i - 1].close;
-    const curUpper = upperArr[i];
-    const prevUpper = upperArr[i - 1];
-    const curLower = lowerArr[i];
-    const prevLower = lowerArr[i - 1];
-
-    // cross_buy = ta.crossover(close, lower)
-    crossBuyArr[i] = prevClose <= prevLower && curClose > curLower;
-    // cross_sell = ta.crossunder(close, upper)
-    crossSellArr[i] = prevClose >= prevUpper && curClose < curUpper;
-
-    const rsiVal = rsiArr[i];
-    if (rsiVal == null) continue;
-
-    // condition_buy: rsi < oversold AND ta.cross(any OHLC, lower)
-    if (rsiVal < oversoldRSI) {
-      const lo = bars[i].low, prevLo = bars[i - 1].low;
-      const hi = bars[i].high, prevHi = bars[i - 1].high;
-      const op = bars[i].open, prevOp = bars[i - 1].open;
-      const anyCrossLower =
-        cross(prevLo, lo, prevLower, curLower) ||
-        cross(prevClose, curClose, prevLower, curLower) ||
-        cross(prevHi, hi, prevLower, curLower) ||
-        cross(prevOp, op, prevLower, curLower);
-      condBuyArr[i] = anyCrossLower;
-    }
-
-    // condition_sell: rsi > overbought AND ta.cross(any OHLC, upper)
-    if (rsiVal > overboughtRSI) {
-      const lo = bars[i].low, prevLo = bars[i - 1].low;
-      const hi = bars[i].high, prevHi = bars[i - 1].high;
-      const op = bars[i].open, prevOp = bars[i - 1].open;
-      const anyCrossUpper =
-        cross(prevLo, lo, prevUpper, curUpper) ||
-        cross(prevClose, curClose, prevUpper, curUpper) ||
-        cross(prevHi, hi, prevUpper, curUpper) ||
-        cross(prevOp, op, prevUpper, curUpper);
-      condSellArr[i] = anyCrossUpper;
-    }
-  }
-
-  // Build plot arrays
-  const basisPlot = basisArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (v == null || i < warmup) ? NaN : v,
-  }));
-  const upperPlot = upperArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || isNaN(v)) ? NaN : v,
-  }));
-  const lowerPlot = lowerArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || isNaN(v)) ? NaN : v,
-  }));
-
-  // sell_sig = cross_sell ? high : na
-  // buy_sig = cross_buy ? ohlc4 : na
-  // tp, sl computed only when condition_buy or condition_sell
-  const sellSigPlot: { time: number; value: number }[] = [];
-  const buySigPlot: { time: number; value: number }[] = [];
-  const tpSigPlot: { time: number; value: number }[] = [];
-  const slSigPlot: { time: number; value: number }[] = [];
-
-  const markers: MarkerData[] = [];
-
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    const ohlc4 = (bars[i].open + bars[i].high + bars[i].low + bars[i].close) / 4;
-
-    // sell_sig plot: cross_sell ? high : NaN
-    sellSigPlot.push({ time, value: crossSellArr[i] ? bars[i].high : NaN });
-    // buy_sig plot: cross_buy ? ohlc4 : NaN
-    buySigPlot.push({ time, value: crossBuyArr[i] ? ohlc4 : NaN });
-
-    // tp/sl: only when condition fires
-    let tp = NaN;
-    let sl = NaN;
-    if (condSellArr[i]) {
-      tp = ohlc4 - ohlc4 * (tpPercent / 100);
-      sl = ohlc4 + ohlc4 * (slPercent / 100);
-    } else if (condBuyArr[i]) {
-      tp = ohlc4 + ohlc4 * (tpPercent / 100);
-      sl = ohlc4 - ohlc4 * (slPercent / 100);
-    }
-    tpSigPlot.push({ time, value: tp });
-    slSigPlot.push({ time, value: sl });
-
-    // Markers: plotshape(cross_sell ? condition_sell : na, ...) means show only when BOTH cross_sell AND condition_sell
-    if (i >= warmup) {
-      if (crossSellArr[i] && condSellArr[i]) {
-        markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'Sell' });
-      }
-      if (crossBuyArr[i] && condBuyArr[i]) {
-        markers.push({ time, position: 'belowBar', shape: 'labelUp', color: '#00FF00', text: 'Buy' });
-      }
-    }
-  }
-
-  // Fill colors for TP/SL: visible for 2 bars after any cross_buy or cross_sell
-  // Pine: tpColor = if(cross_sell[1] or cross_sell[2] or cross_buy[1] or cross_buy[2]) color.new(#1DBC60, 30) else transparent
-  // slColor = same condition but color.new(#F74A58, 30)
-  const tpFillColor = 'rgba(29, 188, 96, 0.70)';
-  const slFillColor = 'rgba(247, 74, 88, 0.70)';
-  const transparentColor = 'rgba(0, 0, 0, 0)';
-
-  const sellSigFillColors: string[] = [];
-  const buySigFillColors: string[] = [];
-  for (let i = 0; i < n; i++) {
-    const recentSignal =
-      (i >= 1 && crossSellArr[i - 1]) || (i >= 2 && crossSellArr[i - 2]) ||
-      (i >= 1 && crossBuyArr[i - 1]) || (i >= 2 && crossBuyArr[i - 2]);
-    sellSigFillColors.push(recentSignal ? tpFillColor : transparentColor);
-    buySigFillColors.push(recentSignal ? slFillColor : transparentColor);
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      'basis': basisPlot,
-      'upper': upperPlot,
-      'lower': lowerPlot,
-      'sellSig': sellSigPlot,
-      'buySig': buySigPlot,
-      'tpSig': tpSigPlot,
-      'slSig': slSigPlot,
+    init() {
+      // Envelope source = hl2
+      const basis = exponential ? taStep.ema(envelopeLen) : new WindowSma(envelopeLen);
+      // RSI on hl2 (Pine default rsiSourceInput = hl2)
+      // Pine computes RSI manually: up = rma(max(change, 0), len), down = rma(-min(change, 0), len)
+      // rsi = down==0 ? 100 : up==0 ? 0 : 100 - 100/(1+up/down)
+      const rsi = taStep.rsi(rsiLen);
+      const s: EnvRun = {
+        basis, rsi, upperArr: [], lowerArr: [], crossBuyArr: [], crossSellArr: [], basisPlot: [], upperPlot: [],
+        lowerPlot: [], sellSigPlot: [], buySigPlot: [], tpSigPlot: [], slSigPlot: [], sellSigFillColors: [],
+        buySigFillColors: [], markers: [], flags: [[], []], times: [[], []],
+        steps: [basis, rsi], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [
+        s.upperArr, s.lowerArr, s.crossBuyArr, s.crossSellArr, s.basisPlot, s.upperPlot, s.lowerPlot, s.sellSigPlot,
+        s.buySigPlot, s.tpSigPlot, s.slSigPlot, s.sellSigFillColors, s.buySigFillColors, ...s.flags,
+      ];
+      return s;
     },
-    fills: [
-      // fill(u, l) - envelope background
-      { plot1: 'upper', plot2: 'lower', options: { color: 'rgba(33, 150, 243, 0.05)' } },
-      // fill(sell_sig, tp_sig, tpColor) and fill(buy_sig, tp_sig, tpColor)
-      { plot1: 'sellSig', plot2: 'tpSig', options: { color: tpFillColor }, colors: sellSigFillColors },
-      { plot1: 'buySig', plot2: 'tpSig', options: { color: tpFillColor }, colors: buySigFillColors },
-      // fill(buy_sig, sl_sig, slColor) and fill(sell_sig, sl_sig, slColor)
-      { plot1: 'buySig', plot2: 'slSig', options: { color: slFillColor }, colors: buySigFillColors },
-      { plot1: 'sellSig', plot2: 'slSig', options: { color: slFillColor }, colors: sellSigFillColors },
-    ],
-    markers,
-    // alertConditionBuy = cross_buy and condition_buy; alertConditionSell = cross_sell and condition_sell
-    alerts: alertStates(alertConditions, bars, [
-      crossBuyArr.map((c, i) => c && condBuyArr[i]), crossSellArr.map((c, i) => c && condSellArr[i]),
-    ]),
+    bar(s, i, bars) {
+      const bar = bars[i]!;
+      const time = bar.time;
+      const hl2 = (bar.high + bar.low) / 2;
+      const b = s.basis.step(hl2);
+      const rsiVal = s.rsi.step(hl2);
+      let curUpper = NaN;
+      let curLower = NaN;
+      if (b != null) {
+        curUpper = b * (1 + k);
+        curLower = b * (1 - k);
+      }
+      s.upperArr[i] = curUpper;
+      s.lowerArr[i] = curLower;
+
+      // Per-bar signal detection
+      let crossBuy = false;
+      let crossSell = false;
+      let condBuy = false;
+      let condSell = false;
+      if (i >= 1) {
+        const prev = bars[i - 1]!;
+        const curClose = bar.close;
+        const prevClose = prev.close;
+        const prevUpper = s.upperArr[i - 1]!;
+        const prevLower = s.lowerArr[i - 1]!;
+        // cross_buy = ta.crossover(close, lower)
+        crossBuy = prevClose <= prevLower && curClose > curLower;
+        // cross_sell = ta.crossunder(close, upper)
+        crossSell = prevClose >= prevUpper && curClose < curUpper;
+
+        if (rsiVal != null) {
+          const lo = bar.low, prevLo = prev.low;
+          const hi = bar.high, prevHi = prev.high;
+          const op = bar.open, prevOp = prev.open;
+          // condition_buy: rsi < oversold AND ta.cross(any OHLC, lower)
+          if (rsiVal < oversoldRSI) {
+            condBuy =
+              cross(prevLo, lo, prevLower, curLower) ||
+              cross(prevClose, curClose, prevLower, curLower) ||
+              cross(prevHi, hi, prevLower, curLower) ||
+              cross(prevOp, op, prevLower, curLower);
+          }
+          // condition_sell: rsi > overbought AND ta.cross(any OHLC, upper)
+          if (rsiVal > overboughtRSI) {
+            condSell =
+              cross(prevLo, lo, prevUpper, curUpper) ||
+              cross(prevClose, curClose, prevUpper, curUpper) ||
+              cross(prevHi, hi, prevUpper, curUpper) ||
+              cross(prevOp, op, prevUpper, curUpper);
+          }
+        }
+      }
+      s.crossBuyArr[i] = crossBuy;
+      s.crossSellArr[i] = crossSell;
+
+      s.basisPlot[i] = { time, value: (b == null || i < warmup) ? NaN : b };
+      s.upperPlot[i] = { time, value: (i < warmup || isNaN(curUpper)) ? NaN : curUpper };
+      s.lowerPlot[i] = { time, value: (i < warmup || isNaN(curLower)) ? NaN : curLower };
+
+      // sell_sig = cross_sell ? high : na
+      // buy_sig = cross_buy ? ohlc4 : na
+      // tp, sl computed only when condition_buy or condition_sell
+      const ohlc4 = (bar.open + bar.high + bar.low + bar.close) / 4;
+      s.sellSigPlot[i] = { time, value: crossSell ? bar.high : NaN };
+      s.buySigPlot[i] = { time, value: crossBuy ? ohlc4 : NaN };
+      let tp = NaN;
+      let sl = NaN;
+      if (condSell) {
+        tp = ohlc4 - ohlc4 * (tpPercent / 100);
+        sl = ohlc4 + ohlc4 * (slPercent / 100);
+      } else if (condBuy) {
+        tp = ohlc4 + ohlc4 * (tpPercent / 100);
+        sl = ohlc4 - ohlc4 * (slPercent / 100);
+      }
+      s.tpSigPlot[i] = { time, value: tp };
+      s.slSigPlot[i] = { time, value: sl };
+
+      // Markers: plotshape(cross_sell ? condition_sell : na, ...) means show only when BOTH cross_sell AND condition_sell
+      if (i >= warmup) {
+        if (crossSell && condSell) {
+          s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'Sell' });
+        }
+        if (crossBuy && condBuy) {
+          s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: '#00FF00', text: 'Buy' });
+        }
+      }
+
+      const recentSignal =
+        (i >= 1 && s.crossSellArr[i - 1]) || (i >= 2 && s.crossSellArr[i - 2]) ||
+        (i >= 1 && s.crossBuyArr[i - 1]) || (i >= 2 && s.crossBuyArr[i - 2]);
+      s.sellSigFillColors[i] = recentSignal ? tpFillColor : transparentColor;
+      s.buySigFillColors[i] = recentSignal ? slFillColor : transparentColor;
+
+      // alertConditionBuy = cross_buy and condition_buy; alertConditionSell = cross_sell and condition_sell
+      const flags = [crossBuy && condBuy, crossSell && condSell];
+      for (let j = 0; j < 2; j++) {
+        s.flags[j]![i] = flags[j]!;
+        if (flags[j]) s.times[j]!.push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          'basis': s.basisPlot.slice(),
+          'upper': s.upperPlot.slice(),
+          'lower': s.lowerPlot.slice(),
+          'sellSig': s.sellSigPlot.slice(),
+          'buySig': s.buySigPlot.slice(),
+          'tpSig': s.tpSigPlot.slice(),
+          'slSig': s.slSigPlot.slice(),
+        },
+        fills: [
+          // fill(u, l) - envelope background
+          { plot1: 'upper', plot2: 'lower', options: { color: 'rgba(33, 150, 243, 0.05)' } },
+          // fill(sell_sig, tp_sig, tpColor) and fill(buy_sig, tp_sig, tpColor)
+          { plot1: 'sellSig', plot2: 'tpSig', options: { color: tpFillColor }, colors: s.sellSigFillColors.slice() },
+          { plot1: 'buySig', plot2: 'tpSig', options: { color: tpFillColor }, colors: s.buySigFillColors.slice() },
+          // fill(buy_sig, sl_sig, slColor) and fill(sell_sig, sl_sig, slColor)
+          { plot1: 'buySig', plot2: 'slSig', options: { color: slFillColor }, colors: s.buySigFillColors.slice() },
+          { plot1: 'sellSig', plot2: 'slSig', options: { color: slFillColor }, colors: s.sellSigFillColors.slice() },
+        ],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EnvelopeRSIInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EnvelopeRSIInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -263,4 +272,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'Envelope RSI Sell signal!', message: 'Sell signal' },
 ];
 
-export const EnvelopeRSI = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const EnvelopeRSI = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

@@ -13,9 +13,11 @@
  * Original notice: © Uncle_the_shooter
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AdaptivePivotZonesInputs {
   /** Pivot length (bars on each side) */
@@ -92,93 +94,132 @@ const lt = (a: number, b: number) => b - a > EPS;
 
 type Point = { time: number; value: number; color: string };
 
+type Result = IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface ApzVars {
+  /** var drHigh / drLow: last pivot high / low */
+  drHigh: number;
+  drLow: number;
+  /** var color prevColor = bullColor */
+  prevColor: string;
+}
+
+interface ApzRun extends BarRunState<ApzVars> {
+  ph: PivotStep;
+  pl: PivotStep;
+  sma: WindowSma[];
+  s2: number[];
+  plots: Point[][];
+  fillColors: string[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<AdaptivePivotZonesInputs>): BarStudy<ApzRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      // ph = ta.pivothigh(high, lenSwing, lenSwing); pl = ta.pivotlow(low, lenSwing, lenSwing)
+      const ph = new PivotStep(cfg.lenSwing, cfg.lenSwing, true);
+      const pl = new PivotStep(cfg.lenSwing, cfg.lenSwing, false);
+      const sma = [new WindowSma(cfg.smoothLen), new WindowSma(cfg.smoothLen), new WindowSma(cfg.smoothLen)];
+      const s: ApzRun = {
+        ph, pl, sma, s2: [], plots: [[], [], []], fillColors: [], barColors: [], flags: [[], []], times: [[], []],
+        steps: [ph, pl, ...sma],
+        vars: { drHigh: NaN, drLow: NaN, prevColor: cfg.bullColor },
+        lists: [], series: [],
+      };
+      s.lists = [s.barColors, ...s.times];
+      s.series = [s.s2, ...s.plots, s.fillColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const ph = s.ph.step(i, b.high);
+      const pl = s.pl.step(i, b.low);
+      // var drHigh / drLow: last pivot high / low; the levels exist once both are known
+      if (!isNaN(ph)) v.drHigh = ph;
+      if (!isNaN(pl)) v.drLow = pl;
+      let line1 = NaN;
+      let line2 = NaN;
+      let line3 = NaN;
+      if (!isNaN(v.drHigh) && !isNaN(v.drLow)) {
+        const rng = v.drHigh - v.drLow;
+        line1 = v.drLow + rng * cfg.pivotLevel1;
+        line2 = v.drLow + rng * cfg.pivotLevel2;
+        line3 = v.drLow + rng * cfg.pivotLevel3;
+      }
+      const s1 = s.sma[0].step(line1);
+      const s2 = s.sma[1].step(line2);
+      const s3 = s.sma[2].step(line3);
+      s.s2[i] = s2;
+
+      let lowerLine = NaN;
+      let upperLine = NaN;
+      if (!isNaN(s1) && !isNaN(s2) && !isNaN(s3)) {
+        lowerLine = Math.min(Math.min(s1, s2), s3);
+        upperLine = Math.max(Math.max(s1, s2), s3);
+      }
+      // calcColor(lowerLine, upperLine)
+      let col = v.prevColor;
+      if (!isNaN(lowerLine) && !isNaN(upperLine)) {
+        if (lt(b.close, lowerLine)) col = cfg.bearColor;
+        else if (gt(b.close, upperLine)) col = cfg.bullColor;
+        else if (cfg.useNeutral) col = cfg.neutralColor;
+        else col = v.prevColor;
+      }
+      v.prevColor = col;
+
+      s.plots[0][i] = { time: b.time, value: s1, color: col };
+      s.plots[1][i] = { time: b.time, value: s2, color: col };
+      s.plots[2][i] = { time: b.time, value: s3, color: col };
+      // fillColor = color.new(combinedColor, fillOpacity)
+      s.fillColors[i] = String(color.new(col, cfg.fillOpacity));
+
+      // barcolor(paintBars ? (close > mid ? paintBullColor : close < mid ? paintBearColor : na) : na)
+      if (cfg.paintBars && !isNaN(s2)) {
+        if (gt(b.close, s2)) s.barColors.push({ time: b.time, color: cfg.paintBullColor });
+        else if (lt(b.close, s2)) s.barColors.push({ time: b.time, color: cfg.paintBearColor });
+      }
+
+      // bullCross = not na(smoothedLine2) and ta.crossover(close, smoothedLine2); bearCross alike with ta.crossunder
+      const pc = i > 0 ? bars[i - 1].close : NaN;
+      const ps = i > 0 ? s.s2[i - 1] : NaN;
+      const flags = [!isNaN(s2) && b.close > s2 && pc <= ps, !isNaN(s2) && b.close < s2 && pc >= ps];
+      for (let k = 0; k < 2; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(b.time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const fillColors = s.fillColors.slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Fill 1-2' }, colors: fillColors },
+          { plot1: 'plot1', plot2: 'plot2', options: { title: 'Fill 2-3' }, colors: fillColors },
+        ],
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdaptivePivotZonesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<AdaptivePivotZonesInputs> = {},
 ): IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // ph = ta.pivothigh(high, lenSwing, lenSwing); pl = ta.pivotlow(low, lenSwing, lenSwing)
-  const ph = A(ta.pivothigh(S(bars.map((b) => b.high)), cfg.lenSwing, cfg.lenSwing));
-  const pl = A(ta.pivotlow(S(bars.map((b) => b.low)), cfg.lenSwing, cfg.lenSwing));
-
-  // var drHigh / drLow: last pivot high / low; the levels exist once both are known
-  const line1: number[] = new Array(n).fill(NaN);
-  const line2: number[] = new Array(n).fill(NaN);
-  const line3: number[] = new Array(n).fill(NaN);
-  let drHigh = NaN;
-  let drLow = NaN;
-  for (let i = 0; i < n; i++) {
-    if (!isNaN(ph[i])) drHigh = ph[i];
-    if (!isNaN(pl[i])) drLow = pl[i];
-    if (!isNaN(drHigh) && !isNaN(drLow)) {
-      const rng = drHigh - drLow;
-      line1[i] = drLow + rng * cfg.pivotLevel1;
-      line2[i] = drLow + rng * cfg.pivotLevel2;
-      line3[i] = drLow + rng * cfg.pivotLevel3;
-    }
-  }
-  const s1 = A(ta.sma(S(line1), cfg.smoothLen));
-  const s2 = A(ta.sma(S(line2), cfg.smoothLen));
-  const s3 = A(ta.sma(S(line3), cfg.smoothLen));
-
-  const plot0: Point[] = [];
-  const plot1: Point[] = [];
-  const plot2: Point[] = [];
-  const fillColors: string[] = [];
-  const barColors: BarColorData[] = [];
-  let prevColor = cfg.bullColor; // var color prevColor = bullColor
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    let lowerLine = NaN;
-    let upperLine = NaN;
-    if (!isNaN(s1[i]) && !isNaN(s2[i]) && !isNaN(s3[i])) {
-      lowerLine = Math.min(Math.min(s1[i], s2[i]), s3[i]);
-      upperLine = Math.max(Math.max(s1[i], s2[i]), s3[i]);
-    }
-    // calcColor(lowerLine, upperLine)
-    let col = prevColor;
-    if (!isNaN(lowerLine) && !isNaN(upperLine)) {
-      if (lt(b.close, lowerLine)) col = cfg.bearColor;
-      else if (gt(b.close, upperLine)) col = cfg.bullColor;
-      else if (cfg.useNeutral) col = cfg.neutralColor;
-      else col = prevColor;
-    }
-    prevColor = col;
-
-    plot0.push({ time: b.time, value: s1[i], color: col });
-    plot1.push({ time: b.time, value: s2[i], color: col });
-    plot2.push({ time: b.time, value: s3[i], color: col });
-    // fillColor = color.new(combinedColor, fillOpacity)
-    fillColors.push(String(color.new(col, cfg.fillOpacity)));
-
-    // barcolor(paintBars ? (close > mid ? paintBullColor : close < mid ? paintBearColor : na) : na)
-    if (cfg.paintBars && !isNaN(s2[i])) {
-      if (gt(b.close, s2[i])) barColors.push({ time: b.time, color: cfg.paintBullColor });
-      else if (lt(b.close, s2[i])) barColors.push({ time: b.time, color: cfg.paintBearColor });
-    }
-  }
-
-  // bullCross = not na(smoothedLine2) and ta.crossover(close, smoothedLine2); bearCross alike with ta.crossunder
-  const close = bars.map((b) => b.close);
-  const crossUp = crossedOver(close, s2);
-  const crossDown = crossedUnder(close, s2);
-  const bullCross = crossUp.map((c, i) => !isNaN(s2[i]) && c);
-  const bearCross = crossDown.map((c, i) => !isNaN(s2[i]) && c);
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Fill 1-2' }, colors: fillColors },
-      { plot1: 'plot1', plot2: 'plot2', options: { title: 'Fill 2-3' }, colors: fillColors },
-    ],
-    barColors,
-    alerts: alertStates(alertConditions, bars, [bullCross, bearCross]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -189,6 +230,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const AdaptivePivotZones = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -10,9 +10,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
 import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { WindowSma, createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type GoldenDeathCrossHighlighterLineStyle = 'Solid' | 'Dashed' | 'Dotted';
 
@@ -81,49 +83,83 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<GoldenDeathCrossHighlighterInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-  const fastMASeries = ta.sma(close, cfg.fastLength);
-  const slowMASeries = ta.sma(close, cfg.slowLength);
-  const fastMA = A(fastMASeries);
-  const slowMA = A(slowMASeries);
-  const goldenCross = A(ta.crossover(fastMASeries, slowMASeries));
-  const deathCross = A(ta.crossunder(fastMASeries, slowMASeries));
+type Result = IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
 
+interface GoldenDeathRun extends BarRunState<{ inGoldenCross: boolean; inDeathCross: boolean }> {
+  fast: WindowSma;
+  slow: WindowSma;
+  over: ReturnType<typeof taStep.crossover>;
+  under: ReturnType<typeof taStep.crossunder>;
+  plot0: Point[];
+  plot1: Point[];
+  golden: boolean[];
+  death: boolean[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<GoldenDeathCrossHighlighterInputs>): BarStudy<GoldenDeathRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const goldenColor = String(color.new(color.yellow, cfg.goldenOpacity));
   const deathColor = String(color.new(color.red, cfg.deathOpacity));
-  const bgColors: BgColorData[] = [];
-  let inGoldenCross = false;
-  let inDeathCross = false;
-  bars.forEach((b, i) => {
-    if (goldenCross[i]) {
-      inGoldenCross = true;
-      inDeathCross = false;
-    } else if (deathCross[i]) {
-      inGoldenCross = false;
-      inDeathCross = true;
-    }
-    const bullishCondition = inGoldenCross && gt(b.close, fastMA[i]) && gt(b.close, slowMA[i]);
-    const bearishCondition = inDeathCross && lt(b.close, fastMA[i]) && lt(b.close, slowMA[i]);
-    if (bullishCondition) bgColors.push({ time: b.time, color: goldenColor });
-    else if (bearishCondition) bgColors.push({ time: b.time, color: deathColor });
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: fastMA[i], color: cfg.fastMAColor })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: slowMA[i], color: cfg.slowMAColor })),
+    init() {
+      const fast = new WindowSma(cfg.fastLength);
+      const slow = new WindowSma(cfg.slowLength);
+      const over = taStep.crossover();
+      const under = taStep.crossunder();
+      const s: GoldenDeathRun = {
+        fast, slow, over, under, plot0: [], plot1: [], golden: [], death: [], bgColors: [],
+        steps: [fast, slow, over, under],
+        vars: { inGoldenCross: false, inDeathCross: false },
+        lists: [], series: [],
+      };
+      s.lists = [s.bgColors];
+      s.series = [s.plot0, s.plot1, s.golden, s.death];
+      return s;
     },
-    bgColors,
-    // alertcondition(goldenCross, "Golden Cross") / alertcondition(deathCross, "Death Cross")
-    alerts: alertStates(alertConditions, bars, [goldenCross.map((v) => !!v), deathCross.map((v) => !!v)]),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const fastMA = s.fast.step(b.close);
+      const slowMA = s.slow.step(b.close);
+      const goldenCross = s.over.step(fastMA, slowMA);
+      const deathCross = s.under.step(fastMA, slowMA);
+      if (goldenCross) {
+        v.inGoldenCross = true;
+        v.inDeathCross = false;
+      } else if (deathCross) {
+        v.inGoldenCross = false;
+        v.inDeathCross = true;
+      }
+      const bullishCondition = v.inGoldenCross && gt(b.close, fastMA) && gt(b.close, slowMA);
+      const bearishCondition = v.inDeathCross && lt(b.close, fastMA) && lt(b.close, slowMA);
+      if (bullishCondition) s.bgColors.push({ time: b.time, color: goldenColor });
+      else if (bearishCondition) s.bgColors.push({ time: b.time, color: deathColor });
+      s.plot0[i] = { time: b.time, value: fastMA, color: cfg.fastMAColor };
+      s.plot1[i] = { time: b.time, value: slowMA, color: cfg.slowMAColor };
+      s.golden[i] = !!goldenCross;
+      s.death[i] = !!deathCross;
+    },
+    result(s, bars) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        bgColors: s.bgColors.slice(),
+        // alertcondition(goldenCross, "Golden Cross") / alertcondition(deathCross, "Death Cross")
+        alerts: alertStates(alertConditions, bars, [s.golden, s.death]),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GoldenDeathCrossHighlighterInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<GoldenDeathCrossHighlighterInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -134,6 +170,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const GoldenDeathCrossHighlighter = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

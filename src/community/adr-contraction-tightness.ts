@@ -11,7 +11,9 @@
  * Original notice: © etfbreakouts
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AdrContractionTightnessInputs {
   /** SMA length of the recent range % */
@@ -61,50 +63,77 @@ const gt = (a: number, b: number) => a - b > EPS;
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<AdrContractionTightnessInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface AdrRun extends BarRunState<Record<string, never>> {
+  shortSma: WindowSma;
+  longSma: WindowSma;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  plot4: Point[];
+}
+
+function study(inputs: Partial<AdrContractionTightnessInputs>): BarStudy<AdrRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  // bar_range_pct = low > 0 ? (high - low) / low * 100.0 : na
-  const rangePct = bars.map((b) => (gt(b.low, 0) ? ((b.high - b.low) / b.low) * 100.0 : NaN));
-  const rangeSeries = Series.fromArray(bars, rangePct);
-  const adrShort = A(ta.sma(rangeSeries, cfg.shortLen));
-  const adrLong = A(ta.sma(rangeSeries, cfg.longLen));
-
-  const t = (i: number) => bars[i].time;
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const plot0 = [];
-  const plot1 = [];
-  const plot2 = [];
-  const plot3 = [];
-  const plot4 = [];
-  for (let i = 0; i < bars.length; i++) {
-    // (na(adr_pct_long) or adr_pct_long == 0.0) ? na : adr_pct_short / adr_pct_long
-    const ratio = !Number.isFinite(adrLong[i]) || eq(adrLong[i], 0.0) ? NaN : adrShort[i] / adrLong[i];
-    const naRatio = !Number.isFinite(ratio);
-    const isTight = naRatio ? false : le(ratio, cfg.tightThresh);
-    const isSuperTight = naRatio ? false : le(ratio, cfg.superTightThresh);
-    const c = isSuperTight ? color.lime : isTight ? color.yellow : LOOSE;
-    plot0.push({ time: t(i), value: fin(ratio), color: c });
-    plot1.push({ time: t(i), value: fin(adrShort[i]) });
-    plot2.push({ time: t(i), value: fin(adrLong[i]) });
-    plot3.push({ time: t(i), value: isTight ? 1 : 0 });
-    plot4.push({ time: t(i), value: isSuperTight ? 1 : 0 });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 1 },
-    plots: { plot0, plot1, plot2, plot3, plot4 },
-    hlines: [
-      { value: cfg.tightThresh, options: { title: 'Tight threshold', color: color.yellow, linestyle: 'dashed', linewidth: 1 } },
-      { value: cfg.superTightThresh,
-        options: { title: 'Super-tight threshold', color: color.lime, linestyle: 'dashed', linewidth: 1 } },
-    ],
+    init() {
+      const shortSma = new WindowSma(cfg.shortLen);
+      const longSma = new WindowSma(cfg.longLen);
+      const s: AdrRun = {
+        shortSma, longSma, plot0: [], plot1: [], plot2: [], plot3: [], plot4: [],
+        steps: [shortSma, longSma], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1, s.plot2, s.plot3, s.plot4];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const time = b.time as number;
+      // bar_range_pct = low > 0 ? (high - low) / low * 100.0 : na
+      const rangePct = gt(b.low, 0) ? ((b.high - b.low) / b.low) * 100.0 : NaN;
+      const adrShort = s.shortSma.step(rangePct) ?? NaN;
+      const adrLong = s.longSma.step(rangePct) ?? NaN;
+      // (na(adr_pct_long) or adr_pct_long == 0.0) ? na : adr_pct_short / adr_pct_long
+      const ratio = !Number.isFinite(adrLong) || eq(adrLong, 0.0) ? NaN : adrShort / adrLong;
+      const naRatio = !Number.isFinite(ratio);
+      const isTight = naRatio ? false : le(ratio, cfg.tightThresh);
+      const isSuperTight = naRatio ? false : le(ratio, cfg.superTightThresh);
+      const c = isSuperTight ? color.lime : isTight ? color.yellow : LOOSE;
+      s.plot0[i] = { time, value: fin(ratio), color: c };
+      s.plot1[i] = { time, value: fin(adrShort) };
+      s.plot2[i] = { time, value: fin(adrLong) };
+      s.plot3[i] = { time, value: isTight ? 1 : 0 };
+      s.plot4[i] = { time, value: isSuperTight ? 1 : 0 };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 1 },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice(), plot4: s.plot4.slice() },
+        hlines: [
+          { value: cfg.tightThresh, options: { title: 'Tight threshold', color: color.yellow, linestyle: 'dashed', linewidth: 1 } },
+          { value: cfg.superTightThresh,
+            options: { title: 'Super-tight threshold', color: color.lime, linestyle: 'dashed', linewidth: 1 } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdrContractionTightnessInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AdrContractionTightnessInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AdrContractionTightness = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

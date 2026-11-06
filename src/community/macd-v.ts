@@ -12,9 +12,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
 
 export interface MACDVInputs {
   fastLength: number;
@@ -57,58 +59,98 @@ const gt = (a: number, b: number): boolean => a - b > 1e-10;
 /** Pine float comparison a >= b: false only when b - a > 1e-10; na operands give false */
 const ge = (a: number, b: number): boolean => !isNaN(a) && !isNaN(b) && !(b - a > 1e-10);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MACDVInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface MacdvRun extends BarRunState<Record<string, never>> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  atr: ReturnType<typeof taStep.atr>;
+  sig: ReturnType<typeof taStep.ema>;
+  hist: number[];
+  plot0: { time: number; value: number }[];
+  plot1: { time: number; value: number }[];
+  plot2: { time: number; value: number; color: string }[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+const finite = (v: number) => (Number.isFinite(v) ? v : NaN);
+
+function study(inputs: Partial<MACDVInputs>): BarStudy<MacdvRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = getSourceSeries(bars, cfg.src);
-
-  // macdLine = ta.ema(src, fastLength) - ta.ema(src, slowLength); atrValue = ta.atr(atrLength)
-  const fastEMA = A(ta.ema(src, cfg.fastLength));
-  const slowEMA = A(ta.ema(src, cfg.slowLength));
-  const atrValue = A(ta.atr(bars, cfg.atrLength));
-  // macdV = macdLine / atrValue * 100. With an ATR of 0 it is +-Infinity (0 / 0: NaN): na for the plots and for
-  // ta.ema (Pine ta.ema skips an infinite value as na), but `hist > hist[1]` compares the infinite value.
-  const macdV = fastEMA.map((f, i) => ((f - slowEMA[i]) / atrValue[i]) * 100);
-  const finite = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const signal = A(ta.ema(Series.fromArray(bars, macdV.map(finite)), cfg.signalLength));
-  const hist = macdV.map((v, i) => v - signal[i]);
-
-  // alertcondition(hist[1] >= 0 and hist < 0, "Rising to falling") / alertcondition(hist[1] <= 0 and hist > 0, ...)
-  const toFalling = hist.map((h, i) => i > 0 && ge(hist[i - 1], 0) && gt(0, h));
-  const toRising = hist.map((h, i) => i > 0 && ge(0, hist[i - 1]) && gt(h, 0));
-
-  const plot0: { time: number; value: number }[] = [];
-  const plot1: { time: number; value: number }[] = [];
-  const plot2: { time: number; value: number; color: string }[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    plot0.push({ time: t, value: finite(macdV[i]) });
-    plot1.push({ time: t, value: signal[i] });
-    // hColor = hist >= 0 ? hist > hist[1] ? #26a69a : #b2dfdb : hist > hist[1] ? #ffcdd2 : #ff5252
-    const prev = i > 0 ? hist[i - 1] : NaN;
-    const rising = gt(hist[i], prev);
-    const hColor = ge(hist[i], 0) ? (rising ? '#26A69A' : '#B2DFDB') : rising ? '#FFCDD2' : '#FF5252';
-    plot2.push({ time: t, value: finite(hist[i]), color: hColor });
-  }
-
+  const value = barSource(cfg.src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    hlines: [
-      { value: 150, options: { title: 'Extreme Overbought', color: color.red, linestyle: 'dashed' } },
-      { value: 50, options: { title: 'Strong Momentum Up', color: color.green, linestyle: 'dotted' } },
-      { value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dashed' } },
-      { value: -50, options: { title: 'Strong Momentum Down', color: color.orange, linestyle: 'dotted' } },
-      { value: -150, options: { title: 'Extreme Oversold', color: color.red, linestyle: 'dashed' } },
-      { value: 0, options: { title: 'Zero', color: '#787B8680', linestyle: 'dashed' } },
-    ],
-    markers: [],
-    alerts: alertStates(alertConditions, bars, [toFalling, toRising]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const fast = taStep.ema(cfg.fastLength);
+      const slow = taStep.ema(cfg.slowLength);
+      const atr = taStep.atr(cfg.atrLength);
+      const sig = taStep.ema(cfg.signalLength);
+      const s: MacdvRun = {
+        fast, slow, atr, sig, hist: [], plot0: [], plot1: [], plot2: [], flags: [[], []], times: [[], []],
+        steps: [fast, slow, atr, sig], vars: {}, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.hist, s.plot0, s.plot1, s.plot2, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const v = value(b);
+      // macdLine = ta.ema(src, fastLength) - ta.ema(src, slowLength); atrValue = ta.atr(atrLength)
+      const f = s.fast.step(v);
+      const sl = s.slow.step(v);
+      const atrValue = s.atr.step(b.high, b.low, b.close);
+      // macdV = macdLine / atrValue * 100. With an ATR of 0 it is +-Infinity (0 / 0: NaN): na for the plots and for
+      // ta.ema (Pine ta.ema skips an infinite value as na), but `hist > hist[1]` compares the infinite value.
+      const macdV = ((f - sl) / atrValue) * 100;
+      const signal = s.sig.step(finite(macdV));
+      const h = macdV - signal;
+      s.hist[i] = h;
+      const prev = i > 0 ? s.hist[i - 1] : NaN;
+
+      // alertcondition(hist[1] >= 0 and hist < 0, "Rising to falling") / alertcondition(hist[1] <= 0 and hist > 0, ...)
+      const flags = [i > 0 && ge(prev, 0) && gt(0, h), i > 0 && ge(0, prev) && gt(h, 0)];
+      for (let k = 0; k < 2; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+
+      s.plot0[i] = { time: t, value: finite(macdV) };
+      s.plot1[i] = { time: t, value: signal };
+      // hColor = hist >= 0 ? hist > hist[1] ? #26a69a : #b2dfdb : hist > hist[1] ? #ffcdd2 : #ff5252
+      const rising = gt(h, prev);
+      const hColor = ge(h, 0) ? (rising ? '#26A69A' : '#B2DFDB') : rising ? '#FFCDD2' : '#FF5252';
+      s.plot2[i] = { time: t, value: finite(h), color: hColor };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        hlines: [
+          { value: 150, options: { title: 'Extreme Overbought', color: color.red, linestyle: 'dashed' } },
+          { value: 50, options: { title: 'Strong Momentum Up', color: color.green, linestyle: 'dotted' } },
+          { value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dashed' } },
+          { value: -50, options: { title: 'Strong Momentum Down', color: color.orange, linestyle: 'dotted' } },
+          { value: -150, options: { title: 'Extreme Oversold', color: color.red, linestyle: 'dashed' } },
+          { value: 0, options: { title: 'Zero', color: '#787B8680', linestyle: 'dashed' } },
+        ],
+        markers: [],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MACDVInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MACDVInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -119,6 +161,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const MACDV = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

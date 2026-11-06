@@ -5,7 +5,10 @@
  * to identify trend direction and strength.
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { taCore, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+
 
 export interface BBTrendInputs {
   /** Short Bollinger Band length */
@@ -42,79 +45,139 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<BBTrendInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+// Pine: color.new(#089981, 25) = 75% opacity, color.new(#089981, 50) = 50% opacity
+const POS_STRONG = '#089981BF';
+const POS_WEAK   = '#08998180';
+const NEG_WEAK   = '#F2364580';
+const NEG_STRONG = '#F23645BF';
+
+// switch as in Pine: operators with the 1e-10 tolerance, a comparison with na is false
+const EPS = 1e-10;
+const gt = (a: number, b: number) => a - b > EPS;
+const lt = (a: number, b: number) => b - a > EPS;
+const ge = (a: number, b: number) => !Number.isNaN(a - b) && !lt(a, b);
+const le = (a: number, b: number) => !Number.isNaN(a - b) && !gt(a, b);
+
+/**
+ * ta.sma(close, length) and ta.stdev(close, length) (biased) with a constant length from one pair of exact window
+ * sums ({@link WindowSum}) of the values and of their squares: the operations of WindowSma / WindowStdev (the same
+ * doubles), the sum of the values shared by the mean and the deviation.
+ */
+class SmaStdevStep {
+  private readonly sums: WindowSum;
+  private readonly squares: WindowSum;
+  private readonly len: number;
+  /** ta.sma of the last step */
+  mean = NaN;
+
+  constructor(length: number) {
+    // the length checks of ta.sma then ta.stdev (the same runtime errors)
+    taCore.sma([], length);
+    taCore.stdev([], length);
+    this.len = Math.floor(length);
+    this.sums = new WindowSum(length);
+    this.squares = new WindowSum(length);
+  }
+
+  /** Steps the bar's value: the stdev (the sma in `mean`) */
+  step(value: number): number {
+    const sum = this.sums.step(value);
+    const sq = this.squares.step(value === undefined || value === null || !Number.isFinite(value) ? NaN : value * value);
+    const mean = sum / this.len;
+    this.mean = mean;
+    const v = sq / this.len - mean * mean;
+    return Number.isNaN(v) ? NaN : v > 0 ? Math.sqrt(v) : 0;
+  }
+
+  commit(): void {
+    this.sums.commit();
+    this.squares.commit();
+  }
+}
+
+interface BBTrendVars {
+  prevBBTrend: number;
+}
+
+interface BBTrendRun extends BarRunState<BBTrendVars> {
+  short: SmaStdevStep;
+  long: SmaStdevStep;
+  data: Point[];
+}
+
+function study(inputs: Partial<BBTrendInputs>): BarStudy<BBTrendRun, IndicatorResult> {
   const { shortLength, longLength, stdDev } = { ...defaultInputs, ...inputs };
-
-  const close = new Series(bars, b => b.close);
-
-  // Calculate short BB
-  const shortMiddle = ta.sma(close, shortLength);
-  const shortStdev = ta.stdev(close, shortLength);
-  const shortUpper = shortMiddle.add(shortStdev.mul(stdDev));
-  const shortLower = shortMiddle.sub(shortStdev.mul(stdDev));
-
-  // Calculate long BB
-  const longMiddle = ta.sma(close, longLength);
-  const longStdev = ta.stdev(close, longLength);
-  const longUpper = longMiddle.add(longStdev.mul(stdDev));
-  const longLower = longMiddle.sub(longStdev.mul(stdDev));
-
-  // BBTrend = (|shortLower - longLower| - |shortUpper - longUpper|) / shortMiddle * 100
-  const shortLowerArr = shortLower.toArray();
-  const shortUpperArr = shortUpper.toArray();
-  const longLowerArr = longLower.toArray();
-  const longUpperArr = longUpper.toArray();
-  const shortMiddleArr = shortMiddle.toArray();
-
-  // Pine: color.new(#089981, 25) = 75% opacity, color.new(#089981, 50) = 50% opacity
-  const POS_STRONG = '#089981BF';
-  const POS_WEAK   = '#08998180';
-  const NEG_WEAK   = '#F2364580';
-  const NEG_STRONG = '#F23645BF';
-
-  const EPS = 1e-10;
-  let prevBBTrend = NaN;
-  const bbTrendData = bars.map((bar, i) => {
-    const sL = shortLowerArr[i];
-    const sU = shortUpperArr[i];
-    const lL = longLowerArr[i];
-    const lU = longUpperArr[i];
-    const sM = shortMiddleArr[i];
-
-    if (sL == null || sU == null || lL == null || lU == null || sM == null || sM === 0) {
-      return { time: bar.time, value: NaN };
-    }
-
-    const bbTrend = (Math.abs(sL - lL) - Math.abs(sU - lU)) / sM * 100;
-    // switch as in Pine: operators with the 1e-10 tolerance, a comparison with na is false
-    const gt = (a: number, b: number) => a - b > EPS;
-    const lt = (a: number, b: number) => b - a > EPS;
-    const ge = (a: number, b: number) => !Number.isNaN(a - b) && !lt(a, b);
-    const le = (a: number, b: number) => !Number.isNaN(a - b) && !gt(a, b);
-    let color: string;
-    if (gt(bbTrend, 0) && ge(bbTrend, prevBBTrend)) color = POS_STRONG;
-    else if (gt(bbTrend, 0) && lt(bbTrend, prevBBTrend)) color = POS_WEAK;
-    else if (lt(bbTrend, 0) && gt(bbTrend, prevBBTrend)) color = NEG_WEAK;
-    else if (lt(bbTrend, 0) && le(bbTrend, prevBBTrend)) color = NEG_STRONG;
-    else color = POS_WEAK;
-    prevBBTrend = bbTrend;
-    return { time: bar.time, value: bbTrend, color };
-  });
-
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    init() {
+      const short = new SmaStdevStep(shortLength);
+      const long = new SmaStdevStep(longLength);
+      const s: BBTrendRun = {
+        short, long, data: [],
+        steps: [short, long], vars: { prevBBTrend: NaN }, lists: [], series: [],
+      };
+      s.series = [s.data];
+      return s;
     },
-    plots: {
-      'plot0': bbTrendData,
+    bar(s, i, bars) {
+      const bar = bars[i];
+      const close = bar.close;
+      // Calculate short BB
+      const shortStdev = s.short.step(close);
+      const sM = s.short.mean;
+      const sU = sM + shortStdev * stdDev;
+      const sL = sM - shortStdev * stdDev;
+      // Calculate long BB
+      const longStdev = s.long.step(close);
+      const longMiddle = s.long.mean;
+      const lU = longMiddle + longStdev * stdDev;
+      const lL = longMiddle - longStdev * stdDev;
+
+      if (sM === 0) {
+        s.data[i] = { time: bar.time, value: NaN };
+        return;
+      }
+
+      // BBTrend = (|shortLower - longLower| - |shortUpper - longUpper|) / shortMiddle * 100
+      const bbTrend = (Math.abs(sL - lL) - Math.abs(sU - lU)) / sM * 100;
+      const prevBBTrend = s.vars.prevBBTrend;
+      let color: string;
+      if (gt(bbTrend, 0) && ge(bbTrend, prevBBTrend)) color = POS_STRONG;
+      else if (gt(bbTrend, 0) && lt(bbTrend, prevBBTrend)) color = POS_WEAK;
+      else if (lt(bbTrend, 0) && gt(bbTrend, prevBBTrend)) color = NEG_WEAK;
+      else if (lt(bbTrend, 0) && le(bbTrend, prevBBTrend)) color = NEG_STRONG;
+      else color = POS_WEAK;
+      s.vars.prevBBTrend = bbTrend;
+      s.data[i] = { time: bar.time, value: bbTrend, color };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.data.slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BBTrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BBTrendInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const BBTrend = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

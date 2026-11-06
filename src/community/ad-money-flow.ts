@@ -15,8 +15,10 @@
  * modified (c) kypexin
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, WindowVwma, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export type AdMoneyFlowMaType = 'EMA' | 'DEMA' | 'TEMA' | 'WMA' | 'VWMA' | 'SMA' | 'SMMA' | 'HMA';
 
@@ -120,168 +122,242 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const nz = (x: number) => (isNaN(x) ? 0 : x);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AdMoneyFlowInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
+type Point = { time: number; value: number; color?: string };
+/** One f_ma call stepped bar by bar */
+type Ma = Committable & { step(v: number, volume: number): number };
+
+/** ta.wma(src, length) with a length fixed at the call */
+function wmaStep(length: number): Committable & { step(v: number): number } {
+  const m = taStep.wma();
+  return { step: (v) => m.step(v, length), commit: () => m.commit() };
+}
+
+/**
+ * SMMA: result := na(w[1]) ? ta.sma(_src, _len) : (w[1] * (_len - 1) + _src) / _len, w = ta.wma(_src, _len); the
+ * ta.sma runs only on the bars where w[1] is na (its history is these bars)
+ */
+class SmmaStep implements Committable {
+  private readonly wma: Committable & { step(v: number): number };
+  private readonly sma: WindowSma;
+  private prevW = NaN;
+  private nextW = NaN;
+  private stepped = false;
+
+  constructor(private readonly len: number) {
+    this.wma = wmaStep(len);
+    this.sma = new WindowSma(len);
+  }
+
+  step(v: number): number {
+    this.stepped = true;
+    this.nextW = this.wma.step(v) ?? NaN;
+    if (isNaN(this.prevW)) return this.sma.step(v) ?? NaN;
+    return (this.prevW * (this.len - 1) + v) / this.len;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.wma.commit();
+    this.sma.commit();
+    this.prevW = this.nextW;
+  }
+}
+
+// f_ma(type, src, len): one moving average per call
+function maStep(type: AdMoneyFlowMaType, len: number): Ma {
+  const A = (v: number) => v ?? NaN;
+  switch (type) {
+    case 'SMA': { const m = new WindowSma(len); return { step: (v) => A(m.step(v)), commit: () => m.commit() }; }
+    case 'EMA': { const m = taStep.ema(len); return { step: (v) => A(m.step(v)), commit: () => m.commit() }; }
+    case 'DEMA': {
+      const e1 = taStep.ema(len);
+      const e2 = taStep.ema(len);
+      return {
+        step: (v) => { const e = A(e1.step(v)); return 2 * e - A(e2.step(e)); },
+        commit: () => { e1.commit(); e2.commit(); },
+      };
+    }
+    case 'TEMA': {
+      const e1 = taStep.ema(len);
+      const e2 = taStep.ema(len);
+      const e3 = taStep.ema(len);
+      return {
+        step: (v) => { const e = A(e1.step(v)); const ee = A(e2.step(e)); return 3 * (e - ee) + A(e3.step(ee)); },
+        commit: () => { e1.commit(); e2.commit(); e3.commit(); },
+      };
+    }
+    case 'WMA': { const m = wmaStep(len); return { step: (v) => A(m.step(v)), commit: () => m.commit() }; }
+    case 'VWMA': { const m = new WindowVwma(len); return { step: (v, vol) => A(m.step(v, vol)), commit: () => m.commit() }; }
+    case 'SMMA': { const m = new SmmaStep(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'HMA': {
+      const half = wmaStep(len / 2);
+      const full = wmaStep(len);
+      const out = wmaStep(Math.round(Math.sqrt(len)));
+      return {
+        step: (v) => { const h = A(half.step(v)); return A(out.step(2 * h - A(full.step(v)))); },
+        commit: () => { half.commit(); full.commit(); out.commit(); },
+      };
+    }
+    default:
+      return { step: () => 0, commit: () => {} };
+  }
+}
+
+interface AdmfVars {
+  /** The ma1 of the previous bars where the left side of the lazy `and` was true */
+  risePrev: number;
+  fallPrev: number;
+}
+
+interface AdmfRun extends BarRunState<AdmfVars> {
+  rma: ReturnType<typeof taStep.rma>;
+  ma1: Ma;
+  ma2: Ma;
+  hMax: WindowExtreme;
+  hMin: WindowExtreme;
+  ma1Arr: number[];
+  ma2Arr: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  fillColors: string[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<AdMoneyFlowInputs>): BarStudy<AdmfRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const volume = S(bars.map((b) => b.volume ?? NaN));
-
-  // f_ma(type, src, len): one moving average per call
-  const fMa = (type: AdMoneyFlowMaType, src: number[], len: number): number[] => {
-    switch (type) {
-      case 'SMA':
-        return A(ta.sma(S(src), len));
-      case 'EMA':
-        return A(ta.ema(S(src), len));
-      case 'DEMA': {
-        const e = A(ta.ema(S(src), len));
-        const ee = A(ta.ema(S(e), len));
-        return e.map((v, i) => 2 * v - ee[i]);
-      }
-      case 'TEMA': {
-        const e = A(ta.ema(S(src), len));
-        const ee = A(ta.ema(S(e), len));
-        const eee = A(ta.ema(S(ee), len));
-        return e.map((v, i) => 3 * (v - ee[i]) + eee[i]);
-      }
-      case 'WMA':
-        return A(ta.wma(S(src), len));
-      case 'VWMA':
-        return A(ta.vwma(S(src), len, volume));
-      case 'SMMA': {
-        // result := na(w[1]) ? ta.sma(_src, _len) : (w[1] * (_len - 1) + _src) / _len
-        // ta.sma runs only on the bars where w[1] is na (its history is these bars)
-        const w = A(ta.wma(S(src), len));
-        const smaIdx: number[] = [];
-        for (let i = 0; i < n; i++) if (i === 0 || isNaN(w[i - 1])) smaIdx.push(i);
-        const smaVals = A(ta.sma(Series.fromArray(smaIdx.map((i) => bars[i]), smaIdx.map((i) => src[i])), len));
-        const out: number[] = new Array(n).fill(NaN);
-        smaIdx.forEach((i, k) => { out[i] = smaVals[k]; });
-        for (let i = 1; i < n; i++) if (!isNaN(w[i - 1])) out[i] = (w[i - 1] * (len - 1) + src[i]) / len;
-        return out;
-      }
-      case 'HMA': {
-        const half = A(ta.wma(S(src), len / 2));
-        const full = A(ta.wma(S(src), len));
-        return A(ta.wma(S(half.map((v, i) => 2 * v - full[i])), Math.round(Math.sqrt(len))));
-      }
-      default:
-        return new Array(n).fill(0);
-    }
-  };
-
-  // AD_ratio = nz(ta.change(close) / ta.tr(true))
-  const ad: number[] = bars.map((b, i) => {
-    const tr = i === 0 ? b.high - b.low
-      : Math.max(b.high - b.low, Math.abs(b.high - bars[i - 1].close), Math.abs(b.low - bars[i - 1].close));
-    const ch = i === 0 ? NaN : b.close - bars[i - 1].close;
-    const r = nz(tr === 0 ? NaN : ch / tr);
-    return (1 - cfg.adWeight) * r + Math.sign(r) * cfg.adWeight;
-  });
-  const vol = bars.map((b) => {
-    const v = b.volume ?? NaN;
-    return cfg.priceEnable ? v * ((b.high + b.low + b.close) / 3) : v;
-  });
-  const admf = A(ta.rma(S(vol.map((v, i) => v * ad[i])), cfg.len));
-  const ma1 = fMa(cfg.ma1Type, admf, cfg.ma1Length);
-  const ma2 = fMa(cfg.ma2Type, ma1, cfg.ma2Length);
-  const hist = ma1.map((v, i) => v - ma2[i]);
-
-  const histMax = A(ta.highest(S(hist), cfg.normPeriod));
-  const histMin = A(ta.lowest(S(hist), cfg.normPeriod));
-
-  const histColor = (i: number) => (gt(hist[i], 0) ? HIST_UP : HIST_DOWN);
-
-  const barColors: BarColorData[] = [];
-  if (cfg.colorBars) {
-    for (let i = 0; i < n; i++) {
-      let c: string | null;
-      if (cfg.colorGrad) {
-        // histGrad = 100 * hist / histRange: a plain division (x / 0 is +-infinity, 0 / 0 NaN); color.from_gradient
-        // uses the infinite value
-        const grad = (100 * hist[i]) / (histMax[i] - histMin[i]);
-        c = gt(hist[i], 0)
-          ? color.from_gradient(grad, 0, 100, String(color.new('#bdffbd', 0)), String(color.new('#00ff00', 0)))
-          : color.from_gradient(grad, -100, 0, String(color.new('#ff0000', 0)), String(color.new('#ffbdbd', 0)));
-      } else if (cfg.colorPlusMinus) {
-        const m = ma1[i];
-        const h = hist[i];
-        c = gt(m, 0) && gt(h, 0) ? String(color.new('#00ff00', 10))
-          : gt(m, 0) && lt(h, 0) ? String(color.new('#ffaaaa', 10))
-            : lt(m, 0) && lt(h, 0) ? String(color.new('#ff0000', 10))
-              : lt(m, 0) && gt(h, 0) ? String(color.new('#aaffaa', 10))
-                : null;
-      } else {
-        c = gt(hist[i], 0) ? BARS_UP : BARS_DOWN;
-      }
-      if (c !== null) barColors.push({ time: bars[i].time, color: c });
-    }
-  }
-
-  // Markers (plotshape, shape.circle, location.absolute, size.tiny)
-  const markers: MarkerData[] = [];
-  const rising = (x: number[], i: number) => i >= 1 && gt(x[i], x[i - 1]); // ta.rising(x, 1)
-  const falling = (x: number[], i: number) => i >= 1 && lt(x[i], x[i - 1]); // ta.falling(x, 1)
-  // Pine v6 `and` is lazy: `not ta.rising(ma1, 1)` / `not ta.falling(ma1, 1)` only run on the bars where the left
-  // side is true, so they compare ma1 with its value on the previous such bar (na before the first one)
-  let risePrev = NaN;
-  let fallPrev = NaN;
-  for (let i = 0; i < n; i++) {
-    let under = NaN;
-    let over = NaN;
-    if (cfg.crossMrk) {
-      // ta.crossunder(ma2, ma1): ma2 < ma1 and ma2[1] >= ma1[1]; ta.crossover(ma2, ma1): ma2 > ma1 and ma2[1] <= ma1[1];
-      // both compare exactly (no 1e-10 tolerance; na compares false)
-      if (i > 0 && ma2[i] < ma1[i] && ma2[i - 1] >= ma1[i - 1]) under = ma1[i];
-      if (i > 0 && ma2[i] > ma1[i] && ma2[i - 1] <= ma1[i - 1]) over = ma2[i];
-    } else {
-      // ta.rising(ma1[1], 1) and not ta.rising(ma1, 1); ta.falling(ma1[1], 1) and not ta.falling(ma1, 1)
-      if (i > 0 && rising(ma1, i - 1)) {
-        if (!gt(ma1[i], risePrev)) under = ma1[i];
-        risePrev = ma1[i];
-      }
-      if (i > 0 && falling(ma1, i - 1)) {
-        if (!lt(ma1[i], fallPrev)) over = ma1[i];
-        fallPrev = ma1[i];
-      }
-    }
-    // plotshape(..., title = 'Signal crossunder') = shape0, plotshape(..., title = 'Signal crossover') = shape1
-    if (!isNaN(under)) {
-      markers.push({ time: bars[i].time, position: 'atPriceMiddle', price: under, shape: 'circle', color: ADMF_COLOR, size: 'tiny', id: 'shape0' });
-    }
-    if (!isNaN(over)) {
-      markers.push({ time: bars[i].time, position: 'atPriceMiddle', price: over, shape: 'circle', color: SIGNAL_COLOR, size: 'tiny', id: 'shape1' });
-    }
-  }
-
   return {
-    metadata: {
-      title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay,
-      precision: metadata.precision, format: metadata.format,
+    init() {
+      const rma = taStep.rma(cfg.len);
+      const ma1 = maStep(cfg.ma1Type, cfg.ma1Length);
+      const ma2 = maStep(cfg.ma2Type, cfg.ma2Length);
+      const hMax = new WindowExtreme(false, cfg.normPeriod);
+      const hMin = new WindowExtreme(true, cfg.normPeriod);
+      const s: AdmfRun = {
+        rma, ma1, ma2, hMax, hMin, ma1Arr: [], ma2Arr: [], plot0: [], plot1: [], plot2: [], plot3: [], fillColors: [],
+        markers: [], barColors: [],
+        steps: [rma, ma1, ma2, hMax, hMin], vars: { risePrev: NaN, fallPrev: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.barColors];
+      s.series = [s.ma1Arr, s.ma2Arr, s.plot0, s.plot1, s.plot2, s.plot3, s.fillColors];
+      return s;
     },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: cfg.showADMF ? admf[i] : NaN, color: ADMF_COLOR })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: ma1[i], color: SMOOTHED_COLOR })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: ma2[i], color: SIGNAL_COLOR })),
-      plot3: bars.map((b, i) => ({ time: b.time, value: cfg.showHist ? hist[i] : NaN, color: histColor(i) })),
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const v = s.vars;
+      const volume = b.volume ?? NaN;
+      // AD_ratio = nz(ta.change(close) / ta.tr(true))
+      const tr = i === 0 ? b.high - b.low
+        : Math.max(b.high - b.low, Math.abs(b.high - bars[i - 1]!.close), Math.abs(b.low - bars[i - 1]!.close));
+      const ch = i === 0 ? NaN : b.close - bars[i - 1]!.close;
+      const r = nz(tr === 0 ? NaN : ch / tr);
+      const ad = (1 - cfg.adWeight) * r + Math.sign(r) * cfg.adWeight;
+      const vol = cfg.priceEnable ? volume * ((b.high + b.low + b.close) / 3) : volume;
+      const admf = s.rma.step(vol * ad) ?? NaN;
+      const ma1 = s.ma1.step(admf, volume);
+      const ma2 = s.ma2.step(ma1, volume);
+      s.ma1Arr[i] = ma1;
+      s.ma2Arr[i] = ma2;
+      const hist = ma1 - ma2;
+      const histMax = s.hMax.step(hist) ?? NaN;
+      const histMin = s.hMin.step(hist) ?? NaN;
+      const histColor = gt(hist, 0) ? HIST_UP : HIST_DOWN;
+
+      if (cfg.colorBars) {
+        let c: string | null;
+        if (cfg.colorGrad) {
+          // histGrad = 100 * hist / histRange: a plain division (x / 0 is +-infinity, 0 / 0 NaN); color.from_gradient
+          // uses the infinite value
+          const grad = (100 * hist) / (histMax - histMin);
+          c = gt(hist, 0)
+            ? color.from_gradient(grad, 0, 100, String(color.new('#bdffbd', 0)), String(color.new('#00ff00', 0)))
+            : color.from_gradient(grad, -100, 0, String(color.new('#ff0000', 0)), String(color.new('#ffbdbd', 0)));
+        } else if (cfg.colorPlusMinus) {
+          const m = ma1;
+          const h = hist;
+          c = gt(m, 0) && gt(h, 0) ? String(color.new('#00ff00', 10))
+            : gt(m, 0) && lt(h, 0) ? String(color.new('#ffaaaa', 10))
+              : lt(m, 0) && lt(h, 0) ? String(color.new('#ff0000', 10))
+                : lt(m, 0) && gt(h, 0) ? String(color.new('#aaffaa', 10))
+                  : null;
+        } else {
+          c = gt(hist, 0) ? BARS_UP : BARS_DOWN;
+        }
+        if (c !== null) s.barColors.push({ time: b.time, color: c });
+      }
+
+      // Markers (plotshape, shape.circle, location.absolute, size.tiny)
+      const m1 = s.ma1Arr;
+      const m2 = s.ma2Arr;
+      const rising = (x: number[], j: number) => j >= 1 && gt(x[j]!, x[j - 1]!); // ta.rising(x, 1)
+      const falling = (x: number[], j: number) => j >= 1 && lt(x[j]!, x[j - 1]!); // ta.falling(x, 1)
+      let under = NaN;
+      let over = NaN;
+      if (cfg.crossMrk) {
+        // ta.crossunder(ma2, ma1): ma2 < ma1 and ma2[1] >= ma1[1]; ta.crossover(ma2, ma1): ma2 > ma1 and ma2[1] <= ma1[1];
+        // both compare exactly (no 1e-10 tolerance; na compares false)
+        if (i > 0 && ma2 < ma1 && m2[i - 1]! >= m1[i - 1]!) under = ma1;
+        if (i > 0 && ma2 > ma1 && m2[i - 1]! <= m1[i - 1]!) over = ma2;
+      } else {
+        // ta.rising(ma1[1], 1) and not ta.rising(ma1, 1); ta.falling(ma1[1], 1) and not ta.falling(ma1, 1)
+        // Pine v6 `and` is lazy: `not ta.rising(ma1, 1)` / `not ta.falling(ma1, 1)` only run on the bars where the left
+        // side is true, so they compare ma1 with its value on the previous such bar (na before the first one)
+        if (i > 0 && rising(m1, i - 1)) {
+          if (!gt(ma1, v.risePrev)) under = ma1;
+          v.risePrev = ma1;
+        }
+        if (i > 0 && falling(m1, i - 1)) {
+          if (!lt(ma1, v.fallPrev)) over = ma1;
+          v.fallPrev = ma1;
+        }
+      }
+      // plotshape(..., title = 'Signal crossunder') = shape0, plotshape(..., title = 'Signal crossover') = shape1
+      if (!isNaN(under)) {
+        s.markers.push({ time: b.time, position: 'atPriceMiddle', price: under, shape: 'circle', color: ADMF_COLOR, size: 'tiny', id: 'shape0' });
+      }
+      if (!isNaN(over)) {
+        s.markers.push({ time: b.time, position: 'atPriceMiddle', price: over, shape: 'circle', color: SIGNAL_COLOR, size: 'tiny', id: 'shape1' });
+      }
+
+      s.plot0[i] = { time: b.time, value: cfg.showADMF ? admf : NaN, color: ADMF_COLOR };
+      s.plot1[i] = { time: b.time, value: ma1, color: SMOOTHED_COLOR };
+      s.plot2[i] = { time: b.time, value: ma2, color: SIGNAL_COLOR };
+      s.plot3[i] = { time: b.time, value: cfg.showHist ? hist : NaN, color: histColor };
+      // fill(ma1Plot, ma2Plot, color = fillRibbon ? histColor : na)
+      s.fillColors[i] = cfg.fillRibbon ? histColor : 'transparent';
     },
-    hlines: [{ value: 0, options: { title: 'Zero line', color: String(color.new(color.gray, 50)), linestyle: 'dotted' } }],
-    // fill(ma1Plot, ma2Plot, color = fillRibbon ? histColor : na)
-    fills: [{
-      plot1: 'plot1', plot2: 'plot2', options: { title: 'Plots Background' },
-      colors: bars.map((_b, i) => (cfg.fillRibbon ? histColor(i) : 'transparent')),
-    }],
-    markers,
-    barColors,
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay,
+          precision: metadata.precision, format: metadata.format,
+        },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+        hlines: [{ value: 0, options: { title: 'Zero line', color: String(color.new(color.gray, 50)), linestyle: 'dotted' } }],
+        fills: [{ plot1: 'plot1', plot2: 'plot2', options: { title: 'Plots Background' }, colors: s.fillColors.slice() }],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdMoneyFlowInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AdMoneyFlowInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AdMoneyFlow = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -11,7 +11,9 @@
  * Original notice: © steveoptionstrade2025
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface IvRankVixFixHvProxyInputs {
   /** Volatility proxy */
@@ -63,48 +65,75 @@ export const metadata = {
 const EPS = 1e-10;
 const ne = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<IvRankVixFixHvProxyInputs> = {}): IndicatorResult {
+interface IvRun extends BarRunState<Record<string, never>> {
+  hh: WindowExtreme | null;
+  st: WindowStdev;
+  ivHi: WindowExtreme;
+  ivLo: WindowExtreme;
+  plot0: Array<{ time: number; value: number }>;
+}
+
+function study(inputs: Partial<IvRankVixFixHvProxyInputs>): BarStudy<IvRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-
-  // ivSource is an input: the same branch runs on every bar, so its ta.* calls see every bar
-  let iv: number[];
-  if (cfg.ivSource === 'VIXFix') {
-    const hh = A(ta.highest(S(bars.map((b) => b.high)), cfg.vixLen));
-    const st = A(ta.stdev(S(bars.map((b) => b.low)), cfg.vixLen));
-    iv = bars.map((_b, i) => {
-      const raw = (100 * (hh[i] - close[i])) / hh[i];
-      // math.max(raw, st): na when one of them is na
-      return Math.max(raw, cfg.vixMult * st[i]);
-    });
-  } else {
-    const r = close.map((c, i) => (i > 0 ? Math.log(c / close[i - 1]) : NaN));
-    const sd = A(ta.stdev(S(r), cfg.hvLen));
-    iv = sd.map((v) => v * Math.sqrt(252) * 100.0);
-  }
-
-  const ivHi = A(ta.highest(S(iv), cfg.lookbackIVR));
-  const ivLo = A(ta.lowest(S(iv), cfg.lookbackIVR));
-  const plot0 = bars.map((b, i) => {
-    const ivRange = ivHi[i] - ivLo[i];
-    const ivr = ne(ivRange, 0) ? (100 * (iv[i] - ivLo[i])) / ivRange : NaN;
-    return { time: b.time, value: Number.isFinite(ivr) ? ivr : NaN };
-  });
-
+  const vixFix = cfg.ivSource === 'VIXFix';
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    hlines: hlineConfig.map((h) => ({
-      value: h.price,
-      options: { title: h.title, color: h.color, linestyle: h.linestyle, linewidth: h.linewidth },
-    })),
+    init() {
+      // ivSource is an input: the same branch runs on every bar, so its ta.* calls see every bar
+      const hh = vixFix ? new WindowExtreme(false, cfg.vixLen) : null;
+      const st = new WindowStdev(vixFix ? cfg.vixLen : cfg.hvLen);
+      const ivHi = new WindowExtreme(false, cfg.lookbackIVR);
+      const ivLo = new WindowExtreme(true, cfg.lookbackIVR);
+      const s: IvRun = { hh, st, ivHi, ivLo, plot0: [], steps: [], vars: {}, lists: [], series: [] };
+      s.steps = [...(hh ? [hh] : []), st, ivHi, ivLo];
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = b.close;
+      let iv: number;
+      if (vixFix) {
+        const hh = s.hh!.step(b.high);
+        const st = s.st.step(b.low);
+        const raw = (100 * (hh - close)) / hh;
+        // math.max(raw, st): na when one of them is na
+        iv = Math.max(raw, cfg.vixMult * st);
+      } else {
+        const r = i > 0 ? Math.log(close / bars[i - 1].close) : NaN;
+        iv = s.st.step(r) * Math.sqrt(252) * 100.0;
+      }
+
+      const ivHi = s.ivHi.step(iv);
+      const ivLo = s.ivLo.step(iv);
+      const ivRange = ivHi - ivLo;
+      const ivr = ne(ivRange, 0) ? (100 * (iv - ivLo)) / ivRange : NaN;
+      s.plot0[i] = { time: b.time as number, value: Number.isFinite(ivr) ? ivr : NaN };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        hlines: hlineConfig.map((h) => ({
+          value: h.price,
+          options: { title: h.title, color: h.color, linestyle: h.linestyle, linewidth: h.linewidth },
+        })),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IvRankVixFixHvProxyInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<IvRankVixFixHvProxyInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const IvRankVixFixHvProxy = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

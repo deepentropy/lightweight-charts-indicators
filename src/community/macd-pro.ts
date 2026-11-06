@@ -14,7 +14,9 @@
  * Original notice: © VEGAlgo
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { WindowSma, barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MacdProInputs {
   /** Fast EMA period */
@@ -86,65 +88,113 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<MacdProInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+type Ema = ReturnType<typeof taStep.ema>;
+
+interface MacdProVars {
+  /** smaClose and hist of the bar before */
+  sma1: number;
+  hist1: number;
+}
+
+interface MacdProRun extends BarRunState<MacdProVars> {
+  fast: Ema;
+  slow: Ema;
+  sig: Ema;
+  e1: Ema;
+  e2: Ema;
+  mom: ReturnType<typeof taStep.mom>;
+  sma: WindowSma;
+  strengthAvg: WindowSma;
+  /** The source of another study (null: a bar source) */
+  ext: number[] | null;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<MacdProInputs>): BarStudy<MacdProRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = getSourceSeries(bars, cfg.source);
-  const s = A(src);
-  const close = S(bars.map((b) => b.close));
-
-  // MACD
-  const fastEma = A(ta.ema(src, cfg.fastPeriod));
-  const slowEma = A(ta.ema(src, cfg.slowPeriod));
-  const macd = fastEma.map((f, i) => f - slowEma[i]);
-  const signal = A(ta.ema(S(macd), cfg.signalPeriod));
-  const hist = macd.map((m, i) => m - signal[i]);
-
-  // Leader: sema / lema are the same EMAs as fast_ema / slow_ema
-  const e1 = A(ta.ema(S(s.map((v, i) => v - fastEma[i])), cfg.fastPeriod));
-  const e2 = A(ta.ema(S(s.map((v, i) => v - slowEma[i])), cfg.slowPeriod));
-  const leader = fastEma.map((f, i) => {
-    const i1 = f + cfg.leaderFactor * e1[i];
-    const i2 = slowEma[i] + cfg.leaderFactor * e2[i];
-    return cfg.enableLeader ? i1 - i2 : NaN;
-  });
-
-  // Market regime
-  const momentum = A(ta.mom(close, 10));
-  const smaClose = A(ta.sma(close, 14));
-  const trendStrength = smaClose.map((v, i) => (i > 0 ? Math.abs(v - smaClose[i - 1]) : NaN));
-  const trendStrengthAvg = A(ta.sma(S(trendStrength), 21));
-
-  const plot0 = [];
-  const plot1 = [];
-  const plot2 = [];
-  const plot3 = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const strong = gt(trendStrength[i], trendStrengthAvg[i]);
-    const bullish = gt(momentum[i], 0) && strong;
-    const bearish = lt(momentum[i], 0) && strong;
-    const macdColor = bullish ? MACD_BULL : bearish ? MACD_BEAR : MACD_NEUTRAL;
-    const h = hist[i];
-    const h1 = i > 0 ? hist[i - 1] : NaN;
-    const histColor = gt(h, 0) ? (gt(h, h1) ? HIST_BULL_STRONG : HIST_BULL_WEAK) : lt(h, h1) ? HIST_BEAR_STRONG : HIST_BEAR_WEAK;
-    plot0.push({ time: t, value: macd[i], color: macdColor });
-    plot1.push({ time: t, value: signal[i], color: SIGNAL_COL });
-    plot2.push({ time: t, value: leader[i], color: LEADER_COL });
-    plot3.push({ time: t, value: cfg.showHistogram ? h : NaN, color: histColor });
-  }
-
+  const barValue = barSource(cfg.source);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
-    hlines: [{ value: 0, options: { title: 'Zero Line', color: ZERO_COL, linestyle: 'dashed' } }],
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init(bars) {
+      // MACD; Leader: sema / lema are the same EMAs as fast_ema / slow_ema
+      const fast = taStep.ema(cfg.fastPeriod);
+      const slow = taStep.ema(cfg.slowPeriod);
+      const sig = taStep.ema(cfg.signalPeriod);
+      const e1 = taStep.ema(cfg.fastPeriod);
+      const e2 = taStep.ema(cfg.slowPeriod);
+      // Market regime
+      const mom = taStep.mom(10);
+      const sma = new WindowSma(14);
+      const strengthAvg = new WindowSma(21);
+      const s: MacdProRun = {
+        fast, slow, sig, e1, e2, mom, sma, strengthAvg,
+        ext: isBarSource(cfg.source) ? null : getSourceSeries(bars, cfg.source).toArray().map((v) => v ?? NaN),
+        plots: [[], [], [], []],
+        steps: [fast, slow, sig, e1, e2, mom, sma, strengthAvg],
+        vars: { sma1: NaN, hist1: NaN },
+        lists: [], series: [],
+      };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      const src = s.ext ? s.ext[i] : barValue(b);
+      const fastEma = s.fast.step(src);
+      const slowEma = s.slow.step(src);
+      const macd = fastEma - slowEma;
+      const signal = s.sig.step(macd);
+      const h = macd - signal;
+
+      const e1 = s.e1.step(src - fastEma);
+      const e2 = s.e2.step(src - slowEma);
+      const i1 = fastEma + cfg.leaderFactor * e1;
+      const i2 = slowEma + cfg.leaderFactor * e2;
+      const leader = cfg.enableLeader ? i1 - i2 : NaN;
+
+      const momentum = s.mom.step(b.close);
+      const smaClose = s.sma.step(b.close);
+      const trendStrength = i > 0 ? Math.abs(smaClose - v.sma1) : NaN;
+      const trendStrengthAvg = s.strengthAvg.step(trendStrength);
+
+      const strong = gt(trendStrength, trendStrengthAvg);
+      const bullish = gt(momentum, 0) && strong;
+      const bearish = lt(momentum, 0) && strong;
+      const macdColor = bullish ? MACD_BULL : bearish ? MACD_BEAR : MACD_NEUTRAL;
+      const h1 = i > 0 ? v.hist1 : NaN;
+      const histColor = gt(h, 0) ? (gt(h, h1) ? HIST_BULL_STRONG : HIST_BULL_WEAK) : lt(h, h1) ? HIST_BEAR_STRONG : HIST_BEAR_WEAK;
+      s.plots[0][i] = { time: t, value: macd, color: macdColor };
+      s.plots[1][i] = { time: t, value: signal, color: SIGNAL_COL };
+      s.plots[2][i] = { time: t, value: leader, color: LEADER_COL };
+      s.plots[3][i] = { time: t, value: cfg.showHistogram ? h : NaN, color: histColor };
+      v.sma1 = smaClose;
+      v.hist1 = h;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice() },
+        hlines: [{ value: 0, options: { title: 'Zero Line', color: ZERO_COL, linestyle: 'dashed' } }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MacdProInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MacdProInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MacdPro = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

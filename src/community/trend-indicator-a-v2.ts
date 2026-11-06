@@ -18,7 +18,9 @@
  * Original notice: Author DZIV (dzi_v_)
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { AlmaStep, WindowSma, WindowVwma, createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrendIndicatorAV2Inputs {
   maType: 'ALMA' | 'HMA' | 'SMA' | 'SWMA' | 'VWMA' | 'WMA' | 'ZLEMA' | 'EMA';
@@ -81,88 +83,136 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-/** Heikin Ashi candles of the bars (ticker.heikinashi on the chart timeframe) */
-function heikinAshi(bars: Bar[]): Array<{ open: number; high: number; low: number; close: number }> {
-  const out: Array<{ open: number; high: number; low: number; close: number }> = [];
-  for (let i = 0; i < bars.length; i++) {
-    const b = bars[i];
-    const close = (b.open + b.high + b.low + b.close) / 4;
-    const open = i === 0 ? (b.open + b.close) / 2 : (out[i - 1].open + out[i - 1].close) / 2;
-    out.push({ open, high: Math.max(b.high, open, close), low: Math.min(b.low, open, close), close });
+type Point = { time: number; value: number; color?: string };
+
+/** f(x) of one price, stepped bar by bar: `step(values, i, volume)` with the values of every bar up to `i` */
+interface MaStep {
+  step(values: number[], i: number, volume: number): number;
+  commit(): void;
+}
+
+const noCommit = (): void => {};
+
+/** The moving average of the type of the inputs (only the one in use is created, as the original calls only it) */
+function maStep(cfg: TrendIndicatorAV2Inputs, period: number): MaStep {
+  switch (cfg.maType) {
+    case 'ALMA': {
+      const m = new AlmaStep(period, cfg.almaOffset, cfg.almaSigma);
+      return { step: (x, i) => m.step(x[i]), commit: () => m.commit() };
+    }
+    case 'HMA': {
+      const m = taStep.hma(period);
+      return { step: (x, i) => m.step(x[i]), commit: () => m.commit() };
+    }
+    case 'SMA': {
+      const m = new WindowSma(period);
+      return { step: (x, i) => m.step(x[i]), commit: () => m.commit() };
+    }
+    // ta.swma(x): (x + 2 * x[1] + 2 * x[2] + x[3]) / 6, na on the first 3 bars
+    case 'SWMA': return { step: (x, i) => (i < 3 ? NaN : (x[i] + 2 * x[i - 1] + 2 * x[i - 2] + x[i - 3]) / 6), commit: noCommit };
+    case 'VWMA':
+    case 'WMA': {
+      const m = new WindowVwma(period);
+      return { step: (x, i, volume) => m.step(x[i], volume), commit: () => m.commit() };
+    }
+    case 'ZLEMA': {
+      const lag = Math.floor((period - 1) / 2);
+      const m = taStep.ema(period);
+      return {
+        step: (x, i) => {
+          const v = x[i];
+          return m.step(v + v - (i >= lag ? x[i - lag] : NaN));
+        },
+        commit: () => m.commit(),
+      };
+    }
+    default: {
+      const m = taStep.ema(period);
+      return { step: (x, i) => m.step(x[i]), commit: () => m.commit() };
+    }
   }
-  return out;
+}
+
+interface TrendIndicatorRun extends BarRunState<Record<string, never>> {
+  mas: MaStep[];
+  /** Heikin Ashi open, close, high, low of every bar */
+  ha: number[][];
+  plots: Point[][];
+  cloud: string[];
+  upper: string[];
+  lower: string[];
+}
+
+function study(inputs: Partial<TrendIndicatorAV2Inputs>): BarStudy<TrendIndicatorRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const period = Math.trunc(cfg.maPeriod);
+  const neutral = cfg.showHighLowLines ? cfg.colorNeutral : 'transparent';
+  const cloudNeutral = cfg.showFill ? String(color.new(cfg.colorNeutral, 87.5)) : 'transparent';
+  return {
+    init() {
+      const mas = [maStep(cfg, period), maStep(cfg, period), maStep(cfg, period), maStep(cfg, period)];
+      const s: TrendIndicatorRun = {
+        mas, ha: [[], [], [], []], plots: [[], [], [], [], [], []], cloud: [], upper: [], lower: [],
+        steps: mas, vars: {}, lists: [], series: [],
+      };
+      s.series = [...s.ha, ...s.plots, s.cloud, s.upper, s.lower];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const [haOpen, haClose, haHigh, haLow] = s.ha;
+      // Heikin Ashi candles of the bars (ticker.heikinashi on the chart timeframe)
+      const close = (b.open + b.high + b.low + b.close) / 4;
+      const open = i === 0 ? (b.open + b.close) / 2 : (haOpen[i - 1] + haClose[i - 1]) / 2;
+      haOpen[i] = open;
+      haClose[i] = close;
+      haHigh[i] = Math.max(b.high, open, close);
+      haLow[i] = Math.min(b.low, open, close);
+      const volume = b.volume ?? NaN;
+      const maOpen = s.mas[0].step(haOpen, i, volume);
+      const maClose = s.mas[1].step(haClose, i, volume);
+      const maHigh = s.mas[2].step(haHigh, i, volume);
+      const maLow = s.mas[3].step(haLow, i, volume);
+
+      // A plain division: x / 0 is +-infinity (0 / 0 na), and the comparison uses the infinite value
+      const trend = (100 * (maClose - maOpen)) / (maHigh - maLow);
+      const colorTrend = gt(trend, 0) ? cfg.colorPositive : cfg.colorNegative;
+      const p = s.plots;
+      p[0][i] = { time, value: maOpen, color: 'transparent' };
+      p[1][i] = { time, value: maClose, color: cfg.showCloseLine ? colorTrend : 'transparent' };
+      p[2][i] = { time, value: maHigh, color: neutral };
+      p[3][i] = { time, value: maLow, color: neutral };
+      p[4][i] = { time, value: Math.max(maOpen, maClose), color: 'transparent' };
+      p[5][i] = { time, value: Math.min(maOpen, maClose), color: 'transparent' };
+      s.cloud[i] = String(color.new(colorTrend, 50));
+      s.upper[i] = cloudNeutral;
+      s.lower[i] = cloudNeutral;
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(), plot5: p[5].slice(),
+        },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Open/Close Cloud' }, colors: s.cloud.slice() },
+          { plot1: 'plot2', plot2: 'plot4', options: { title: 'High Cloud' }, colors: s.upper.slice() },
+          { plot1: 'plot5', plot2: 'plot3', options: { title: 'Low Cloud' }, colors: s.lower.slice() },
+        ],
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrendIndicatorAV2Inputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(bars: Bar[], inputs: Partial<TrendIndicatorAV2Inputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const period = Math.trunc(cfg.maPeriod);
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const volume = new Series(bars, (b) => b.volume ?? NaN);
-
-  // f(x)
-  const f = (values: number[]): number[] => {
-    const x = Series.fromArray(bars, values);
-    switch (cfg.maType) {
-      case 'ALMA': return A(ta.alma(x, period, cfg.almaOffset, cfg.almaSigma));
-      case 'HMA': return A(ta.hma(x, period));
-      case 'SMA': return A(ta.sma(x, period));
-      case 'SWMA': return A(ta.swma(x));
-      case 'VWMA':
-      case 'WMA': return A(ta.vwma(x, period, volume));
-      case 'ZLEMA': {
-        const lag = Math.floor((period - 1) / 2);
-        const z = values.map((v, i) => v + v - (i >= lag ? values[i - lag] : NaN));
-        return A(ta.ema(Series.fromArray(bars, z), period));
-      }
-      default: return A(ta.ema(x, period));
-    }
-  };
-
-  const ha = heikinAshi(bars);
-  const maOpen = f(ha.map((c) => c.open));
-  const maClose = f(ha.map((c) => c.close));
-  const maHigh = f(ha.map((c) => c.high));
-  const maLow = f(ha.map((c) => c.low));
-
-  const neutral = cfg.showHighLowLines ? cfg.colorNeutral : 'transparent';
-  const cloudNeutral = cfg.showFill ? String(color.new(cfg.colorNeutral, 87.5)) : 'transparent';
-
-  type Point = { time: number; value: number; color?: string };
-  const plot0: Point[] = [];
-  const plot1: Point[] = [];
-  const plot2: Point[] = [];
-  const plot3: Point[] = [];
-  const plot4: Point[] = [];
-  const plot5: Point[] = [];
-  const cloud: string[] = [];
-  const upper: string[] = [];
-  const lower: string[] = [];
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    // A plain division: x / 0 is +-infinity (0 / 0 na), and the comparison uses the infinite value
-    const trend = (100 * (maClose[i] - maOpen[i])) / (maHigh[i] - maLow[i]);
-    const colorTrend = gt(trend, 0) ? cfg.colorPositive : cfg.colorNegative;
-    plot0.push({ time, value: maOpen[i], color: 'transparent' });
-    plot1.push({ time, value: maClose[i], color: cfg.showCloseLine ? colorTrend : 'transparent' });
-    plot2.push({ time, value: maHigh[i], color: neutral });
-    plot3.push({ time, value: maLow[i], color: neutral });
-    plot4.push({ time, value: Math.max(maOpen[i], maClose[i]), color: 'transparent' });
-    plot5.push({ time, value: Math.min(maOpen[i], maClose[i]), color: 'transparent' });
-    cloud.push(String(color.new(colorTrend, 50)));
-    upper.push(cloudNeutral);
-    lower.push(cloudNeutral);
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3, plot4, plot5 },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Open/Close Cloud' }, colors: cloud },
-      { plot1: 'plot2', plot2: 'plot4', options: { title: 'High Cloud' }, colors: upper },
-      { plot1: 'plot5', plot2: 'plot3', options: { title: 'Low Cloud' }, colors: lower },
-    ],
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
-export const TrendIndicatorAV2 = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+export const TrendIndicatorAV2 = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

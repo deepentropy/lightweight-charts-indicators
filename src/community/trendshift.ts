@@ -16,8 +16,10 @@
  * Original notice: © chervolino
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrendshiftInputs {
   /** Bars left / right of the swing highs and lows */
@@ -89,19 +91,28 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TrendshiftInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] };
+
+interface TrendshiftVars {
+  lastSwingHigh: number;
+  lastSwingLow: number;
+  regime: number;
+  bandLow: number;
+  bandHigh: number;
+  lastShiftBar: number;
+  isLastShiftBullish: boolean;
+}
+
+interface TrendshiftRun extends BarRunState<TrendshiftVars> {
+  ph: PivotStep;
+  pl: PivotStep;
+  atr: ReturnType<typeof taStep.atr>;
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<TrendshiftInputs>): BarStudy<TrendshiftRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const pivotHigh = A(ta.pivothigh(S(bars.map((b) => b.high)), cfg.swingLen, cfg.swingLen));
-  const pivotLow = A(ta.pivotlow(S(bars.map((b) => b.low)), cfg.swingLen, cfg.swingLen));
-  const atr = A(ta.atr(bars, cfg.atrLen));
-
   // Colours: color.new(color.new(c, 30), 85) is c with transparency 85
   const discountZone = cfg.invertColors ? String(color.new(color.red, 30)) : String(color.new(color.green, 30));
   const premiumZone = cfg.invertColors ? String(color.new(color.green, 30)) : String(color.new(color.red, 30));
@@ -109,99 +120,121 @@ export function calculate(
   const premiumBg = String(color.new(premiumZone, 85));
   const bullColor = String(color.new(color.lime, 0));
   const bearColor = String(color.new(color.red, 0));
-
-  let lastSwingHigh = NaN;
-  let lastSwingLow = NaN;
-  let regime = 0;
-  let bandLow = NaN;
-  let bandHigh = NaN;
-  let lastShiftBar = NaN;
-  let isLastShiftBullish = false;
-
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    if (!isNaN(pivotHigh[i])) lastSwingHigh = pivotHigh[i];
-    if (!isNaN(pivotLow[i])) lastSwingLow = pivotLow[i];
-    const atrValue = atr[i];
-
-    // Structure shifts
-    const hasMajorHigh = !isNaN(lastSwingHigh);
-    const hasMajorLow = !isNaN(lastSwingLow);
-    const bullBase = hasMajorHigh && gt(b.close, lastSwingHigh);
-    const bearBase = hasMajorLow && lt(b.close, lastSwingLow);
-    let bullBreak = bullBase;
-    let bearBreak = bearBase;
-    if (cfg.useAtrFilter && gt(atrValue, 0)) {
-      bullBreak = bullBase && ge(b.close - lastSwingHigh, cfg.atrMultBreak * atrValue);
-      bearBreak = bearBase && ge(lastSwingLow - b.close, cfg.atrMultBreak * atrValue);
-    }
-    let bullShift = bullBreak && hasMajorLow;
-    let bearShift = bearBreak && hasMajorHigh;
-    if (bullShift && bearShift) {
-      bullShift = ge(b.close, b.open);
-      bearShift = !bullShift;
-    }
-    const bullFirst = bullShift && (isNaN(lastShiftBar) || !isLastShiftBullish);
-    const bearFirst = bearShift && (isNaN(lastShiftBar) || isLastShiftBullish);
-
-    // Regime and band update
-    if (bullShift) {
-      regime = 1;
-      bandLow = lastSwingLow;
-      bandHigh = b.high;
-      lastShiftBar = i;
-      isLastShiftBullish = true;
-    }
-    if (bearShift) {
-      regime = -1;
-      bandLow = b.low;
-      bandHigh = lastSwingHigh;
-      lastShiftBar = i;
-      isLastShiftBullish = false;
-    }
-    // Regime timeout (bar_index differences do not depend on the first bar)
-    if (cfg.regimeTimeoutBars > 0 && regime !== 0 && !bullShift && !bearShift && !isNaN(lastShiftBar)
-      && i - lastShiftBar > cfg.regimeTimeoutBars) {
-      regime = 0;
-      if (!cfg.persistLastBand) {
-        bandLow = NaN;
-        bandHigh = NaN;
-      }
-    }
-
-    // Premium / discount band
-    const baseValid = cfg.enableFramework && !isNaN(bandLow) && !isNaN(bandHigh) && gt(bandHigh, bandLow);
-    const span = baseValid ? bandHigh - bandLow : NaN;
-    const notTiny = (baseValid && gt(atrValue, 0) && gt(cfg.minBandAtrMult, 0) && ge(span, cfg.minBandAtrMult * atrValue))
-      || (baseValid && (eq(cfg.minBandAtrMult, 0) || le(atrValue, 0)));
-    const valid = baseValid && notTiny;
-    const discountThreshold = valid ? bandLow + 0.25 * span : NaN;
-    const premiumThreshold = valid ? bandLow + 0.75 * span : NaN;
-    const inDiscount = valid && le(b.close, discountThreshold);
-    const inPremium = valid && ge(b.close, premiumThreshold);
-
-    const t = b.time;
-    // bgcolor(discount_bg_color, "Discount zone tint"), then bgcolor(premium_bg_color, "Premium zone tint")
-    if (cfg.showZoneTint && inDiscount) bgColors.push({ id: 'bgcolor0', time: t, color: discountBg });
-    if (cfg.showZoneTint && inPremium) bgColors.push({ id: 'bgcolor1', time: t, color: premiumBg });
-    // plotshape(... ? low : na, shape.triangleup, location.belowbar, size.small, text = "Shift↑", textcolor = color.white)
-    if (cfg.showStructureMarks && bullFirst) {
-      markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: bullColor, text: 'Shift↑', textColor: color.white, size: 'small' });
-    }
-    // plotshape(... ? high : na, shape.triangledown, location.abovebar, size.small, text = "Shift↓", textcolor = color.white)
-    if (cfg.showStructureMarks && bearFirst) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: bearColor, text: 'Shift↓', textColor: color.white, size: 'small' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    bgColors,
+    init() {
+      const ph = new PivotStep(cfg.swingLen, cfg.swingLen, true);
+      const pl = new PivotStep(cfg.swingLen, cfg.swingLen, false);
+      const atr = taStep.atr(cfg.atrLen);
+      const s: TrendshiftRun = {
+        ph, pl, atr, markers: [], bgColors: [],
+        steps: [ph, pl, atr],
+        vars: {
+          lastSwingHigh: NaN, lastSwingLow: NaN, regime: 0, bandLow: NaN, bandHigh: NaN, lastShiftBar: NaN,
+          isLastShiftBullish: false,
+        },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, s.bgColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const pivotHigh = s.ph.step(i, b.high);
+      const pivotLow = s.pl.step(i, b.low);
+      const atrValue = s.atr.step(b.high, b.low, b.close);
+      if (!isNaN(pivotHigh)) v.lastSwingHigh = pivotHigh;
+      if (!isNaN(pivotLow)) v.lastSwingLow = pivotLow;
+
+      // Structure shifts
+      const hasMajorHigh = !isNaN(v.lastSwingHigh);
+      const hasMajorLow = !isNaN(v.lastSwingLow);
+      const bullBase = hasMajorHigh && gt(b.close, v.lastSwingHigh);
+      const bearBase = hasMajorLow && lt(b.close, v.lastSwingLow);
+      let bullBreak = bullBase;
+      let bearBreak = bearBase;
+      if (cfg.useAtrFilter && gt(atrValue, 0)) {
+        bullBreak = bullBase && ge(b.close - v.lastSwingHigh, cfg.atrMultBreak * atrValue);
+        bearBreak = bearBase && ge(v.lastSwingLow - b.close, cfg.atrMultBreak * atrValue);
+      }
+      let bullShift = bullBreak && hasMajorLow;
+      let bearShift = bearBreak && hasMajorHigh;
+      if (bullShift && bearShift) {
+        bullShift = ge(b.close, b.open);
+        bearShift = !bullShift;
+      }
+      const bullFirst = bullShift && (isNaN(v.lastShiftBar) || !v.isLastShiftBullish);
+      const bearFirst = bearShift && (isNaN(v.lastShiftBar) || v.isLastShiftBullish);
+
+      // Regime and band update
+      if (bullShift) {
+        v.regime = 1;
+        v.bandLow = v.lastSwingLow;
+        v.bandHigh = b.high;
+        v.lastShiftBar = i;
+        v.isLastShiftBullish = true;
+      }
+      if (bearShift) {
+        v.regime = -1;
+        v.bandLow = b.low;
+        v.bandHigh = v.lastSwingHigh;
+        v.lastShiftBar = i;
+        v.isLastShiftBullish = false;
+      }
+      // Regime timeout (bar_index differences do not depend on the first bar)
+      if (cfg.regimeTimeoutBars > 0 && v.regime !== 0 && !bullShift && !bearShift && !isNaN(v.lastShiftBar)
+        && i - v.lastShiftBar > cfg.regimeTimeoutBars) {
+        v.regime = 0;
+        if (!cfg.persistLastBand) {
+          v.bandLow = NaN;
+          v.bandHigh = NaN;
+        }
+      }
+
+      // Premium / discount band
+      const bandLow = v.bandLow;
+      const bandHigh = v.bandHigh;
+      const baseValid = cfg.enableFramework && !isNaN(bandLow) && !isNaN(bandHigh) && gt(bandHigh, bandLow);
+      const span = baseValid ? bandHigh - bandLow : NaN;
+      const notTiny = (baseValid && gt(atrValue, 0) && gt(cfg.minBandAtrMult, 0) && ge(span, cfg.minBandAtrMult * atrValue))
+        || (baseValid && (eq(cfg.minBandAtrMult, 0) || le(atrValue, 0)));
+      const valid = baseValid && notTiny;
+      const discountThreshold = valid ? bandLow + 0.25 * span : NaN;
+      const premiumThreshold = valid ? bandLow + 0.75 * span : NaN;
+      const inDiscount = valid && le(b.close, discountThreshold);
+      const inPremium = valid && ge(b.close, premiumThreshold);
+
+      const t = b.time;
+      // bgcolor(discount_bg_color, "Discount zone tint"), then bgcolor(premium_bg_color, "Premium zone tint")
+      if (cfg.showZoneTint && inDiscount) s.bgColors.push({ id: 'bgcolor0', time: t, color: discountBg });
+      if (cfg.showZoneTint && inPremium) s.bgColors.push({ id: 'bgcolor1', time: t, color: premiumBg });
+      // plotshape(... ? low : na, shape.triangleup, location.belowbar, size.small, text = "Shift↑", textcolor = color.white)
+      if (cfg.showStructureMarks && bullFirst) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: bullColor, text: 'Shift↑', textColor: color.white, size: 'small' });
+      }
+      // plotshape(... ? high : na, shape.triangledown, location.abovebar, size.small, text = "Shift↓", textcolor = color.white)
+      if (cfg.showStructureMarks && bearFirst) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: bearColor, text: 'Shift↓', textColor: color.white, size: 'small' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
 }
 
-export const Trendshift = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrendshiftInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TrendshiftInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const Trendshift = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

@@ -11,9 +11,11 @@
  */
 
 import {
-  taCore, color,
+  taStep, color,
   type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar,
 } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface IndicatorsTradersDynamicIndexHlctrendsInputs {
   lengthrsi: number;
@@ -75,35 +77,77 @@ export const metadata = {
 
 const num = (v: number | null | undefined): number => (v === null || v === undefined ? NaN : v);
 
-export function calculate(bars: Bar[], inputs: Partial<IndicatorsTradersDynamicIndexHlctrendsInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface TdiRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  ma: WindowSma;
+  sd: WindowStdev;
+  mab: WindowSma;
+  mbb: WindowSma;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<IndicatorsTradersDynamicIndexHlctrendsInputs>): BarStudy<TdiRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const close = bars.map((b) => b.close);
-
-  const r = Array.from(taCore.rsi(close, cfg.lengthrsi), num);
-  const ma = Array.from(taCore.sma(r, cfg.lengthband), num);
-  const sd = Array.from(taCore.stdev(r, cfg.lengthband), num);
-  const up = ma.map((m, i) => m + 1.6185 * sd[i]);
-  const dn = ma.map((m, i) => m - 1.6185 * sd[i]);
-  const mid = up.map((u, i) => (u + dn[i]) / 2);
-  const mab = Array.from(taCore.sma(r, cfg.lengthrsipl), num);
-  const mbb = Array.from(taCore.sma(r, cfg.lengthtradesl), num);
-
-  const series = (values: number[]) => values.map((value, i) => ({ time: bars[i].time, value }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: series(up), plot1: series(dn), plot2: series(mid), plot3: series(mab), plot4: series(mbb) },
-    hlines: [
-      { value: 32, options: { title: 'Level', color: LEVEL, linestyle: 'dashed', linewidth: 1 } },
-      { value: 68, options: { title: 'Level', color: LEVEL, linestyle: 'dashed', linewidth: 1 } },
-    ],
-    fills: [
-      { plot1: 'plot0', plot2: 'plot2', options: { color: FILL_UPPER, title: 'Plots Background' } },
-      { plot1: 'plot2', plot2: 'plot1', options: { color: FILL_LOWER, title: 'Plots Background' } },
-    ],
+    init() {
+      const rsi = taStep.rsi(cfg.lengthrsi);
+      const ma = new WindowSma(cfg.lengthband);
+      const sd = new WindowStdev(cfg.lengthband);
+      const mab = new WindowSma(cfg.lengthrsipl);
+      const mbb = new WindowSma(cfg.lengthtradesl);
+      const s: TdiRun = {
+        rsi, ma, sd, mab, mbb, plots: [[], [], [], [], []],
+        steps: [rsi, ma, sd, mab, mbb], vars: {}, lists: [], series: [],
+      };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      const r = num(s.rsi.step(bars[i].close));
+      const ma = num(s.ma.step(r));
+      const sd = num(s.sd.step(r));
+      const up = ma + 1.6185 * sd;
+      const dn = ma - 1.6185 * sd;
+      const mid = (up + dn) / 2;
+      const mab = num(s.mab.step(r));
+      const mbb = num(s.mbb.step(r));
+      const p = s.plots;
+      p[0][i] = { time, value: up };
+      p[1][i] = { time, value: dn };
+      p[2][i] = { time, value: mid };
+      p[3][i] = { time, value: mab };
+      p[4][i] = { time, value: mbb };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice() },
+        hlines: [
+          { value: 32, options: { title: 'Level', color: LEVEL, linestyle: 'dashed', linewidth: 1 } },
+          { value: 68, options: { title: 'Level', color: LEVEL, linestyle: 'dashed', linewidth: 1 } },
+        ],
+        fills: [
+          { plot1: 'plot0', plot2: 'plot2', options: { color: FILL_UPPER, title: 'Plots Background' } },
+          { plot1: 'plot2', plot2: 'plot1', options: { color: FILL_LOWER, title: 'Plots Background' } },
+        ],
+      };
+    },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IndicatorsTradersDynamicIndexHlctrendsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<IndicatorsTradersDynamicIndexHlctrendsInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const IndicatorsTradersDynamicIndexHlctrends = {
-  calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig,
+  calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig,
 };

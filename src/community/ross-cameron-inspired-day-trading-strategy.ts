@@ -13,8 +13,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RossCameronInspiredDayTradingStrategyInputs {
   /** Gap percentage (%) */
@@ -66,83 +68,129 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RossCameronInspiredDayTradingStrategyInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface RossVars {
+  /** The closes of the bars where each ta.valuewhen pair runs, latest last (the last confirmationPeriod + 1 of them;
+   *  changed in place, copied by copyVars) */
+  momBuyCloses: number[];
+  momSellCloses: number[];
+  mrBuyCloses: number[];
+  mrSellCloses: number[];
+}
+
+interface RossRun extends BarRunState<RossVars> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  ema: ReturnType<typeof taStep.ema>;
+  sma: WindowSma;
+  over: ReturnType<typeof taStep.crossover>;
+  under: ReturnType<typeof taStep.crossunder>;
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<RossCameronInspiredDayTradingStrategyInputs>): BarStudy<RossRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
   const gapPercentage = cfg.gapPercentage / 100;
   const occ = cfg.confirmationPeriod;
-
-  const closeS = Series.fromArray(bars, bars.map((b) => b.close));
-  const rsi = ta.rsi(closeS, cfg.rsiLength);
-  const ema = A(ta.ema(closeS, cfg.emaLength));
-  const sma = A(ta.sma(closeS, cfg.smaLength));
-  // ta.crossover / ta.crossunder (exact comparisons, last bar where both values were not na)
-  const rsiOverOversold = A(ta.crossover(rsi, cfg.overSold));
-  const rsiUnderOverbought = A(ta.crossunder(rsi, cfg.overBought));
+  /** Closes kept: occurrence `occ` back is the only older one read */
+  const keep = Math.max(occ + 1, 1);
 
   // ta.valuewhen(cond, close, 0) > / < ta.valuewhen(cond, close, confirmationPeriod): the calls run on the bars where
   // cond is true (right side of a lazy `and`); the closes of those bars, latest last
   const confirmed = (closes: number[], close: number, up: boolean) => {
     closes.push(close);
+    while (closes.length > keep) closes.shift();
     const k = closes.length - 1 - occ;
     const earlier = k >= 0 && k < closes.length ? closes[k] : NaN;
     return up ? gt(close, earlier) : lt(close, earlier);
   };
-  const momBuyCloses: number[] = [];
-  const momSellCloses: number[] = [];
-  const mrBuyCloses: number[] = [];
-  const mrSellCloses: number[] = [];
-
-  const markers: MarkerData[] = [];
-  const plot0: { time: number; value: number }[] = [];
-  const plot1: { time: number; value: number }[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time;
-    const prevClose = i > 0 ? bars[i - 1].close : NaN;
-    const gap = (b.open - prevClose) / prevClose;
-    const gapUp = ge(gap, gapPercentage);
-    const gapDown = le(gap, -gapPercentage);
-
-    const momentumBuy = rsiOverOversold[i] === 1 && gt(b.close, ema[i]);
-    const momentumBuyConfirmed = momentumBuy && confirmed(momBuyCloses, b.close, true);
-    const momentumSell = rsiUnderOverbought[i] === 1 || lt(b.close, ema[i]);
-    const momentumSellConfirmed = momentumSell && confirmed(momSellCloses, b.close, false);
-    const meanReversionBuy = rsiUnderOverbought[i] === 1 && lt(b.close, sma[i]);
-    const meanReversionBuyConfirmed = meanReversionBuy && confirmed(mrBuyCloses, b.close, false);
-    const meanReversionSell = rsiOverOversold[i] === 1 && gt(b.close, sma[i]);
-    const meanReversionSellConfirmed = meanReversionSell && confirmed(mrSellCloses, b.close, true);
-
-    const longCondition = gapUp || momentumBuyConfirmed || meanReversionBuyConfirmed;
-    const shortCondition = gapDown || momentumSellConfirmed || meanReversionSellConfirmed;
-    // plotshape(..., location.belowbar / abovebar, shape.labelup / labeldown, text, size.small); default text colour
-    if (longCondition) {
-      markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY', textColor: color.blue, size: 'small' });
-    }
-    if (shortCondition) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL', textColor: color.blue, size: 'small' });
-    }
-    plot0.push({ time: t, value: ema[i] });
-    plot1.push({ time: t, value: sma[i] });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    hlines: [
-      { value: cfg.overBought, options: { title: 'Over Bought', color: color.red, linestyle: 'dashed' } },
-      { value: cfg.overSold, options: { title: 'Over Sold', color: color.green, linestyle: 'dashed' } },
-    ],
-    markers,
+    init() {
+      const rsi = taStep.rsi(cfg.rsiLength);
+      const ema = taStep.ema(cfg.emaLength);
+      const sma = new WindowSma(cfg.smaLength);
+      // ta.crossover / ta.crossunder (exact comparisons, last bar where both values were not na)
+      const over = taStep.crossover();
+      const under = taStep.crossunder();
+      const s: RossRun = {
+        rsi, ema, sma, over, under, plot0: [], plot1: [], markers: [],
+        steps: [rsi, ema, sma, over, under],
+        vars: { momBuyCloses: [], momSellCloses: [], mrBuyCloses: [], mrSellCloses: [] },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    copyVars: (v) => ({
+      momBuyCloses: v.momBuyCloses.slice(), momSellCloses: v.momSellCloses.slice(), mrBuyCloses: v.mrBuyCloses.slice(),
+      mrSellCloses: v.mrSellCloses.slice(),
+    }),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      const rsi = s.rsi.step(b.close);
+      const ema = s.ema.step(b.close);
+      const sma = s.sma.step(b.close);
+      const rsiOverOversold = s.over.step(rsi, cfg.overSold);
+      const rsiUnderOverbought = s.under.step(rsi, cfg.overBought);
+
+      const prevClose = i > 0 ? bars[i - 1].close : NaN;
+      const gap = (b.open - prevClose) / prevClose;
+      const gapUp = ge(gap, gapPercentage);
+      const gapDown = le(gap, -gapPercentage);
+
+      const momentumBuy = rsiOverOversold && gt(b.close, ema);
+      const momentumBuyConfirmed = momentumBuy && confirmed(v.momBuyCloses, b.close, true);
+      const momentumSell = rsiUnderOverbought || lt(b.close, ema);
+      const momentumSellConfirmed = momentumSell && confirmed(v.momSellCloses, b.close, false);
+      const meanReversionBuy = rsiUnderOverbought && lt(b.close, sma);
+      const meanReversionBuyConfirmed = meanReversionBuy && confirmed(v.mrBuyCloses, b.close, false);
+      const meanReversionSell = rsiOverOversold && gt(b.close, sma);
+      const meanReversionSellConfirmed = meanReversionSell && confirmed(v.mrSellCloses, b.close, true);
+
+      const longCondition = gapUp || momentumBuyConfirmed || meanReversionBuyConfirmed;
+      const shortCondition = gapDown || momentumSellConfirmed || meanReversionSellConfirmed;
+      // plotshape(..., location.belowbar / abovebar, shape.labelup / labeldown, text, size.small); default text colour
+      if (longCondition) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY', textColor: color.blue, size: 'small' });
+      }
+      if (shortCondition) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL', textColor: color.blue, size: 'small' });
+      }
+      s.plot0[i] = { time: t, value: ema };
+      s.plot1[i] = { time: t, value: sma };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [
+          { value: cfg.overBought, options: { title: 'Over Bought', color: color.red, linestyle: 'dashed' } },
+          { value: cfg.overSold, options: { title: 'Over Sold', color: color.green, linestyle: 'dashed' } },
+        ],
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RossCameronInspiredDayTradingStrategyInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RossCameronInspiredDayTradingStrategyInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RossCameronInspiredDayTradingStrategy = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

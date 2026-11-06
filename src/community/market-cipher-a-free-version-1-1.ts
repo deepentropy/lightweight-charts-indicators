@@ -9,8 +9,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MarketCipherAFreeVersion11Inputs {
   ema1: number;
@@ -64,45 +66,81 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MarketCipherAFreeVersion11Inputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface McaRun extends BarRunState<Record<string, never>> {
+  emas: ReturnType<typeof taStep.ema>[];
+  longEma: ReturnType<typeof taStep.crossover>;
+  redCross: ReturnType<typeof taStep.crossunder>;
+  blueTriangle: ReturnType<typeof taStep.crossover>;
+  plots: { time: number; value: number }[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<MarketCipherAFreeVersion11Inputs>): BarStudy<McaRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
   const lengths = [cfg.ema1, cfg.ema2, cfg.ema3, cfg.ema4, cfg.ema5, cfg.ema6, cfg.ema7, cfg.ema8];
-  const emas = lengths.map((len) => ta.ema(close, len));
-  const arr = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const values = emas.map(arr);
-
-  // ta.crossover / ta.crossunder of the library (exact comparison, last bar where both values were not na)
-  const longEma = arr(ta.crossover(emas[1], emas[7]));
-  const redCross = arr(ta.crossunder(emas[0], emas[1]));
-  const blueTriangle = arr(ta.crossover(emas[1], emas[2]));
-
-  const markers: MarkerData[] = [];
-  bars.forEach((b, i) => {
-    if (longEma[i]) markers.push({ time: b.time, position: 'aboveBar', shape: 'circle', color: GREEN, size: 'tiny' });
-    if (redCross[i]) markers.push({ time: b.time, position: 'aboveBar', shape: 'xcross', color: RED, size: 'tiny' });
-    if (blueTriangle[i]) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: BLUE, size: 'small' });
-    }
-  });
-
-  const plots: Record<string, { time: number; value: number }[]> = {};
-  values.forEach((v, k) => {
-    plots[`plot${k}`] = bars.map((b, i) => ({ time: b.time, value: v[i] }));
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    markers,
+    init() {
+      const emas = lengths.map((len) => taStep.ema(len));
+      // ta.crossover / ta.crossunder of the library (exact comparison, last bar where both values were not na)
+      const longEma = taStep.crossover();
+      const redCross = taStep.crossunder();
+      const blueTriangle = taStep.crossover();
+      const s: McaRun = {
+        emas, longEma, redCross, blueTriangle, plots: lengths.map(() => []), markers: [],
+        steps: [...emas, longEma, redCross, blueTriangle], vars: {}, lists: [], series: [],
+      };
+      s.series = s.plots;
+      s.lists = [s.markers];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      let e0 = NaN;
+      let e1 = NaN;
+      let e2 = NaN;
+      let e7 = NaN;
+      for (let k = 0; k < 8; k++) {
+        const v = s.emas[k].step(b.close) ?? NaN;
+        s.plots[k][i] = { time: b.time, value: v };
+        if (k === 0) e0 = v;
+        else if (k === 1) e1 = v;
+        else if (k === 2) e2 = v;
+        else if (k === 7) e7 = v;
+      }
+      if (s.longEma.step(e1, e7)) s.markers.push({ time: b.time, position: 'aboveBar', shape: 'circle', color: GREEN, size: 'tiny' });
+      if (s.redCross.step(e0, e1)) s.markers.push({ time: b.time, position: 'aboveBar', shape: 'xcross', color: RED, size: 'tiny' });
+      if (s.blueTriangle.step(e1, e2)) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: BLUE, size: 'small' });
+      }
+    },
+    result(s) {
+      const plots: Record<string, { time: number; value: number }[]> = {};
+      s.plots.forEach((p, k) => {
+        plots[`plot${k}`] = p.slice();
+      });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MarketCipherAFreeVersion11Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MarketCipherAFreeVersion11Inputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MarketCipherAFreeVersion11 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

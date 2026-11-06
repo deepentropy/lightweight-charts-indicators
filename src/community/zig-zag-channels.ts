@@ -17,9 +17,11 @@
  * Original notice: © LuxAlgo
  */
 
-import { ta, str, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { str, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { LabelData, LineDrawingData } from '../types';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ZigZagChannelsInputs {
   length: number;
@@ -87,134 +89,161 @@ interface Lb {
   style: 'label_down' | 'label_up';
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ZigZagChannelsInputs> = {},
-): Omit<IndicatorResult, 'labels' | 'lines'> & { labels: LabelData[]; lines: LineDrawingData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'labels' | 'lines'> & { labels: LabelData[]; lines: LineDrawingData[] };
+
+/**
+ * Drawings kept of `total` created in order: when a creation brings the count above max + 5, the oldest are deleted
+ * until max remain
+ */
+const keptCount = (total: number): number => (total <= MAX_OBJECTS + 5 ? total : MAX_OBJECTS + ((total - MAX_OBJECTS - 6) % 6));
+
+interface ZzVars {
+  os: number;
+  valtop: number;
+  valbtm: number;
+  btmN: number;
+  topN: number;
+}
+
+interface ZzRun extends BarRunState<ZzVars> {
+  upper: WindowExtreme;
+  lower: WindowExtreme;
+  /** Every line and label created (the limit is applied in the result) */
+  lines: Ln[];
+  labels: Lb[];
+  /** plot0 points of bars length.. (bar i draws on bar i - length) */
+  plot0: { index: number; value: number; color: string }[];
+}
+
+function study(inputs: Partial<ZigZagChannelsInputs>): BarStudy<ZzRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const length = Math.trunc(cfg.length);
-
-  const closeS = new Series(bars, (b) => b.close);
-  const upper = ta.highest(closeS, length).toArray();
-  const lower = ta.lowest(closeS, length).toArray();
-
-  // Drawings in creation order: when a creation brings the count above max + 5, the oldest are deleted until max
-  // remain
-  const limit = <T>(list: T[]) => {
-    if (list.length > MAX_OBJECTS + 5) list.splice(0, list.length - MAX_OBJECTS);
-  };
-  const lines: Ln[] = [];
-  const labels: Lb[] = [];
-  const newLine = (x1: number, y1: number, x2: number, y2: number, color: string, dotted = false, extendRight = false) => {
-    lines.push({ x1, y1, x2, y2, color, dotted, extendRight });
-    limit(lines);
-  };
-  const newLabel = (l: Lb) => {
-    labels.push(l);
-    limit(labels);
-  };
-
-  /** Largest distance of the candle bodies above and below the line from `from` (bar `first`) to `to` */
-  const spread = (first: number, count: number, from: number, to: number): [number, number] => {
-    let up = 0;
-    let dn = 0;
-    for (let k = 0; k < count; k++) {
-      const point = from + (k / (count - 1)) * (to - from);
-      const b = bars[first - k];
-      up = Math.max(Math.max(b.close, b.open) - point, up);
-      dn = Math.max(point - Math.min(b.close, b.open), dn);
-    }
-    return [up, dn];
-  };
-
-  type Point = { time: number; value: number; color?: string };
-  const plot0: Point[] = [];
-  const interval = barInterval(bars);
-  const T = (index: number) => barTime(bars, index, interval);
-
-  let os = NaN; // na until the first top or bottom
-  let valtop = NaN;
-  let valbtm = NaN;
-  let btmN = NaN;
-  let topN = NaN;
-
-  for (let i = 0; i < n; i++) {
-    const back = i >= length ? bars[i - length] : null;
-    const srcBack = back ? back.close : NaN;
-    const prevOs = os;
-    os = gt(srcBack, upper[i] ?? NaN) ? 0 : lt(srcBack, lower[i] ?? NaN) ? 1 : prevOs;
-    // `os[1] != 1` is false while os[1] is na
-    const btm = os === 1 && !isNaN(prevOs) && prevOs !== 1;
-    const top = os === 0 && !isNaN(prevOs) && prevOs !== 0;
-    if (btm) btmN = i;
-    if (top) topN = i;
-    const len = Math.abs(btmN - topN);
-
-    if (btm || top) {
-      const price = btm ? back!.low : back!.high;
-      const other = btm ? valtop : valbtm;
-      if (btm) valbtm = price;
-      else valtop = price;
-      const [up, dn] = isNaN(len) ? [0, 0] : spread(i - length, len, price, other);
-      const x1 = i - len - length;
-      const x2 = i - length;
-      newLine(x1, other, x2, price, cfg.midcol);
-      if (cfg.showExt) {
-        newLine(x1, other + up, x2, price + up, cfg.upcol, true);
-        newLine(x1, other - dn, x2, price - dn, cfg.dncol, true);
-      }
-      if (cfg.showLabels) {
-        newLabel({
-          x: x2, y: price, text: str.tostring(price, '#.####'), textColor: btm ? cfg.dncol : cfg.upcol,
-          style: btm ? 'label_up' : 'label_down',
-        });
-      }
-    }
-
-    // barstate.islast
-    if (i === n - 1 && cfg.extend) {
-      const src = bars[i].close;
-      const swingN = os === 1 ? btmN : topN;
-      const x1 = swingN - length;
-      const y1 = os === 1 ? valbtm : valtop;
-      const count = i - swingN + length;
-      const [up, dn] = isNaN(count) ? [0, 0] : spread(i, count, src, y1);
-      newLine(x1, y1, i, src, cfg.midcol, false, true);
-      if (cfg.showExt) {
-        newLine(x1, y1 + up, i, src + up, cfg.upcol, true, true);
-        newLine(x1, y1 - dn, i, src - dn, cfg.dncol, true, true);
-      }
-    }
-
-    // plot(btm ? low[length] : top ? high[length] : na, offset = -length): the value of bar i is drawn on bar i - length
-    if (i >= length) {
-      plot0.push({
-        time: T(i - length),
-        value: btm ? back!.low : top ? back!.high : NaN,
-        color: btm ? cfg.dncol : cfg.upcol,
-      });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    // a line with an na coordinate is not drawn
-    lines: lines.filter((l) => !isNaN(l.x1) && !isNaN(l.y1) && !isNaN(l.y2)).map((l) => ({
-      time1: T(l.x1), price1: l.y1, time2: T(l.x2), price2: l.y2, color: l.color,
-      ...(l.dotted ? { style: 'dotted' as const } : {}),
-      ...(l.extendRight ? { extend: 'right' as const } : {}),
-    })),
-    labels: labels.map((l) => ({
-      time: T(l.x), price: l.y, text: l.text, color: '#00000000', textColor: l.textColor, style: l.style,
-      textAlign: 'left' as const, size: 'small' as const,
-    })),
+    init() {
+      const upper = new WindowExtreme(false, length);
+      const lower = new WindowExtreme(true, length);
+      const s: ZzRun = {
+        upper, lower, lines: [], labels: [], plot0: [],
+        steps: [upper, lower],
+        // os: na until the first top or bottom
+        vars: { os: NaN, valtop: NaN, valbtm: NaN, btmN: NaN, topN: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [s.lines, s.labels, s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const n = bars.length;
+      const v = s.vars;
+      const newLine = (x1: number, y1: number, x2: number, y2: number, color: string, dotted = false, extendRight = false) => {
+        s.lines.push({ x1, y1, x2, y2, color, dotted, extendRight });
+      };
+
+      /** Largest distance of the candle bodies above and below the line from `from` (bar `first`) to `to` */
+      const spread = (first: number, count: number, from: number, to: number): [number, number] => {
+        let up = 0;
+        let dn = 0;
+        for (let k = 0; k < count; k++) {
+          const point = from + (k / (count - 1)) * (to - from);
+          const b = bars[first - k];
+          up = Math.max(Math.max(b.close, b.open) - point, up);
+          dn = Math.max(point - Math.min(b.close, b.open), dn);
+        }
+        return [up, dn];
+      };
+
+      const close = bars[i].close;
+      const upper = s.upper.step(close);
+      const lower = s.lower.step(close);
+      const back = i >= length ? bars[i - length] : null;
+      const srcBack = back ? back.close : NaN;
+      const prevOs = v.os;
+      v.os = gt(srcBack, upper) ? 0 : lt(srcBack, lower) ? 1 : prevOs;
+      const os = v.os;
+      // `os[1] != 1` is false while os[1] is na
+      const btm = os === 1 && !isNaN(prevOs) && prevOs !== 1;
+      const top = os === 0 && !isNaN(prevOs) && prevOs !== 0;
+      if (btm) v.btmN = i;
+      if (top) v.topN = i;
+      const len = Math.abs(v.btmN - v.topN);
+
+      if (btm || top) {
+        const price = btm ? back!.low : back!.high;
+        const other = btm ? v.valtop : v.valbtm;
+        if (btm) v.valbtm = price;
+        else v.valtop = price;
+        const [up, dn] = isNaN(len) ? [0, 0] : spread(i - length, len, price, other);
+        const x1 = i - len - length;
+        const x2 = i - length;
+        newLine(x1, other, x2, price, cfg.midcol);
+        if (cfg.showExt) {
+          newLine(x1, other + up, x2, price + up, cfg.upcol, true);
+          newLine(x1, other - dn, x2, price - dn, cfg.dncol, true);
+        }
+        if (cfg.showLabels) {
+          s.labels.push({
+            x: x2, y: price, text: str.tostring(price, '#.####'), textColor: btm ? cfg.dncol : cfg.upcol,
+            style: btm ? 'label_up' : 'label_down',
+          });
+        }
+      }
+
+      // barstate.islast (the last bar is calculated again on each update)
+      if (i === n - 1 && cfg.extend) {
+        const src = bars[i].close;
+        const swingN = os === 1 ? v.btmN : v.topN;
+        const x1 = swingN - length;
+        const y1 = os === 1 ? v.valbtm : v.valtop;
+        const count = i - swingN + length;
+        const [up, dn] = isNaN(count) ? [0, 0] : spread(i, count, src, y1);
+        newLine(x1, y1, i, src, cfg.midcol, false, true);
+        if (cfg.showExt) {
+          newLine(x1, y1 + up, i, src + up, cfg.upcol, true, true);
+          newLine(x1, y1 - dn, i, src - dn, cfg.dncol, true, true);
+        }
+      }
+
+      // plot(btm ? low[length] : top ? high[length] : na, offset = -length): the value of bar i is drawn on bar i - length
+      if (i >= length) {
+        s.plot0.push({ index: i - length, value: btm ? back!.low : top ? back!.high : NaN, color: btm ? cfg.dncol : cfg.upcol });
+      }
+    },
+    result(s, bars) {
+      const interval = barInterval(bars);
+      const T = (index: number) => barTime(bars, index, interval);
+      const lines = s.lines.slice(s.lines.length - keptCount(s.lines.length));
+      const labels = s.labels.slice(s.labels.length - keptCount(s.labels.length));
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.map((p): Point => ({ time: T(p.index), value: p.value, color: p.color })) },
+        // a line with an na coordinate is not drawn
+        lines: lines.filter((l) => !isNaN(l.x1) && !isNaN(l.y1) && !isNaN(l.y2)).map((l) => ({
+          time1: T(l.x1), price1: l.y1, time2: T(l.x2), price2: l.y2, color: l.color,
+          ...(l.dotted ? { style: 'dotted' as const } : {}),
+          ...(l.extendRight ? { extend: 'right' as const } : {}),
+        })),
+        labels: labels.map((l) => ({
+          time: T(l.x), price: l.y, text: l.text, color: '#00000000', textColor: l.textColor, style: l.style,
+          textAlign: 'left' as const, size: 'small' as const,
+        })),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ZigZagChannelsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ZigZagChannelsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const ZigZagChannels = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

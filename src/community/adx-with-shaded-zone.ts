@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AdxWithShadedZoneInputs {
   /** RMA length of the true range, the directional movements and the DX */
@@ -42,69 +44,96 @@ export const metadata = {
 const EPS = 1e-10;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AdxWithShadedZoneInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+type Rma = ReturnType<typeof taStep.rma>;
+
+interface AdxRun extends BarRunState<Record<string, never>> {
+  smoothTR: Rma;
+  smoothPlusDM: Rma;
+  smoothMinusDM: Rma;
+  adx: Rma;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<AdxWithShadedZoneInputs>): BarStudy<AdxRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   // math.max / math.abs of na is na
   const max = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.max(a, b));
-
-  const tr: number[] = new Array(n);
-  const plusDM: number[] = new Array(n);
-  const minusDM: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const prevClose = i > 0 ? bars[i - 1].close : NaN;
-    const highLow = b.high - b.low;
-    const highClose = Math.abs(b.high - prevClose);
-    const lowClose = Math.abs(b.low - prevClose);
-    tr[i] = max(max(highLow, highClose), lowClose);
-    // ta.change(high) / ta.change(low): na on bar 0
-    const chHigh = i > 0 ? b.high - bars[i - 1].high : NaN;
-    const chLow = i > 0 ? b.low - bars[i - 1].low : NaN;
-    plusDM[i] = max(chHigh, 0);
-    minusDM[i] = max(-chLow, 0);
-  }
-
-  const smoothTR = A(ta.rma(S(tr), cfg.length));
-  const smoothPlusDM = A(ta.rma(S(plusDM), cfg.length));
-  const smoothMinusDM = A(ta.rma(S(minusDM), cfg.length));
-
-  // Plain divisions: x / 0 is +-infinity, 0 / 0 is na (ta.rma skips the infinite values like na)
-  const plusDI = smoothPlusDM.map((p, i) => (100 * p) / smoothTR[i]);
-  const minusDI = smoothMinusDM.map((m, i) => (100 * m) / smoothTR[i]);
-  const dx = plusDI.map((p, i) => (100 * Math.abs(p - minusDI[i])) / (p + minusDI[i]));
-  const adx = A(ta.rma(S(dx), cfg.length));
-
   const fin = (x: number) => (Number.isFinite(x) ? x : NaN);
   const shade = String(color.new(color.gray, 85));
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    // bgcolor((adx < 25) ? color.new(color.gray, 85) : na, title = "Shaded Zone (20-25)")
-    if (lt(adx[i], 25)) bgColors.push({ time: bars[i].time, color: shade });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: fin(plusDI[i]), color: color.green })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: fin(minusDI[i]), color: color.red })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: fin(adx[i]), color: color.blue })),
+    init() {
+      const smoothTR = taStep.rma(cfg.length);
+      const smoothPlusDM = taStep.rma(cfg.length);
+      const smoothMinusDM = taStep.rma(cfg.length);
+      const adx = taStep.rma(cfg.length);
+      const s: AdxRun = {
+        smoothTR, smoothPlusDM, smoothMinusDM, adx, plot0: [], plot1: [], plot2: [], bgColors: [],
+        steps: [smoothTR, smoothPlusDM, smoothMinusDM, adx], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.bgColors];
+      s.series = [s.plot0, s.plot1, s.plot2];
+      return s;
     },
-    hlines: [
-      { value: 20, options: { title: '20 Level', color: color.red, linestyle: 'dotted' } },
-      { value: 25, options: { title: '25 Level', color: color.green, linestyle: 'dotted' } },
-    ],
-    bgColors,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const prevClose = i > 0 ? bars[i - 1].close : NaN;
+      const highLow = b.high - b.low;
+      const highClose = Math.abs(b.high - prevClose);
+      const lowClose = Math.abs(b.low - prevClose);
+      const tr = max(max(highLow, highClose), lowClose);
+      // ta.change(high) / ta.change(low): na on bar 0
+      const chHigh = i > 0 ? b.high - bars[i - 1].high : NaN;
+      const chLow = i > 0 ? b.low - bars[i - 1].low : NaN;
+      const plusDM = max(chHigh, 0);
+      const minusDM = max(-chLow, 0);
+
+      const smoothTR = s.smoothTR.step(tr);
+      const smoothPlusDM = s.smoothPlusDM.step(plusDM);
+      const smoothMinusDM = s.smoothMinusDM.step(minusDM);
+
+      // Plain divisions: x / 0 is +-infinity, 0 / 0 is na (ta.rma skips the infinite values like na)
+      const plusDI = (100 * smoothPlusDM) / smoothTR;
+      const minusDI = (100 * smoothMinusDM) / smoothTR;
+      const dx = (100 * Math.abs(plusDI - minusDI)) / (plusDI + minusDI);
+      const adx = s.adx.step(dx);
+
+      // bgcolor((adx < 25) ? color.new(color.gray, 85) : na, title = "Shaded Zone (20-25)")
+      if (lt(adx, 25)) s.bgColors.push({ time: b.time, color: shade });
+      s.plot0[i] = { time: b.time, value: fin(plusDI), color: color.green };
+      s.plot1[i] = { time: b.time, value: fin(minusDI), color: color.red };
+      s.plot2[i] = { time: b.time, value: fin(adx), color: color.blue };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        hlines: [
+          { value: 20, options: { title: '20 Level', color: color.red, linestyle: 'dotted' } },
+          { value: 25, options: { title: '25 Level', color: color.green, linestyle: 'dotted' } },
+        ],
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdxWithShadedZoneInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AdxWithShadedZoneInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AdxWithShadedZone = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

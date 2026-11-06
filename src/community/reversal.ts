@@ -19,6 +19,8 @@
 import type { Bar, IndicatorResult, InputConfig, PlotConfig, ShapeConfig } from 'oakscriptjs';
 import type { MarkerData } from '../types';
 import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ReversalInputs {
   /** Candle Lookback */
@@ -67,115 +69,138 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ReversalInputs> = {},
-): IndicatorResult & { markers: MarkerData[]; alerts: AlertConditionState[] } {
+type Result = IndicatorResult & { markers: MarkerData[]; alerts: AlertConditionState[] };
+
+interface ReversalVars {
+  bullActive: boolean;
+  bullLow: number;
+  bullHigh: number;
+  bullSignal: boolean;
+  bullCount: number;
+  bearActive: boolean;
+  bearLow: number;
+  bearHigh: number;
+  bearSignal: boolean;
+  bearCount: number;
+}
+
+interface ReversalRun extends BarRunState<ReversalVars> {
+  vupFlags: boolean[];
+  vdnFlags: boolean[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<ReversalInputs>): BarStudy<ReversalRun, Result> {
   const { lookback, confirmation, nonRepaint } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
+  return {
+    // a lookback below 1 reads the bars after the current one (close < low[-k])
+    fullRunReason: () => (lookback - 1 >= 0 ? null : 'lookback reads later bars'),
+    init() {
+      const s: ReversalRun = {
+        vupFlags: [], vdnFlags: [], markers: [],
+        steps: [],
+        vars: {
+          bullActive: false, bullLow: 0, bullHigh: 0, bullSignal: false, bullCount: 0,
+          bearActive: false, bearLow: 0, bearHigh: 0, bearSignal: false, bearCount: 0,
+        },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.vupFlags, s.vdnFlags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const n = bars.length;
+      // values of the previous bar (history references [1])
+      const pBullActive = v.bullActive;
+      const pBullHigh = v.bullHigh;
+      const pBullSignal = v.bullSignal;
+      const pBullCount = v.bullCount;
+      const pBearActive = v.bearActive;
+      const pBearLow = v.bearLow;
+      const pBearSignal = v.bearSignal;
+      const pBearCount = v.bearCount;
 
-  let bullActive = false;
-  let bullLow = 0;
-  let bullHigh = 0;
-  let bullSignal = false;
-  let bullCount = 0;
-  let bearActive = false;
-  let bearLow = 0;
-  let bearHigh = 0;
-  let bearSignal = false;
-  let bearCount = 0;
-  // values of the previous bar (history references [1])
-  let pBullActive = false;
-  let pBullHigh = 0;
-  let pBullSignal = false;
-  let pBullCount = 0;
-  let pBearActive = false;
-  let pBearLow = 0;
-  let pBearSignal = false;
-  let pBearCount = 0;
+      const close = bars[i].close;
+      let bullCandle = 0;
+      let bearCandle = 0;
+      // for i = 0 to (lookback - 1): na history (before bar 0) compares false
+      const last = lookback - 1;
+      const step = last >= 0 ? 1 : -1;
+      for (let k = 0; step > 0 ? k <= last : k >= last; k += step) {
+        if (i - k < 0 || i - k >= n) continue;
+        if (lt(close, bars[i - k].low)) bullCandle += 1;
+        if (gt(close, bars[i - k].high)) bearCandle += 1;
+      }
 
-  const vupFlags = new Array<boolean>(n).fill(false);
-  const vdnFlags = new Array<boolean>(n).fill(false);
-  const markers: MarkerData[] = [];
+      if (bullCandle === lookback - 1) {
+        v.bullActive = true;
+        v.bullLow = bars[i].low;
+        v.bullHigh = bars[i].high;
+        v.bullSignal = false;
+        v.bullCount = 0;
+      }
+      if (v.bullActive) v.bullCount += 1;
 
-  for (let i = 0; i < n; i++) {
-    const close = bars[i].close;
-    let bullCandle = 0;
-    let bearCandle = 0;
-    // for i = 0 to (lookback - 1): na history (before bar 0) compares false
-    const last = lookback - 1;
-    const step = last >= 0 ? 1 : -1;
-    for (let k = 0; step > 0 ? k <= last : k >= last; k += step) {
-      if (i - k < 0 || i - k >= n) continue;
-      if (lt(close, bars[i - k].low)) bullCandle += 1;
-      if (gt(close, bars[i - k].high)) bearCandle += 1;
-    }
+      if (bearCandle === lookback - 1) {
+        v.bearActive = true;
+        v.bearLow = bars[i].low;
+        v.bearHigh = bars[i].high;
+        v.bearSignal = false;
+        v.bearCount = 0;
+      }
+      if (v.bearActive) v.bearCount += 1;
 
-    if (bullCandle === lookback - 1) {
-      bullActive = true;
-      bullLow = bars[i].low;
-      bullHigh = bars[i].high;
-      bullSignal = false;
-      bullCount = 0;
-    }
-    if (bullActive) bullCount += 1;
+      if (lt(close, v.bullLow)) v.bullActive = false;
+      if (gt(close, v.bearHigh)) v.bearActive = false;
 
-    if (bearCandle === lookback - 1) {
-      bearActive = true;
-      bearLow = bars[i].low;
-      bearHigh = bars[i].high;
-      bearSignal = false;
-      bearCount = 0;
-    }
-    if (bearActive) bearCount += 1;
-
-    if (lt(close, bullLow)) bullActive = false;
-    if (gt(close, bearHigh)) bearActive = false;
-
-    let vup = false;
-    let vdn = false;
-    const prevClose = i > 0 ? bars[i - 1].close : NaN;
-    if (nonRepaint) {
-      if (i > 0 && pBullActive && gt(prevClose, pBullHigh) && !pBullSignal && pBullCount <= confirmation + 1) {
-        bullSignal = true;
+      let vup = false;
+      let vdn = false;
+      const prevClose = i > 0 ? bars[i - 1].close : NaN;
+      if (nonRepaint) {
+        if (i > 0 && pBullActive && gt(prevClose, pBullHigh) && !pBullSignal && pBullCount <= confirmation + 1) {
+          v.bullSignal = true;
+          vup = true;
+        }
+      } else if (v.bullActive && gt(close, v.bullHigh) && !v.bullSignal && v.bullCount <= confirmation + 1) {
+        v.bullSignal = true;
         vup = true;
       }
-    } else if (bullActive && gt(close, bullHigh) && !bullSignal && bullCount <= confirmation + 1) {
-      bullSignal = true;
-      vup = true;
-    }
 
-    if (nonRepaint) {
-      if (i > 0 && pBearActive && lt(prevClose, pBearLow) && !pBearSignal && pBearCount <= confirmation + 1) {
-        bearSignal = true;
+      if (nonRepaint) {
+        if (i > 0 && pBearActive && lt(prevClose, pBearLow) && !pBearSignal && pBearCount <= confirmation + 1) {
+          v.bearSignal = true;
+          vdn = true;
+        }
+      } else if (v.bearActive && lt(close, v.bearLow) && !v.bearSignal && v.bearCount <= confirmation + 1) {
+        v.bearSignal = true;
         vdn = true;
       }
-    } else if (bearActive && lt(close, bearLow) && !bearSignal && bearCount <= confirmation + 1) {
-      bearSignal = true;
-      vdn = true;
-    }
 
-    vupFlags[i] = vup;
-    vdnFlags[i] = vdn;
-    if (vup) markers.push({ id: 'shape0', time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: LIME, size: 'small' });
-    if (vdn) markers.push({ id: 'shape1', time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: RED, size: 'small' });
-
-    pBullActive = bullActive;
-    pBullHigh = bullHigh;
-    pBullSignal = bullSignal;
-    pBullCount = bullCount;
-    pBearActive = bearActive;
-    pBearLow = bearLow;
-    pBearSignal = bearSignal;
-    pBearCount = bearCount;
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    alerts: alertStates(alertConditions, bars, [vupFlags, vdnFlags]),
+      s.vupFlags[i] = vup;
+      s.vdnFlags[i] = vdn;
+      if (vup) s.markers.push({ id: 'shape0', time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: LIME, size: 'small' });
+      if (vdn) s.markers.push({ id: 'shape1', time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: RED, size: 'small' });
+    },
+    result(s, bars) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        alerts: alertStates(alertConditions, bars, [s.vupFlags, s.vdnFlags]),
+      };
+    },
   };
 }
 
-export const Reversal = { calculate, metadata, defaultInputs, inputConfig, plotConfig, shapeConfig, alertConditions };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ReversalInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ReversalInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const Reversal = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, shapeConfig, alertConditions };

@@ -12,7 +12,9 @@
  * Original notice: Cabal_Dev_Indicator, Author: Senyor, Release: v2.1
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CabalDevIndicatorInputs {
   /** Length of the highest high / lowest low range */
@@ -67,58 +69,97 @@ const lt = (a: number, b: number) => b - a > EPS;
 /** Pine `x != y`: false when one side is na, true when they differ by more than 1e-10 */
 const ne = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<CabalDevIndicatorInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+type Ema = ReturnType<typeof taStep.ema>;
+
+interface CabalRun extends BarRunState<Record<string, never>> {
+  lowest: WindowExtreme;
+  highest: WindowExtreme;
+  avgrel: Ema;
+  avgdiff: Ema;
+  smoothed: WindowSma;
+  signal: Ema;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<CabalDevIndicatorInputs>): BarStudy<CabalRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // Range
-  const ll = A(ta.lowest(S(bars.map((b) => b.low)), cfg.percentKLength));
-  const hh = A(ta.highest(S(bars.map((b) => b.high)), cfg.percentKLength));
-  const diff = hh.map((h, i) => h - ll[i]);
-  const rdiff = bars.map((b, i) => b.close - (hh[i] + ll[i]) / 2);
-  const avgrel = A(ta.ema(S(rdiff), cfg.percentDLength));
-  const avgdiff = A(ta.ema(S(diff), cfg.percentDLength));
-
-  // SMI = avgdiff != 0 ? avgrel / (avgdiff / 2) * 100 : 0.0 (plain division, as Pine)
-  const smi = avgdiff.map((d, i) => (ne(d, 0) ? (avgrel[i] / (d / 2)) * 100 : 0.0));
-  const smiSmoothed = A(ta.sma(S(smi), cfg.smoothingPeriod));
-  const emaSignal = A(ta.ema(S(smiSmoothed), cfg.emaSignalLength));
-
   const ob = cfg.overbought;
   const os = cfg.oversold;
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const t = (i: number) => bars[i].time;
-  const plot0 = bars.map((_b, i) => ({ time: t(i), value: fin(smiSmoothed[i]), color: color.green }));
-  const plot1 = bars.map((_b, i) => ({ time: t(i), value: fin(emaSignal[i]), color: color.red }));
-  // level_obsmi = SMI_smoothed > ob ? SMI_smoothed : ob; level_ossmi = SMI_smoothed < os ? SMI_smoothed : os
-  const plot2 = bars.map((_b, i) => ({ time: t(i), value: ob }));
-  const plot3 = bars.map((_b, i) => ({ time: t(i), value: fin(gt(smiSmoothed[i], ob) ? smiSmoothed[i] : ob) }));
-  const plot4 = bars.map((_b, i) => ({ time: t(i), value: os }));
-  const plot5 = bars.map((_b, i) => ({ time: t(i), value: fin(lt(smiSmoothed[i], os) ? smiSmoothed[i] : os) }));
-
   const obFill = String(color.new(color.red, 60));
   const osFill = String(color.new(color.green, 60));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3, plot4, plot5 },
-    hlines: [
-      { value: ob, options: { title: 'Overbought', color: color.gray, linestyle: 'dashed' } },
-      { value: os, options: { title: 'Oversold', color: color.gray, linestyle: 'dashed' } },
-    ],
-    fills: [
-      // fill(p1, p2, color = color.new(color.red, 60), title = 'OverBought')
-      { plot1: 'plot2', plot2: 'plot3', options: { title: 'OverBought' }, colors: new Array<string>(n).fill(obFill) },
-      // fill(p3, p4, color = color.new(color.green, 60), title = 'OverSold')
-      { plot1: 'plot4', plot2: 'plot5', options: { title: 'OverSold' }, colors: new Array<string>(n).fill(osFill) },
-    ],
+    init() {
+      const s: CabalRun = {
+        lowest: new WindowExtreme(true, cfg.percentKLength), highest: new WindowExtreme(false, cfg.percentKLength),
+        avgrel: taStep.ema(cfg.percentDLength), avgdiff: taStep.ema(cfg.percentDLength),
+        smoothed: new WindowSma(cfg.smoothingPeriod), signal: taStep.ema(cfg.emaSignalLength),
+        plots: [[], [], [], [], [], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.lowest, s.highest, s.avgrel, s.avgdiff, s.smoothed, s.signal];
+      s.series = [...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // Range
+      const ll = s.lowest.step(b.low);
+      const hh = s.highest.step(b.high);
+      const diff = hh - ll;
+      const rdiff = b.close - (hh + ll) / 2;
+      const avgrel = s.avgrel.step(rdiff);
+      const avgdiff = s.avgdiff.step(diff);
+
+      // SMI = avgdiff != 0 ? avgrel / (avgdiff / 2) * 100 : 0.0 (plain division, as Pine)
+      const smi = ne(avgdiff, 0) ? (avgrel / (avgdiff / 2)) * 100 : 0.0;
+      const smiSmoothed = s.smoothed.step(smi);
+      const emaSignal = s.signal.step(smiSmoothed);
+
+      const t = b.time;
+      const p = s.plots;
+      p[0][i] = { time: t, value: fin(smiSmoothed), color: color.green };
+      p[1][i] = { time: t, value: fin(emaSignal), color: color.red };
+      // level_obsmi = SMI_smoothed > ob ? SMI_smoothed : ob; level_ossmi = SMI_smoothed < os ? SMI_smoothed : os
+      p[2][i] = { time: t, value: ob };
+      p[3][i] = { time: t, value: fin(gt(smiSmoothed, ob) ? smiSmoothed : ob) };
+      p[4][i] = { time: t, value: os };
+      p[5][i] = { time: t, value: fin(lt(smiSmoothed, os) ? smiSmoothed : os) };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(), plot5: p[5].slice() },
+        hlines: [
+          { value: ob, options: { title: 'Overbought', color: color.gray, linestyle: 'dashed' } },
+          { value: os, options: { title: 'Oversold', color: color.gray, linestyle: 'dashed' } },
+        ],
+        fills: [
+          // fill(p1, p2, color = color.new(color.red, 60), title = 'OverBought')
+          { plot1: 'plot2', plot2: 'plot3', options: { title: 'OverBought' }, colors: new Array<string>(n).fill(obFill) },
+          // fill(p3, p4, color = color.new(color.green, 60), title = 'OverSold')
+          { plot1: 'plot4', plot2: 'plot5', options: { title: 'OverSold' }, colors: new Array<string>(n).fill(osFill) },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CabalDevIndicatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CabalDevIndicatorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const CabalDevIndicator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

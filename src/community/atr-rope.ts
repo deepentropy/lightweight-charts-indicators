@@ -11,8 +11,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ATRRopeInputs {
   /** Source (Pine nz(source)) */
@@ -77,107 +79,149 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface RopeVars {
+  /** var float _rope = _src (first bar) */
+  rope: number;
+  /** var dir = 0 */
+  dir: number;
+  /** var float c_hi = na, var float c_lo = na */
+  cHi: number;
+  cLo: number;
+  /** var float h_sum = 0, var float l_sum = 0, var int c_count = 0 */
+  hSum: number;
+  lSum: number;
+  cCount: number;
+  /** var ff = true */
+  ff: boolean;
+}
+
+interface RopeRun extends BarRunState<RopeVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  src: number[];
+  rope: number[];
+  dir: number[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<ATRRopeInputs>): BarStudy<RopeRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const nz = (v: number) => (isNaN(v) ? 0 : v);
+  const value = barSource(cfg.src);
+  // col = dir > 0 ? up_col : dir < 0 ? down_col : flat_col
+  const col = (d: number) => (d > 0 ? cfg.upCol : d < 0 ? cfg.downCol : cfg.flatCol);
+  // Range lines: color.new(rng_col, 0)
+  const rngLine = String(color.new(cfg.rngCol, 0));
+  const fillCol = cfg.rngTog ? cfg.rngCol : 'transparent';
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const atr = taStep.atr(cfg.len);
+      const s: RopeRun = {
+        atr, src: [], rope: [], dir: [], plots: Array.from({ length: 7 }, () => []),
+        steps: [atr],
+        vars: { rope: NaN, dir: 0, cHi: NaN, cLo: NaN, hSum: 0, lSum: 0, cCount: 0, ff: true },
+        lists: [], series: [],
+      };
+      s.series = [s.src, s.rope, s.dir, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const time = b.time;
+      // src = nz(input.source(close)); atr = ta.atr(len) * multi
+      const src = nz(value(b) ?? NaN);
+      s.src[i] = src;
+      const atr = (s.atr.step(b.high, b.low, b.close) ?? NaN) * cfg.multi;
+
+      // rope_smoother(src, atr): _rope += max(|_move| - nz(_threshold), 0) * sign(_move)
+      if (i === 0) v.rope = src;
+      const move = src - v.rope;
+      v.rope += Math.max(Math.abs(move) - nz(atr), 0) * Math.sign(move);
+      const rope = v.rope;
+      s.rope[i] = rope;
+      const upper = rope + atr;
+      const lower = rope - atr;
+
+      // dir := rope > rope[1] ? 1 : rope < rope[1] ? -1 : dir (rope[1] is na on the first bar)
+      const prevRope = i > 0 ? s.rope[i - 1] : NaN;
+      v.dir = gt(rope, prevRope) ? 1 : lt(rope, prevRope) ? -1 : v.dir;
+      // if ta.cross(src, rope): dir := 0. Pine's cross needs a strict inequality on the previous bar too
+      // (src[1] < rope[1] before a cross up, src[1] > rope[1] before a cross down): a bar where src == rope does
+      // not start a cross. ta.cross compares exactly (no 1e-10 tolerance).
+      if (i > 0) {
+        const crossUp = src > rope && s.src[i - 1] < s.rope[i - 1];
+        const crossDown = src < rope && s.src[i - 1] > s.rope[i - 1];
+        if (crossUp || crossDown) v.dir = 0;
+      }
+      s.dir[i] = v.dir;
+
+      // if dir == 0: if dir[1] != 0 -> reset the sums and flip ff; accumulate upper / lower
+      // (dir[1] is na on the first bar: na != 0 is false)
+      if (v.dir === 0) {
+        if (i > 0 && s.dir[i - 1] !== 0) {
+          v.hSum = 0;
+          v.lSum = 0;
+          v.cCount = 0;
+          v.ff = !v.ff;
+        }
+        v.hSum += upper;
+        v.lSum += lower;
+        v.cCount += 1;
+        v.cHi = v.hSum / v.cCount;
+        v.cLo = v.lSum / v.cCount;
+      }
+      const c = col(v.dir);
+      const p = s.plots;
+      // plot(rope, linewidth = 3, color = col, force_overlay = true)
+      p[0][i] = { time, value: rope, color: c };
+      // plot(upper / lower, color = col, display = atr_tog ? display.all : display.none)
+      p[1][i] = { time, value: upper, color: c };
+      p[2][i] = { time, value: lower, color: c };
+      // h1 = plot(ff ? na : c_hi), l1 = plot(ff ? na : c_lo), h2 = plot(ff ? c_hi : na), l2 = plot(ff ? c_lo : na)
+      p[3][i] = { time, value: v.ff ? NaN : v.cHi, color: rngLine };
+      p[4][i] = { time, value: v.ff ? NaN : v.cLo, color: rngLine };
+      p[5][i] = { time, value: v.ff ? v.cHi : NaN, color: rngLine };
+      p[6][i] = { time, value: v.ff ? v.cLo : NaN, color: rngLine };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(), plot6: p[6].slice(),
+        },
+        // fill(h1, l1, rng_col); fill(h2, l2, rng_col) (display = rng_tog ? display.all : display.none)
+        fills: [
+          { plot1: 'plot3', plot2: 'plot4', colors: new Array<string>(n).fill(fillCol) },
+          { plot1: 'plot5', plot2: 'plot6', colors: new Array<string>(n).fill(fillCol) },
+        ],
+        markers: [],
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ATRRopeInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<ATRRopeInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const nz = (v: number) => (isNaN(v) ? 0 : v);
-
-  // src = nz(input.source(close)); atr = ta.atr(len) * multi
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => nz(v ?? NaN));
-  const atr = ta.atr(bars, cfg.len).toArray().map((v) => (v ?? NaN) * cfg.multi);
-
-  const rope: number[] = new Array(n);
-  const upper: number[] = new Array(n);
-  const lower: number[] = new Array(n);
-  const dir: number[] = new Array(n);
-  const cHi: number[] = new Array(n);
-  const cLo: number[] = new Array(n);
-  const ff: boolean[] = new Array(n);
-
-  let ropeVar = NaN; // var float _rope = _src (first bar)
-  let dirVar = 0; // var dir = 0
-  let cHiVar = NaN; // var float c_hi = na
-  let cLoVar = NaN; // var float c_lo = na
-  let hSum = 0; // var float h_sum = 0
-  let lSum = 0; // var float l_sum = 0
-  let cCount = 0; // var int c_count = 0
-  let ffVar = true; // var ff = true
-  for (let i = 0; i < n; i++) {
-    // rope_smoother(src, atr): _rope += max(|_move| - nz(_threshold), 0) * sign(_move)
-    if (i === 0) ropeVar = src[0];
-    const move = src[i] - ropeVar;
-    ropeVar += Math.max(Math.abs(move) - nz(atr[i]), 0) * Math.sign(move);
-    rope[i] = ropeVar;
-    upper[i] = ropeVar + atr[i];
-    lower[i] = ropeVar - atr[i];
-
-    // dir := rope > rope[1] ? 1 : rope < rope[1] ? -1 : dir (rope[1] is na on the first bar)
-    const prevRope = i > 0 ? rope[i - 1] : NaN;
-    dirVar = gt(rope[i], prevRope) ? 1 : lt(rope[i], prevRope) ? -1 : dirVar;
-    // if ta.cross(src, rope): dir := 0. Pine's cross needs a strict inequality on the previous bar too
-    // (src[1] < rope[1] before a cross up, src[1] > rope[1] before a cross down): a bar where src == rope does
-    // not start a cross. ta.cross compares exactly (no 1e-10 tolerance).
-    if (i > 0) {
-      const crossUp = src[i] > rope[i] && src[i - 1] < rope[i - 1];
-      const crossDown = src[i] < rope[i] && src[i - 1] > rope[i - 1];
-      if (crossUp || crossDown) dirVar = 0;
-    }
-    dir[i] = dirVar;
-
-    // if dir == 0: if dir[1] != 0 -> reset the sums and flip ff; accumulate upper / lower
-    // (dir[1] is na on the first bar: na != 0 is false)
-    if (dirVar === 0) {
-      if (i > 0 && dir[i - 1] !== 0) {
-        hSum = 0;
-        lSum = 0;
-        cCount = 0;
-        ffVar = !ffVar;
-      }
-      hSum += upper[i];
-      lSum += lower[i];
-      cCount += 1;
-      cHiVar = hSum / cCount;
-      cLoVar = lSum / cCount;
-    }
-    cHi[i] = cHiVar;
-    cLo[i] = cLoVar;
-    ff[i] = ffVar;
-  }
-
-  // col = dir > 0 ? up_col : dir < 0 ? down_col : flat_col
-  const col = (i: number) => (dir[i] > 0 ? cfg.upCol : dir[i] < 0 ? cfg.downCol : cfg.flatCol);
-  // Range lines: color.new(rng_col, 0)
-  const rngLine = String(color.new(cfg.rngCol, 0));
-  const fillCol = cfg.rngTog ? cfg.rngCol : 'transparent';
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(rope, linewidth = 3, color = col, force_overlay = true)
-      plot0: bars.map((b, i) => ({ time: b.time, value: rope[i], color: col(i) })),
-      // plot(upper / lower, color = col, display = atr_tog ? display.all : display.none)
-      plot1: bars.map((b, i) => ({ time: b.time, value: upper[i], color: col(i) })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: lower[i], color: col(i) })),
-      // h1 = plot(ff ? na : c_hi), l1 = plot(ff ? na : c_lo), h2 = plot(ff ? c_hi : na), l2 = plot(ff ? c_lo : na)
-      plot3: bars.map((b, i) => ({ time: b.time, value: ff[i] ? NaN : cHi[i], color: rngLine })),
-      plot4: bars.map((b, i) => ({ time: b.time, value: ff[i] ? NaN : cLo[i], color: rngLine })),
-      plot5: bars.map((b, i) => ({ time: b.time, value: ff[i] ? cHi[i] : NaN, color: rngLine })),
-      plot6: bars.map((b, i) => ({ time: b.time, value: ff[i] ? cLo[i] : NaN, color: rngLine })),
-    },
-    // fill(h1, l1, rng_col); fill(h2, l2, rng_col) (display = rng_tog ? display.all : display.none)
-    fills: [
-      { plot1: 'plot3', plot2: 'plot4', colors: new Array<string>(n).fill(fillCol) },
-      { plot1: 'plot5', plot2: 'plot6', colors: new Array<string>(n).fill(fillCol) },
-    ],
-    markers: [],
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const ATRRope = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

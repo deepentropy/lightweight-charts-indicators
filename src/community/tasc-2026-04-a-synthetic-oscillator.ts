@@ -14,7 +14,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+
 
 export interface TascSyntheticOscillatorInputs {
   /** Source series */
@@ -61,130 +64,163 @@ function consts(period: number): [number, number, number] {
   return [q, c1, q * q];
 }
 
-/** HP(src, period): 0 before bar_index 4, then nz(a0 * (src - 2 * src[1] + src[2]) + c1 * hp[1] - c2 * hp[2]) */
-function highPass(src: number[], period: number): number[] {
-  const [, c1, c2] = consts(period);
-  const a0 = (1 + c1 + c2) / 4;
-  const hp = new Array(src.length).fill(0);
-  for (let i = 4; i < src.length; i++) {
-    hp[i] = nz(a0 * (src[i] - 2 * src[i - 1] + src[i - 2]) + c1 * hp[i - 1] - c2 * hp[i - 2]);
-  }
-  return hp;
+/** HP(src, period) on bar i: 0 before bar_index 4, then nz(a0 * (src - 2 * src[1] + src[2]) + c1 * hp[1] - c2 * hp[2]) */
+function highPassAt(hp: number[], src: number[], i: number, a0: number, c1: number, c2: number): number {
+  return i < 4 ? 0 : nz(a0 * (src[i] - 2 * src[i - 1] + src[i - 2]) + c1 * hp[i - 1] - c2 * hp[i - 2]);
 }
 
-/** SuperSmoother(src, period): src before bar_index 4, then a0 * (src + src[1]) + c1 * ss[1] - c2 * ss[2] */
-function superSmoother(src: number[], period: number): number[] {
-  const [, c1, c2] = consts(period);
-  const a0 = (1.0 - c1 + c2) / 2;
-  const ss = src.slice();
-  for (let i = 4; i < src.length; i++) ss[i] = a0 * (src[i] + src[i - 1]) + c1 * ss[i - 1] - c2 * ss[i - 2];
-  return ss;
+/** SuperSmoother(src, period) on bar i: src before bar_index 4, then a0 * (src + src[1]) + c1 * ss[1] - c2 * ss[2] */
+function superSmootherAt(ss: number[], src: number[], i: number, a0: number, c1: number, c2: number): number {
+  return i < 4 ? src[i] : a0 * (src[i] + src[i - 1]) + c1 * ss[i - 1] - c2 * ss[i - 2];
 }
 
-/** UltimateSmoother(src, period): src before bar_index 4, then the all-pass minus high-pass response */
-function ultimateSmoother(src: number[], period: number): number[] {
-  const [, c1, c2] = consts(period);
-  const a0 = (1.0 + c1 + c2) / 4.0;
-  const us = src.slice();
-  for (let i = 4; i < src.length; i++) {
-    us[i] = (1.0 - a0) * src[i] + (2.0 * a0 - c1) * src[i - 1] + (c2 - a0) * src[i - 2]
-      + c1 * nz(us[i - 1]) - c2 * nz(us[i - 2]);
-  }
-  return us;
+/** UltimateSmoother(src, period) on bar i: src before bar_index 4, then the all-pass minus high-pass response */
+function ultimateSmootherAt(us: number[], src: number[], i: number, a0: number, c1: number, c2: number): number {
+  if (i < 4) return src[i];
+  return (1.0 - a0) * src[i] + (2.0 * a0 - c1) * src[i - 1] + (c2 - a0) * src[i - 2]
+    + c1 * nz(us[i - 1]) - c2 * nz(us[i - 2]);
 }
 
 /**
- * RMS(src, length): math.sum(src * src, length) (na until `length` bars, na while an na value is in the window);
- * sqrt(sum / length) when the sum is not 0, else 0 (an na sum gives 0)
+ * RMS(src, length) on bar i: math.sum(src * src, length) (na until `length` bars, na while an na value is in the
+ * window); sqrt(sum / length) when the sum is not 0, else 0 (an na sum gives 0)
  */
-function rms(src: number[], length: number): number[] {
-  const out: number[] = new Array(src.length);
-  for (let i = 0; i < src.length; i++) {
-    let s = NaN;
-    if (i >= length - 1) {
-      s = 0;
-      for (let k = i - length + 1; k <= i; k++) s += src[k] * src[k];
-    }
-    out[i] = ne(s, 0) ? Math.sqrt(s / length) : 0.0;
+function rmsAt(src: number[], i: number, length: number): number {
+  let s = NaN;
+  if (i >= length - 1) {
+    s = 0;
+    for (let k = i - length + 1; k <= i; k++) s += src[k] * src[k];
   }
-  return out;
+  return ne(s, 0) ? Math.sqrt(s / length) : 0.0;
 }
 
-/** Hann(src, length): Hann-window weighted average of src[0 .. length - 1] (na values count as 0) */
-function hann(src: number[], length: number): number[] {
-  return src.map((_v, i) => {
-    let filt = 0.0;
-    let coef = 0.0;
-    for (let c = 1; c <= length; c++) {
-      const p = Math.cos((2 * Math.PI * c) / (length + 1));
-      filt += (1.0 - p) * nz(i - (c - 1) >= 0 ? src[i - (c - 1)] : NaN);
-      coef += 1.0 - p;
-    }
-    return ne(coef, 0.0) ? filt / coef : 0.0;
-  });
+/** Hann(src, length) on bar i: Hann-window weighted average of src[0 .. length - 1] (na values count as 0) */
+function hannAt(src: number[], i: number, length: number): number {
+  let filt = 0.0;
+  let coef = 0.0;
+  for (let c = 1; c <= length; c++) {
+    const p = Math.cos((2 * Math.PI * c) / (length + 1));
+    filt += (1.0 - p) * nz(i - (c - 1) >= 0 ? src[i - (c - 1)] : NaN);
+    coef += 1.0 - p;
+  }
+  return ne(coef, 0.0) ? filt / coef : 0.0;
+}
+
+interface SoVars {
+  /** var float ph = 0.0 */
+  ph: number;
+}
+
+interface SoRun extends BarRunState<SoVars> {
+  src: number[];
+  price: number[];
+  hp: number[];
+  lp: number[];
+  re: number[];
+  roc: number[];
+  im: number[];
+  hpMid: number[];
+  bp: number[];
+  so: number[];
+  plot: { time: number; value: number }[];
+}
+
+function study(inputs: Partial<TascSyntheticOscillatorInputs>): BarStudy<SoRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { lb, ub } = cfg;
+  const value = barSource(cfg.src);
+  const [, c1U, c2U] = consts(ub);
+  const hpA0 = (1 + c1U + c2U) / 4;
+  const [, c1L, c2L] = consts(lb);
+  const ssA0 = (1.0 - c1L + c2L) / 2;
+  // Bandpass filter at the average dominant cycle period
+  const mid = Math.trunc(Math.sqrt(lb * ub));
+  const [, c1M, c2M] = consts(mid);
+  const hpMidA0 = (1 + c1M + c2M) / 4;
+  const usA0 = (1.0 + c1M + c2M) / 4.0;
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      if (lb >= ub) {
+        // runtime.error in Pine
+        throw new Error("The 'Upper Bound' value must be greater than the 'Lower Bound' value.");
+      }
+      const s: SoRun = {
+        src: [], price: [], hp: [], lp: [], re: [], roc: [], im: [], hpMid: [], bp: [], so: [], plot: [],
+        steps: [], vars: { ph: 0.0 }, lists: [], series: [],
+      };
+      s.series = [s.src, s.price, s.hp, s.lp, s.re, s.roc, s.im, s.hpMid, s.bp, s.so, s.plot];
+      return s;
+    },
+    bar(s, i, bars) {
+      const src = value(bars[i]);
+      s.src[i] = src;
+
+      // Real component: bandpass filtered and normalized
+      s.price[i] = hannAt(s.src, i, 12);
+      s.hp[i] = highPassAt(s.hp, s.price, i, hpA0, c1U, c2U);
+      const lp = superSmootherAt(s.lp, s.hp, i, ssA0, c1L, c2L);
+      s.lp[i] = lp;
+      const lpRms = rmsAt(s.lp, i, 100);
+      const re = ne(lpRms, 0.0) ? lp / lpRms : 0.0;
+      s.re[i] = re;
+      // Imaginary component: rate of change, normalized
+      const roc = i > 0 ? re - s.re[i - 1] : NaN;
+      s.roc[i] = roc;
+      const rocRms = rmsAt(s.roc, i, 100);
+      const im = ne(rocRms, 0.0) ? roc / rocRms : 0.0;
+      s.im[i] = im;
+
+      s.hpMid[i] = highPassAt(s.hpMid, s.src, i, hpMidA0, c1M, c2M);
+      const bp = ultimateSmootherAt(s.bp, s.hpMid, i, usA0, c1M, c2M);
+      s.bp[i] = bp;
+
+      // Rate of change of the arctangent, limited to the bounds
+      const denom = roc * im - (im - (i > 0 ? s.im[i - 1] : NaN)) * re;
+      let dc = ne(denom, 0.0) ? (6.28 * (re * re + im * im)) / denom : 0.0;
+      dc = Math.max(lb, Math.min(ub, dc));
+
+      // Cumulative phase, reset at 0 and 180 degrees (ta.crossover / ta.crossunder of bp and 0: exact comparisons,
+      // no 1e-10 tolerance, unlike the operators)
+      const v = s.vars;
+      v.ph += (2 * Math.PI) / dc;
+      const xo = i > 0 && bp > 0.0 && s.bp[i - 1] <= 0.0;
+      const xu = i > 0 && bp < 0.0 && s.bp[i - 1] >= 0.0;
+      if (xo) v.ph = Math.PI / dc;
+      else if (xu) v.ph = Math.PI + Math.PI / dc;
+      const ph = v.ph;
+
+      // Sine of the phase; remove the reset glitch when the move stays in the same quadrant
+      let so = Math.sin(ph);
+      const prev = i > 0 ? s.so[i - 1] : NaN;
+      if (gt(ph, 0.0) && lt(ph, Math.PI / 2) && lt(so, prev)) so = prev;
+      else if (gt(ph, Math.PI) && lt(ph, (3 * Math.PI) / 2) && gt(so, prev)) so = prev;
+      s.so[i] = so;
+      s.plot[i] = { time: bars[i].time, value: so };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot.slice() },
+        // hline(0, "Zero Line"): Pine default colour, dashed, width 1
+        hlines: [{ value: 0, options: { title: 'Zero Line', color: '#787B86', linestyle: 'dashed', linewidth: 1 } }],
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TascSyntheticOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(bars: Bar[], inputs: Partial<TascSyntheticOscillatorInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const { lb, ub } = cfg;
-  if (lb >= ub) {
-    // runtime.error in Pine
-    throw new Error("The 'Upper Bound' value must be greater than the 'Lower Bound' value.");
-  }
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
-
-  // Real component: bandpass filtered and normalized
-  const price = hann(src, 12);
-  const hp = highPass(price, ub);
-  const lp = superSmoother(hp, lb);
-  const lpRms = rms(lp, 100);
-  const re = lp.map((v, i) => (ne(lpRms[i], 0.0) ? v / lpRms[i] : 0.0));
-  // Imaginary component: rate of change, normalized
-  const roc = re.map((v, i) => (i > 0 ? v - re[i - 1] : NaN));
-  const rocRms = rms(roc, 100);
-  const im = roc.map((v, i) => (ne(rocRms[i], 0.0) ? v / rocRms[i] : 0.0));
-
-  // Bandpass filter at the average dominant cycle period
-  const mid = Math.trunc(Math.sqrt(lb * ub));
-  const bp = ultimateSmoother(highPass(src, mid), mid);
-
-  const so: number[] = new Array(n);
-  let ph = 0.0; // var float ph = 0.0
-  for (let i = 0; i < n; i++) {
-    // Rate of change of the arctangent, limited to the bounds
-    const denom = roc[i] * im[i] - (im[i] - (i > 0 ? im[i - 1] : NaN)) * re[i];
-    let dc = ne(denom, 0.0) ? (6.28 * (re[i] * re[i] + im[i] * im[i])) / denom : 0.0;
-    dc = Math.max(lb, Math.min(ub, dc));
-
-    // Cumulative phase, reset at 0 and 180 degrees (ta.crossover / ta.crossunder of bp and 0: exact comparisons,
-    // no 1e-10 tolerance, unlike the operators)
-    ph += (2 * Math.PI) / dc;
-    const xo = i > 0 && bp[i] > 0.0 && bp[i - 1] <= 0.0;
-    const xu = i > 0 && bp[i] < 0.0 && bp[i - 1] >= 0.0;
-    if (xo) ph = Math.PI / dc;
-    else if (xu) ph = Math.PI + Math.PI / dc;
-
-    // Sine of the phase; remove the reset glitch when the move stays in the same quadrant
-    let s = Math.sin(ph);
-    const prev = i > 0 ? so[i - 1] : NaN;
-    if (gt(ph, 0.0) && lt(ph, Math.PI / 2) && lt(s, prev)) s = prev;
-    else if (gt(ph, Math.PI) && lt(ph, (3 * Math.PI) / 2) && gt(s, prev)) s = prev;
-    so[i] = s;
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: so[i] })),
-    },
-    // hline(0, "Zero Line"): Pine default colour, dashed, width 1
-    hlines: [{ value: 0, options: { title: 'Zero Line', color: '#787B86', linestyle: 'dashed', linewidth: 1 } }],
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const TascSyntheticOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

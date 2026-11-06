@@ -7,7 +7,9 @@
  * Reference: "Moving Average Deviation Rate" (community)
  */
 
-import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MADeviationRateInputs {
   length: number;
@@ -47,78 +49,98 @@ export const metadata = {
   overlay: false,
 };
 
-function applyMA(src: Series, length: number, maType: string): number[] {
+type Point = { time: number; value: number };
+type Ma = { step(v: number): number; commit(): void };
+
+/** The moving average of the source stepped bar by bar */
+function maStep(length: number, maType: string): Ma {
   switch (maType) {
-    case 'ema': return ta.ema(src, length).toArray();
-    case 'wma': return ta.wma(src, length).toArray();
-    default: return ta.sma(src, length).toArray();
+    case 'ema': return taStep.ema(length);
+    case 'wma': { const m = taStep.wma(); return { step: (v) => m.step(v, length), commit: () => m.commit() }; }
+    default: return new WindowSma(length);
   }
 }
 
-export function calculate(bars: Bar[], inputs: Partial<MADeviationRateInputs> = {}): IndicatorResult {
+interface MadrRun extends BarRunState<Record<string, never>> {
+  ma: Ma;
+  center: WindowSma;
+  dev: WindowStdev;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  hiFillColors: string[];
+  loFillColors: string[];
+}
+
+function study(inputs: Partial<MADeviationRateInputs>): BarStudy<MadrRun, IndicatorResult> {
   const { length, numStdDev, maType, src } = { ...defaultInputs, ...inputs };
-  const srcSeries = getSourceSeries(bars, src);
-  const srcArr = srcSeries.toArray();
-  const n = bars.length;
-
-  const maArr = applyMA(srcSeries, length, maType);
-
-  // deviation rate = close / sma * 100 - 100
-  const rateArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const maVal = maArr[i];
-    if (i < length || !maVal || maVal === 0) { rateArr[i] = NaN; continue; }
-    rateArr[i] = (srcArr[i] ?? 0) / maVal * 100 - 100;
-  }
-
+  const value = barSource(src);
   // stdCenter = SMA(rate, length * numStdDev), std = STDEV(rate, length * numStdDev)
   const devPeriod = length * numStdDev;
-  const rateSeries = Series.fromArray(bars, rateArr);
-  const stdCenterArr = ta.sma(rateSeries, devPeriod).toArray();
-  const stdArr = ta.stdev(rateSeries, devPeriod).toArray();
-
   const warmup = length + devPeriod;
-
-  const plusDevArr: number[] = new Array(n);
-  const minusDevArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const center = stdCenterArr[i];
-    const std = stdArr[i];
-    if (i < warmup || isNaN(center) || isNaN(std)) {
-      plusDevArr[i] = NaN;
-      minusDevArr[i] = NaN;
-    } else {
-      plusDevArr[i] = center + std * numStdDev;
-      minusDevArr[i] = center - std * numStdDev;
-    }
-  }
-
-  // Dynamic fill colors: rate > plusDev → red, rate < minusDev → lime, else transparent
-  const hiFillColors: string[] = new Array(n);
-  const loFillColors: string[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    hiFillColors[i] = (!isNaN(rateArr[i]) && !isNaN(plusDevArr[i]) && rateArr[i] > plusDevArr[i])
-      ? 'rgba(252, 3, 3, 0.5)' : 'rgba(128, 128, 128, 0)';
-    loFillColors[i] = (!isNaN(rateArr[i]) && !isNaN(minusDevArr[i]) && rateArr[i] < minusDevArr[i])
-      ? 'rgba(0, 255, 0, 0.5)' : 'rgba(128, 128, 128, 0)';
-  }
-
-  const plot0 = rateArr.map((v, i) => ({ time: bars[i].time, value: isNaN(v) ? NaN : v }));
-  const plot1 = stdCenterArr.map((v, i) => ({ time: bars[i].time, value: (i < warmup || isNaN(v)) ? NaN : v }));
-  const plot2 = plusDevArr.map((v, i) => ({ time: bars[i].time, value: isNaN(v) ? NaN : v }));
-  const plot3 = minusDevArr.map((v, i) => ({ time: bars[i].time, value: isNaN(v) ? NaN : v }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
-    hlines: hlineConfig.map(h => ({ value: h.value, options: h.options })),
-    fills: [
-      { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(128, 128, 128, 0.1)' } },
-      { plot1: 'plot1', plot2: 'plot3', options: { color: 'rgba(128, 128, 128, 0.1)' } },
-      { plot1: 'plot0', plot2: 'plot2', options: { color: 'rgba(252, 3, 3, 0.3)' }, colors: hiFillColors },
-      { plot1: 'plot0', plot2: 'plot3', options: { color: 'rgba(0, 255, 0, 0.3)' }, colors: loFillColors },
-    ],
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const ma = maStep(length, maType);
+      const center = new WindowSma(devPeriod);
+      const dev = new WindowStdev(devPeriod);
+      const s: MadrRun = {
+        ma, center, dev, plot0: [], plot1: [], plot2: [], plot3: [], hiFillColors: [], loFillColors: [],
+        steps: [ma, center, dev], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1, s.plot2, s.plot3, s.hiFillColors, s.loFillColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const time = b.time;
+      const srcV = value(b);
+      const maVal = s.ma.step(srcV);
+      // deviation rate = close / sma * 100 - 100
+      const rate = i < length || !maVal || maVal === 0 ? NaN : (srcV ?? 0) / maVal * 100 - 100;
+      const center = s.center.step(rate);
+      const std = s.dev.step(rate);
+      let plusDev: number;
+      let minusDev: number;
+      if (i < warmup || isNaN(center) || isNaN(std)) {
+        plusDev = NaN;
+        minusDev = NaN;
+      } else {
+        plusDev = center + std * numStdDev;
+        minusDev = center - std * numStdDev;
+      }
+      // Dynamic fill colors: rate > plusDev → red, rate < minusDev → lime, else transparent
+      s.hiFillColors[i] = (!isNaN(rate) && !isNaN(plusDev) && rate > plusDev) ? 'rgba(252, 3, 3, 0.5)' : 'rgba(128, 128, 128, 0)';
+      s.loFillColors[i] = (!isNaN(rate) && !isNaN(minusDev) && rate < minusDev) ? 'rgba(0, 255, 0, 0.5)' : 'rgba(128, 128, 128, 0)';
+      s.plot0[i] = { time, value: isNaN(rate) ? NaN : rate };
+      s.plot1[i] = { time, value: (i < warmup || isNaN(center)) ? NaN : center };
+      s.plot2[i] = { time, value: isNaN(plusDev) ? NaN : plusDev };
+      s.plot3[i] = { time, value: isNaN(minusDev) ? NaN : minusDev };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice(), 'plot2': s.plot2.slice(), 'plot3': s.plot3.slice() },
+        hlines: hlineConfig.map(h => ({ value: h.value, options: h.options })),
+        fills: [
+          { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(128, 128, 128, 0.1)' } },
+          { plot1: 'plot1', plot2: 'plot3', options: { color: 'rgba(128, 128, 128, 0.1)' } },
+          { plot1: 'plot0', plot2: 'plot2', options: { color: 'rgba(252, 3, 3, 0.3)' }, colors: s.hiFillColors.slice() },
+          { plot1: 'plot0', plot2: 'plot3', options: { color: 'rgba(0, 255, 0, 0.3)' }, colors: s.loFillColors.slice() },
+        ],
+      };
+    },
   };
 }
 
-export const MADeviationRate = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MADeviationRateInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MADeviationRateInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MADeviationRate = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

@@ -13,9 +13,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AtrTrailingStopWithAtrTargetsInputs {
   /** ATR period */
@@ -60,109 +62,143 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AtrTrailingStopWithAtrTargetsInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color?: string };
+
+/** The var state */
+interface AtrTsVars {
+  trailStop: number;
+  highestHi: number;
+  lowestLo: number;
+  trend: number;
+  flipPrice: number;
+  flipBar: number;
+  flipAtr: number;
+  target1: number;
+  target2: number;
+  target3: number;
+}
+
+interface AtrTsRun extends BarRunState<AtrTsVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<AtrTrailingStopWithAtrTargetsInputs>): BarStudy<AtrTsRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const { atrMult } = cfg;
-  const atrArr = ta.atr(bars, cfg.atrLength).toArray().map((v) => v ?? NaN);
-
-  // var state
-  let trailStop = NaN;
-  let highestHi = NaN;
-  let lowestLo = NaN;
-  let trend = cfg.initialTrend === 'Bullish' ? 1 : -1;
-  let flipPrice = NaN;
-  let flipBar = NaN;
-  let flipAtr = NaN;
-  let target1 = NaN;
-  let target2 = NaN;
-  let target3 = NaN;
-
-  type Point = { time: number; value: number; color?: string };
-  const plot0: Point[] = [];
-  const plot1: Point[] = [];
-  const plot2: Point[] = [];
-  const plot3: Point[] = [];
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
   const bg = String(color.new(color.gray, 95));
-  const buyFlags: boolean[] = [], sellFlags: boolean[] = [];
-
-  for (let i = 0; i < n; i++) {
-    const { high, low, close, time } = bars[i];
-    const atr = atrArr[i];
-    if (i === 0) {
-      highestHi = high;
-      lowestLo = low;
-    }
-    let buySignal = false;
-    let sellSignal = false;
-    if (trend === 1) {
-      highestHi = isNaN(highestHi) ? high : Math.max(highestHi, high);
-      trailStop = highestHi - atr * atrMult;
-      if (lt(close, trailStop)) {
-        trend = -1;
-        highestHi = NaN;
-        lowestLo = low;
-        trailStop = close + atr * atrMult;
-        flipPrice = close;
-        flipBar = i;
-        flipAtr = atr;
-        target1 = flipPrice - flipAtr * 1;
-        target2 = flipPrice - flipAtr * 2;
-        target3 = flipPrice - flipAtr * 3;
-        sellSignal = true;
-      }
-    } else {
-      lowestLo = isNaN(lowestLo) ? low : Math.min(lowestLo, low);
-      trailStop = lowestLo + atr * atrMult;
-      if (gt(close, trailStop)) {
-        trend = 1;
-        lowestLo = NaN;
-        highestHi = high;
-        trailStop = close - atr * atrMult;
-        flipPrice = close;
-        flipBar = i;
-        flipAtr = atr;
-        target1 = flipPrice + flipAtr * 1;
-        target2 = flipPrice + flipAtr * 2;
-        target3 = flipPrice + flipAtr * 3;
-        buySignal = true;
-      }
-    }
-
-    buyFlags.push(buySignal);
-    sellFlags.push(sellSignal);
-    plot0.push({ time, value: trailStop, color: trend === 1 ? color.green : color.red });
-    // showTargets = not na(flipBar) and bar_index >= flipBar
-    const showTargets = !isNaN(flipBar) && i >= flipBar;
-    plot1.push({ time, value: showTargets ? target1 : NaN, color: color.orange });
-    plot2.push({ time, value: showTargets ? target2 : NaN, color: color.yellow });
-    plot3.push({ time, value: showTargets ? target3 : NaN, color: color.purple });
-
-    if (cfg.showSignals && buySignal) {
-      markers.push({ time, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY',
-        textColor: color.white, size: 'small' });
-    }
-    if (cfg.showSignals && sellSignal) {
-      markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
-        textColor: color.white, size: 'small' });
-    }
-    // bgcolor(color.new(color.gray, 95))
-    bgColors.push({ time, color: bg });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
-    markers,
-    bgColors,
-    // alertcondition(buySignal, ...) / alertcondition(sellSignal, ...)
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
+    init() {
+      const atr = taStep.atr(cfg.atrLength);
+      const s: AtrTsRun = {
+        atr, plot0: [], plot1: [], plot2: [], plot3: [], markers: [], bgColors: [], flags: [[], []], times: [[], []],
+        steps: [atr],
+        vars: {
+          trailStop: NaN, highestHi: NaN, lowestLo: NaN, trend: cfg.initialTrend === 'Bullish' ? 1 : -1,
+          flipPrice: NaN, flipBar: NaN, flipAtr: NaN, target1: NaN, target2: NaN, target3: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.plot0, s.plot1, s.plot2, s.plot3, s.bgColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const { high, low, close, time } = bars[i]!;
+      const v = s.vars;
+      const atr = s.atr.step(high, low, close) ?? NaN;
+      if (i === 0) {
+        v.highestHi = high;
+        v.lowestLo = low;
+      }
+      let buySignal = false;
+      let sellSignal = false;
+      if (v.trend === 1) {
+        v.highestHi = isNaN(v.highestHi) ? high : Math.max(v.highestHi, high);
+        v.trailStop = v.highestHi - atr * atrMult;
+        if (lt(close, v.trailStop)) {
+          v.trend = -1;
+          v.highestHi = NaN;
+          v.lowestLo = low;
+          v.trailStop = close + atr * atrMult;
+          v.flipPrice = close;
+          v.flipBar = i;
+          v.flipAtr = atr;
+          v.target1 = v.flipPrice - v.flipAtr * 1;
+          v.target2 = v.flipPrice - v.flipAtr * 2;
+          v.target3 = v.flipPrice - v.flipAtr * 3;
+          sellSignal = true;
+        }
+      } else {
+        v.lowestLo = isNaN(v.lowestLo) ? low : Math.min(v.lowestLo, low);
+        v.trailStop = v.lowestLo + atr * atrMult;
+        if (gt(close, v.trailStop)) {
+          v.trend = 1;
+          v.lowestLo = NaN;
+          v.highestHi = high;
+          v.trailStop = close - atr * atrMult;
+          v.flipPrice = close;
+          v.flipBar = i;
+          v.flipAtr = atr;
+          v.target1 = v.flipPrice + v.flipAtr * 1;
+          v.target2 = v.flipPrice + v.flipAtr * 2;
+          v.target3 = v.flipPrice + v.flipAtr * 3;
+          buySignal = true;
+        }
+      }
+
+      s.plot0[i] = { time, value: v.trailStop, color: v.trend === 1 ? color.green : color.red };
+      // showTargets = not na(flipBar) and bar_index >= flipBar
+      const showTargets = !isNaN(v.flipBar) && i >= v.flipBar;
+      s.plot1[i] = { time, value: showTargets ? v.target1 : NaN, color: color.orange };
+      s.plot2[i] = { time, value: showTargets ? v.target2 : NaN, color: color.yellow };
+      s.plot3[i] = { time, value: showTargets ? v.target3 : NaN, color: color.purple };
+
+      if (cfg.showSignals && buySignal) {
+        s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY',
+          textColor: color.white, size: 'small' });
+      }
+      if (cfg.showSignals && sellSignal) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
+          textColor: color.white, size: 'small' });
+      }
+      // bgcolor(color.new(color.gray, 95))
+      s.bgColors[i] = { time, color: bg };
+      const flags = [buySignal, sellSignal];
+      for (let k = 0; k < 2; k++) {
+        s.flags[k]![i] = flags[k]!;
+        if (flags[k]) s.times[k]!.push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        // alertcondition(buySignal, ...) / alertcondition(sellSignal, ...)
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AtrTrailingStopWithAtrTargetsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AtrTrailingStopWithAtrTargetsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -173,6 +209,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const AtrTrailingStopWithAtrTargets = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

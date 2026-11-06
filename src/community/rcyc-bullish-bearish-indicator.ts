@@ -13,9 +13,12 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+
 
 export interface RcycBullishBearishIndicatorInputs {
   /** KDJ length (highest high / lowest low window) */
@@ -59,60 +62,102 @@ const EPS = 1e-10;
 const ne = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
+type Result = Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } & { alerts: AlertConditionState[] };
+
+interface RcycVars {
+  /** var int colorState = na */
+  colorState: number;
+}
+
+interface RcycRun extends BarRunState<RcycVars> {
+  hi: WindowExtreme;
+  lo: WindowExtreme;
+  pK: ReturnType<typeof taStep.rma>;
+  pD: ReturnType<typeof taStep.rma>;
+  over: ReturnType<typeof taStep.crossover>;
+  under: ReturnType<typeof taStep.crossunder>;
+  candles: PlotCandleData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<RcycBullishBearishIndicatorInputs>): BarStudy<RcycRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const hi = new WindowExtreme(false, cfg.length);
+      const lo = new WindowExtreme(true, cfg.length);
+      const pK = taStep.rma(cfg.signal);
+      const pD = taStep.rma(cfg.signal);
+      const over = taStep.crossover();
+      const under = taStep.crossunder();
+      const s: RcycRun = {
+        hi, lo, pK, pD, over, under, candles: [], flags: [[], []], times: [[], []],
+        steps: [hi, lo, pK, pD, over, under], vars: { colorState: NaN }, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.candles, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const hi = s.hi.step(b.high);
+      const lo = s.lo.step(b.low);
+      // k = range_ != 0 ? 100 * ((close - lo) / range_) : 50 (an na range gives 50: na != 0 is false)
+      const range = hi - lo;
+      const k = ne(range, 0) ? 100 * ((b.close - lo) / range) : 50;
+      const pK = s.pK.step(k);
+      const pD = s.pD.step(pK);
+      const j = 3 * pK - 2 * pD;
+      // ta.crossover / ta.crossunder: exact comparisons, with the last bar where both values were not na
+      const up = !!s.over.step(j, cfg.midline);
+      const down = !!s.under.step(j, cfg.midline);
+
+      const v = s.vars;
+      if (i === 0) {
+        // barstate.isfirst: Bullish 1, Bearish 2, Neutral / Auto 0
+        v.colorState = cfg.initialStateInput === 'Bullish' ? 1 : cfg.initialStateInput === 'Bearish' ? 2 : 0;
+      }
+      if (cfg.initialStateInput === 'Auto' && v.colorState === 0 && !isNaN(j)) {
+        v.colorState = ge(j, cfg.midline) ? 1 : 2;
+      }
+      if (up) v.colorState = 1;
+      else if (down) v.colorState = 2;
+
+      const colorState = v.colorState;
+      const col = colorState === 1 ? (up ? color.red : color.navy)
+        : colorState === 2 ? (down ? color.yellow : color.aqua)
+          : color.gray;
+      s.candles[i] = { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: col, wickColor: col, borderColor: col };
+
+      // alertcondition(crossOverMid, "Red Candle Alert") / alertcondition(crossUnderMid, "Yellow Candle Alert")
+      s.flags[0][i] = up;
+      s.flags[1][i] = down;
+      if (up) s.times[0].push(b.time as number);
+      if (down) s.times[1].push(b.time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        plotCandles: { candles: s.candles.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RcycBullishBearishIndicatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<RcycBullishBearishIndicatorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const hi = A(ta.highest(new Series(bars, (b) => b.high), cfg.length));
-  const lo = A(ta.lowest(new Series(bars, (b) => b.low), cfg.length));
-  // k = range_ != 0 ? 100 * ((close - lo) / range_) : 50 (an na range gives 50: na != 0 is false)
-  const k = bars.map((b, i) => {
-    const range = hi[i] - lo[i];
-    return ne(range, 0) ? 100 * ((b.close - lo[i]) / range) : 50;
-  });
-  const pKs = ta.rma(S(k), cfg.signal);
-  const pK = A(pKs);
-  const pD = A(ta.rma(pKs, cfg.signal));
-  const j = pK.map((v, i) => 3 * v - 2 * pD[i]);
-  const js = S(j);
-  // ta.crossover / ta.crossunder: exact comparisons, with the last bar where both values were not na
-  const crossOver = A(ta.crossover(js, cfg.midline));
-  const crossUnder = A(ta.crossunder(js, cfg.midline));
-
-  const candles: PlotCandleData[] = [];
-  let colorState = NaN; // var int colorState = na
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    if (i === 0) {
-      // barstate.isfirst: Bullish 1, Bearish 2, Neutral / Auto 0
-      colorState = cfg.initialStateInput === 'Bullish' ? 1 : cfg.initialStateInput === 'Bearish' ? 2 : 0;
-    }
-    if (cfg.initialStateInput === 'Auto' && colorState === 0 && !isNaN(j[i])) {
-      colorState = ge(j[i], cfg.midline) ? 1 : 2;
-    }
-    const up = !!crossOver[i];
-    const down = !!crossUnder[i];
-    if (up) colorState = 1;
-    else if (down) colorState = 2;
-
-    const col = colorState === 1 ? (up ? color.red : color.navy)
-      : colorState === 2 ? (down ? color.yellow : color.aqua)
-        : color.gray;
-    candles.push({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: col, wickColor: col, borderColor: col });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    plotCandles: { candles },
-    // alertcondition(crossOverMid, "Red Candle Alert") / alertcondition(crossUnderMid, "Yellow Candle Alert")
-    alerts: alertStates(alertConditions, bars, [bars.map((_, i) => !!crossOver[i]), bars.map((_, i) => !!crossUnder[i])]),
-  };
+): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -121,4 +166,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'Yellow Candle Alert', message: 'Yellow Candle Signal: J Value has crossed below the selected midline.' },
 ];
 
-export const RcycBullishBearishIndicator = { calculate, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig, alertConditions };
+export const RcycBullishBearishIndicator = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig, alertConditions };

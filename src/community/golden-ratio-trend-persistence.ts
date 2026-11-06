@@ -12,8 +12,10 @@
  * Original notice: © ZenTrader
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface GoldenRatioTrendPersistenceInputs {
   /** Pivot lookback left */
@@ -60,75 +62,106 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<GoldenRatioTrendPersistenceInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+
+interface GoldenVars {
+  /** var int trend = 0 */
+  trend: number;
+  /** var float anchorPrice = na */
+  anchor: number;
+  /** var float extremityPrice = na */
+  extremity: number;
+  /** var float trendLevel = na */
+  level: number;
+}
+
+interface GoldenRun extends BarRunState<GoldenVars> {
+  ph: PivotStep;
+  pl: PivotStep;
+  plot0: Point[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<GoldenRatioTrendPersistenceInputs>): BarStudy<GoldenRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const pivotHigh = A(ta.pivothigh(Series.fromArray(bars, bars.map((b) => b.high)), cfg.pivotLeft, cfg.pivotRight));
-  const pivotLow = A(ta.pivotlow(Series.fromArray(bars, bars.map((b) => b.low)), cfg.pivotLeft, cfg.pivotRight));
   const useHl = cfg.extremitySource === 'High/Low';
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const bgColors: BgColorData[] = [];
-  let trend = 0; // var int trend = 0
-  let anchor = NaN; // var float anchorPrice = na
-  let extremity = NaN; // var float extremityPrice = na
-  let level = NaN; // var float trendLevel = na
-
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const ph = pivotHigh[i];
-    const pl = pivotLow[i];
-    const sourceUp = useHl ? b.high : b.close;
-    const sourceDown = useHl ? b.low : b.close;
-
-    if (trend === 0) {
-      if (!isNaN(ph)) {
-        trend = -1;
-        anchor = ph;
-        extremity = sourceDown;
-      } else if (!isNaN(pl)) {
-        trend = 1;
-        anchor = pl;
-        extremity = sourceUp;
-      }
-    } else if (trend === 1) {
-      extremity = Math.max(isNaN(extremity) ? sourceUp : extremity, sourceUp);
-      if (!isNaN(pl) && gt(pl, anchor)) anchor = pl;
-      level = extremity - cfg.fibRatio * (extremity - anchor);
-      if (lt(b.close, level)) {
-        trend = -1;
-        anchor = extremity;
-        extremity = sourceDown;
-      }
-    } else if (trend === -1) {
-      extremity = Math.min(isNaN(extremity) ? sourceDown : extremity, sourceDown);
-      if (!isNaN(ph) && lt(ph, anchor)) anchor = ph;
-      level = extremity + cfg.fibRatio * (anchor - extremity);
-      if (gt(b.close, level)) {
-        trend = 1;
-        anchor = extremity;
-        extremity = sourceUp;
-      }
-    }
-
-    plot0.push({ time: b.time, value: level, color: trend === 1 ? UP_COL : DOWN_COL });
-    if (trend === 1) bgColors.push({ time: b.time, color: UP_BG });
-    else if (trend === -1) bgColors.push({ time: b.time, color: DOWN_BG });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    bgColors,
+    init() {
+      const ph = new PivotStep(cfg.pivotLeft, cfg.pivotRight, true);
+      const pl = new PivotStep(cfg.pivotLeft, cfg.pivotRight, false);
+      const s: GoldenRun = {
+        ph, pl, plot0: [], bgColors: [],
+        steps: [ph, pl], vars: { trend: 0, anchor: NaN, extremity: NaN, level: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.bgColors];
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const ph = s.ph.step(i, b.high);
+      const pl = s.pl.step(i, b.low);
+      const sourceUp = useHl ? b.high : b.close;
+      const sourceDown = useHl ? b.low : b.close;
+
+      if (v.trend === 0) {
+        if (!isNaN(ph)) {
+          v.trend = -1;
+          v.anchor = ph;
+          v.extremity = sourceDown;
+        } else if (!isNaN(pl)) {
+          v.trend = 1;
+          v.anchor = pl;
+          v.extremity = sourceUp;
+        }
+      } else if (v.trend === 1) {
+        v.extremity = Math.max(isNaN(v.extremity) ? sourceUp : v.extremity, sourceUp);
+        if (!isNaN(pl) && gt(pl, v.anchor)) v.anchor = pl;
+        v.level = v.extremity - cfg.fibRatio * (v.extremity - v.anchor);
+        if (lt(b.close, v.level)) {
+          v.trend = -1;
+          v.anchor = v.extremity;
+          v.extremity = sourceDown;
+        }
+      } else if (v.trend === -1) {
+        v.extremity = Math.min(isNaN(v.extremity) ? sourceDown : v.extremity, sourceDown);
+        if (!isNaN(ph) && lt(ph, v.anchor)) v.anchor = ph;
+        v.level = v.extremity + cfg.fibRatio * (v.anchor - v.extremity);
+        if (gt(b.close, v.level)) {
+          v.trend = 1;
+          v.anchor = v.extremity;
+          v.extremity = sourceUp;
+        }
+      }
+
+      s.plot0[i] = { time: b.time, value: v.level, color: v.trend === 1 ? UP_COL : DOWN_COL };
+      if (v.trend === 1) s.bgColors.push({ time: b.time, color: UP_BG });
+      else if (v.trend === -1) s.bgColors.push({ time: b.time, color: DOWN_BG });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GoldenRatioTrendPersistenceInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<GoldenRatioTrendPersistenceInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const GoldenRatioTrendPersistence = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

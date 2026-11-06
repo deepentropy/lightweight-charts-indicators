@@ -12,9 +12,11 @@
  */
 
 import {
-  ta, Series, getSourceSeries, color,
+  taStep, color,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RsMacdInputs {
   /** Source of the moving averages */
@@ -66,47 +68,77 @@ const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => ge(b, a);
 
-export function calculate(bars: Bar[], inputs: Partial<RsMacdInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface RsMacdRun extends BarRunState<Record<string, never>> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  sig: WindowSma;
+  macd: number[];
+  signal: number[];
+  hist: number[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<RsMacdInputs>): BarStudy<RsMacdRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const src = getSourceSeries(bars, cfg.source);
-  const fastMA = A(ta.ema(src, cfg.fastLength));
-  const slowMA = A(ta.ema(src, cfg.slowLength));
-  const macd = fastMA.map((f, i) => f - slowMA[i]);
-  const signal = A(ta.sma(Series.fromArray(bars, macd), cfg.signalLength));
-  const hist = macd.map((m, i) => m - signal[i]);
-  const prev = (a: number[], i: number) => (i > 0 ? a[i - 1] : NaN);
-
-  const plot0 = [];
-  const plot1 = [];
-  const plot2 = [];
-  const plot3 = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // c1 = macd > signal and macd >= macd[1] ? color.green : #fda8a8
-    const c1 = gt(macd[i], signal[i]) && ge(macd[i], prev(macd, i)) ? color.green : MACD_LIGHT;
-    // c2 = signal > macd and signal <= signal[1] ? color.red : #a8fdab
-    const c2 = gt(signal[i], macd[i]) && le(signal[i], prev(signal, i)) ? color.red : SIGNAL_LIGHT;
-    // c3 = hist <= hist[1] ? #455669 : #91a3b5
-    const c3 = le(hist[i], prev(hist, i)) ? HIST_DOWN : HIST_UP;
-    plot0.push({ time: t, value: hist[i], color: HIST_AREA });
-    plot1.push({ time: t, value: hist[i], color: c3 });
-    plot2.push({ time: t, value: macd[i], color: c1 });
-    plot3.push({ time: t, value: signal[i], color: c2 });
-  }
-
+  const value = barSource(cfg.source);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
-    // hline(0): Pine defaults (colour #787B86, dashed, width 1)
-    hlines: [{ value: 0, options: { title: 'Level', color: '#787B86', linestyle: 'dashed', linewidth: 1 } }],
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const s: RsMacdRun = {
+        fast: taStep.ema(cfg.fastLength), slow: taStep.ema(cfg.slowLength), sig: new WindowSma(cfg.signalLength),
+        macd: [], signal: [], hist: [], plots: [[], [], [], []], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.fast, s.slow, s.sig];
+      s.series = [s.macd, s.signal, s.hist, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time as number;
+      const v = value(b);
+      const macd = s.fast.step(v) - s.slow.step(v);
+      const signal = s.sig.step(macd);
+      const hist = macd - signal;
+      s.macd[i] = macd;
+      s.signal[i] = signal;
+      s.hist[i] = hist;
+      const prev = (a: number[]) => (i > 0 ? a[i - 1] : NaN);
+      // c1 = macd > signal and macd >= macd[1] ? color.green : #fda8a8
+      const c1 = gt(macd, signal) && ge(macd, prev(s.macd)) ? color.green : MACD_LIGHT;
+      // c2 = signal > macd and signal <= signal[1] ? color.red : #a8fdab
+      const c2 = gt(signal, macd) && le(signal, prev(s.signal)) ? color.red : SIGNAL_LIGHT;
+      // c3 = hist <= hist[1] ? #455669 : #91a3b5
+      const c3 = le(hist, prev(s.hist)) ? HIST_DOWN : HIST_UP;
+      s.plots[0][i] = { time: t, value: hist, color: HIST_AREA };
+      s.plots[1][i] = { time: t, value: hist, color: c3 };
+      s.plots[2][i] = { time: t, value: macd, color: c1 };
+      s.plots[3][i] = { time: t, value: signal, color: c2 };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice() },
+        // hline(0): Pine defaults (colour #787B86, dashed, width 1)
+        hlines: [{ value: 0, options: { title: 'Level', color: '#787B86', linestyle: 'dashed', linewidth: 1 } }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RsMacdInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RsMacdInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RsMacd = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

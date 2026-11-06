@@ -12,6 +12,8 @@
  */
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type BuysellVolumeBarChartInputs = Record<string, never>;
 
@@ -36,35 +38,58 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(bars: Bar[], _inputs: Partial<BuysellVolumeBarChartInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface BuysellRun extends BarRunState<Record<string, never>> {
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+}
+
+function study(_inputs: Partial<BuysellVolumeBarChartInputs>): BarStudy<BuysellRun, IndicatorResult> {
   const buyWeak = String(color.new('#4caf4f', 48));
   const sellWeak = String(color.new('#ff5252', 58));
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const plot2: { time: number; value: number; color: string }[] = [];
-  for (const b of bars) {
-    const volume = b.volume ?? NaN;
-    // flat = high == low: no buy / sell split on a flat bar
-    const flat = eq(b.high, b.low);
-    const bv = flat ? NaN : (volume * (b.close - b.low)) / (b.high - b.low);
-    const sv = flat ? NaN : (volume * (b.high - b.close)) / (b.high - b.low);
-    const diff = bv - sv;
-    const buyHigher = gt(diff, 0);
-    plot0.push({ time: b.time, value: fin(bv), color: buyHigher ? color.green : buyWeak });
-    plot1.push({ time: b.time, value: fin(-sv), color: buyHigher ? sellWeak : color.red });
-    plot2.push({ time: b.time, value: fin(diff), color: buyHigher ? color.green : color.red });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
+    init() {
+      const s: BuysellRun = { plot0: [], plot1: [], plot2: [], steps: [], vars: {}, lists: [], series: [] };
+      s.series = [s.plot0, s.plot1, s.plot2];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = b.volume ?? NaN;
+      // flat = high == low: no buy / sell split on a flat bar
+      const flat = eq(b.high, b.low);
+      const bv = flat ? NaN : (volume * (b.close - b.low)) / (b.high - b.low);
+      const sv = flat ? NaN : (volume * (b.high - b.close)) / (b.high - b.low);
+      const diff = bv - sv;
+      const buyHigher = gt(diff, 0);
+      s.plot0[i] = { time: b.time, value: fin(bv), color: buyHigher ? color.green : buyWeak };
+      s.plot1[i] = { time: b.time, value: fin(-sv), color: buyHigher ? sellWeak : color.red };
+      s.plot2[i] = { time: b.time, value: fin(diff), color: buyHigher ? color.green : color.red };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BuysellVolumeBarChartInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BuysellVolumeBarChartInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const BuysellVolumeBarChart = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -28,9 +28,11 @@
  * Original notice: © LuxAlgo
  */
 
-import { ta, color, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall, BoxData, LabelData, LineDrawingData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -221,34 +223,74 @@ interface Lb {
   deleted: boolean;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<BreakerBlocksWithSignalsInputs> = {},
-): Omit<IndicatorResult, 'boxes' | 'labels' | 'lines'> & { boxes: BoxData[]; labels: LabelData[]; lines: LineDrawingData[] }
-  & { alerts: AlertConditionState[]; alertCalls: AlertCall[] } {
+type Result = Omit<IndicatorResult, 'boxes' | 'labels' | 'lines'> & { boxes: BoxData[]; labels: LabelData[]; lines: LineDrawingData[] }
+  & { alerts: AlertConditionState[]; alertCalls: AlertCall[] };
+
+interface PdArea {
+  box: Bx;
+  line: Ln;
+  lab: Lb | null;
+  broken: boolean;
+}
+
+/** The drawings and `var` state of the script (changed in place, copied by copyVars) */
+interface BbVars {
+  /** Labels in creation order */
+  labels: Lb[];
+  boxA: Bx;
+  boxB: Bx;
+  bbLine: Ln;
+  pd: PdArea[];
+  swing: { line: Ln; broken: boolean }[];
+  tp: { line: Ln; hit: boolean }[];
+  hl: Lb | null;
+  aLabels: Lb[];
+  pdBoxA: Bx | null;
+  pdBoxB: Bx | null;
+  /** na (0) before the first block */
+  bbDir: number;
+  broken: boolean;
+  mitigated: boolean;
+  scalp: boolean;
+  /** var ZZ aZZ: direction, bar and price of the latest swings (newest first) */
+  zzD: number[];
+  zzX: number[];
+  zzY: number[];
+  mssDir: number;
+}
+
+interface BbRun extends BarRunState<BbVars> {
+  ph: PivotStep;
+  pl: PivotStep;
+  /** signals = array.from(false, ...): the flags of the alertconditions on each bar (bit k: condition k) */
+  masks: number[];
+  times: number[][];
+  alertCalls: AlertCall[];
+}
+
+function study(inputs: Partial<BreakerBlocksWithSignalsInputs>): BarStudy<BbRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const last = n - 1;
   const len = Math.trunc(cfg.len);
   const { breakerCandleOnlyBody: onlyBody, breakerCandle2Last: twoLast, tillFirstBreak, onlyWhenInPDarray, showPDarray, showBreaks, showSPD } = cfg;
   const { pdTxtCss, pdSCss, tpCss } = cfg;
   /** method notransp() */
   const notransp = (css: string) => String(color.rgb(color.r(css), color.g(css), color.b(css)));
+  const box = (): Bx => ({ left: NaN, top: NaN, right: NaN, bottom: NaN, bg: 'transparent', deleted: false });
+  const line = (css: string, dashed = false): Ln => ({ x1: NaN, y1: NaN, x2: NaN, y2: NaN, color: css, dashed });
 
-  const phArr = ta.pivothigh(new Series(bars, (b) => b.high), len, 1).toArray();
-  const plArr = ta.pivotlow(new Series(bars, (b) => b.low), len, 1).toArray();
-
-  const H = (i: number) => (i >= 0 ? bars[i].high : NaN);
-  const L = (i: number) => (i >= 0 ? bars[i].low : NaN);
-  const O = (i: number) => (i >= 0 ? bars[i].open : NaN);
-  const C = (i: number) => (i >= 0 ? bars[i].close : NaN);
-  const MX = (i: number) => Math.max(C(i), O(i));
-  const MN = (i: number) => Math.min(C(i), O(i));
-
+  // The bars and state of the bar being calculated (read by the helpers below)
+  let B: Bar[] = [];
+  let V: BbVars;
+  const H = (j: number) => (j >= 0 ? B[j].high : NaN);
+  const L = (j: number) => (j >= 0 ? B[j].low : NaN);
+  const O = (j: number) => (j >= 0 ? B[j].open : NaN);
+  const C = (j: number) => (j >= 0 ? B[j].close : NaN);
+  const MX = (j: number) => Math.max(C(j), O(j));
+  const MN = (j: number) => Math.min(C(j), O(j));
   // Labels in creation order: when a creation brings the count above max + 5, the oldest are deleted until max
   // remain. A deleted label ignores later changes. (Boxes and lines never reach their limit.)
-  const labels: Lb[] = [];
   const newLabel = (x: number, y: number, text: string, textColor: string, style: LabStyle, size: LabSize): Lb => {
+    const labels = V.labels;
     const o = { x, y, text, textColor, style, size, deleted: false };
     labels.push(o);
     if (labels.length > MAX_LABELS + 5) for (const old of labels.splice(0, labels.length - MAX_LABELS)) old.deleted = true;
@@ -257,42 +299,10 @@ export function calculate(
   const deleteLabel = (o: Lb) => {
     if (o.deleted) return;
     o.deleted = true;
-    labels.splice(labels.indexOf(o), 1);
+    V.labels.splice(V.labels.indexOf(o), 1);
   };
-  const box = (): Bx => ({ left: NaN, top: NaN, right: NaN, bottom: NaN, bg: 'transparent', deleted: false });
-  const line = (css: string, dashed = false): Ln => ({ x1: NaN, y1: NaN, x2: NaN, y2: NaN, color: css, dashed });
-
-  // var block BB: the only block, made on the first bar (its drawings have no place yet)
-  const boxA = box();
-  const boxB: Bx = { ...box(), styled: true };
-  const bbLine = line(SILVER, true);
-  const pd = [
-    { box: box(), line: line(pdSCss), lab: null as Lb | null, broken: false },
-    { box: box(), line: line(pdSCss), lab: null as Lb | null, broken: false },
-  ];
-  const swing = [
-    { line: line(pdSCss), broken: false },
-    { line: line(pdSCss), broken: false },
-  ];
-  const tp = [
-    { line: line(tpCss), hit: false },
-    { line: line(tpCss), hit: false },
-    { line: line(tpCss), hit: false },
-  ];
-  let hl: Lb | null = null;
-  let aLabels: Lb[] = [];
-  let pdBoxA: Bx | null = null;
-  let pdBoxB: Bx | null = null;
-  let bbDir = 0; // na before the first block
-  let broken = false;
-  let mitigated = false;
-  let scalp = false;
-
-  // var ZZ aZZ: direction, bar and price of the latest swings (newest first)
-  const zzD: number[] = new Array(ZZ_SIZE).fill(0);
-  const zzX: number[] = new Array(ZZ_SIZE).fill(0);
-  const zzY: number[] = new Array(ZZ_SIZE).fill(NaN);
   const inOut = (d: number, x: number, y: number) => {
+    const { zzD, zzX, zzY } = V;
     zzD.unshift(d);
     zzX.unshift(x);
     zzY.unshift(y);
@@ -300,315 +310,405 @@ export function calculate(
     zzX.pop();
     zzY.pop();
   };
-  let mssDir = 0;
-
-  // signals = array.from(false, ...): one flag per alertcondition and bar
-  const flags: boolean[][] = alertConditions.map(() => new Array<boolean>(n).fill(false));
-  const alertCalls: AlertCall[] = [];
-
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const { open, high, low, close } = b;
-    /** signals.set(k, true) and alert(message, freq) */
-    const signal = (k: number | null, message: string, freq: AlertCall['freq'] = 'once_per_bar_close') => {
-      if (k !== null) flags[k][i] = true;
-      alertCalls.push({ time: b.time, message, freq });
-    };
-    if (i === 0) {
-      pd[0].lab = newLabel(NaN, NaN, '', '#FFFFFF', 'label_down', 'normal');
-      pd[1].lab = newLabel(NaN, NaN, '', '#FFFFFF', 'label_down', 'normal');
-      hl = newLabel(NaN, NaN, '', pdTxtCss, 'label_down', 'normal');
-    }
-    /** createLab(): a label on the current bar */
-    const createLab = (s: 'c' | 'u' | 'd', y: number, css: string, text: string, size: LabSize = 'small') => {
-      aLabels.unshift(newLabel(i, y, text, css, s === 'c' ? 'label_center' : s === 'u' ? 'label_up' : 'label_down', size));
-    };
-    const setLab = (o: Lb | null, change: (o: Lb) => void) => {
-      if (o && !o.deleted) change(o);
-    };
-
-    // draw(): zigzag
-    const x2 = i - 1;
-    const ph = phArr[i] ?? NaN;
-    const pl = plArr[i] ?? NaN;
-    if (!isNaN(ph) && ph !== 0) {
-      const y2 = i >= 1 ? bars[i - 1].high : 0;
-      if (zzD[0] < 1) inOut(1, x2, y2);
-      else if (zzD[0] === 1 && gt(ph, zzY[0])) {
-        zzX[0] = x2;
-        zzY[0] = y2;
-      }
-    }
-    if (!isNaN(pl) && pl !== 0) {
-      const y2 = i >= 1 ? bars[i - 1].low : 0;
-      if (zzD[0] > -1) inOut(-1, x2, y2);
-      else if (zzD[0] === -1 && lt(pl, zzY[0])) {
-        zzX[0] = x2;
-        zzY[0] = y2;
-      }
-    }
-    const iH = zzD[2] === 1 ? 2 : 1;
-    const iL = zzD[2] === -1 ? 2 : 1;
-    const per = last - i <= LOOKBACK;
-
-    /** A new breaker block from a market structure shift (up: bullish) */
-    const shift = (up: boolean, iS: number) => {
-      const Ex = zzX[iS - 1];
-      const Ey = zzY[iS - 1];
-      const Dx = zzX[iS];
-      const Cx = zzX[iS + 1];
-      const Cy = zzY[iS + 1];
-      const Bx = zzX[iS + 2];
-      const Ax = zzX[iS + 3];
-      const Ay = zzY[iS + 3];
-      // 50 % of the range from A to the body extreme of B and D
-      const aBody = up ? MN(Ax) : MX(Ax);
-      const yy = up ? Math.max(MX(Bx), MX(Dx)) : Math.min(MN(Bx), MN(Dx));
-      const mid = up ? aBody + (yy - aBody) / 2 : aBody - (aBody - yy) / 2;
-      const isOK = !onlyWhenInPDarray
-        || (up ? lt(Ay, Cy) && lt(Ay, Ey) && lt(Ey, mid) : gt(Ay, Cy) && gt(Ay, Ey) && gt(Ey, mid));
-      if (!(up ? lt(Ey, Cy) : gt(Ey, Cy)) || Cx === Dx || !isOK) return;
-
-      // From the swing D back to the swing C: the first candle in the direction of the shift
-      const step = Dx >= Cx ? -1 : 1;
-      for (let k = Dx; step < 0 ? k >= Cx : k <= Cx; k += step) {
-        const sameDir = (j: number) => (up ? gt(C(j), O(j)) : lt(C(j), O(j)));
-        if (!sameDir(k)) continue;
-        // reset the previous swing areas
-        for (const p of pd) {
-          p.box.left = NaN;
-          p.box.top = NaN;
-          p.line.x1 = NaN;
-          p.line.y1 = NaN;
-          setLab(p.lab, (o) => {
-            o.x = NaN;
-            o.y = NaN;
-          });
-        }
-        let idx = k;
-        let prT = onlyBody ? MX(k) : H(k);
-        let prB = onlyBody ? MN(k) : L(k);
-        if (twoLast && sameDir(k - 1)) {
-          const t2 = onlyBody ? MX(k - 1) : H(k - 1);
-          const b2 = onlyBody ? MN(k - 1) : L(k - 1);
-          if (gt(t2, prT) || lt(b2, prB)) idx -= 1;
-          prT = Math.max(prT, t2);
-          prB = Math.min(prB, b2);
-        }
-
-        const avg = (prB + prT) / 2;
-        while (aLabels.length > 0) deleteLabel(aLabels.pop()!);
-        if (pdBoxA) pdBoxA.deleted = true;
-        if (pdBoxB) pdBoxB.deleted = true;
-        bbDir = up ? 1 : -1;
-        const cssB = up ? cfg.cBBplusB : cfg.cBBminB;
-        Object.assign(boxA, { left: idx, top: prT, right: i, bottom: prB, bg: up ? cfg.cBBplusA : cfg.cBBminA });
-        Object.assign(boxB, {
-          left: i, top: prT, right: i + 8, bottom: prB, bg: cssB, text: up ? '+BB' : '-BB', textColor: notransp(cssB),
-          textVAlign: up ? 'bottom' : 'top',
-        });
-        Object.assign(bbLine, { x1: i, y1: avg, x2: i, y2: avg });
-
-        if (showSPD) {
-          Object.assign(swing[0].line, { x1: Cx, y1: Cy, x2: i, y2: Cy });
-          swing[0].broken = false;
-          Object.assign(swing[1].line, { x1: Ex, y1: Ey, x2: i, y2: Ey });
-          swing[1].broken = false;
-          setLab(hl, (o) => {
-            o.x = Ex;
-            o.y = Ey;
-            o.style = up ? 'label_up' : 'label_down';
-            o.text = up ? 'LL' : 'HH';
-            if (!up) o.textColor = pdTxtCss;
-          });
-        }
-        for (const t of tp) t.hit = false;
-        broken = false;
-        mitigated = false;
-        scalp = false;
-        pd[0].broken = false;
-        pd[1].broken = false;
-
-        if (onlyWhenInPDarray && showPDarray) {
-          const premium = { bg: String(color.rgb(248, 153, 132, 90)), text: String(color.rgb(248, 153, 132, 25)) };
-          const discount = { bg: String(color.rgb(132, 248, 171, 90)), text: String(color.rgb(132, 248, 171, 25)) };
-          const zone = up ? discount : premium;
-          pdBoxA = {
-            left: Ax, top: up ? mid : aBody, right: Ex + 1, bottom: up ? aBody : mid, bg: zone.bg,
-            text: up ? 'Discount PD Array' : 'Premium PD Array', textColor: zone.text, textVAlign: 'center', styled: true, deleted: false,
-          };
-          pdBoxB = { left: Ax, top: up ? yy : mid, right: Ex + 1, bottom: up ? mid : yy, bg: (up ? premium : discount).bg, deleted: false };
-        }
-
-        // Previous swings beyond the current bar
-        let cnt = 0;
-        let ref = up ? high : low;
-        for (let c = 0; c <= ZZ_SIZE - 2; c++) {
-          const getX = zzX[c];
-          const getY = zzY[c];
-          if ((up ? gt(getY, ref) : lt(getY, ref)) && zzD[c] === (up ? 1 : -1) && showSPD) {
-            const getY2 = (up ? H(getX) - MN(getX) : MX(getX) - L(getX)) / 4;
-            const edge = up ? getY - getY2 : getY + getY2;
-            const take = cnt === 0 || (cnt === 1 && (up ? gt(edge, ref) : lt(edge, ref)));
-            if (take) {
-              const p = pd[cnt];
-              Object.assign(p.box, { left: getX, top: up ? getY : edge, right: i, bottom: up ? edge : getY, bg: up ? cfg.cSwingBl : cfg.cSwingBr });
-              Object.assign(p.line, { x1: getX, y1: getY, x2: i, y2: getY });
-              setLab(p.lab, (o) => {
-                o.x = getX;
-                o.y = getY;
-                o.size = 'small';
-                o.textColor = pdTxtCss;
-                o.text = up ? 'Premium PD Array' : 'Discount PD Array';
-                o.style = up ? 'label_lower_left' : 'label_upper_left';
-              });
-              if (cnt === 0) ref = getY;
-              cnt += 1;
-            }
-          }
-          if (cnt === 2) break;
-        }
-
-        // Targets
-        if (cfg.iTP) {
-          const height = prT - prB;
-          const ratios = [cfg.r2a / cfg.r1a, cfg.r2b / cfg.r1b, cfg.r2c / cfg.r1c];
-          tp.forEach((t, j) => {
-            const e = up ? prT + height * ratios[j] : prB - height * ratios[j];
-            Object.assign(t.line, { x1: i, y1: e, x2: i + 20, y2: e });
-          });
-        }
-        // signals.set(BBplus / BB_min, true); alert('+BB' / '-BB', alert.freq_once_per_bar_close)
-        signal(up ? SIG.BBplus : SIG.BBmin, up ? '+BB' : '-BB');
-        createLab(up ? 'u' : 'd', up ? low : high, notransp(cssB), up ? ARROW_UP : ARROW_DOWN, 'large');
-        break;
-      }
-    };
-
-    if (gt(close, zzY[iH]) && zzD[iH] === 1 && mssDir < 1 && per) {
-      shift(true, iH);
-      mssDir = 1;
-    } else if (lt(close, zzY[iL]) && zzD[iL] === -1 && mssDir > -1 && per) {
-      shift(false, iL);
-      mssDir = -1;
-    }
-
-    // The life of the block
-    if (bbDir !== 0) {
-      const up = bbDir === 1;
-      const top = boxB.top;
-      const btm = boxB.bottom;
-      const avg = bbLine.y2;
-      const near = up ? top : btm; // the side of the signals
-      const far = up ? btm : top; // the side of the mitigation
-      const beyond = (a: number, level: number) => (up ? gt(a, level) : lt(a, level)); // in the direction of the block
-      const behind = (a: number, level: number) => (up ? lt(a, level) : gt(a, level));
-      const l1 = swing[0].line.y2;
-      const l2 = swing[1].line.y2;
-      const targets = tp.map((t) => t.line.y2);
-      const s = up ? 'u' : 'd';
-      const extreme = up ? low : high;
-
-      if (!mitigated) {
-        if (behind(close, far)) {
-          mitigated = true;
-          signal(up ? SIG.BBendBl : SIG.BBendBr, up ? '+BB Mitigated' : '-BB Mitigated');
-          if (up) createLab('u', low, YELLOW, DOT);
-          else if (showBreaks) createLab('d', high, notransp(cfg.cBBminB), DOT);
-          boxB.right = i;
-          bbLine.x2 = i;
-        } else {
-          boxB.right = i + 8;
-          bbLine.x2 = i + 8;
-        }
-        for (const t of tp) t.line.x2 = i;
-
-        if (i > boxB.left) {
-          if (!broken) {
-            if (scalp) {
-              tp.forEach((t, j) => {
-                if (!t.hit && behind(open, targets[j]) && beyond(up ? high : low, targets[j])) {
-                  t.hit = true;
-                  // alert('TP UP 1', alert.freq_once_per_bar) ...
-                  signal((up ? SIG.tpUP1 : SIG.tpDN1) + j, `TP ${up ? 'UP' : 'DN'} ${j + 1}`, 'once_per_bar');
-                  createLab('c', targets[j], TP_HIT, DOT);
-                }
-              });
-            }
-            if (beyond(open, avg) && behind(open, near) && beyond(close, near)) {
-              for (const t of tp) t.hit = false;
-              scalp = true;
-              signal(up ? SIG.signUP : SIG.signDN, up ? 'signal UP' : 'signal DN');
-              createLab(s, extreme, up ? LIME : ORANGE, up ? ARROW_UP : ARROW_DOWN, 'normal');
-            } else if (behind(close, avg) && beyond(close, far)) {
-              broken = true;
-              scalp = false;
-              signal(up ? SIG.cnclUP : SIG.cnclDN, up ? 'cancel UP' : 'cancel DN');
-              createLab(s, extreme, up ? ORANGE : RED, CROSS);
-            }
-          } else if (!tillFirstBreak && beyond(close, near)) {
-            // reset
-            broken = false;
-            scalp = true;
-            signal(up ? SIG.BBplus : SIG.BBmin, up ? '+BB (R)' : '-BB (R)');
-            createLab(s, extreme, BLUE, 'R', 'normal');
-          }
-        }
-      }
-
-      // Breaks of the two swings
-      [l1, l2].forEach((level, j) => {
-        if (swing[j].broken) return;
-        swing[j].line.x2 = i;
-        if (behind(close, level)) {
-          swing[j].broken = true;
-          signal((up ? SIG.LL1break : SIG.HH1break) + j, `${up ? 'LL' : 'HH'} ${j + 1} break`);
-          if (showBreaks) createLab('c', extreme, BREAK, DOT);
-        }
-      });
-      // Breaks of the swing areas
-      pd.forEach((p, j) => {
-        if (p.broken) return;
-        p.box.right = i;
-        p.line.x2 = i;
-        if (beyond(close, up ? p.box.top : p.box.bottom) && i > p.box.left) {
-          p.broken = true;
-          signal((up ? SIG.SW1breakUP : SIG.SW1breakDN) + j, `Swing ${up ? 'UP' : 'DN'} ${j + 1} break`);
-          if (showBreaks) createLab('c', up ? high : low, BREAK, DOT);
-        }
-      });
-    }
-  }
-
-  const interval = barInterval(bars);
-  const T = (index: number) => barTime(bars, index, interval);
-  const drawn = (...v: number[]) => v.every((value) => !isNaN(value));
-  // creation order of the boxes and lines of the original
-  const allBoxes = [boxA, boxB, pd[0].box, pd[1].box, pdBoxA, pdBoxB].filter((o): o is Bx => o !== null && !o.deleted);
-  const allLines = [bbLine, pd[0].line, pd[1].line, swing[0].line, swing[1].line, tp[0].line, tp[1].line, tp[2].line];
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    // an object with an na coordinate is not drawn
-    boxes: allBoxes.filter((o) => drawn(o.left, o.top, o.right, o.bottom)).map((o) => ({
-      time1: T(o.left), price1: o.top, time2: T(o.right), price2: o.bottom, bgColor: o.bg, borderColor: 'transparent',
-      ...(o.text !== undefined ? { text: o.text, textColor: o.textColor, textVAlign: o.textVAlign } : {}),
-      ...(o.styled ? { textSize: 'small' as const, textHAlign: 'right' as const, fontFamily: 'monospace' as const } : {}),
-    })),
-    lines: allLines.filter((o) => drawn(o.x1, o.y1, o.x2, o.y2)).map((o) => ({
-      time1: T(o.x1), price1: o.y1, time2: T(o.x2), price2: o.y2, color: o.color,
-      ...(o.dashed ? { style: 'dashed' as const } : {}),
-    })),
-    labels: labels.filter((o) => drawn(o.x, o.y)).map((o) => ({
-      time: T(o.x), price: o.y, text: o.text, color: 'transparent', textColor: o.textColor, style: o.style, size: o.size,
-    })),
-    alerts: alertStates(alertConditions, bars, flags),
-    alertCalls,
+  const setLab = (o: Lb | null, change: (o: Lb) => void) => {
+    if (o && !o.deleted) change(o);
   };
+
+  return {
+    // blocks are searched while last_bar_index - bar_index <= 2000: with more bars, the bar count changes every bar
+    key: (bars) => (bars.length > LOOKBACK + 1 ? String(bars.length) : ''),
+    init() {
+      const ph = new PivotStep(len, 1, true);
+      const pl = new PivotStep(len, 1, false);
+      const s: BbRun = {
+        ph, pl, masks: [], times: alertConditions.map(() => []), alertCalls: [],
+        steps: [ph, pl],
+        vars: {
+          labels: [],
+          // var block BB: the only block, made on the first bar (its drawings have no place yet)
+          boxA: box(),
+          boxB: { ...box(), styled: true },
+          bbLine: line(SILVER, true),
+          pd: [
+            { box: box(), line: line(pdSCss), lab: null, broken: false },
+            { box: box(), line: line(pdSCss), lab: null, broken: false },
+          ],
+          swing: [
+            { line: line(pdSCss), broken: false },
+            { line: line(pdSCss), broken: false },
+          ],
+          tp: [
+            { line: line(tpCss), hit: false },
+            { line: line(tpCss), hit: false },
+            { line: line(tpCss), hit: false },
+          ],
+          hl: null, aLabels: [], pdBoxA: null, pdBoxB: null, bbDir: 0, broken: false, mitigated: false, scalp: false,
+          zzD: new Array(ZZ_SIZE).fill(0), zzX: new Array(ZZ_SIZE).fill(0), zzY: new Array(ZZ_SIZE).fill(NaN), mssDir: 0,
+        },
+        lists: [], series: [],
+      };
+      s.lists = [...s.times, s.alertCalls];
+      s.series = [s.masks];
+      return s;
+    },
+    copyVars(v) {
+      // the labels referenced by the state are the copies of the same objects (a deleted one is copied once too)
+      const copies = new Map<Lb, Lb>();
+      const lab = (o: Lb): Lb => {
+        let c = copies.get(o);
+        if (!c) {
+          c = { ...o };
+          copies.set(o, c);
+        }
+        return c;
+      };
+      const labOrNull = (o: Lb | null) => (o ? lab(o) : null);
+      return {
+        labels: v.labels.map(lab),
+        boxA: { ...v.boxA },
+        boxB: { ...v.boxB },
+        bbLine: { ...v.bbLine },
+        pd: v.pd.map((p) => ({ box: { ...p.box }, line: { ...p.line }, lab: labOrNull(p.lab), broken: p.broken })),
+        swing: v.swing.map((w) => ({ line: { ...w.line }, broken: w.broken })),
+        tp: v.tp.map((t) => ({ line: { ...t.line }, hit: t.hit })),
+        hl: labOrNull(v.hl),
+        aLabels: v.aLabels.map(lab),
+        pdBoxA: v.pdBoxA ? { ...v.pdBoxA } : null,
+        pdBoxB: v.pdBoxB ? { ...v.pdBoxB } : null,
+        bbDir: v.bbDir,
+        broken: v.broken,
+        mitigated: v.mitigated,
+        scalp: v.scalp,
+        zzD: v.zzD.slice(),
+        zzX: v.zzX.slice(),
+        zzY: v.zzY.slice(),
+        mssDir: v.mssDir,
+      };
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      B = bars;
+      V = v;
+      const last = bars.length - 1;
+      const { boxA, boxB, bbLine, pd, swing, tp, zzD, zzX, zzY } = v;
+
+      const b = bars[i];
+      const { open, high, low, close } = b;
+      let mask = 0;
+      /** signals.set(k, true) and alert(message, freq) */
+      const signal = (k: number | null, message: string, freq: AlertCall['freq'] = 'once_per_bar_close') => {
+        if (k !== null) mask |= 1 << k;
+        s.alertCalls.push({ time: b.time, message, freq });
+      };
+      if (i === 0) {
+        pd[0].lab = newLabel(NaN, NaN, '', '#FFFFFF', 'label_down', 'normal');
+        pd[1].lab = newLabel(NaN, NaN, '', '#FFFFFF', 'label_down', 'normal');
+        v.hl = newLabel(NaN, NaN, '', pdTxtCss, 'label_down', 'normal');
+      }
+      /** createLab(): a label on the current bar */
+      const createLab = (at: 'c' | 'u' | 'd', y: number, css: string, text: string, size: LabSize = 'small') => {
+        v.aLabels.unshift(newLabel(i, y, text, css, at === 'c' ? 'label_center' : at === 'u' ? 'label_up' : 'label_down', size));
+      };
+
+      // draw(): zigzag
+      const x2 = i - 1;
+      const ph = s.ph.step(i, b.high);
+      const pl = s.pl.step(i, b.low);
+      if (!isNaN(ph) && ph !== 0) {
+        const y2 = i >= 1 ? bars[i - 1].high : 0;
+        if (zzD[0] < 1) inOut(1, x2, y2);
+        else if (zzD[0] === 1 && gt(ph, zzY[0])) {
+          zzX[0] = x2;
+          zzY[0] = y2;
+        }
+      }
+      if (!isNaN(pl) && pl !== 0) {
+        const y2 = i >= 1 ? bars[i - 1].low : 0;
+        if (zzD[0] > -1) inOut(-1, x2, y2);
+        else if (zzD[0] === -1 && lt(pl, zzY[0])) {
+          zzX[0] = x2;
+          zzY[0] = y2;
+        }
+      }
+      const iH = zzD[2] === 1 ? 2 : 1;
+      const iL = zzD[2] === -1 ? 2 : 1;
+      const per = last - i <= LOOKBACK;
+
+      /** A new breaker block from a market structure shift (up: bullish) */
+      const shift = (up: boolean, iS: number) => {
+        const Ex = zzX[iS - 1];
+        const Ey = zzY[iS - 1];
+        const Dx = zzX[iS];
+        const Cx = zzX[iS + 1];
+        const Cy = zzY[iS + 1];
+        const Bx = zzX[iS + 2];
+        const Ax = zzX[iS + 3];
+        const Ay = zzY[iS + 3];
+        // 50 % of the range from A to the body extreme of B and D
+        const aBody = up ? MN(Ax) : MX(Ax);
+        const yy = up ? Math.max(MX(Bx), MX(Dx)) : Math.min(MN(Bx), MN(Dx));
+        const mid = up ? aBody + (yy - aBody) / 2 : aBody - (aBody - yy) / 2;
+        const isOK = !onlyWhenInPDarray
+          || (up ? lt(Ay, Cy) && lt(Ay, Ey) && lt(Ey, mid) : gt(Ay, Cy) && gt(Ay, Ey) && gt(Ey, mid));
+        if (!(up ? lt(Ey, Cy) : gt(Ey, Cy)) || Cx === Dx || !isOK) return;
+
+        // From the swing D back to the swing C: the first candle in the direction of the shift
+        const step = Dx >= Cx ? -1 : 1;
+        for (let k = Dx; step < 0 ? k >= Cx : k <= Cx; k += step) {
+          const sameDir = (j: number) => (up ? gt(C(j), O(j)) : lt(C(j), O(j)));
+          if (!sameDir(k)) continue;
+          // reset the previous swing areas
+          for (const p of pd) {
+            p.box.left = NaN;
+            p.box.top = NaN;
+            p.line.x1 = NaN;
+            p.line.y1 = NaN;
+            setLab(p.lab, (o) => {
+              o.x = NaN;
+              o.y = NaN;
+            });
+          }
+          let idx = k;
+          let prT = onlyBody ? MX(k) : H(k);
+          let prB = onlyBody ? MN(k) : L(k);
+          if (twoLast && sameDir(k - 1)) {
+            const t2 = onlyBody ? MX(k - 1) : H(k - 1);
+            const b2 = onlyBody ? MN(k - 1) : L(k - 1);
+            if (gt(t2, prT) || lt(b2, prB)) idx -= 1;
+            prT = Math.max(prT, t2);
+            prB = Math.min(prB, b2);
+          }
+
+          const avg = (prB + prT) / 2;
+          while (v.aLabels.length > 0) deleteLabel(v.aLabels.pop()!);
+          if (v.pdBoxA) v.pdBoxA.deleted = true;
+          if (v.pdBoxB) v.pdBoxB.deleted = true;
+          v.bbDir = up ? 1 : -1;
+          const cssB = up ? cfg.cBBplusB : cfg.cBBminB;
+          Object.assign(boxA, { left: idx, top: prT, right: i, bottom: prB, bg: up ? cfg.cBBplusA : cfg.cBBminA });
+          Object.assign(boxB, {
+            left: i, top: prT, right: i + 8, bottom: prB, bg: cssB, text: up ? '+BB' : '-BB', textColor: notransp(cssB),
+            textVAlign: up ? 'bottom' : 'top',
+          });
+          Object.assign(bbLine, { x1: i, y1: avg, x2: i, y2: avg });
+
+          if (showSPD) {
+            Object.assign(swing[0].line, { x1: Cx, y1: Cy, x2: i, y2: Cy });
+            swing[0].broken = false;
+            Object.assign(swing[1].line, { x1: Ex, y1: Ey, x2: i, y2: Ey });
+            swing[1].broken = false;
+            setLab(v.hl, (o) => {
+              o.x = Ex;
+              o.y = Ey;
+              o.style = up ? 'label_up' : 'label_down';
+              o.text = up ? 'LL' : 'HH';
+              if (!up) o.textColor = pdTxtCss;
+            });
+          }
+          for (const t of tp) t.hit = false;
+          v.broken = false;
+          v.mitigated = false;
+          v.scalp = false;
+          pd[0].broken = false;
+          pd[1].broken = false;
+
+          if (onlyWhenInPDarray && showPDarray) {
+            const premium = { bg: String(color.rgb(248, 153, 132, 90)), text: String(color.rgb(248, 153, 132, 25)) };
+            const discount = { bg: String(color.rgb(132, 248, 171, 90)), text: String(color.rgb(132, 248, 171, 25)) };
+            const zone = up ? discount : premium;
+            v.pdBoxA = {
+              left: Ax, top: up ? mid : aBody, right: Ex + 1, bottom: up ? aBody : mid, bg: zone.bg,
+              text: up ? 'Discount PD Array' : 'Premium PD Array', textColor: zone.text, textVAlign: 'center', styled: true, deleted: false,
+            };
+            v.pdBoxB = { left: Ax, top: up ? yy : mid, right: Ex + 1, bottom: up ? mid : yy, bg: (up ? premium : discount).bg, deleted: false };
+          }
+
+          // Previous swings beyond the current bar
+          let cnt = 0;
+          let ref = up ? high : low;
+          for (let c = 0; c <= ZZ_SIZE - 2; c++) {
+            const getX = zzX[c];
+            const getY = zzY[c];
+            if ((up ? gt(getY, ref) : lt(getY, ref)) && zzD[c] === (up ? 1 : -1) && showSPD) {
+              const getY2 = (up ? H(getX) - MN(getX) : MX(getX) - L(getX)) / 4;
+              const edge = up ? getY - getY2 : getY + getY2;
+              const take = cnt === 0 || (cnt === 1 && (up ? gt(edge, ref) : lt(edge, ref)));
+              if (take) {
+                const p = pd[cnt];
+                Object.assign(p.box, { left: getX, top: up ? getY : edge, right: i, bottom: up ? edge : getY, bg: up ? cfg.cSwingBl : cfg.cSwingBr });
+                Object.assign(p.line, { x1: getX, y1: getY, x2: i, y2: getY });
+                setLab(p.lab, (o) => {
+                  o.x = getX;
+                  o.y = getY;
+                  o.size = 'small';
+                  o.textColor = pdTxtCss;
+                  o.text = up ? 'Premium PD Array' : 'Discount PD Array';
+                  o.style = up ? 'label_lower_left' : 'label_upper_left';
+                });
+                if (cnt === 0) ref = getY;
+                cnt += 1;
+              }
+            }
+            if (cnt === 2) break;
+          }
+
+          // Targets
+          if (cfg.iTP) {
+            const height = prT - prB;
+            const ratios = [cfg.r2a / cfg.r1a, cfg.r2b / cfg.r1b, cfg.r2c / cfg.r1c];
+            tp.forEach((t, j) => {
+              const e = up ? prT + height * ratios[j] : prB - height * ratios[j];
+              Object.assign(t.line, { x1: i, y1: e, x2: i + 20, y2: e });
+            });
+          }
+          // signals.set(BBplus / BB_min, true); alert('+BB' / '-BB', alert.freq_once_per_bar_close)
+          signal(up ? SIG.BBplus : SIG.BBmin, up ? '+BB' : '-BB');
+          createLab(up ? 'u' : 'd', up ? low : high, notransp(cssB), up ? ARROW_UP : ARROW_DOWN, 'large');
+          break;
+        }
+      };
+
+      if (gt(close, zzY[iH]) && zzD[iH] === 1 && v.mssDir < 1 && per) {
+        shift(true, iH);
+        v.mssDir = 1;
+      } else if (lt(close, zzY[iL]) && zzD[iL] === -1 && v.mssDir > -1 && per) {
+        shift(false, iL);
+        v.mssDir = -1;
+      }
+
+      // The life of the block
+      if (v.bbDir !== 0) {
+        const up = v.bbDir === 1;
+        const top = boxB.top;
+        const btm = boxB.bottom;
+        const avg = bbLine.y2;
+        const near = up ? top : btm; // the side of the signals
+        const far = up ? btm : top; // the side of the mitigation
+        const beyond = (a: number, level: number) => (up ? gt(a, level) : lt(a, level)); // in the direction of the block
+        const behind = (a: number, level: number) => (up ? lt(a, level) : gt(a, level));
+        const l1 = swing[0].line.y2;
+        const l2 = swing[1].line.y2;
+        const targets = tp.map((t) => t.line.y2);
+        const side = up ? 'u' : 'd';
+        const extreme = up ? low : high;
+
+        if (!v.mitigated) {
+          if (behind(close, far)) {
+            v.mitigated = true;
+            signal(up ? SIG.BBendBl : SIG.BBendBr, up ? '+BB Mitigated' : '-BB Mitigated');
+            if (up) createLab('u', low, YELLOW, DOT);
+            else if (showBreaks) createLab('d', high, notransp(cfg.cBBminB), DOT);
+            boxB.right = i;
+            bbLine.x2 = i;
+          } else {
+            boxB.right = i + 8;
+            bbLine.x2 = i + 8;
+          }
+          for (const t of tp) t.line.x2 = i;
+
+          if (i > boxB.left) {
+            if (!v.broken) {
+              if (v.scalp) {
+                tp.forEach((t, j) => {
+                  if (!t.hit && behind(open, targets[j]) && beyond(up ? high : low, targets[j])) {
+                    t.hit = true;
+                    // alert('TP UP 1', alert.freq_once_per_bar) ...
+                    signal((up ? SIG.tpUP1 : SIG.tpDN1) + j, `TP ${up ? 'UP' : 'DN'} ${j + 1}`, 'once_per_bar');
+                    createLab('c', targets[j], TP_HIT, DOT);
+                  }
+                });
+              }
+              if (beyond(open, avg) && behind(open, near) && beyond(close, near)) {
+                for (const t of tp) t.hit = false;
+                v.scalp = true;
+                signal(up ? SIG.signUP : SIG.signDN, up ? 'signal UP' : 'signal DN');
+                createLab(side, extreme, up ? LIME : ORANGE, up ? ARROW_UP : ARROW_DOWN, 'normal');
+              } else if (behind(close, avg) && beyond(close, far)) {
+                v.broken = true;
+                v.scalp = false;
+                signal(up ? SIG.cnclUP : SIG.cnclDN, up ? 'cancel UP' : 'cancel DN');
+                createLab(side, extreme, up ? ORANGE : RED, CROSS);
+              }
+            } else if (!tillFirstBreak && beyond(close, near)) {
+              // reset
+              v.broken = false;
+              v.scalp = true;
+              signal(up ? SIG.BBplus : SIG.BBmin, up ? '+BB (R)' : '-BB (R)');
+              createLab(side, extreme, BLUE, 'R', 'normal');
+            }
+          }
+        }
+
+        // Breaks of the two swings
+        [l1, l2].forEach((level, j) => {
+          if (swing[j].broken) return;
+          swing[j].line.x2 = i;
+          if (behind(close, level)) {
+            swing[j].broken = true;
+            signal((up ? SIG.LL1break : SIG.HH1break) + j, `${up ? 'LL' : 'HH'} ${j + 1} break`);
+            if (showBreaks) createLab('c', extreme, BREAK, DOT);
+          }
+        });
+        // Breaks of the swing areas
+        pd.forEach((p, j) => {
+          if (p.broken) return;
+          p.box.right = i;
+          p.line.x2 = i;
+          if (beyond(close, up ? p.box.top : p.box.bottom) && i > p.box.left) {
+            p.broken = true;
+            signal((up ? SIG.SW1breakUP : SIG.SW1breakDN) + j, `Swing ${up ? 'UP' : 'DN'} ${j + 1} break`);
+            if (showBreaks) createLab('c', up ? high : low, BREAK, DOT);
+          }
+        });
+      }
+
+      s.masks[i] = mask;
+      if (mask !== 0) for (let k = 0; k < alertConditions.length; k++) if ((mask >> k) & 1) s.times[k].push(b.time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const { labels, boxA, boxB, bbLine, pd, swing, tp, pdBoxA, pdBoxB } = s.vars;
+      const interval = barInterval(bars);
+      const T = (index: number) => barTime(bars, index, interval);
+      const drawn = (...v: number[]) => v.every((value) => !isNaN(value));
+      // creation order of the boxes and lines of the original
+      const allBoxes = [boxA, boxB, pd[0].box, pd[1].box, pdBoxA, pdBoxB].filter((o): o is Bx => o !== null && !o.deleted);
+      const allLines = [bbLine, pd[0].line, pd[1].line, swing[0].line, swing[1].line, tp[0].line, tp[1].line, tp[2].line];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        // an object with an na coordinate is not drawn
+        boxes: allBoxes.filter((o) => drawn(o.left, o.top, o.right, o.bottom)).map((o) => ({
+          time1: T(o.left), price1: o.top, time2: T(o.right), price2: o.bottom, bgColor: o.bg, borderColor: 'transparent',
+          ...(o.text !== undefined ? { text: o.text, textColor: o.textColor, textVAlign: o.textVAlign } : {}),
+          ...(o.styled ? { textSize: 'small' as const, textHAlign: 'right' as const, fontFamily: 'monospace' as const } : {}),
+        })),
+        lines: allLines.filter((o) => drawn(o.x1, o.y1, o.x2, o.y2)).map((o) => ({
+          time1: T(o.x1), price1: o.y1, time2: T(o.x2), price2: o.y2, color: o.color,
+          ...(o.dashed ? { style: 'dashed' as const } : {}),
+        })),
+        labels: labels.filter((o) => drawn(o.x, o.y)).map((o) => ({
+          time: T(o.x), price: o.y, text: o.text, color: 'transparent', textColor: o.textColor, style: o.style, size: o.size,
+        })),
+        alerts: liveAlertStates(alertConditions, s.times, alertConditions.map((_d, k) => n > 0 && ((s.masks[n - 1] >> k) & 1) === 1)),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BreakerBlocksWithSignalsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BreakerBlocksWithSignalsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const BreakerBlocksWithSignals = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

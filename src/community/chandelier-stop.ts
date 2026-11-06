@@ -7,7 +7,9 @@
  * Reference: "Chandelier Stop" (community)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ChandelierStopInputs {
   lookback: number;
@@ -38,65 +40,85 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ChandelierStopInputs> = {}): IndicatorResult {
+interface ChandelierRun extends BarRunState<Record<string, never>> {
+  hh: WindowExtreme;
+  ll: WindowExtreme;
+  atr: ReturnType<typeof taStep.atr>;
+  stop: number[];
+  dir: number[];
+  plot0: { time: number; value: number; color?: string }[];
+  plot1: { time: number; value: number; color?: string }[];
+}
+
+function study(inputs: Partial<ChandelierStopInputs>): BarStudy<ChandelierRun, IndicatorResult> {
   const { lookback, atrPeriod, atrMult } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-  const hh = ta.highest(highSeries, lookback).toArray();
-  const ll = ta.lowest(lowSeries, lookback).toArray();
-  const atrArr = ta.atr(bars, atrPeriod).toArray();
-
-  const stopArr: number[] = new Array(n);
-  const dirArr: number[] = new Array(n); // 1 = up, -1 = down
-
-  for (let i = 0; i < n; i++) {
-    const atr = (atrArr[i] ?? 0) * atrMult;
-    const longStop = (hh[i] ?? bars[i].high) - atr;
-    const shortStop = (ll[i] ?? bars[i].low) + atr;
-
-    if (i === 0) {
-      stopArr[i] = isNaN(longStop) ? bars[i].high : longStop;
-      dirArr[i] = 1;
-      continue;
-    }
-
-    const prevStop = stopArr[i - 1];
-    const prevDir = dirArr[i - 1];
-    const close = bars[i].close;
-
-    if (prevDir === 1) {
-      // Long: ratchet up
-      const ls = isNaN(longStop) ? prevStop : longStop;
-      stopArr[i] = isNaN(prevStop) ? ls : Math.max(ls, prevStop);
-      dirArr[i] = close < stopArr[i] ? -1 : 1;
-    } else {
-      // Short: ratchet down
-      const ss = isNaN(shortStop) ? prevStop : shortStop;
-      stopArr[i] = isNaN(prevStop) ? ss : Math.min(ss, prevStop);
-      dirArr[i] = close > stopArr[i] ? 1 : -1;
-    }
-  }
-
   const warmup = Math.max(lookback, atrPeriod);
-  const plot0 = stopArr.map((v, i) => {
-    if (i < warmup) return { time: bars[i].time, value: NaN };
-    const color = dirArr[i] === 1 ? '#00BCD4' : '#FF00FF';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  // Second plot: same values as line (Pine plots pc twice: circles + line)
-  const plot1 = stopArr.map((v, i) => {
-    if (i < warmup) return { time: bars[i].time, value: NaN };
-    const color = dirArr[i] === 1 ? '#00BCD4' : '#FF00FF';
-    return { time: bars[i].time, value: v, color };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
+    init() {
+      const hh = new WindowExtreme(false, lookback);
+      const ll = new WindowExtreme(true, lookback);
+      const atr = taStep.atr(atrPeriod);
+      const s: ChandelierRun = {
+        hh, ll, atr, stop: [], dir: [], plot0: [], plot1: [], steps: [hh, ll, atr], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.stop, s.dir, s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const hh = s.hh.step(b.high);
+      const ll = s.ll.step(b.low);
+      const atr = (s.atr.step(b.high, b.low, b.close) ?? 0) * atrMult;
+      const longStop = (hh ?? b.high) - atr;
+      const shortStop = (ll ?? b.low) + atr;
+
+      if (i === 0) {
+        s.stop[i] = isNaN(longStop) ? b.high : longStop;
+        s.dir[i] = 1;
+      } else {
+        const prevStop = s.stop[i - 1];
+        const prevDir = s.dir[i - 1];
+        const close = b.close;
+
+        if (prevDir === 1) {
+          // Long: ratchet up
+          const ls = isNaN(longStop) ? prevStop : longStop;
+          s.stop[i] = isNaN(prevStop) ? ls : Math.max(ls, prevStop);
+          s.dir[i] = close < s.stop[i] ? -1 : 1;
+        } else {
+          // Short: ratchet down
+          const ss = isNaN(shortStop) ? prevStop : shortStop;
+          s.stop[i] = isNaN(prevStop) ? ss : Math.min(ss, prevStop);
+          s.dir[i] = close > s.stop[i] ? 1 : -1;
+        }
+      }
+
+      // Second plot: same values as line (Pine plots pc twice: circles + line)
+      if (i < warmup) {
+        s.plot0[i] = { time: b.time, value: NaN };
+        s.plot1[i] = { time: b.time, value: NaN };
+      } else {
+        const color = s.dir[i] === 1 ? '#00BCD4' : '#FF00FF';
+        s.plot0[i] = { time: b.time, value: s.stop[i], color };
+        s.plot1[i] = { time: b.time, value: s.stop[i], color };
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice() },
+      };
+    },
   };
 }
 
-export const ChandelierStop = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ChandelierStopInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ChandelierStopInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const ChandelierStop = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

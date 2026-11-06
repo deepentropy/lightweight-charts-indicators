@@ -11,8 +11,10 @@
  *   hline(70), hline(50), hline(30)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
 import type { PlotCandleData, BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RSICandlesInputs {
   length: number;
@@ -45,56 +47,73 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RSICandlesInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]>; barColors: BarColorData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]>; barColors: BarColorData[] };
+type Rsi = ReturnType<typeof taStep.rsi>;
+
+interface RsiCandlesRun extends BarRunState<Record<string, never>> {
+  rsiOpen: Rsi;
+  rsiHigh: Rsi;
+  rsiLow: Rsi;
+  rsiClose: Rsi;
+  candles: PlotCandleData[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<RSICandlesInputs>): BarStudy<RsiCandlesRun, Result> {
   const { length } = { ...defaultInputs, ...inputs };
-
-  const rsiOpen = ta.rsi(new Series(bars, (b) => b.open), length).toArray();
-  const rsiHigh = ta.rsi(new Series(bars, (b) => b.high), length).toArray();
-  const rsiLow = ta.rsi(new Series(bars, (b) => b.low), length).toArray();
-  const rsiClose = ta.rsi(new Series(bars, (b) => b.close), length).toArray();
-
-  const candles: PlotCandleData[] = [];
-
-  for (let i = 0; i < bars.length; i++) {
-    if (rsiOpen[i] == null || rsiClose[i] == null || rsiHigh[i] == null || rsiLow[i] == null) {
-      candles.push({ time: bars[i].time as number, open: NaN, high: NaN, low: NaN, close: NaN });
-      continue;
-    }
-
-    const o = rsiOpen[i]!;
-    const h = rsiHigh[i]!;
-    const l = rsiLow[i]!;
-    const c = rsiClose[i]!;
-    const col = c >= o ? '#26A69A' : '#EF5350';
-
-    candles.push({
-      time: bars[i].time as number,
-      open: o,
-      high: h,
-      low: l,
-      close: c,
-      color: col,
-      borderColor: col,
-      wickColor: col,
-    });
-  }
-
-  // barcolor: green when RSI close > 70, red when < 30
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const c = rsiClose[i];
-    if (c != null) {
-      if (c > 70) barColors.push({ time: bars[i].time as number, color: '#26A69A' });
-      else if (c < 30) barColors.push({ time: bars[i].time as number, color: '#EF5350' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    plotCandles: { rsi: candles },
-    barColors,
+    init() {
+      const rsiOpen = taStep.rsi(length);
+      const rsiHigh = taStep.rsi(length);
+      const rsiLow = taStep.rsi(length);
+      const rsiClose = taStep.rsi(length);
+      const s: RsiCandlesRun = {
+        rsiOpen, rsiHigh, rsiLow, rsiClose, candles: [], barColors: [],
+        steps: [rsiOpen, rsiHigh, rsiLow, rsiClose], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.candles];
+      s.lists = [s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time as number;
+      const o = s.rsiOpen.step(b.open);
+      const h = s.rsiHigh.step(b.high);
+      const l = s.rsiLow.step(b.low);
+      const c = s.rsiClose.step(b.close);
+
+      if (o == null || c == null || h == null || l == null) {
+        s.candles[i] = { time, open: NaN, high: NaN, low: NaN, close: NaN };
+      } else {
+        const col = c >= o ? '#26A69A' : '#EF5350';
+        s.candles[i] = { time, open: o, high: h, low: l, close: c, color: col, borderColor: col, wickColor: col };
+      }
+
+      // barcolor: green when RSI close > 70, red when < 30
+      if (c != null) {
+        if (c > 70) s.barColors.push({ time, color: '#26A69A' });
+        else if (c < 30) s.barColors.push({ time, color: '#EF5350' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        plotCandles: { rsi: s.candles.slice() },
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const RSICandles = { calculate, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig, hlineConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RSICandlesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RSICandlesInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const RSICandles = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig, hlineConfig };
