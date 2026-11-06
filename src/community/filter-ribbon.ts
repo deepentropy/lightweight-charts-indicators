@@ -11,7 +11,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface FilterRibbonInputs {
   /** Number of regression values compared pairwise */
@@ -65,61 +67,92 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<FilterRibbonInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface RibbonRun extends BarRunState<Record<string, never>> {
+  linreg: ReturnType<typeof taStep.linreg>;
+  atr: ReturnType<typeof taStep.atr>;
+  lr: number[];
+  cols: string[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<FilterRibbonInputs>): BarStudy<RibbonRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: { toArray(): (number | null | undefined)[] }) => s.toArray().map((v) => v ?? NaN);
+  const value = barSource(cfg.src);
   const k = cfg.lookback;
-
-  const lr = A(ta.linreg(getSourceSeries(bars, cfg.src), cfg.lrLength, 0));
-  const atr = A(ta.atr(bars, 14));
-  const lrAgo = (i: number, back: number) => (i - back >= 0 ? lr[i - back] : NaN);
-
   // total_pairs = n * (n - 1) / 2; threshold = total_pairs * (p / 100)
   const totalPairs = (k * (k - 1)) / 2;
   const threshold = totalPairs * (cfg.tolerance / 100);
-
-  const top: number[] = new Array(n);
-  const bottom: number[] = new Array(n);
-  const cols: string[] = new Array(n);
-  for (let t = 0; t < n; t++) {
-    let trend = 0;
-    for (let i = 0; i <= k - 2; i++) {
-      for (let j = i + 1; j <= k - 1; j++) {
-        const a = lrAgo(t, i);
-        const b = lrAgo(t, j);
-        trend += gt(a, b) ? 1 : gt(b, a) ? -1 : 0;
-      }
-    }
-    const state = trend > threshold ? 1 : trend < -threshold ? -1 : 0;
-    const intensity = Math.abs(trend) / totalPairs;
-    // alpha = 90 - int(intensity * 70)
-    const alpha = 90 - Math.trunc(intensity * 70);
-    cols[t] = String(color.new(state === 1 ? cfg.bullColor : cfg.bearColor, alpha));
-    const offset = atr[t] * 0.1;
-    top[t] = lr[t] + offset;
-    bottom[t] = lr[t] - offset;
-  }
-
-  const time = (i: number) => bars[i].time;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(ribbon_top, color = ribbon_col, linewidth = 3); plot(ribbon_bottom, ...)
-      plot0: bars.map((_b, i) => ({ time: time(i), value: top[i], color: cols[i] })),
-      plot1: bars.map((_b, i) => ({ time: time(i), value: bottom[i], color: cols[i] })),
-      plot2: bars.map((_b, i) => ({ time: time(i), value: top[i] })),
-      plot3: bars.map((_b, i) => ({ time: time(i), value: bottom[i] })),
-      // plot(lr, color = color.new(color.white, 60), linewidth = 1)
-      plot4: bars.map((_b, i) => ({ time: time(i), value: lr[i], color: LR_COLOR })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: RibbonRun = {
+        linreg: taStep.linreg(cfg.lrLength, 0), atr: taStep.atr(14), lr: [], cols: [],
+        plots: Array.from({ length: 5 }, () => []), steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.linreg, s.atr];
+      s.series = [s.lr, s.cols, ...s.plots];
+      return s;
     },
-    // fill(plot(ribbon_top), plot(ribbon_bottom), color = ribbon_col)
-    fills: [{ plot1: 'plot2', plot2: 'plot3', colors: cols }],
+    bar(s, t, bars) {
+      const bar = bars[t];
+      const lrT = s.linreg.step(value(bar));
+      const atr = s.atr.step(bar.high, bar.low, bar.close);
+      const lr = s.lr;
+      lr[t] = lrT;
+      let trend = 0;
+      for (let i = 0; i <= k - 2; i++) {
+        for (let j = i + 1; j <= k - 1; j++) {
+          const a = t - i >= 0 ? lr[t - i] : NaN;
+          const b = t - j >= 0 ? lr[t - j] : NaN;
+          trend += gt(a, b) ? 1 : gt(b, a) ? -1 : 0;
+        }
+      }
+      const state = trend > threshold ? 1 : trend < -threshold ? -1 : 0;
+      const intensity = Math.abs(trend) / totalPairs;
+      // alpha = 90 - int(intensity * 70)
+      const alpha = 90 - Math.trunc(intensity * 70);
+      const col = String(color.new(state === 1 ? cfg.bullColor : cfg.bearColor, alpha));
+      s.cols[t] = col;
+      const offset = atr * 0.1;
+      const top = lrT + offset;
+      const bottom = lrT - offset;
+      const time = bar.time;
+      // plot(ribbon_top, color = ribbon_col, linewidth = 3); plot(ribbon_bottom, ...)
+      s.plots[0][t] = { time, value: top, color: col };
+      s.plots[1][t] = { time, value: bottom, color: col };
+      s.plots[2][t] = { time, value: top };
+      s.plots[3][t] = { time, value: bottom };
+      // plot(lr, color = color.new(color.white, 60), linewidth = 1)
+      s.plots[4][t] = { time, value: lrT, color: LR_COLOR };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice(),
+          plot4: s.plots[4].slice(),
+        },
+        // fill(plot(ribbon_top), plot(ribbon_bottom), color = ribbon_col)
+        fills: [{ plot1: 'plot2', plot2: 'plot3', colors: s.cols.slice() }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FilterRibbonInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<FilterRibbonInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const FilterRibbon = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

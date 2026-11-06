@@ -16,9 +16,11 @@
  * Original notice: © LyroRS
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface LinearVolumeMacdLyroRsInputs {
   src: SourceType;
@@ -101,120 +103,168 @@ const PALETTES: Record<LinearVolumeMacdLyroRsInputs['colMode'], [string, string]
   Royal: ['#FFC107', '#673AB7'],
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<LinearVolumeMacdLyroRsInputs> = {},
-): IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface LvmVars {
+  /** var color pc = na */
+  cur: string | null;
+  /** var int lr_s = 0, swt_s = 0, vmacd_s = 0: the signal state of each type (alerts) */
+  lr: number;
+  swt: number;
+  vm: number;
+}
+
+interface LvmRun extends BarRunState<LvmVars> {
+  fastNum: ReturnType<typeof taStep.ema>;
+  fastDen: ReturnType<typeof taStep.ema>;
+  slowNum: ReturnType<typeof taStep.ema>;
+  slowDen: ReturnType<typeof taStep.ema>;
+  signal: ReturnType<typeof taStep.ema>;
+  linreg: ReturnType<typeof taStep.linreg>;
+  base: WindowSma;
+  sd: WindowStdev;
+  macdLr: number[];
+  plots: Point[][];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<LinearVolumeMacdLyroRsInputs>): BarStudy<LvmRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  // Plain divisions can give +-infinity: oakscriptjs averages get NaN (Pine skips infinity like na)
-  const S = (a: number[]) => Series.fromArray(bars, a.map((v) => (Number.isFinite(v) ? v : NaN)));
+  const source = barSource(cfg.src);
   const [upC, dnC] = cfg.cpyn ? [cfg.cpUpC, cfg.cpDnC] : PALETTES[cfg.colMode];
-
-  const src = A(getSourceSeries(bars, cfg.src));
-  const vol = bars.map((b) => b.volume ?? NaN);
-  const pv = S(src.map((v, i) => v * vol[i]));
-  const volS = S(vol);
-  // fast_ma = ta.ema(src * volume, fast_length) / ta.ema(volume, fast_length)
-  const fastNum = A(ta.ema(pv, cfg.fastLength));
-  const fastDen = A(ta.ema(volS, cfg.fastLength));
-  const slowNum = A(ta.ema(pv, cfg.slowLength));
-  const slowDen = A(ta.ema(volS, cfg.slowLength));
-  const macd = bars.map((_b, i) => fastNum[i] / fastDen[i] - slowNum[i] / slowDen[i]);
-  const signal = A(ta.ema(S(macd), cfg.signalLength));
-  const hist = macd.map((m, i) => m - signal[i]);
-  const macdLr = A(ta.linreg(S(hist), cfg.lrLength, 0));
-
-  // stdv_bands(sig_type == "Volume MACD" ? hist : macd_lr, stdev_length, mult)
-  const histType = cfg.sigType === 'Volume MACD' ? hist : macdLr;
-  const htS = S(histType);
-  const base = A(ta.sma(htS, cfg.stdevLength));
-  const sd = A(ta.stdev(htS, cfg.stdevLength));
-  const dev1 = sd.map((v) => (cfg.stdevMult / 2) * v);
-  const dev2 = sd.map((v) => cfg.stdevMult * v);
-  const u1 = base.map((b, i) => b + dev1[i]);
-  const l1 = base.map((b, i) => b - dev1[i]);
-  const u2 = base.map((b, i) => b + dev2[i]);
-  const l2 = base.map((b, i) => b - dev2[i]);
-
-  // var color pc = na: the histogram and bar colour by the signal type
-  const pc: (string | null)[] = new Array(n);
-  let cur: string | null = null;
-  // var int lr_s = 0, swt_s = 0, vmacd_s = 0: the signal state of each type (alerts)
-  const lrS: number[] = new Array(n);
-  const swtS: number[] = new Array(n);
-  const vmS: number[] = new Array(n);
-  let lr = 0, swt = 0, vm = 0;
-  for (let i = 0; i < n; i++) {
-    if (cfg.sigType === 'Linear Regression') {
-      if (gt(macdLr[i], 0)) { cur = upC; lr = 1; }
-      if (lt(macdLr[i], 0)) { cur = dnC; lr = -1; }
-    } else if (cfg.sigType === 'Strong/Weak Trend') {
-      // Both branches (macd_lr >= 0 or not, na included): macd_lr[1] < macd_lr ? UpC : DnC
-      const prev = i > 0 ? macdLr[i - 1] : NaN;
-      const up = lt(prev, macdLr[i]);
-      cur = up ? upC : dnC;
-      swt = up ? 1 : -1;
-    } else {
-      if (ge(hist[i], 0)) { cur = upC; vm = 1; }
-      else if (le(hist[i], 0)) { cur = dnC; vm = -1; }
-    }
-    pc[i] = cur;
-    lrS[i] = lr;
-    swtS[i] = swt;
-    vmS[i] = vm;
-  }
-
+  // Plain divisions can give +-infinity: oakscriptjs averages get NaN (Pine skips infinity like na)
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
   const zeroCol = String(color.new('#787B86', 50));
   const upBand = String(color.new(upC, 50));
   const dnBand = String(color.new(dnC, 50));
   const upFill = String(color.new(upC, 75));
   const dnFill = String(color.new(dnC, 75));
-
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // barcolor(pc, title = "Bar Color")
-    if (pc[i] !== null) barColors.push({ time: t, color: pc[i] as string, id: 'barcolor0' });
-    // bgcolor(hist_type > u2 ? color.new(DnC, 75) : hist_type < l2 ? color.new(UpC, 75) : na), in the indicator pane
-    // and again with force_overlay = true on the price pane
-    const bg = gt(histType[i], u2[i]) ? dnFill : lt(histType[i], l2[i]) ? upFill : null;
-    if (bg !== null) {
-      bgColors.push({ time: t, color: bg, id: 'bgcolor0' });
-      bgColors.push({ time: t, color: bg, forceOverlay: true, id: 'bgcolor1' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b) => ({ time: b.time, value: 0, color: zeroCol })),
-      // plot(hist_type, "Histogram", style = plot.style_columns, color = pc)
-      plot1: bars.map((b, i) => ({ time: b.time, value: fin(histType[i]), color: pc[i] ?? 'transparent' })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: fin(l2[i]), color: upBand })),
-      plot3: bars.map((b, i) => ({ time: b.time, value: fin(l1[i]), color: upBand })),
-      plot4: bars.map((b, i) => ({ time: b.time, value: fin(u2[i]), color: dnBand })),
-      plot5: bars.map((b, i) => ({ time: b.time, value: fin(u1[i]), color: dnBand })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: LvmRun = {
+        fastNum: taStep.ema(cfg.fastLength), fastDen: taStep.ema(cfg.fastLength),
+        slowNum: taStep.ema(cfg.slowLength), slowDen: taStep.ema(cfg.slowLength),
+        signal: taStep.ema(cfg.signalLength), linreg: taStep.linreg(cfg.lrLength, 0),
+        base: new WindowSma(cfg.stdevLength), sd: new WindowStdev(cfg.stdevLength),
+        macdLr: [], plots: Array.from({ length: 6 }, () => []), barColors: [], bgColors: [],
+        flags: Array.from({ length: 6 }, () => []), times: Array.from({ length: 6 }, () => []),
+        steps: [], vars: { cur: null, lr: 0, swt: 0, vm: 0 }, lists: [], series: [],
+      };
+      s.steps = [s.fastNum, s.fastDen, s.slowNum, s.slowDen, s.signal, s.linreg, s.base, s.sd];
+      s.lists = [s.barColors, s.bgColors, ...s.times];
+      s.series = [s.macdLr, ...s.plots, ...s.flags];
+      return s;
     },
-    fills: [
-      // fill(pl2, pl1, color.new(UpC, 75)); fill(pu2, pu1, color.new(DnC, 75))
-      { plot1: 'plot2', plot2: 'plot3', colors: new Array<string>(n).fill(upFill) },
-      { plot1: 'plot4', plot2: 'plot5', colors: new Array<string>(n).fill(dnFill) },
-      // fill(pu1, zline, color.new(DnC, 75)); fill(pl1, zline, color.new(UpC, 75))
-      { plot1: 'plot5', plot2: 'plot0', colors: new Array<string>(n).fill(dnFill) },
-      { plot1: 'plot3', plot2: 'plot0', colors: new Array<string>(n).fill(upFill) },
-    ],
-    barColors,
-    bgColors,
-    alerts: alertStates(alertConditions, bars, [
-      lrS.map((v) => v === 1), lrS.map((v) => v === -1),
-      swtS.map((v) => v === 1), swtS.map((v) => v === -1),
-      vmS.map((v) => v === 1), vmS.map((v) => v === -1),
-    ]),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      const vol = b.volume ?? NaN;
+      const pv = fin(source(b) * vol);
+      const volF = fin(vol);
+      // fast_ma = ta.ema(src * volume, fast_length) / ta.ema(volume, fast_length)
+      const fastNum = s.fastNum.step(pv);
+      const fastDen = s.fastDen.step(volF);
+      const slowNum = s.slowNum.step(pv);
+      const slowDen = s.slowDen.step(volF);
+      const macd = fastNum / fastDen - slowNum / slowDen;
+      const signal = s.signal.step(fin(macd));
+      const hist = macd - signal;
+      const macdLr = s.linreg.step(fin(hist));
+      s.macdLr[i] = macdLr;
+
+      // stdv_bands(sig_type == "Volume MACD" ? hist : macd_lr, stdev_length, mult)
+      const histType = cfg.sigType === 'Volume MACD' ? hist : macdLr;
+      const base = s.base.step(fin(histType));
+      const sd = s.sd.step(fin(histType));
+      const dev1 = (cfg.stdevMult / 2) * sd;
+      const dev2 = cfg.stdevMult * sd;
+      const u1 = base + dev1;
+      const l1 = base - dev1;
+      const u2 = base + dev2;
+      const l2 = base - dev2;
+
+      // var color pc = na: the histogram and bar colour by the signal type
+      if (cfg.sigType === 'Linear Regression') {
+        if (gt(macdLr, 0)) { v.cur = upC; v.lr = 1; }
+        if (lt(macdLr, 0)) { v.cur = dnC; v.lr = -1; }
+      } else if (cfg.sigType === 'Strong/Weak Trend') {
+        // Both branches (macd_lr >= 0 or not, na included): macd_lr[1] < macd_lr ? UpC : DnC
+        const prev = i > 0 ? s.macdLr[i - 1] : NaN;
+        const up = lt(prev, macdLr);
+        v.cur = up ? upC : dnC;
+        v.swt = up ? 1 : -1;
+      } else {
+        if (ge(hist, 0)) { v.cur = upC; v.vm = 1; }
+        else if (le(hist, 0)) { v.cur = dnC; v.vm = -1; }
+      }
+      const pc = v.cur;
+
+      // barcolor(pc, title = "Bar Color")
+      if (pc !== null) s.barColors.push({ time: t, color: pc, id: 'barcolor0' });
+      // bgcolor(hist_type > u2 ? color.new(DnC, 75) : hist_type < l2 ? color.new(UpC, 75) : na), in the indicator pane
+      // and again with force_overlay = true on the price pane
+      const bg = gt(histType, u2) ? dnFill : lt(histType, l2) ? upFill : null;
+      if (bg !== null) {
+        s.bgColors.push({ time: t, color: bg, id: 'bgcolor0' });
+        s.bgColors.push({ time: t, color: bg, forceOverlay: true, id: 'bgcolor1' });
+      }
+
+      const p = s.plots;
+      p[0][i] = { time: t, value: 0, color: zeroCol };
+      // plot(hist_type, "Histogram", style = plot.style_columns, color = pc)
+      p[1][i] = { time: t, value: fin(histType), color: pc ?? 'transparent' };
+      p[2][i] = { time: t, value: fin(l2), color: upBand };
+      p[3][i] = { time: t, value: fin(l1), color: upBand };
+      p[4][i] = { time: t, value: fin(u2), color: dnBand };
+      p[5][i] = { time: t, value: fin(u1), color: dnBand };
+
+      const flags = [v.lr === 1, v.lr === -1, v.swt === 1, v.swt === -1, v.vm === 1, v.vm === -1];
+      for (let k = 0; k < 6; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(),
+        },
+        fills: [
+          // fill(pl2, pl1, color.new(UpC, 75)); fill(pu2, pu1, color.new(DnC, 75))
+          { plot1: 'plot2', plot2: 'plot3', colors: new Array<string>(n).fill(upFill) },
+          { plot1: 'plot4', plot2: 'plot5', colors: new Array<string>(n).fill(dnFill) },
+          // fill(pu1, zline, color.new(DnC, 75)); fill(pl1, zline, color.new(UpC, 75))
+          { plot1: 'plot5', plot2: 'plot0', colors: new Array<string>(n).fill(dnFill) },
+          { plot1: 'plot3', plot2: 'plot0', colors: new Array<string>(n).fill(upFill) },
+        ],
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<LinearVolumeMacdLyroRsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<LinearVolumeMacdLyroRsInputs> = {},
+): IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -229,6 +279,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const LinearVolumeMacdLyroRs = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

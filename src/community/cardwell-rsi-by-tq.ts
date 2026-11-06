@@ -11,8 +11,12 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import {
+  barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 
 export interface CardwellRsiByTqInputs {
   /** RSI source */
@@ -111,78 +115,118 @@ export const metadata = {
   overlay: false,
 };
 
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+type Ma = { step(v: number): number; commit(): void };
+
+interface CardwellRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  mas: Ma[];
+  r: number[];
+  m: number[][];
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<CardwellRsiByTqInputs>): BarStudy<CardwellRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  const ma = (len: number): Ma => {
+    switch (cfg.maType) {
+      case 'SMA': return new WindowSma(len);
+      case 'EMA': return taStep.ema(len);
+      case 'RMA': return taStep.rma(len);
+      default: { const w = taStep.wma(); return { step: (v) => w.step(v, len), commit: () => w.commit() }; }
+    }
+  };
+  const uTop = Math.max(cfg.upperTop, 60.0);
+  const lBot = Math.min(cfg.lowerBot, 40.0);
+  const throwCol = cfg.showThrow ? C_THROW : 'transparent';
+  const maColors = [C_MA_FAST, C_MA_CUSTOM, C_MA_SLOW];
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: CardwellRun = {
+        rsi: taStep.rsi(cfg.rsiLen), mas: [ma(cfg.maFastLen), ma(cfg.maCustomLen), ma(cfg.maSlowLen)],
+        r: [], m: [[], [], []], plots: Array.from({ length: 11 }, () => []),
+        flags: Array.from({ length: 6 }, () => []), times: Array.from({ length: 6 }, () => []),
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.rsi, ...s.mas];
+      s.lists = s.times;
+      s.series = [s.r, ...s.m, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      const r = s.rsi.step(value(bars[i]));
+      s.r[i] = r;
+      s.plots[0][i] = { time, value: r, color: C_RSI };
+      // p60 = plot(60, display = display.none), p40 = plot(40, ...), pUp = plot(uTop, ...), pDn = plot(lBot, ...)
+      s.plots[4][i] = { time, value: 60 };
+      s.plots[5][i] = { time, value: 40 };
+      s.plots[6][i] = { time, value: uTop };
+      s.plots[7][i] = { time, value: lBot };
+      const pr = i > 0 ? s.r[i - 1] : NaN;
+      for (let k = 0; k < 3; k++) {
+        const m = s.mas[k].step(r);
+        s.m[k][i] = m;
+        s.plots[1 + k][i] = { time, value: m, color: maColors[k] };
+        // plot(r - rFast, title = "Data RSI-Fast", display = display.data_window, color = na) ...
+        s.plots[8 + k][i] = { time, value: r - m, color: 'transparent' };
+        // alertcondition(ta.crossover(r, rFast), ...) / ta.crossunder(r, rFast), then rCustom and rSlow
+        const pm = i > 0 ? s.m[k][i - 1] : NaN;
+        const up = r > m && pr <= pm;
+        const down = r < m && pr >= pm;
+        s.flags[2 * k][i] = up;
+        s.flags[2 * k + 1][i] = down;
+        if (up) s.times[2 * k].push(time as number);
+        if (down) s.times[2 * k + 1].push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        // hline(v, title, color = showX ? c : na): na colour = not drawn; hline default style dashed
+        hlines: [
+          { value: 80, options: { title: 'Level 80', color: cfg.show80 ? C_LEVEL_MAIN : 'transparent', linestyle: 'dashed' } },
+          { value: 60, options: { title: 'Level 60', color: cfg.show60 ? C_LEVEL_MAIN : 'transparent', linestyle: 'dashed' } },
+          { value: 40, options: { title: 'Level 40', color: cfg.show40 ? C_LEVEL_MAIN : 'transparent', linestyle: 'dashed' } },
+          { value: 20, options: { title: 'Level 20', color: cfg.show20 ? C_LEVEL_MAIN : 'transparent', linestyle: 'dashed' } },
+          { value: 55, options: { title: 'Level 55', color: cfg.show4545 ? C_LEVEL_MID : 'transparent', linestyle: 'dashed' } },
+          { value: 45, options: { title: 'Level 45', color: cfg.show4545 ? C_LEVEL_MID : 'transparent', linestyle: 'dashed' } },
+          { value: 70, options: { title: 'Band 70', color: cfg.showBase ? C_LEVEL_DOT : 'transparent', linestyle: 'dotted' } },
+          { value: 50, options: { title: 'Band 50', color: cfg.showBase ? C_LEVEL_DOT : 'transparent', linestyle: 'dotted' } },
+          { value: 30, options: { title: 'Band 30', color: cfg.showBase ? C_LEVEL_DOT : 'transparent', linestyle: 'dotted' } },
+        ],
+        fills: [
+          // fill(p60, p40, color = cZone6040)
+          { plot1: 'plot4', plot2: 'plot5', colors: new Array<string>(n).fill(C_ZONE_6040) },
+          // fill(pUp, p60, color = showThrow ? cThrow : na); fill(p40, pDn, color = showThrow ? cThrow : na)
+          { plot1: 'plot6', plot2: 'plot4', colors: new Array<string>(n).fill(throwCol) },
+          { plot1: 'plot5', plot2: 'plot7', colors: new Array<string>(n).fill(throwCol) },
+        ],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CardwellRsiByTqInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<CardwellRsiByTqInputs> = {},
 ): IndicatorResult & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const rS = ta.rsi(getSourceSeries(bars, cfg.src), cfg.rsiLen);
-  const r = A(rS);
-  const ma = (len: number): number[] => {
-    switch (cfg.maType) {
-      case 'SMA': return A(ta.sma(rS, len));
-      case 'EMA': return A(ta.ema(rS, len));
-      case 'RMA': return A(ta.rma(rS, len));
-      default: return A(ta.wma(rS, len));
-    }
-  };
-  const rFast = ma(cfg.maFastLen);
-  const rCustom = ma(cfg.maCustomLen);
-  const rSlow = ma(cfg.maSlowLen);
-
-  const uTop = Math.max(cfg.upperTop, 60.0);
-  const lBot = Math.min(cfg.lowerBot, 40.0);
-  const line = (vals: number[], c: string) => bars.map((b, i) => ({ time: b.time, value: vals[i], color: c }));
-  const level = (v: number) => bars.map((b) => ({ time: b.time, value: v }));
-  const diff = (m: number[]) => bars.map((b, i) => ({ time: b.time, value: r[i] - m[i], color: 'transparent' }));
-  const throwCol = cfg.showThrow ? C_THROW : 'transparent';
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(r, C_RSI),
-      plot1: line(rFast, C_MA_FAST),
-      plot2: line(rCustom, C_MA_CUSTOM),
-      plot3: line(rSlow, C_MA_SLOW),
-      // p60 = plot(60, display = display.none), p40 = plot(40, ...), pUp = plot(uTop, ...), pDn = plot(lBot, ...)
-      plot4: level(60),
-      plot5: level(40),
-      plot6: level(uTop),
-      plot7: level(lBot),
-      // plot(r - rFast, title = "Data RSI-Fast", display = display.data_window, color = na) ...
-      plot8: diff(rFast),
-      plot9: diff(rCustom),
-      plot10: diff(rSlow),
-    },
-    // hline(v, title, color = showX ? c : na): na colour = not drawn; hline default style dashed
-    hlines: [
-      { value: 80, options: { title: 'Level 80', color: cfg.show80 ? C_LEVEL_MAIN : 'transparent', linestyle: 'dashed' } },
-      { value: 60, options: { title: 'Level 60', color: cfg.show60 ? C_LEVEL_MAIN : 'transparent', linestyle: 'dashed' } },
-      { value: 40, options: { title: 'Level 40', color: cfg.show40 ? C_LEVEL_MAIN : 'transparent', linestyle: 'dashed' } },
-      { value: 20, options: { title: 'Level 20', color: cfg.show20 ? C_LEVEL_MAIN : 'transparent', linestyle: 'dashed' } },
-      { value: 55, options: { title: 'Level 55', color: cfg.show4545 ? C_LEVEL_MID : 'transparent', linestyle: 'dashed' } },
-      { value: 45, options: { title: 'Level 45', color: cfg.show4545 ? C_LEVEL_MID : 'transparent', linestyle: 'dashed' } },
-      { value: 70, options: { title: 'Band 70', color: cfg.showBase ? C_LEVEL_DOT : 'transparent', linestyle: 'dotted' } },
-      { value: 50, options: { title: 'Band 50', color: cfg.showBase ? C_LEVEL_DOT : 'transparent', linestyle: 'dotted' } },
-      { value: 30, options: { title: 'Band 30', color: cfg.showBase ? C_LEVEL_DOT : 'transparent', linestyle: 'dotted' } },
-    ],
-    fills: [
-      // fill(p60, p40, color = cZone6040)
-      { plot1: 'plot4', plot2: 'plot5', colors: new Array<string>(n).fill(C_ZONE_6040) },
-      // fill(pUp, p60, color = showThrow ? cThrow : na); fill(p40, pDn, color = showThrow ? cThrow : na)
-      { plot1: 'plot6', plot2: 'plot4', colors: new Array<string>(n).fill(throwCol) },
-      { plot1: 'plot5', plot2: 'plot7', colors: new Array<string>(n).fill(throwCol) },
-    ],
-    // alertcondition(ta.crossover(r, rFast), ...) / ta.crossunder(r, rFast), then rCustom and rSlow
-    alerts: alertStates(alertConditions, bars, [
-      crossedOver(r, rFast), crossedUnder(r, rFast),
-      crossedOver(r, rCustom), crossedUnder(r, rCustom),
-      crossedOver(r, rSlow), crossedUnder(r, rSlow),
-    ]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -197,6 +241,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const CardwellRsiByTq = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

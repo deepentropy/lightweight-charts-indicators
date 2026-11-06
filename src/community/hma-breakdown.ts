@@ -14,8 +14,10 @@
  * Original notice: © NonLinearRookie
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface HmaBreakdownInputs {
   /** HMA length */
@@ -80,82 +82,151 @@ export const metadata = {
 /** Pine float comparisons: a > b only when a - b > 1e-10 (na compares false) */
 const gt = (a: number, b: number) => a - b > 1e-10;
 
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> };
+type Wma = ReturnType<typeof taStep.wma>;
+
+interface HmaRun extends BarRunState<Record<string, never>> {
+  full: Wma;
+  half: Wma;
+  hma: Wma;
+  signal: Wma;
+  sma3: WindowSma;
+  wma5: Wma;
+  mx1: ReturnType<typeof taStep.ema>;
+  mx2: ReturnType<typeof taStep.ema>;
+  tmaWma: Wma;
+  tma: number[];
+  lower: number[];
+  wmaHalf: number[];
+  lowerFill: string[];
+  hmaFill: string[];
+  mxFill: string[];
+  plots: Point[][];
+  tmaCandles: PlotCandleData[];
+}
+
+function study(inputs: Partial<HmaBreakdownInputs>): BarStudy<HmaRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  // sqrt_len = int(math.sqrt(length)); half_len = length / 2 (int division of two ints)
+  const sqrtLen = Math.trunc(Math.sqrt(cfg.length));
+  const halfLen = Math.trunc(cfg.length / 2);
+  const gap = Math.trunc(cfg.candleGap);
+  // the colours with their transparencies
+  const tr = (c: string, t: number) => String(color.new(c, t));
+  const up = { c: cfg.up, t50: tr(cfg.up, 50), t90: tr(cfg.up, 90) };
+  const down = { c: cfg.down, t50: tr(cfg.down, 50), t90: tr(cfg.down, 90) };
+  const mxUp = { c: color.lime as string, t70: tr(color.lime, 70), t80: tr(color.lime, 80) };
+  const mxDown = { c: '#ff0000', t70: tr('#ff0000', 70), t80: tr('#ff0000', 80) };
+  // plotcandle(tmax, tma, tmax, tma, "TMA Candle", tma > tmax ? up : down): no candle when a value is na
+  const candle = (time: number, tmax: number, tma: number): PlotCandleData => ({
+    time, open: tmax, high: tma, low: tmax, close: tma,
+    color: gt(tma, tmax) ? cfg.up : cfg.down, wickColor: CANDLE_WICK, borderColor: CANDLE_BORDER,
+  });
+  return {
+    init() {
+      const s: HmaRun = {
+        full: taStep.wma(), half: taStep.wma(), hma: taStep.wma(), signal: taStep.wma(), sma3: new WindowSma(3),
+        wma5: taStep.wma(), mx1: taStep.ema(cfg.fastLength), mx2: taStep.ema(cfg.slowLength), tmaWma: taStep.wma(),
+        tma: [], lower: [], wmaHalf: [], lowerFill: [], hmaFill: [], mxFill: [], plots: Array.from({ length: 7 }, () => []),
+        tmaCandles: [], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.full, s.half, s.hma, s.signal, s.sma3, s.wma5, s.mx1, s.mx2, s.tmaWma];
+      s.lists = [s.tmaCandles];
+      s.series = [s.tma, s.lower, s.wmaHalf, s.lowerFill, s.hmaFill, s.mxFill, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const close = b.close;
+      const wmaFull = s.full.step(close, cfg.length);
+      const wmaHalf = s.half.step(close, halfLen);
+      const hma = s.hma.step(2 * wmaHalf - wmaFull, sqrtLen);
+      const signal = s.signal.step(hma, sqrtLen);
+      const lower = wmaFull - (wmaHalf - wmaFull);
+
+      // src2 = ta.wma(ta.sma(close, 3), 5); mx1 / mx2 = ta.ema(src2, fast / slow)
+      const src2 = s.wma5.step(s.sma3.step(close), 5);
+      const mx1 = s.mx1.step(src2);
+      const mx2 = s.mx2.step(src2);
+
+      const wmaClr = gt(wmaHalf, wmaFull) ? up : down;
+      const hmaClr = gt(hma, signal) ? up : down;
+      const mxClr = gt(mx1, mx2) ? mxUp : mxDown;
+      // tma = ta.wma(wma_half, half_len); tmax = tma[candle_gap]
+      const tma = s.tmaWma.step(wmaHalf, halfLen);
+      s.tma[i] = tma;
+      if (gap >= 0) {
+        const tmax = i - gap >= 0 ? s.tma[i - gap] : NaN;
+        if (!(isNaN(tmax) || isNaN(tma))) s.tmaCandles.push(candle(time as number, tmax, tma));
+      }
+
+      s.lower[i] = lower;
+      s.wmaHalf[i] = wmaHalf;
+      s.plots[0][i] = { time, value: wmaHalf, color: wmaClr.c };
+      s.plots[1][i] = { time, value: wmaFull, color: wmaClr.c };
+      s.plots[2][i] = { time, value: lower, color: wmaClr.c };
+      s.plots[3][i] = { time, value: signal, color: hmaClr.t50 };
+      s.plots[4][i] = { time, value: hma, color: hmaClr.c };
+      s.plots[5][i] = { time, value: cfg.showMaCross ? mx1 : NaN, color: mxClr.t70 };
+      s.plots[6][i] = { time, value: cfg.showMaCross ? mx2 : NaN, color: mxClr.c };
+      s.lowerFill[i] = wmaClr.t90;
+      s.hmaFill[i] = hmaClr.t90;
+      s.mxFill[i] = mxClr.t80;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      let tmaCandles = s.tmaCandles.slice();
+      if (gap < 0) {
+        // a negative lookback reads later bars: the candles of every bar from the whole set
+        tmaCandles = [];
+        for (let i = 0; i < n; i++) {
+          const tmax = i - gap >= 0 && i - gap < n ? s.tma[i - gap] : NaN;
+          if (isNaN(tmax) || isNaN(s.tma[i])) continue;
+          tmaCandles.push(candle(bars[i].time as number, tmax, s.tma[i]));
+        }
+      }
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: [
+          // fill(plowr, phalf, lower, wma_half, color.new(wma_clr, 90), na)
+          { plot1: 'plot2', plot2: 'plot0', options: { title: 'Lower Band / WMA Half' },
+            gradient: {
+              topValue: s.lower.slice(),
+              bottomValue: s.wmaHalf.slice(),
+              topColor: s.lowerFill.slice(),
+              bottomColor: new Array<string | null>(n).fill(null),
+            } },
+          // fill(psig, phma, color.new(hma_clr, 90))
+          { plot1: 'plot3', plot2: 'plot4', options: { title: 'Signal / HMA' }, colors: s.hmaFill.slice() },
+          // fill(pmx1, pmx2, color.new(mxclr, 80))
+          { plot1: 'plot5', plot2: 'plot6', options: { title: 'Fast / Slow EMA' }, colors: s.mxFill.slice() },
+        ],
+        plotCandles: { tmaCandle: tmaCandles },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HmaBreakdownInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<HmaBreakdownInputs> = {},
 ): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
-
-  // sqrt_len = int(math.sqrt(length)); half_len = length / 2 (int division of two ints)
-  const sqrtLen = Math.trunc(Math.sqrt(cfg.length));
-  const halfLen = Math.trunc(cfg.length / 2);
-  const wmaFull = A(ta.wma(close, cfg.length));
-  const wmaHalf = A(ta.wma(close, halfLen));
-  const hma = A(ta.wma(S(wmaHalf.map((h, i) => 2 * h - wmaFull[i])), sqrtLen));
-  const signal = A(ta.wma(S(hma), sqrtLen));
-  const lower = wmaHalf.map((h, i) => wmaFull[i] - (h - wmaFull[i]));
-
-  // src2 = ta.wma(ta.sma(close, 3), 5); mx1 / mx2 = ta.ema(src2, fast / slow)
-  const src2 = ta.wma(ta.sma(close, 3), 5);
-  const mx1 = A(ta.ema(src2, cfg.fastLength));
-  const mx2 = A(ta.ema(src2, cfg.slowLength));
-
-  const wmaClr = wmaHalf.map((h, i) => (gt(h, wmaFull[i]) ? cfg.up : cfg.down));
-  const hmaClr = hma.map((h, i) => (gt(h, signal[i]) ? cfg.up : cfg.down));
-  const mxClr = mx1.map((v, i) => (gt(v, mx2[i]) ? color.lime : '#ff0000'));
-  // tma = ta.wma(wma_half, half_len); tmax = tma[candle_gap];
-  // plotcandle(tmax, tma, tmax, tma, "TMA Candle", tma > tmax ? up : down): no candle when a value is na
-  const tma = A(ta.wma(S(wmaHalf), halfLen));
-  const gap = Math.trunc(cfg.candleGap);
-  const tmaCandles: PlotCandleData[] = [];
-  for (let i = 0; i < n; i++) {
-    const tmax = i - gap >= 0 && i - gap < n ? tma[i - gap] : NaN;
-    if (isNaN(tmax) || isNaN(tma[i])) continue;
-    tmaCandles.push({
-      time: bars[i].time as number, open: tmax, high: tma[i], low: tmax, close: tma[i],
-      color: gt(tma[i], tmax) ? cfg.up : cfg.down, wickColor: CANDLE_WICK, borderColor: CANDLE_BORDER,
-    });
-  }
-
-  const line = (v: number[], c: (i: number) => string) => bars.map((b, i) => ({ time: b.time, value: v[i], color: c(i) }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(wmaHalf, (i) => wmaClr[i]),
-      plot1: line(wmaFull, (i) => wmaClr[i]),
-      plot2: line(lower, (i) => wmaClr[i]),
-      plot3: line(signal, (i) => String(color.new(hmaClr[i], 50))),
-      plot4: line(hma, (i) => hmaClr[i]),
-      plot5: line(cfg.showMaCross ? mx1 : new Array<number>(n).fill(NaN), (i) => String(color.new(mxClr[i], 70))),
-      plot6: line(cfg.showMaCross ? mx2 : new Array<number>(n).fill(NaN), (i) => mxClr[i]),
-    },
-    fills: [
-      // fill(plowr, phalf, lower, wma_half, color.new(wma_clr, 90), na)
-      { plot1: 'plot2', plot2: 'plot0', options: { title: 'Lower Band / WMA Half' },
-        gradient: {
-          topValue: lower.slice(),
-          bottomValue: wmaHalf.slice(),
-          topColor: wmaClr.map((c) => String(color.new(c, 90))),
-          bottomColor: new Array<string | null>(n).fill(null),
-        } },
-      // fill(psig, phma, color.new(hma_clr, 90))
-      { plot1: 'plot3', plot2: 'plot4', options: { title: 'Signal / HMA' },
-        colors: hmaClr.map((c) => String(color.new(c, 90))) },
-      // fill(pmx1, pmx2, color.new(mxclr, 80))
-      { plot1: 'plot5', plot2: 'plot6', options: { title: 'Fast / Slow EMA' },
-        colors: mxClr.map((c) => String(color.new(c, 80))) },
-    ],
-    plotCandles: { tmaCandle: tmaCandles },
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const HmaBreakdown = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

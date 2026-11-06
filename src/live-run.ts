@@ -214,41 +214,82 @@ export function barSource(src: string): (b: Bar) => number {
  * oakscriptjs #202).
  */
 export class PivotStep implements Committable {
+  /** Kept (non-na) values of the confirmed bars and their bars, from position `base` on */
   private values: number[] = [];
   private bars: number[] = [];
-  private pending: { value: number; bar: number } | null = null;
+  private base = 0;
+  /** Positions of the values that can still be the extreme of a window (strictly better than the newer ones) */
+  private queue: number[] = [];
+  private head = 0;
+  private pendingValue = NaN;
+  private pendingBar = -1;
+  private readonly left: number;
+  private readonly right: number;
 
-  constructor(private readonly left: number, private readonly right: number, private readonly isHigh: boolean) {}
+  constructor(left: number, right: number, private readonly isHigh: boolean) {
+    this.left = Math.trunc(left);
+    this.right = Math.trunc(right);
+  }
+
+  /** `a` is the extreme over the newer `b` of a window: strictly better (the newest of equal values wins) */
+  private better(a: number, b: number): boolean {
+    return this.isHigh ? a > b : a < b;
+  }
+
+  private at(pos: number): number {
+    return this.values[pos - this.base]!;
+  }
 
   /** The pivot found on bar `bar` (its value, else NaN) */
   step(bar: number, value: number): number {
     const kept = value !== undefined && value !== null && Number.isFinite(value);
-    this.pending = kept ? { value, bar } : null;
-    const left = Math.trunc(this.left);
-    const right = Math.trunc(this.right);
-    const count = this.values.length + (kept ? 1 : 0);
-    if (!(bar >= left + right) || count === 0) return NaN;
-    const at = (j: number) => (j === this.values.length ? value : this.values[j]!);
-    const barAt = (j: number) => (j === this.values.length ? bar : this.bars[j]!);
-    const k = count - 1;
-    let best = k;
-    for (let j = k - 1; j >= 0 && j >= k - left - right; j--) {
-      if (this.isHigh ? at(j) > at(best) : at(j) < at(best)) best = j;
+    this.pendingValue = kept ? value : NaN;
+    this.pendingBar = kept ? bar : -1;
+    const committed = this.base + this.values.length;
+    const count = committed + (kept ? 1 : 0);
+    if (!(bar >= this.left + this.right) || count === 0) return NaN;
+    // the window: the last left + right + 1 kept values, ending with the value of this bar when it has one
+    const first = count - 1 - Math.max(0, this.left + this.right);
+    let h = this.head;
+    while (h < this.queue.length && this.queue[h]! < first) h++;
+    let bestValue: number;
+    let bestBar: number;
+    if (h < this.queue.length && (!kept || this.better(this.at(this.queue[h]!), value))) {
+      bestValue = this.at(this.queue[h]!);
+      bestBar = this.bars[this.queue[h]! - this.base]!;
+    } else if (kept) {
+      bestValue = value;
+      bestBar = bar;
+    } else {
+      return NaN;
     }
-    return barAt(best) === bar - right ? at(best) : NaN;
+    return bestBar === bar - this.right ? bestValue : NaN;
   }
 
   commit(): void {
-    if (this.pending) {
-      this.values.push(this.pending.value);
-      this.bars.push(this.pending.bar);
-      const keep = Math.trunc(this.left) + Math.trunc(this.right) + 1;
-      if (this.values.length > keep * 2 + 64) {
-        this.values = this.values.slice(-keep);
-        this.bars = this.bars.slice(-keep);
+    if (this.pendingBar >= 0) {
+      const v = this.pendingValue;
+      const pos = this.base + this.values.length;
+      this.values.push(v);
+      this.bars.push(this.pendingBar);
+      // a newer value as good as an older one replaces it (the newest of equal values wins)
+      while (this.queue.length > this.head && !this.better(this.at(this.queue[this.queue.length - 1]!), v)) this.queue.pop();
+      this.queue.push(pos);
+      const keep = Math.max(0, this.left + this.right) + 1;
+      const first = pos + 1 - keep;
+      while (this.head < this.queue.length && this.queue[this.head]! < first) this.head++;
+      if (this.values.length > keep * 2 + 1024) {
+        const drop = this.values.length - keep;
+        this.values = this.values.slice(drop);
+        this.bars = this.bars.slice(drop);
+        this.base += drop;
+      }
+      if (this.head > 1024 && this.head * 2 > this.queue.length) {
+        this.queue = this.queue.slice(this.head);
+        this.head = 0;
       }
     }
-    this.pending = null;
+    this.pendingBar = -1;
   }
 }
 

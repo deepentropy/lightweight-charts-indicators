@@ -13,8 +13,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AggregatedScoresOscillatorInputs {
   /** Calculation period of the Omega and Sortino ratios */
@@ -89,112 +91,141 @@ const lt = (a: number, b: number) => b - a > EPS;
 /** Pine x != 0: false when x is na or within 1e-10 of 0 */
 const nonZero = (x: number) => !isNaN(x) && Math.abs(x) > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AggregatedScoresOscillatorInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } {
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+type Point = { time: number; value: number; color: string };
+
+interface AggVars {
+  /** Expanding statistics (var float cumulativeSum = 0, cumulativeSquareSum = 0, var int count = 0) */
+  cumSum: number;
+  cumSq: number;
+  count: number;
+}
+
+interface AggRun extends BarRunState<AggVars> {
+  meanReturn: WindowSma;
+  omegaSma: WindowSma;
+  sortinoSma: WindowSma;
+  rollingMean: WindowSma;
+  rollingStd: WindowStdev;
+  up: number[];
+  down: number[];
+  downSq: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<AggregatedScoresOscillatorInputs>): BarStudy<AggRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const { period, targetReturn } = cfg;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // dailyReturn = close / close[1] - 1
-  const ret = bars.map((b, i) => (i > 0 ? b.close / bars[i - 1].close - 1 : NaN));
-  // excess / deficit terms: an na return compares false, so the term is 0
-  const up = ret.map((r) => (gt(r, targetReturn) ? r - targetReturn : 0));
-  const down = ret.map((r) => (lt(r, targetReturn) ? targetReturn - r : 0));
-  const downSq = ret.map((r) => {
-    const d = lt(r, targetReturn) ? r - targetReturn : 0;
-    return d * d;
-  });
-
-  const omega: number[] = new Array(n).fill(NaN);
-  const sortino: number[] = new Array(n).fill(NaN);
-  const meanReturn = A(ta.sma(S(ret), period));
-  for (let i = 0; i < n; i++) {
-    // math.sum(x, period): na until period bars
-    let excess = NaN;
-    let deficit = NaN;
-    if (i >= period - 1) {
-      excess = 0;
-      deficit = 0;
-      for (let j = i - period + 1; j <= i; j++) {
-        excess += up[j];
-        deficit += down[j];
-      }
-    }
-    omega[i] = nonZero(deficit) ? excess / deficit : NaN;
-    // for i = 0 to period - 1: dailyReturn[i] before the first bar is na (term 0)
-    let dd = 0;
-    for (let j = 0; j < period; j++) {
-      if (i - j >= 0) dd += downSq[i - j];
-    }
-    dd = Math.sqrt(dd / period);
-    sortino[i] = nonZero(dd) ? (meanReturn[i] / dd) * Math.sqrt(365) : NaN;
-  }
-  const omegaSmaValue = A(ta.sma(S(omega), cfg.omegaSma));
-  const sortinoSmaValue = A(ta.sma(S(sortino), cfg.sortinoSma));
-  const score = omegaSmaValue.map((o, i) => o + sortinoSmaValue[i]);
-
-  // Rolling statistics
-  const rollingMean = A(ta.sma(S(score), cfg.rollingWindow));
-  const rollingStd = A(ta.stdev(S(score), cfg.rollingWindow));
-
-  const upper: number[] = new Array(n);
-  const lower: number[] = new Array(n);
-  const ob: boolean[] = new Array(n);
-  const os: boolean[] = new Array(n);
-  // Expanding statistics (var float cumulativeSum = 0, cumulativeSquareSum = 0, var int count = 0)
-  let cumSum = 0;
-  let cumSq = 0;
-  let count = 0;
-  for (let i = 0; i < n; i++) {
-    const s = score[i];
-    if (!isNaN(s)) {
-      cumSum += s;
-      cumSq += s * s;
-      count += 1;
-    }
-    const expandingMean = count === 0 ? NaN : cumSum / count;
-    const variance = (count === 0 ? NaN : cumSq / count) - expandingMean * expandingMean;
-    const expandingStd = Math.sqrt(variance);
-    const expUpper = expandingMean + expandingStd * cfg.upperMultiplier;
-    const expLower = expandingMean - expandingStd * cfg.lowerMultiplier;
-    const rollUpper = rollingMean[i] + rollingStd[i] * cfg.rollingMultiplier;
-    const rollLower = rollingMean[i] - rollingStd[i] * cfg.rollingMultiplier;
-    upper[i] = ((expUpper + rollUpper) / 2) * cfg.upperBandAdjust;
-    lower[i] = (expLower + rollLower) / 2;
-    ob[i] = gt(s, upper[i]);
-    os[i] = lt(s, lower[i]);
-  }
-
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    // bgcolor(OB ? OBCol : OS ? OSCol : na, force_overlay = true)
-    if (ob[i]) bgColors.push({ time: bars[i].time, color: OB_COL, forceOverlay: true });
-    else if (os[i]) bgColors.push({ time: bars[i].time, color: OS_COL, forceOverlay: true });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: score[i], color: ob[i] ? BEARISH : os[i] ? BULLISH : NEUTRAL })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: upper[i], color: UPPER_BAND })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: lower[i], color: LOWER_BAND })),
+    init() {
+      const meanReturn = new WindowSma(period);
+      const omegaSma = new WindowSma(cfg.omegaSma);
+      const sortinoSma = new WindowSma(cfg.sortinoSma);
+      // Rolling statistics
+      const rollingMean = new WindowSma(cfg.rollingWindow);
+      const rollingStd = new WindowStdev(cfg.rollingWindow);
+      const s: AggRun = {
+        meanReturn, omegaSma, sortinoSma, rollingMean, rollingStd, up: [], down: [], downSq: [], plot0: [], plot1: [],
+        plot2: [], bgColors: [],
+        steps: [meanReturn, omegaSma, sortinoSma, rollingMean, rollingStd],
+        vars: { cumSum: 0, cumSq: 0, count: 0 }, lists: [], series: [],
+      };
+      s.lists = [s.bgColors];
+      s.series = [s.up, s.down, s.downSq, s.plot0, s.plot1, s.plot2];
+      return s;
     },
-    hlines: [
-      { value: 0, options: { title: '━━━ Zero Line ━━━', color: String(color.new(color.gray, 50)), linestyle: 'dashed', linewidth: 1 } },
-    ],
-    fills: [
-      { plot1: 'plot1', plot2: 'plot2', options: { title: 'Channel Fill', color: CHANNEL_FILL } },
-    ],
-    bgColors,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const { up, down, downSq } = s;
+      // dailyReturn = close / close[1] - 1
+      const r = i > 0 ? b.close / bars[i - 1].close - 1 : NaN;
+      // excess / deficit terms: an na return compares false, so the term is 0
+      up[i] = gt(r, targetReturn) ? r - targetReturn : 0;
+      down[i] = lt(r, targetReturn) ? targetReturn - r : 0;
+      const d = lt(r, targetReturn) ? r - targetReturn : 0;
+      downSq[i] = d * d;
+
+      const meanReturn = s.meanReturn.step(r);
+      // math.sum(x, period): na until period bars
+      let excess = NaN;
+      let deficit = NaN;
+      if (i >= period - 1) {
+        excess = 0;
+        deficit = 0;
+        for (let j = i - period + 1; j <= i; j++) {
+          excess += up[j];
+          deficit += down[j];
+        }
+      }
+      const omega = nonZero(deficit) ? excess / deficit : NaN;
+      // for i = 0 to period - 1: dailyReturn[i] before the first bar is na (term 0)
+      let dd = 0;
+      for (let j = 0; j < period; j++) {
+        if (i - j >= 0) dd += downSq[i - j];
+      }
+      dd = Math.sqrt(dd / period);
+      const sortino = nonZero(dd) ? (meanReturn / dd) * Math.sqrt(365) : NaN;
+      const score = s.omegaSma.step(omega) + s.sortinoSma.step(sortino);
+
+      const rollingMean = s.rollingMean.step(score);
+      const rollingStd = s.rollingStd.step(score);
+      const v = s.vars;
+      if (!isNaN(score)) {
+        v.cumSum += score;
+        v.cumSq += score * score;
+        v.count += 1;
+      }
+      const expandingMean = v.count === 0 ? NaN : v.cumSum / v.count;
+      const variance = (v.count === 0 ? NaN : v.cumSq / v.count) - expandingMean * expandingMean;
+      const expandingStd = Math.sqrt(variance);
+      const expUpper = expandingMean + expandingStd * cfg.upperMultiplier;
+      const expLower = expandingMean - expandingStd * cfg.lowerMultiplier;
+      const rollUpper = rollingMean + rollingStd * cfg.rollingMultiplier;
+      const rollLower = rollingMean - rollingStd * cfg.rollingMultiplier;
+      const upper = ((expUpper + rollUpper) / 2) * cfg.upperBandAdjust;
+      const lower = (expLower + rollLower) / 2;
+      const ob = gt(score, upper);
+      const os = lt(score, lower);
+
+      // bgcolor(OB ? OBCol : OS ? OSCol : na, force_overlay = true)
+      if (ob) s.bgColors.push({ time: b.time, color: OB_COL, forceOverlay: true });
+      else if (os) s.bgColors.push({ time: b.time, color: OS_COL, forceOverlay: true });
+
+      s.plot0[i] = { time: b.time, value: score, color: ob ? BEARISH : os ? BULLISH : NEUTRAL };
+      s.plot1[i] = { time: b.time, value: upper, color: UPPER_BAND };
+      s.plot2[i] = { time: b.time, value: lower, color: LOWER_BAND };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        hlines: [
+          { value: 0, options: { title: '━━━ Zero Line ━━━', color: String(color.new(color.gray, 50)), linestyle: 'dashed', linewidth: 1 } },
+        ],
+        fills: [
+          { plot1: 'plot1', plot2: 'plot2', options: { title: 'Channel Fill', color: CHANNEL_FILL } },
+        ],
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AggregatedScoresOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AggregatedScoresOscillatorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AggregatedScoresOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -24,11 +24,12 @@
  */
 
 import {
-  ta, Series, color, timeframe, resample, mapToChart,
+  ta, taStep, Series, color, timeframe, resample, mapToChart,
   type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar,
 } from 'oakscriptjs';
 import { periodStarts, chartTimeframe, securityBars } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CmMacdCustomMtfInputs {
   /** Use the chart timeframe (the timeframe input is ignored) */
@@ -128,58 +129,109 @@ function timeframeBars(bars: Bar[], tf: string, context?: ChartContext): { htf: 
   return { htf, toChart: (values) => mapToChart(values, group, [], true, false) };
 }
 
-export function calculate(bars: Bar[], inputs: Partial<CmMacdCustomMtfInputs> = {}, chart?: ChartContext): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface CmRun extends BarRunState<Record<string, never>> {
+  /** Chart timeframe: the MACD machines; another timeframe: the values on the chart bars, calculated by init */
+  fast: ReturnType<typeof taStep.ema> | null;
+  slow: ReturnType<typeof taStep.ema> | null;
+  sig: WindowSma | null;
+  pre: { macd: number[]; signal: number[]; hist: number[] } | null;
+  cross: ReturnType<typeof taStep.cross>;
+  hist: number[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<CmMacdCustomMtfInputs>): BarStudy<CmRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  // res = useCurrentRes ? period : resCustom
-  const { htf, toChart } = timeframeBars(bars, cfg.useCurrentRes ? '' : cfg.resCustom, chart);
-  const source = Series.fromArray(htf, htf.map((b) => b.close));
-  const fastMA = A(ta.ema(source, cfg.fastLength));
-  const slowMA = A(ta.ema(source, cfg.slowLength));
-  const macd = fastMA.map((v, i) => v - slowMA[i]);
-  const signal = A(ta.sma(Series.fromArray(htf, macd), cfg.signalLength));
-  const hist = macd.map((v, i) => v - signal[i]);
-
-  const outMacD = toChart(macd);
-  const outSignal = toChart(signal);
-  const outHist = toChart(hist);
-  // cross(outMacD, outSignal) on the chart bars
-  const crossed = ta.cross(Series.fromArray(bars, outMacD), Series.fromArray(bars, outSignal)).toArray();
-
-  const t = (i: number) => bars[i].time;
-  const plot0: Array<{ time: number; value: number; color: string }> = [];
-  const plot1: typeof plot0 = [];
-  const plot2: typeof plot0 = [];
-  const plot3: typeof plot0 = [];
-  for (let i = 0; i < n; i++) {
-    const h = outHist[i];
-    const h1 = i > 0 ? outHist[i - 1] : NaN;
-    const histAIsUp = gt(h, h1) && gt(h, 0);
-    const histAIsDown = lt(h, h1) && gt(h, 0);
-    const histBIsDown = lt(h, h1) && le(h, 0);
-    const histBIsUp = gt(h, h1) && le(h, 0);
-    const macdIsAbove = ge(outMacD[i], outSignal[i]);
-
-    const plotColor = cfg.histColorChange
-      ? histAIsUp ? AQUA : histAIsDown ? BLUE : histBIsDown ? RED : histBIsUp ? MAROON : YELLOW
-      : GRAY;
-    const macdColor = cfg.macdColorChange ? (macdIsAbove ? LIME : RED) : RED;
-    const signalColor = cfg.macdColorChange ? YELLOW : LIME;
-
-    // plot(smd and outMacD ? outMacD : na): a value of 0 or na is not drawn
-    plot0.push({ time: t(i), value: cfg.showMacd && truthy(outMacD[i]) ? outMacD[i] : NaN, color: macdColor });
-    plot1.push({ time: t(i), value: cfg.showMacd && truthy(outSignal[i]) ? outSignal[i] : NaN, color: signalColor });
-    plot2.push({ time: t(i), value: cfg.showHistogram && truthy(h) ? h : NaN, color: plotColor });
-    plot3.push({ time: t(i), value: cfg.showDots && crossed[i] ? outSignal[i] : NaN, color: macdColor });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
-    hlines: [{ value: 0, options: { title: '0 Line', color: '#FFFFFF', linestyle: 'solid', linewidth: 2 } }],
+    // another timeframe: every chart bar of a period shows the value of the period at its end (from the later bars)
+    fullRunReason: () => (cfg.useCurrentRes ? null : 'another timeframe, calculated on the whole bar set'),
+    init(bars, chart) {
+      let pre: CmRun['pre'] = null;
+      if (!cfg.useCurrentRes) {
+        // res = useCurrentRes ? period : resCustom
+        const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
+        const { htf, toChart } = timeframeBars(bars, cfg.resCustom, chart);
+        const source = Series.fromArray(htf, htf.map((b) => b.close));
+        const fastMA = A(ta.ema(source, cfg.fastLength));
+        const slowMA = A(ta.ema(source, cfg.slowLength));
+        const macd = fastMA.map((v, i) => v - slowMA[i]);
+        const signal = A(ta.sma(Series.fromArray(htf, macd), cfg.signalLength));
+        const hist = macd.map((v, i) => v - signal[i]);
+        pre = { macd: toChart(macd), signal: toChart(signal), hist: toChart(hist) };
+      }
+      const fast = pre ? null : taStep.ema(cfg.fastLength);
+      const slow = pre ? null : taStep.ema(cfg.slowLength);
+      const sig = pre ? null : new WindowSma(cfg.signalLength);
+      const s: CmRun = {
+        fast, slow, sig, pre,
+        cross: taStep.cross(),
+        hist: [],
+        plots: [[], [], [], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [...(fast ? [fast, slow!, sig!] : []), s.cross];
+      s.series = [s.hist, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time;
+      let outMacD: number;
+      let outSignal: number;
+      let h: number;
+      if (s.pre) {
+        outMacD = s.pre.macd[i]!;
+        outSignal = s.pre.signal[i]!;
+        h = s.pre.hist[i]!;
+      } else {
+        const c = bars[i].close;
+        outMacD = s.fast!.step(c) - s.slow!.step(c);
+        outSignal = s.sig!.step(outMacD);
+        h = outMacD - outSignal;
+      }
+      s.hist[i] = h;
+      // cross(outMacD, outSignal) on the chart bars
+      const crossed = s.cross.step(outMacD, outSignal);
+
+      const h1 = i > 0 ? s.hist[i - 1]! : NaN;
+      const histAIsUp = gt(h, h1) && gt(h, 0);
+      const histAIsDown = lt(h, h1) && gt(h, 0);
+      const histBIsDown = lt(h, h1) && le(h, 0);
+      const histBIsUp = gt(h, h1) && le(h, 0);
+      const macdIsAbove = ge(outMacD, outSignal);
+
+      const plotColor = cfg.histColorChange
+        ? histAIsUp ? AQUA : histAIsDown ? BLUE : histBIsDown ? RED : histBIsUp ? MAROON : YELLOW
+        : GRAY;
+      const macdColor = cfg.macdColorChange ? (macdIsAbove ? LIME : RED) : RED;
+      const signalColor = cfg.macdColorChange ? YELLOW : LIME;
+
+      // plot(smd and outMacD ? outMacD : na): a value of 0 or na is not drawn
+      const p = s.plots;
+      p[0]![i] = { time: t, value: cfg.showMacd && truthy(outMacD) ? outMacD : NaN, color: macdColor };
+      p[1]![i] = { time: t, value: cfg.showMacd && truthy(outSignal) ? outSignal : NaN, color: signalColor };
+      p[2]![i] = { time: t, value: cfg.showHistogram && truthy(h) ? h : NaN, color: plotColor };
+      p[3]![i] = { time: t, value: cfg.showDots && crossed ? outSignal : NaN, color: macdColor };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0]!.slice(), plot1: p[1]!.slice(), plot2: p[2]!.slice(), plot3: p[3]!.slice() },
+        hlines: [{ value: 0, options: { title: '0 Line', color: '#FFFFFF', linestyle: 'solid', linewidth: 2 } }],
+      };
+    },
   };
 }
 
-export const CmMacdCustomMtf = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CmMacdCustomMtfInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CmMacdCustomMtfInputs> = {}, chart?: ChartContext): IndicatorResult {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const CmMacdCustomMtf = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig };

@@ -13,9 +13,11 @@
  * Original notice: © Raisontgh
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -79,72 +81,122 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface MfiRun extends BarRunState<Record<string, never>> {
+  mfi: ReturnType<typeof taStep.mfi>;
+  rsi: ReturnType<typeof taStep.rsi>;
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  emaUp: ReturnType<typeof taStep.crossover>;
+  emaDown: ReturnType<typeof taStep.crossunder>;
+  mfiUp: ReturnType<typeof taStep.crossover>;
+  mfiDown: ReturnType<typeof taStep.crossunder>;
+  mfiArr: number[];
+  bullish: boolean[];
+  bearish: boolean[];
+  near: boolean[];
+  crossover: boolean[];
+  crossunder: boolean[];
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<MfiRsiEmaDynamicSignalsInputs>): BarStudy<MfiRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+  return {
+    init() {
+      const s: MfiRun = {
+        mfi: taStep.mfi(cfg.mfiLength), rsi: taStep.rsi(cfg.rsiLength), fast: taStep.ema(cfg.fastEmaLength),
+        slow: taStep.ema(cfg.slowEmaLength), emaUp: taStep.crossover(), emaDown: taStep.crossunder(),
+        mfiUp: taStep.crossover(), mfiDown: taStep.crossunder(), mfiArr: [], bullish: [], bearish: [], near: [],
+        crossover: [], crossunder: [], plots: [[], [], [], []], flags: [[], []], times: [[], []], markers: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.mfi, s.rsi, s.fast, s.slow, s.emaUp, s.emaDown, s.mfiUp, s.mfiDown];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.mfiArr, s.bullish, s.bearish, s.near, s.crossover, s.crossunder, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const close = b.close;
+      const mfi = s.mfi.step(close, b.volume ?? NaN);
+      const rsi = s.rsi.step(close);
+      const fastEma = s.fast.step(close);
+      const slowEma = s.slow.step(close);
+      s.mfiArr[i] = mfi;
+
+      s.bullish[i] = gt(rsi, cfg.rsiBuyThreshold);
+      s.bearish[i] = lt(rsi, cfg.rsiSellThreshold);
+      // ema_diff_percent = math.abs((fast_ema - slow_ema) / slow_ema * 100); a plain division (x / 0 is infinite)
+      s.near[i] = le(Math.abs(((fastEma - slowEma) / slowEma) * 100), cfg.emaProximity);
+      s.crossover[i] = s.emaUp.step(fastEma, slowEma);
+      s.crossunder[i] = s.emaDown.step(fastEma, slowEma);
+      // ta.crossover(mfi[1], level) / ta.crossunder(mfi[1], level)
+      const mfi1 = i > 0 ? s.mfiArr[i - 1] : NaN;
+      const mfiUp = s.mfiUp.step(mfi1, cfg.mfiOversold);
+      const mfiDown = s.mfiDown.step(mfi1, cfg.mfiOverbought);
+
+      let buy = false;
+      let sell = false;
+      if (i >= 1) {
+        const near1 = s.near[i - 1];
+        buy = (mfiUp || s.crossover[i - 1]) && (s.bullish[i - 1] || near1);
+        sell = (mfiDown || s.crossunder[i - 1]) && (s.bearish[i - 1] || near1);
+        // plotshape(buy_signal, "Buy Signal", shape.triangleup, location.belowbar, color.green, size = size.small)
+        if (buy) s.markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'small' });
+        // plotshape(sell_signal, "Sell Signal", shape.triangledown, location.abovebar, color.red, size = size.small)
+        if (sell) s.markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'small' });
+      }
+      // alertcondition(buy_signal, "Buy Signal") / alertcondition(sell_signal, "Sell Signal")
+      [buy, sell].forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(time as number);
+      });
+      s.plots[0][i] = { time, value: fin(fastEma) };
+      s.plots[1][i] = { time, value: fin(slowEma) };
+      s.plots[2][i] = { time, value: fin(mfi) };
+      s.plots[3][i] = { time, value: fin(rsi) };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice() },
+        hlines: [
+          { value: cfg.mfiOverbought, options: { title: 'Overbought', color: color.red, linestyle: 'dashed' } },
+          { value: cfg.mfiOversold, options: { title: 'Oversold', color: color.green, linestyle: 'dashed' } },
+          { value: cfg.rsiBuyThreshold, options: { title: 'RSI Buy Threshold', color: color.green, linestyle: 'dashed' } },
+          { value: cfg.rsiSellThreshold, options: { title: 'RSI Sell Threshold', color: color.red, linestyle: 'dashed' } },
+        ],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MfiRsiEmaDynamicSignalsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<MfiRsiEmaDynamicSignalsInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const B = (s: Series) => s.toArray().map((v) => Boolean(v));
-
-  const close = S(bars.map((b) => b.close));
-  const volume = S(bars.map((b) => b.volume ?? NaN));
-  const mfi = A(ta.mfi(close, cfg.mfiLength, volume));
-  const rsi = A(ta.rsi(close, cfg.rsiLength));
-  const fastEma = A(ta.ema(close, cfg.fastEmaLength));
-  const slowEma = A(ta.ema(close, cfg.slowEmaLength));
-
-  const bullishMomentum = rsi.map((v) => gt(v, cfg.rsiBuyThreshold));
-  const bearishMomentum = rsi.map((v) => lt(v, cfg.rsiSellThreshold));
-  // ema_diff_percent = math.abs((fast_ema - slow_ema) / slow_ema * 100); a plain division (x / 0 is infinite)
-  const emaNear = bars.map((_b, i) => le(Math.abs(((fastEma[i] - slowEma[i]) / slowEma[i]) * 100), cfg.emaProximity));
-  const emaCrossover = B(ta.crossover(S(fastEma), S(slowEma)));
-  const emaCrossunder = B(ta.crossunder(S(fastEma), S(slowEma)));
-  // ta.crossover(mfi[1], level) / ta.crossunder(mfi[1], level)
-  const mfi1 = S(mfi.map((_v, i) => (i > 0 ? mfi[i - 1] : NaN)));
-  const mfiUp = B(ta.crossover(mfi1, cfg.mfiOversold));
-  const mfiDown = B(ta.crossunder(mfi1, cfg.mfiOverbought));
-
-  const markers: MarkerData[] = [];
-  const buyFlags: boolean[] = new Array(n).fill(false);
-  const sellFlags: boolean[] = new Array(n).fill(false);
-  for (let i = 1; i < n; i++) {
-    const near1 = emaNear[i - 1];
-    const buy = (mfiUp[i] || emaCrossover[i - 1]) && (bullishMomentum[i - 1] || near1);
-    const sell = (mfiDown[i] || emaCrossunder[i - 1]) && (bearishMomentum[i - 1] || near1);
-    buyFlags[i] = buy;
-    sellFlags[i] = sell;
-    // plotshape(buy_signal, "Buy Signal", shape.triangleup, location.belowbar, color.green, size = size.small)
-    if (buy) markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'small' });
-    // plotshape(sell_signal, "Sell Signal", shape.triangledown, location.abovebar, color.red, size = size.small)
-    if (sell) markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'small' });
-  }
-
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: fin(fastEma[i]) })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: fin(slowEma[i]) })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: fin(mfi[i]) })),
-      plot3: bars.map((b, i) => ({ time: b.time, value: fin(rsi[i]) })),
-    },
-    hlines: [
-      { value: cfg.mfiOverbought, options: { title: 'Overbought', color: color.red, linestyle: 'dashed' } },
-      { value: cfg.mfiOversold, options: { title: 'Oversold', color: color.green, linestyle: 'dashed' } },
-      { value: cfg.rsiBuyThreshold, options: { title: 'RSI Buy Threshold', color: color.green, linestyle: 'dashed' } },
-      { value: cfg.rsiSellThreshold, options: { title: 'RSI Sell Threshold', color: color.red, linestyle: 'dashed' } },
-    ],
-    markers,
-    // alertcondition(buy_signal, "Buy Signal") / alertcondition(sell_signal, "Sell Signal")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MfiRsiEmaDynamicSignals = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

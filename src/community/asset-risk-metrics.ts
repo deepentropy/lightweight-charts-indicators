@@ -18,10 +18,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, timeframe, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, timeframe, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData, MarkerData } from '../types';
 import { barInterval } from '../bar-time';
 import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import { executeScript, ta as scriptTa, hlc3 as scriptHlc3 } from 'oakscriptjs/script';
 
 export type AssetRiskMaType = 'SMA' | 'EMA' | 'SMMA (RMA)' | 'WMA' | 'VWMA' | 'HMA';
@@ -185,106 +186,152 @@ function intradayVwap(bars: Bar[], chart: ChartContext): number[] {
   return vwap;
 }
 
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
+type MaStep = { step(v: number, volume: number): number; commit(): void };
+
+const isIntraday = (bars: Bar[]) => {
+  const interval = barInterval(bars);
+  return interval > 0 && interval < DAY_SECONDS;
+};
+
+/** ma(source, length, type): only the branch of the selected type runs */
+function maStep(length: number, type: AssetRiskMaType): MaStep {
+  switch (type) {
+    case 'SMA': { const m = new WindowSma(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'EMA': { const m = taStep.ema(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'SMMA (RMA)': { const m = taStep.rma(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, length), commit: () => m.commit() }; }
+    case 'VWMA': { const m = taStep.vwma(length); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+    case 'HMA': { const m = taStep.hma(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    default: return { step: () => NaN, commit: () => {} };
+  }
+}
+
+interface RiskVars {
+  /** lastATH of the bar before */
+  lastATH: number;
+}
+
+interface RiskRun extends BarRunState<RiskVars> {
+  /** ta.vwap of every bar on intraday bars (each update of intraday bars is a full run) */
+  intradayVwap: number[] | null;
+  rsi: ReturnType<typeof taStep.rsi>;
+  rsiMA: MaStep;
+  rsi2: ReturnType<typeof taStep.rsi>;
+  rsi2MA: MaStep;
+  plot0: Point[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<AssetRiskMetricsInputs>): BarStudy<RiskRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const rsiSource = barSource(cfg.rsiSource);
+  const riskSourceOf = barSource(cfg.riskSource);
+  const riskShapeOf = barSource(cfg.riskSourceShape);
+  const risk: boolean[] = new Array(BANDS.length);
+  let fullRuns = 0;
+  return {
+    fullRunReason: () => ([cfg.riskSource, cfg.riskSourceShape, cfg.rsiSource].every(isBarSource) ? null : 'source of another study'),
+    // the timeframe from the bar gaps; on intraday bars the trading days of ta.vwap come from the whole set of bars
+    // (the library's session rules): every update is a full run
+    key: (bars) => (isIntraday(bars) ? `intraday ${++fullRuns}` : 'dwm'),
+    init(bars, chart) {
+      const intraday = isIntraday(bars);
+      if (intraday && (chart?.timezone === undefined || chart.session === undefined)) {
+        throw new Error(
+          'Asset risk metrics supports daily and higher timeframes only: on intraday bars ta.vwap resets '
+          + 'on each trading day, which needs the exchange time zone and session.',
+        );
+      }
+      for (const length of [cfg.maType === 'HMA' ? cfg.rsiMALength : NaN, cfg.ma2Type === 'HMA' ? cfg.ma2Length : NaN]) {
+        if (length === 1 && bars.length > 0) {
+          throw new Error("Invalid value of the 'length' argument (0.0) in the 'wma' function. It must be > 0.");
+        }
+      }
+      const s: RiskRun = {
+        intradayVwap: intraday ? intradayVwap(bars, chart) : null,
+        rsi: taStep.rsi(cfg.rsiLength), rsiMA: maStep(cfg.rsiMALength, cfg.maType),
+        rsi2: taStep.rsi(cfg.rsi2Length), rsi2MA: maStep(cfg.ma2Length, cfg.ma2Type),
+        plot0: [], markers: [], barColors: [],
+        steps: [], vars: { lastATH: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.rsi, s.rsiMA, s.rsi2, s.rsi2MA];
+      s.lists = [s.markers, s.barColors];
+      s.series = [s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const vol = b.volume ?? NaN;
+      // lastATH := math.max(high, nz(lastATH[1]))
+      const prev = s.vars.lastATH;
+      const lastATH = Math.max(b.high, isNaN(prev) ? 0 : prev);
+      s.vars.lastATH = lastATH;
+
+      const rsi = s.rsi.step(rsiSource(b));
+      const rsiMA = s.rsiMA.step(rsi, vol);
+      // ta.vwap (hlc3, anchor timeframe.change("1D")). Intraday bars: the sums restart on each trading day of the
+      // exchange. Daily or higher bars: a new anchor on every bar, so sum(hlc3 * volume) / sum(volume) over the bar
+      // alone (0 / 0 = na when the volume is 0, na when it is na)
+      const vwap = s.intradayVwap ? s.intradayVwap[i] : (((b.high + b.low + b.close) / 3) * vol) / vol;
+      const rsi2 = s.rsi2.step(vwap);
+      const rsi2MA = s.rsi2MA.step(rsi2, vol);
+
+      const metric = cfg.vwapMode ? (cfg.maMode ? rsi2MA : rsi2) : (cfg.maMode ? rsiMA : rsi);
+      // riskFormula = riskSource / lastATH * metric / 100 (plain division)
+      const riskFormula = ((riskSourceOf(b) / lastATH) * metric) / 100;
+      // risk20 = riskFormula > 0.95; riskK = riskFormula > threshold and not risk(K+1)
+      for (let k = 0; k < BANDS.length; k++) {
+        risk[k] = gt(riskFormula, BANDS[k][1]) && (k === 0 || !risk[k - 1]);
+      }
+      // riskColor = risk20 ? (enable20 ? colour : na) : risk19 ? ... : na
+      let riskColor: string | null = null;
+      for (let k = 0; k < BANDS.length; k++) {
+        if (risk[k]) {
+          riskColor = cfg[BANDS[k][0]] ? BANDS[k][2] : null;
+          break;
+        }
+      }
+
+      s.plot0[i] = { time: t, value: cfg.enableATHLine ? lastATH : NaN, color: ATH_COLOR };
+      // plotshape(enableSpots ? riskSourceShape : na, shape.circle, location.absolute, size.tiny, color = riskColor)
+      const riskShape = riskShapeOf(b);
+      if (cfg.enableSpots && riskColor !== null && !isNaN(riskShape)) {
+        s.markers.push({ time: t, position: 'atPriceMiddle', price: riskShape, shape: 'circle', color: riskColor,
+          size: 'tiny' });
+      }
+      if (cfg.insideBar && riskColor !== null) s.barColors.push({ time: t, color: riskColor });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: metadata.precision },
+        plots: { plot0: s.plot0.slice() },
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AssetRiskMetricsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<AssetRiskMetricsInputs> = {},
   chart?: ChartContext,
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const interval = barInterval(bars);
-  const intraday = interval > 0 && interval < DAY_SECONDS;
-  if (intraday && (chart?.timezone === undefined || chart.session === undefined)) {
-    throw new Error(
-      'Asset risk metrics supports daily and higher timeframes only: on intraday bars ta.vwap resets '
-      + 'on each trading day, which needs the exchange time zone and session.',
-    );
-  }
-
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const vol = bars.map((b) => b.volume ?? NaN);
-
-  // ma(source, length, type): only the branch of the selected type runs
-  const ma = (source: number[], length: number, type: AssetRiskMaType): number[] => {
-    const s = S(source);
-    switch (type) {
-      case 'SMA': return A(ta.sma(s, length));
-      case 'EMA': return A(ta.ema(s, length));
-      case 'SMMA (RMA)': return A(ta.rma(s, length));
-      case 'WMA': return A(ta.wma(s, length));
-      case 'VWMA': return A(ta.vwma(s, length, S(vol)));
-      case 'HMA':
-        if (length === 1 && n > 0) {
-          throw new Error("Invalid value of the 'length' argument (0.0) in the 'wma' function. It must be > 0.");
-        }
-        return A(ta.hma(s, length));
-      default: return new Array(n).fill(NaN);
-    }
-  };
-
-  // lastATH := math.max(high, nz(lastATH[1]))
-  const lastATH: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const prev = i > 0 ? lastATH[i - 1] : NaN;
-    lastATH[i] = Math.max(bars[i].high, isNaN(prev) ? 0 : prev);
-  }
-
-  const rsi = A(ta.rsi(getSourceSeries(bars, cfg.rsiSource), cfg.rsiLength));
-  const rsiMA = ma(rsi, cfg.rsiMALength, cfg.maType);
-  // ta.vwap (hlc3, anchor timeframe.change("1D")). Intraday bars: the sums restart on each trading day of the
-  // exchange. Daily or higher bars: a new anchor on every bar, so sum(hlc3 * volume) / sum(volume) over the bar
-  // alone (0 / 0 = na when the volume is 0, na when it is na)
-  const vwap = intraday && chart ? intradayVwap(bars, chart)
-    : bars.map((b, i) => (((b.high + b.low + b.close) / 3) * vol[i]) / vol[i]);
-  const rsi2 = A(ta.rsi(S(vwap), cfg.rsi2Length));
-  const rsi2MA = ma(rsi2, cfg.ma2Length, cfg.ma2Type);
-
-  const riskSource = A(getSourceSeries(bars, cfg.riskSource));
-  const riskShape = A(getSourceSeries(bars, cfg.riskSourceShape));
-  const metric = cfg.vwapMode ? (cfg.maMode ? rsi2MA : rsi2) : (cfg.maMode ? rsiMA : rsi);
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // riskFormula = riskSource / lastATH * metric / 100 (plain division)
-    const riskFormula = ((riskSource[i] / lastATH[i]) * metric[i]) / 100;
-    // risk20 = riskFormula > 0.95; riskK = riskFormula > threshold and not risk(K+1)
-    const risk: boolean[] = new Array(BANDS.length);
-    for (let k = 0; k < BANDS.length; k++) {
-      risk[k] = gt(riskFormula, BANDS[k][1]) && (k === 0 || !risk[k - 1]);
-    }
-    // riskColor = risk20 ? (enable20 ? colour : na) : risk19 ? ... : na
-    let riskColor: string | null = null;
-    for (let k = 0; k < BANDS.length; k++) {
-      if (risk[k]) {
-        riskColor = cfg[BANDS[k][0]] ? BANDS[k][2] : null;
-        break;
-      }
-    }
-
-    plot0.push({ time: t, value: cfg.enableATHLine ? lastATH[i] : NaN, color: ATH_COLOR });
-    // plotshape(enableSpots ? riskSourceShape : na, shape.circle, location.absolute, size.tiny, color = riskColor)
-    if (cfg.enableSpots && riskColor !== null && !isNaN(riskShape[i])) {
-      markers.push({ time: t, position: 'atPriceMiddle', price: riskShape[i], shape: 'circle', color: riskColor,
-        size: 'tiny' });
-    }
-    if (cfg.insideBar && riskColor !== null) barColors.push({ time: t, color: riskColor });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: metadata.precision },
-    plots: { plot0 },
-    markers,
-    barColors,
-  };
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 export const AssetRiskMetrics = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

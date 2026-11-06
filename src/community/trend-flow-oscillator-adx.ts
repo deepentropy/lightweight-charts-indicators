@@ -13,10 +13,12 @@
  */
 
 import {
-  ta, math, fixnan, Series, getSourceSeries, color,
+  taStep, color,
   type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrendFlowOscillatorAdxInputs {
   /** MFI length */
@@ -84,79 +86,124 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TrendFlowOscillatorAdxInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+
+interface TfoVars {
+  /** fixnan(plus) / fixnan(minus): the last non-na values */
+  plus: number;
+  minus: number;
+}
+
+interface TfoRun extends BarRunState<TfoVars> {
+  mfi: ReturnType<typeof taStep.mfi>;
+  sumAd: WindowSum;
+  sumVol: WindowSum;
+  tfoSma: WindowSma;
+  tr: ReturnType<typeof taStep.tr>;
+  trRma: ReturnType<typeof taStep.rma>;
+  plusRma: ReturnType<typeof taStep.rma>;
+  minusRma: ReturnType<typeof taStep.rma>;
+  adxRma: ReturnType<typeof taStep.rma>;
+  tfo: number[];
+  plots: Point[][];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<TrendFlowOscillatorAdxInputs>): BarStudy<TfoRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const vol = bars.map((b) => b.volume ?? NaN);
-
-  // mfi = (ta.mfi(src, mfiLen) - 50) / 50
-  const mfiRaw = A(ta.mfi(getSourceSeries(bars, cfg.src), cfg.mfiLen, S(vol)));
-  const mfi = mfiRaw.map((v) => (v - 50.0) / 50.0);
-
-  // ad = high == low ? 0 : ((2 * close - high - low) / (high - low)) * volume
-  const ad = bars.map((b, i) => (eq(b.high, b.low) ? 0.0 : ((2.0 * b.close - b.high - b.low) / (b.high - b.low)) * vol[i]));
-  const sumAd = A(math.sum(S(ad), cfg.cmfLen) as Series);
-  const sumVol = A(math.sum(S(vol), cfg.cmfLen) as Series);
-  // plain division: x / 0 is +-infinity, 0 / 0 na
-  const cmf = sumAd.map((v, i) => v / sumVol[i]);
-
-  // tfo = smoothLen > 1 ? ta.sma(cmf + mfi, smoothLen) : cmf + mfi
-  const tfoRaw = cmf.map((v, i) => v + mfi[i]);
-  const tfo = cfg.smoothLen > 1 ? A(ta.sma(S(tfoRaw), cfg.smoothLen)) : tfoRaw;
-
-  // dirmov(diLen)
-  const up = bars.map((b, i) => (i > 0 ? b.high - bars[i - 1].high : NaN));
-  const down = bars.map((b, i) => (i > 0 ? -(b.low - bars[i - 1].low) : NaN));
-  const plusDM = up.map((u, i) => (isNaN(u) ? NaN : gt(u, down[i]) && gt(u, 0) ? u : 0));
-  const minusDM = down.map((d, i) => (isNaN(d) ? NaN : gt(d, up[i]) && gt(d, 0) ? d : 0));
-  const trRma = A(ta.rma(ta.tr(bars, false), cfg.diLen));
-  const plusRma = A(ta.rma(S(plusDM), cfg.diLen));
-  const minusRma = A(ta.rma(S(minusDM), cfg.diLen));
-  const plus = fixnan(plusRma.map((v, i) => (100 * v) / trRma[i]));
-  const minus = fixnan(minusRma.map((v, i) => (100 * v) / trRma[i]));
-  // adx = 100 * ta.rma(math.abs(p - m) / (sumDM == 0 ? 1 : sumDM), adxLen)
-  const dx = plus.map((p, i) => {
-    const sumDM = p + minus[i];
-    return Math.abs(p - minus[i]) / (eq(sumDM, 0) ? 1 : sumDM);
-  });
-  const adxRaw = A(ta.rma(S(dx), cfg.adxLen)).map((v) => 100 * v);
-  const adxNorm = adxRaw.map((v) => (v - 25) / 25);
-
+  const value = barSource(cfg.src);
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const t = (i: number) => bars[i].time;
-  const plot0 = new Array(n);
-  const plot1 = new Array(n);
-  const plot2 = new Array(n);
-  const plot3 = new Array(n);
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const prev = i > 0 ? tfo[i - 1] : NaN;
-    const c = ge(tfo[i], 0)
-      ? (gt(tfo[i], prev) ? COL_UP_RISING : COL_UP_FALLING)
-      : (lt(tfo[i], prev) ? COL_DOWN_FALLING : COL_DOWN_RISING);
-    plot0[i] = { time: t(i), value: fin(tfo[i]), color: c };
-    plot1[i] = { time: t(i), value: fin(adxNorm[i]), color: color.yellow };
-    plot2[i] = { time: t(i), value: fin(cmf[i]) };
-    plot3[i] = { time: t(i), value: fin(mfi[i]) };
-    // bgcolor(math.abs(tfo) > 1.0 ? color.new(color.gray, 95) : na)
-    if (gt(Math.abs(tfo[i]), 1.0)) bgColors.push({ time: t(i), color: BG_EXTREME });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
-    hlines: hlineConfig.map((h) => ({ value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle } })),
-    bgColors,
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: TfoRun = {
+        mfi: taStep.mfi(cfg.mfiLen), sumAd: new WindowSum(cfg.cmfLen), sumVol: new WindowSum(cfg.cmfLen),
+        tfoSma: new WindowSma(cfg.smoothLen), tr: taStep.tr(false), trRma: taStep.rma(cfg.diLen),
+        plusRma: taStep.rma(cfg.diLen), minusRma: taStep.rma(cfg.diLen), adxRma: taStep.rma(cfg.adxLen),
+        tfo: [], plots: [[], [], [], []], bgColors: [],
+        vars: { plus: NaN, minus: NaN }, steps: [], lists: [], series: [],
+      };
+      s.steps = [
+        s.mfi, s.sumAd, s.sumVol, ...(cfg.smoothLen > 1 ? [s.tfoSma] : []), s.tr, s.trRma, s.plusRma, s.minusRma, s.adxRma,
+      ];
+      s.lists = [s.bgColors];
+      s.series = [s.tfo, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const time = b.time;
+      const vol = b.volume ?? NaN;
+
+      // mfi = (ta.mfi(src, mfiLen) - 50) / 50
+      const mfi = ((s.mfi.step(value(b), vol) ?? NaN) - 50.0) / 50.0;
+
+      // ad = high == low ? 0 : ((2 * close - high - low) / (high - low)) * volume
+      const ad = eq(b.high, b.low) ? 0.0 : ((2.0 * b.close - b.high - b.low) / (b.high - b.low)) * vol;
+      const sumAd = s.sumAd.step(ad);
+      const sumVol = s.sumVol.step(vol);
+      // plain division: x / 0 is +-infinity, 0 / 0 na
+      const cmf = sumAd / sumVol;
+
+      // tfo = smoothLen > 1 ? ta.sma(cmf + mfi, smoothLen) : cmf + mfi
+      const tfoRaw = cmf + mfi;
+      const tfo = cfg.smoothLen > 1 ? s.tfoSma.step(tfoRaw) : tfoRaw;
+      s.tfo[i] = tfo;
+
+      // dirmov(diLen)
+      const up = i > 0 ? b.high - bars[i - 1].high : NaN;
+      const down = i > 0 ? -(b.low - bars[i - 1].low) : NaN;
+      const plusDM = isNaN(up) ? NaN : gt(up, down) && gt(up, 0) ? up : 0;
+      const minusDM = isNaN(down) ? NaN : gt(down, up) && gt(down, 0) ? down : 0;
+      const trRma = s.trRma.step(s.tr.step(b.high, b.low, b.close) ?? NaN) ?? NaN;
+      const plusRaw = (100 * (s.plusRma.step(plusDM) ?? NaN)) / trRma;
+      const minusRaw = (100 * (s.minusRma.step(minusDM) ?? NaN)) / trRma;
+      if (!isNaN(plusRaw)) v.plus = plusRaw;
+      if (!isNaN(minusRaw)) v.minus = minusRaw;
+      const plus = v.plus;
+      const minus = v.minus;
+      // adx = 100 * ta.rma(math.abs(p - m) / (sumDM == 0 ? 1 : sumDM), adxLen)
+      const sumDM = plus + minus;
+      const dx = Math.abs(plus - minus) / (eq(sumDM, 0) ? 1 : sumDM);
+      const adxRaw = 100 * (s.adxRma.step(dx) ?? NaN);
+      const adxNorm = (adxRaw - 25) / 25;
+
+      const prev = i > 0 ? s.tfo[i - 1] : NaN;
+      const c = ge(tfo, 0)
+        ? (gt(tfo, prev) ? COL_UP_RISING : COL_UP_FALLING)
+        : (lt(tfo, prev) ? COL_DOWN_FALLING : COL_DOWN_RISING);
+      s.plots[0][i] = { time, value: fin(tfo), color: c };
+      s.plots[1][i] = { time, value: fin(adxNorm), color: color.yellow };
+      s.plots[2][i] = { time, value: fin(cmf) };
+      s.plots[3][i] = { time, value: fin(mfi) };
+      // bgcolor(math.abs(tfo) > 1.0 ? color.new(color.gray, 95) : na)
+      if (gt(Math.abs(tfo), 1.0)) s.bgColors.push({ time, color: BG_EXTREME });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice() },
+        hlines: hlineConfig.map((h) => ({ value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle } })),
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrendFlowOscillatorAdxInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TrendFlowOscillatorAdxInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const TrendFlowOscillatorAdx = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

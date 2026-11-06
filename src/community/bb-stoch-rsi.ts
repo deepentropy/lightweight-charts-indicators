@@ -11,9 +11,14 @@
  * Reference: "Bollinger Bands Stochastic RSI Extreme Signal"
  */
 
-import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import {
+  barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowExtreme, WindowSma, WindowStdev,
+  type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 
 export interface BBStochRSIInputs {
   src: SourceType;
@@ -63,113 +68,126 @@ export const metadata = {
   overlay: true,
 };
 
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface BBStochRSIRun extends BarRunState<Record<string, never>> {
+  basis: WindowSma;
+  dev: WindowStdev;
+  rsi: ReturnType<typeof taStep.rsi>;
+  rsiHigh: WindowExtreme;
+  rsiLow: WindowExtreme;
+  kSma: WindowSma;
+  dSma: WindowSma;
+  upper: number[];
+  lower: number[];
+  k: number[];
+  d: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<BBStochRSIInputs>): BarStudy<BBStochRSIRun, Result> {
+  const { src, bbLength, bbMult, kSmooth, dSmooth, rsiLen, stochLen, upperLimit, lowerLimit } = { ...defaultInputs, ...inputs };
+  const value = barSource(src);
+  const warmup = bbLength;
+  return {
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const s: BBStochRSIRun = {
+        basis: new WindowSma(bbLength), dev: new WindowStdev(bbLength), rsi: taStep.rsi(rsiLen),
+        rsiHigh: new WindowExtreme(false, stochLen), rsiLow: new WindowExtreme(true, stochLen),
+        kSma: new WindowSma(kSmooth), dSma: new WindowSma(dSmooth),
+        upper: [], lower: [], k: [], d: [], plot0: [], plot1: [], plot2: [], flags: [[], [], []], times: [[], [], []],
+        markers: [], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.basis, s.dev, s.rsi, s.rsiHigh, s.rsiLow, s.kSma, s.dSma];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.upper, s.lower, s.k, s.d, s.plot0, s.plot1, s.plot2, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const v = value(b);
+      // Bollinger Bands on price
+      const basis = s.basis.step(v);
+      const dev = s.dev.step(v) * bbMult;
+      const upper = basis + dev;
+      const lower = basis - dev;
+      s.upper[i] = upper;
+      s.lower[i] = lower;
+
+      // Stochastic RSI: stoch(rsi1, rsi1, rsi1, lengthStoch)
+      const r = s.rsi.step(v);
+      const h = s.rsiHigh.step(r);
+      const l = s.rsiLow.step(r);
+      const stochRSI = r == null || h == null || l == null || h === l ? NaN : (r - l) / (h - l) * 100;
+      const k = s.kSma.step(stochRSI);
+      const d = s.dSma.step(k);
+      s.k[i] = k;
+      s.d[i] = d;
+
+      // Plot BB on price
+      s.plot0[i] = { time, value: i < warmup || basis == null ? NaN : basis };
+      s.plot1[i] = { time, value: i < warmup || upper == null ? NaN : upper };
+      s.plot2[i] = { time, value: i < warmup || lower == null ? NaN : lower };
+
+      // Bull/Bear markers from StochRSI extreme conditions
+      // (from the second bar: an na value makes the conditions false, as in the original)
+      let bear = false;
+      let bull = false;
+      if (i >= 1) {
+        const closeCur = b.close;
+        const closePrev = bars[i - 1].close;
+        const upperPrev = s.upper[i - 1];
+        const lowerPrev = s.lower[i - 1];
+        const kPrev = s.k[i - 1];
+        const dPrev = s.d[i - 1];
+        if (!(upperPrev == null || lowerPrev == null || kPrev == null || dPrev == null || isNaN(kPrev) || isNaN(dPrev))) {
+          // Bear: close[1] > upper[1] and close < upper and k[1] > upperlimit and d[1] > upperlimit
+          bear = closePrev > upperPrev && closeCur < upper && kPrev > upperLimit && dPrev > upperLimit;
+          // Bull: close[1] < lower[1] and close > lower and k[1] < lowerlimit and d[1] < lowerlimit
+          bull = closePrev < lowerPrev && closeCur > lower && kPrev < lowerLimit && dPrev < lowerLimit;
+          if (bear) s.markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: '#FF5252' });
+          if (bull) s.markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: '#4CAF50' });
+        }
+      }
+      // alertcondition(Bear or Bull) / alertcondition(Bear) / alertcondition(Bull)
+      [bear || bull, bear, bull].forEach((f, j) => {
+        s.flags[j][i] = f;
+        if (f) s.times[j].push(time as number);
+      });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice(), 'plot2': s.plot2.slice() },
+        fills: [
+          { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(25,135,135,0.05)' } },
+        ],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BBStochRSIInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<BBStochRSIInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const { src, bbLength, bbMult, kSmooth, dSmooth, rsiLen, stochLen, upperLimit, lowerLimit } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  // Bollinger Bands on price
-  const source = getSourceSeries(bars, src);
-  const basis = ta.sma(source, bbLength);
-  const dev = ta.stdev(source, bbLength).mul(bbMult);
-  const upper = basis.add(dev);
-  const lower = basis.sub(dev);
-
-  const basisArr = basis.toArray();
-  const upperArr = upper.toArray();
-  const lowerArr = lower.toArray();
-
-  // Stochastic RSI: stoch(rsi1, rsi1, rsi1, lengthStoch)
-  const rsi = ta.rsi(source, rsiLen);
-  const rsiArr = rsi.toArray();
-  const rsiHigh = ta.highest(rsi, stochLen);
-  const rsiLow = ta.lowest(rsi, stochLen);
-  const rsiHighArr = rsiHigh.toArray();
-  const rsiLowArr = rsiLow.toArray();
-
-  const stochRSI: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const r = rsiArr[i];
-    const h = rsiHighArr[i];
-    const l = rsiLowArr[i];
-    if (r == null || h == null || l == null || h === l) {
-      stochRSI[i] = NaN;
-    } else {
-      stochRSI[i] = (r - l) / (h - l) * 100;
-    }
-  }
-
-  const stochSeries = Series.fromArray(bars, stochRSI);
-  const kSeries = ta.sma(stochSeries, kSmooth);
-  const dSeries = ta.sma(kSeries, dSmooth);
-  const kArr = kSeries.toArray();
-  const dArr = dSeries.toArray();
-
-  const warmup = bbLength;
-
-  // Plot BB on price
-  const plot0 = basisArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || v == null) ? NaN : v,
-  }));
-  const plot1 = upperArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || v == null) ? NaN : v,
-  }));
-  const plot2 = lowerArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || v == null) ? NaN : v,
-  }));
-
-  // Bull/Bear markers from StochRSI extreme conditions
-  // (from the second bar: an na value makes the conditions false, as in the original)
-  const markers: MarkerData[] = [];
-  const bearFlags: boolean[] = new Array(n).fill(false);
-  const bullFlags: boolean[] = new Array(n).fill(false);
-
-  for (let i = 1; i < n; i++) {
-    const closeCur = bars[i].close;
-    const closePrev = bars[i - 1].close;
-    const upperPrev = upperArr[i - 1];
-    const upperCur = upperArr[i];
-    const lowerPrev = lowerArr[i - 1];
-    const lowerCur = lowerArr[i];
-    const kPrev = kArr[i - 1];
-    const dPrev = dArr[i - 1];
-
-    if (upperPrev == null || upperCur == null || lowerPrev == null || lowerCur == null ||
-        kPrev == null || dPrev == null || isNaN(kPrev) || isNaN(dPrev)) continue;
-
-    // Bear: close[1] > upper[1] and close < upper and k[1] > upperlimit and d[1] > upperlimit
-    const bear = closePrev > upperPrev && closeCur < upperCur &&
-                 kPrev > upperLimit && dPrev > upperLimit;
-
-    // Bull: close[1] < lower[1] and close > lower and k[1] < lowerlimit and d[1] < lowerlimit
-    const bull = closePrev < lowerPrev && closeCur > lowerCur &&
-                 kPrev < lowerLimit && dPrev < lowerLimit;
-
-    bearFlags[i] = bear;
-    bullFlags[i] = bull;
-    if (bear) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#FF5252' });
-    }
-    if (bull) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#4CAF50' });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
-    fills: [
-      { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(25,135,135,0.05)' } },
-    ],
-    markers,
-    // alertcondition(Bear or Bull) / alertcondition(Bear) / alertcondition(Bull)
-    alerts: alertStates(alertConditions, bars, [bearFlags.map((b, i) => b || bullFlags[i]), bearFlags, bullFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -179,4 +197,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert2', title: 'Bullish Signal', message: '{{exchange}}:{{ticker}} {{interval}} Bullish BB Stochastic Extreme!' },
 ];
 
-export const BBStochRSI = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const BBStochRSI = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

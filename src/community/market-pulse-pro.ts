@@ -13,8 +13,12 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import {
+  createBarRun, fullResult, liveAlertStates, WindowExtreme, type BarRunState, type BarStudy, type Committable, type IndicatorRun,
+} from '../live-run';
 
 export type MarketPulseSmoothing = 'EMA' | 'HMA' | 'ZLA' | 'SSE';
 
@@ -69,100 +73,177 @@ export const metadata = {
 /** Pine a == b: within 1e-10 (false with na) */
 const eq = (a: number, b: number) => Math.abs(a - b) <= 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MarketPulseProInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
+/** f_smooth(src, length, method), one bar at a time: one call site per use (each keeps its own history) */
+class Smoother implements Committable {
+  private readonly ma: { step(v: number): number; commit(): void } | null;
+  private readonly lag: number;
+  /** The source and the SSE values by bar */
+  private readonly src: number[] = [];
+  private readonly ss: number[] = [];
+  private readonly c1: number;
+  private readonly c2: number;
+  private readonly c3: number;
 
-  // f_smooth(src, length, method): one call site per use (each keeps its own history)
-  const smooth = (src: number[], length: number, method: MarketPulseSmoothing): number[] => {
-    switch (method) {
+  constructor(length: number, private readonly method: MarketPulseSmoothing) {
+    this.ma = method === 'HMA' ? taStep.hma(length) : method === 'SSE' ? null : taStep.ema(length);
+    // lag = math.floor((length - 1) / 2)
+    this.lag = Math.floor((length - 1) / 2);
+    const a1 = Math.exp((-1.414 * Math.PI) / length);
+    const b1 = 2 * a1 * Math.cos((1.414 * Math.PI) / length);
+    this.c2 = b1;
+    this.c3 = -a1 * a1;
+    this.c1 = 1 - this.c2 - this.c3;
+  }
+
+  step(i: number, v: number): number {
+    switch (this.method) {
       case 'HMA':
-        return A(ta.hma(S(src), length));
+        return this.ma!.step(v);
       case 'ZLA': {
-        // lag = math.floor((length - 1) / 2); ta.ema(src + (src - src[lag]), length)
-        const lag = Math.floor((length - 1) / 2);
-        const input = src.map((v, i) => (i - lag >= 0 ? v + (v - src[i - lag]) : NaN));
-        return A(ta.ema(S(input), length));
+        // ta.ema(src + (src - src[lag]), length)
+        this.src[i] = v;
+        const lag = this.lag;
+        return this.ma!.step(i - lag >= 0 ? v + (v - this.src[i - lag]!) : NaN);
       }
       case 'SSE': {
-        const a1 = Math.exp((-1.414 * Math.PI) / length);
-        const b1 = 2 * a1 * Math.cos((1.414 * Math.PI) / length);
-        const c2 = b1;
-        const c3 = -a1 * a1;
-        const c1 = 1 - c2 - c3;
-        const nz = (v: number) => (Number.isFinite(v) ? v : 0);
-        const ss: number[] = new Array(n);
-        for (let i = 0; i < n; i++) {
-          // ss := c1 * (src + nz(src[1])) / 2 + c2 * nz(ss[1]) + c3 * nz(ss[2])
-          const src1 = i >= 1 ? src[i - 1] : NaN;
-          const ss1 = i >= 1 ? ss[i - 1] : NaN;
-          const ss2 = i >= 2 ? ss[i - 2] : NaN;
-          ss[i] = (c1 * (src[i] + nz(src1))) / 2 + c2 * nz(ss1) + c3 * nz(ss2);
-        }
-        return ss;
+        const nz = (x: number) => (Number.isFinite(x) ? x : 0);
+        // ss := c1 * (src + nz(src[1])) / 2 + c2 * nz(ss[1]) + c3 * nz(ss[2])
+        this.src[i] = v;
+        const src1 = i >= 1 ? this.src[i - 1]! : NaN;
+        const ss1 = i >= 1 ? this.ss[i - 1]! : NaN;
+        const ss2 = i >= 2 ? this.ss[i - 2]! : NaN;
+        const r = (this.c1 * (v + nz(src1))) / 2 + this.c2 * nz(ss1) + this.c3 * nz(ss2);
+        this.ss[i] = r;
+        return r;
       }
       default:
-        return A(ta.ema(S(src), length));
+        return this.ma!.step(v);
     }
-  };
+  }
 
-  // SMI
-  const hh = A(ta.highest(S(bars.map((b) => b.high)), cfg.smiLength));
-  const ll = A(ta.lowest(S(bars.map((b) => b.low)), cfg.smiLength));
-  const smiInput = bars.map((b, i) => {
-    const midpoint = (hh[i] + ll[i]) / 2;
-    const rangel = hh[i] - ll[i];
-    return ((b.close - midpoint) / (eq(rangel, 0) ? 1 : rangel / 2)) * 100;
-  });
-  const smiK = smooth(smiInput, cfg.smiSmoothK, cfg.normalSmoothingMethod);
-  // smiD = f_smooth(smiK, smiSmoothD, ...) is not used by any output of the Pine script (input kept)
+  commit(): void {
+    this.ma?.commit();
+  }
+}
 
-  // Stoch RSI
-  const rsi = A(ta.rsi(S(bars.map((b) => b.close)), cfg.rsiPeriod));
-  const rsiHi = A(ta.highest(S(rsi), cfg.rsiPeriod));
-  const rsiLo = A(ta.lowest(S(rsi), cfg.rsiPeriod));
-  const stochRSI = rsi.map((v, i) => {
-    const r = rsiHi[i] - rsiLo[i];
-    return ((v - rsiLo[i]) / (eq(r, 0) ? 1 : r)) * 100;
-  });
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
 
-  // Signal line
-  const signal = smooth(bars.map((b) => b.close), cfg.signalPeriod, cfg.signalSmoothingMethod);
-  const sigHi = A(ta.highest(S(signal), cfg.signalPeriod));
-  const sigLo = A(ta.lowest(S(signal), cfg.signalPeriod));
+interface PulseRun extends BarRunState<Record<string, never>> {
+  hh: WindowExtreme;
+  ll: WindowExtreme;
+  smiK: Smoother;
+  rsi: ReturnType<typeof taStep.rsi>;
+  rsiHi: WindowExtreme;
+  rsiLo: WindowExtreme;
+  signal: Smoother;
+  sigHi: WindowExtreme;
+  sigLo: WindowExtreme;
+  smoothBuy: Smoother;
+  smoothSell: Smoother;
+  buyLine: number[];
+  sellLine: number[];
+  plot0: Point[];
+  plot1: Point[];
+  flags: boolean[][];
+  times: number[][];
+}
 
-  const buyDominance = bars.map((_b, i) => {
-    const normSmiK = (smiK[i] + 100) / 200;
-    const normStochRSI = stochRSI[i] / 100;
-    const sigRange = sigHi[i] - sigLo[i];
-    const normSignal = (signal[i] - sigLo[i]) / (eq(sigRange, 0) ? 1 : sigRange);
-    return ((normSmiK + normStochRSI + normSignal) / 3) * 100;
-  });
-  const sellDominance = buyDominance.map((v) => 100 - v);
-  const smoothBuy = smooth(buyDominance, 10, cfg.normalSmoothingMethod);
-  const smoothSell = smooth(sellDominance, 10, cfg.normalSmoothingMethod);
-
+function study(inputs: Partial<MarketPulseProInputs>): BarStudy<PulseRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  // bullCrossOverBear, bearCrossOverBull, buyCross50Up, buyCross50Down
-  const buyLine = smoothBuy.map(fin);
-  const sellLine = smoothSell.map(fin);
-  const flags = [
-    crossedOver(buyLine, sellLine), crossedOver(sellLine, buyLine), crossedOver(buyLine, 50), crossedUnder(buyLine, 50),
-  ];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: fin(smoothBuy[i]), color: color.lime })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: fin(smoothSell[i]), color: color.fuchsia })),
+    init() {
+      const s: PulseRun = {
+        hh: new WindowExtreme(false, cfg.smiLength),
+        ll: new WindowExtreme(true, cfg.smiLength),
+        smiK: new Smoother(cfg.smiSmoothK, cfg.normalSmoothingMethod),
+        rsi: taStep.rsi(cfg.rsiPeriod),
+        rsiHi: new WindowExtreme(false, cfg.rsiPeriod),
+        rsiLo: new WindowExtreme(true, cfg.rsiPeriod),
+        signal: new Smoother(cfg.signalPeriod, cfg.signalSmoothingMethod),
+        sigHi: new WindowExtreme(false, cfg.signalPeriod),
+        sigLo: new WindowExtreme(true, cfg.signalPeriod),
+        smoothBuy: new Smoother(10, cfg.normalSmoothingMethod),
+        smoothSell: new Smoother(10, cfg.normalSmoothingMethod),
+        buyLine: [], sellLine: [], plot0: [], plot1: [], flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.hh, s.ll, s.smiK, s.rsi, s.rsiHi, s.rsiLo, s.signal, s.sigHi, s.sigLo, s.smoothBuy, s.smoothSell];
+      s.lists = s.times;
+      s.series = [s.buyLine, s.sellLine, s.plot0, s.plot1, ...s.flags];
+      return s;
     },
-    hlines: [{ value: 50, options: { title: '50%', color: color.gray, linestyle: 'dashed' } }],
-    alerts: alertStates(alertConditions, bars, flags),
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      // SMI
+      const hh = s.hh.step(b.high);
+      const ll = s.ll.step(b.low);
+      const midpoint = (hh + ll) / 2;
+      const rangel = hh - ll;
+      const smiInput = ((b.close - midpoint) / (eq(rangel, 0) ? 1 : rangel / 2)) * 100;
+      const smiK = s.smiK.step(i, smiInput);
+      // smiD = f_smooth(smiK, smiSmoothD, ...) is not used by any output of the Pine script (input kept)
+
+      // Stoch RSI
+      const rsi = s.rsi.step(b.close);
+      const rsiHi = s.rsiHi.step(rsi);
+      const rsiLo = s.rsiLo.step(rsi);
+      const r = rsiHi - rsiLo;
+      const stochRSI = ((rsi - rsiLo) / (eq(r, 0) ? 1 : r)) * 100;
+
+      // Signal line
+      const signal = s.signal.step(i, b.close);
+      const sigHi = s.sigHi.step(signal);
+      const sigLo = s.sigLo.step(signal);
+
+      const normSmiK = (smiK + 100) / 200;
+      const normStochRSI = stochRSI / 100;
+      const sigRange = sigHi - sigLo;
+      const normSignal = (signal - sigLo) / (eq(sigRange, 0) ? 1 : sigRange);
+      const buyDominance = ((normSmiK + normStochRSI + normSignal) / 3) * 100;
+      const sellDominance = 100 - buyDominance;
+      const buy = fin(s.smoothBuy.step(i, buyDominance));
+      const sell = fin(s.smoothSell.step(i, sellDominance));
+      s.buyLine[i] = buy;
+      s.sellLine[i] = sell;
+      s.plot0[i] = { time: b.time, value: buy, color: color.lime };
+      s.plot1[i] = { time: b.time, value: sell, color: color.fuchsia };
+      // bullCrossOverBear, bearCrossOverBull, buyCross50Up, buyCross50Down
+      const pb = i > 0 ? s.buyLine[i - 1]! : NaN;
+      const ps = i > 0 ? s.sellLine[i - 1]! : NaN;
+      const f0 = buy > sell && pb <= ps;
+      const f1 = sell > buy && ps <= pb;
+      const f2 = buy > 50 && pb <= 50;
+      const f3 = buy < 50 && pb >= 50;
+      s.flags[0]![i] = f0;
+      s.flags[1]![i] = f1;
+      s.flags[2]![i] = f2;
+      s.flags[3]![i] = f3;
+      if (f0) s.times[0]!.push(b.time as number);
+      if (f1) s.times[1]!.push(b.time as number);
+      if (f2) s.times[2]!.push(b.time as number);
+      if (f3) s.times[3]!.push(b.time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [{ value: 50, options: { title: '50%', color: color.gray, linestyle: 'dashed' } }],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MarketPulseProInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MarketPulseProInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -175,6 +256,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const MarketPulsePro = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

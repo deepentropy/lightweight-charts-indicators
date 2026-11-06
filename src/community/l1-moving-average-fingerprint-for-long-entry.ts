@@ -14,8 +14,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { taCore, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData, MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface L1MovingAverageFingerprintInputs {
   maGene1: number;
@@ -81,76 +83,52 @@ const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 const nz = (x: number) => (isNaN(x) ? 0 : x);
 
 /**
- * Pine xsa(src, len, wei): running sum sum = nz(sum[1]) - nz(src[len]) + src, ma = sum / len (na while src[len] is
- * na), out = ma on the first bar where out[1] is na, then (src * wei + out[1] * (len - wei)) / len.
+ * Pine xsa(src, len, wei) on bar i: running sum sum = nz(sum[1]) - nz(src[len]) + src, ma = sum / len (na while
+ * src[len] is na), out = ma on the first bar where out[1] is na, then (src * wei + out[1] * (len - wei)) / len.
+ * `st` holds sum[1] and out[1] and takes the values of bar i.
  */
-function xsa(src: number[], len: number, wei: number): number[] {
-  const out: number[] = new Array(src.length).fill(NaN);
-  let sumPrev = NaN;
-  let outPrev = NaN;
-  for (let i = 0; i < src.length; i++) {
-    const srcLen = i - len >= 0 ? src[i - len] : NaN;
-    const sum = nz(sumPrev) - nz(srcLen) + src[i];
-    const ma = isNaN(srcLen) ? NaN : sum / len;
-    const o = isNaN(outPrev) ? ma : (src[i] * wei + outPrev * (len - wei)) / len;
-    out[i] = o;
-    sumPrev = sum;
-    outPrev = o;
-  }
-  return out;
+function xsaStep(src: number[], i: number, len: number, wei: number, st: { sum: number; out: number }): number {
+  const srcLen = i - len >= 0 ? src[i - len] : NaN;
+  const sum = nz(st.sum) - nz(srcLen) + src[i];
+  const ma = isNaN(srcLen) ? NaN : sum / len;
+  const o = isNaN(st.out) ? ma : (src[i] * wei + st.out * (len - wei)) / len;
+  st.sum = sum;
+  st.out = o;
+  return o;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<L1MovingAverageFingerprintInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] };
+
+interface L1Vars {
+  /** xsa(src1, 3, 1) and xsa(src2, 3, 1): sum[1] and out[1] (changed in place, copied by copyVars) */
+  xsa1: { sum: number; out: number };
+  xsa2: { sum: number; out: number };
+}
+
+interface L1Run extends BarRunState<L1Vars> {
+  hi: WindowExtreme[];
+  lo: WindowExtreme[];
+  fp: WindowSma[];
+  mixes: WindowSma[];
+  fp10: WindowSma;
+  fp12: WindowSma;
+  fpH: WindowExtreme;
+  lowest13: WindowExtreme;
+  ready: WindowSma;
+  crosses: ReturnType<typeof taStep.crossover>[];
+  src1: number[];
+  src2: number[];
+  bgColors: BgColorData[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<L1MovingAverageFingerprintInputs>): BarStudy<L1Run, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { maGene1, maGene2, maGene3, maLookback: L, fpLookback } = cfg;
   const { fpCoeff1: c1, fpCoeff2: c2, fpCoeff3: c3, fpCoeff4: c4, fpCoeff5: c5, fpCoeff6: c6, fpCoeff7: c7,
     fpCoeff8: c8 } = cfg;
-  const n = bars.length;
-  const high = bars.map((b) => b.high);
-  const low = bars.map((b) => b.low);
-
-  // Basic fingerprints (highest highs and lowest lows smoothed)
-  const fp1 = taCore.sma(taCore.highest(high, maGene1), L);
-  const fp2 = taCore.sma(taCore.highest(high, maGene2), L);
-  const fp3 = taCore.sma(taCore.highest(high, maGene3), L);
-  const fp4 = taCore.sma(taCore.lowest(low, maGene1), L);
-  const fp5 = taCore.sma(taCore.lowest(low, maGene2), L);
-  const fp6 = taCore.sma(taCore.lowest(low, maGene3), L);
-
-  // Composite fingerprints with coefficients
-  const mix = (a: number, b: number) => fp1.map((_, i) =>
-    (fp1[i] * a + fp2[i] * a + fp3[i] * a + fp4[i] * b + fp5[i] * b + fp6[i] * b) / 6);
-  const fp7 = taCore.sma(mix(c1, c2), L);
-  const fp8 = taCore.sma(mix(c3, c4), L);
-  const fp9 = taCore.sma(mix(c5, c6), L);
-  const fp10 = taCore.sma(fp7.map((_, i) => (fp7[i] * 3 + fp8[i] * 2 + fp9[i]) / 6 * c7), L);
-
-  // Specialized fingerprint using xsa (low[1] is na on bar 0)
-  const src1 = low.map((v, i) => (i > 0 ? Math.abs(v - low[i - 1]) : NaN));
-  const src2 = low.map((v, i) => (i > 0 ? Math.max(v - low[i - 1], 0) : NaN));
-  const xsa1 = xsa(src1, 3, 1);
-  const xsa2 = xsa(src2, 3, 1);
-  // A plain division: x / 0 is +-infinity (0 / 0 NaN), the infinite value is used as in Pine
-  const fp11 = xsa1.map((v, i) => v / xsa2[i] * 100);
-
-  const value = fp11.map((v, i) => (le(bars[i].close * c8, fp10[i]) ? v * 10 : v / 10));
-  const fp12 = taCore.sma(value, 3);
-
-  // Final fingerprint calculations
-  const fpH = taCore.highest(fp12, fpLookback);
-  const lowest13 = taCore.lowest(low, 13);
-  const part = low.map((v, i) => (le(v, lowest13[i]) ? (fpH[i] + fp11[i] * 2) / 2 : 0));
-  const readyToLong = taCore.sma(part, 3).map((v) => v / 200);
-
+  const genes = [maGene1, maGene2, maGene3];
   const bg = String(color.new(color.green, 70));
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    if (gt(readyToLong[i], 0)) bgColors.push({ time: bars[i].time, color: bg });
-  }
-
   // plotchar(ta.crossover(ReadytoLong, level), ...): Pine keeps only the first character of a plotchar char, so
   // '▲▲' and '▲▲▲' are drawn as '▲'
   const levels: [number, string][] = [
@@ -158,24 +136,92 @@ export function calculate(
     [4.5, String(color.new(color.lime, 0))],
     [7.0, String(color.new(color.green, 0))],
   ];
-  const markers: MarkerData[] = [];
-  const crosses = levels.map(([level]) => taCore.crossover(readyToLong, new Array(n).fill(level)));
-  for (let i = 0; i < n; i++) {
-    levels.forEach(([, c], k) => {
-      if (crosses[k][i]) {
-        // ids char0 / char1 / char2: the three plotchar outputs in declaration order
-        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'circle', color: 'transparent', text: '▲',
-          textColor: c, size: 'small', id: `char${k}` });
-      }
-    });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    bgColors,
+    init() {
+      // the length checks of ta.highest / ta.lowest and ta.sma
+      for (const g of genes) taStep.highest().step(0, g);
+      taStep.sma().step(0, L);
+      taStep.highest().step(0, fpLookback);
+      const s: L1Run = {
+        hi: genes.map((g) => new WindowExtreme(false, g)), lo: genes.map((g) => new WindowExtreme(true, g)),
+        fp: Array.from({ length: 6 }, () => new WindowSma(L)), mixes: Array.from({ length: 3 }, () => new WindowSma(L)),
+        fp10: new WindowSma(L), fp12: new WindowSma(3), fpH: new WindowExtreme(false, fpLookback),
+        lowest13: new WindowExtreme(true, 13), ready: new WindowSma(3),
+        crosses: levels.map(() => taStep.crossover()), src1: [], src2: [], bgColors: [], markers: [],
+        steps: [], vars: { xsa1: { sum: NaN, out: NaN }, xsa2: { sum: NaN, out: NaN } }, lists: [], series: [],
+      };
+      s.steps = [...s.hi, ...s.lo, ...s.fp, ...s.mixes, s.fp10, s.fp12, s.fpH, s.lowest13, s.ready, ...s.crosses];
+      s.lists = [s.bgColors, s.markers];
+      s.series = [s.src1, s.src2];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const low = b.low;
+      // Basic fingerprints (highest highs and lowest lows smoothed)
+      const fp1 = s.fp[0].step(s.hi[0].step(b.high));
+      const fp2 = s.fp[1].step(s.hi[1].step(b.high));
+      const fp3 = s.fp[2].step(s.hi[2].step(b.high));
+      const fp4 = s.fp[3].step(s.lo[0].step(low));
+      const fp5 = s.fp[4].step(s.lo[1].step(low));
+      const fp6 = s.fp[5].step(s.lo[2].step(low));
+
+      // Composite fingerprints with coefficients
+      const fp7 = s.mixes[0].step((fp1 * c1 + fp2 * c1 + fp3 * c1 + fp4 * c2 + fp5 * c2 + fp6 * c2) / 6);
+      const fp8 = s.mixes[1].step((fp1 * c3 + fp2 * c3 + fp3 * c3 + fp4 * c4 + fp5 * c4 + fp6 * c4) / 6);
+      const fp9 = s.mixes[2].step((fp1 * c5 + fp2 * c5 + fp3 * c5 + fp4 * c6 + fp5 * c6 + fp6 * c6) / 6);
+      const fp10 = s.fp10.step((fp7 * 3 + fp8 * 2 + fp9) / 6 * c7);
+
+      // Specialized fingerprint using xsa (low[1] is na on bar 0)
+      const prevLow = i > 0 ? bars[i - 1].low : NaN;
+      s.src1[i] = i > 0 ? Math.abs(low - prevLow) : NaN;
+      s.src2[i] = i > 0 ? Math.max(low - prevLow, 0) : NaN;
+      const xsa1 = xsaStep(s.src1, i, 3, 1, v.xsa1);
+      const xsa2 = xsaStep(s.src2, i, 3, 1, v.xsa2);
+      // A plain division: x / 0 is +-infinity (0 / 0 NaN), the infinite value is used as in Pine
+      const fp11 = xsa1 / xsa2 * 100;
+
+      const value = le(b.close * c8, fp10) ? fp11 * 10 : fp11 / 10;
+      const fp12 = s.fp12.step(value);
+
+      // Final fingerprint calculations
+      const fpH = s.fpH.step(fp12);
+      const lowest13 = s.lowest13.step(low);
+      const part = le(low, lowest13) ? (fpH + fp11 * 2) / 2 : 0;
+      const readyToLong = s.ready.step(part) / 200;
+
+      if (gt(readyToLong, 0)) s.bgColors.push({ time: b.time, color: bg });
+      for (let k = 0; k < levels.length; k++) {
+        if (s.crosses[k].step(readyToLong, levels[k][0])) {
+          // ids char0 / char1 / char2: the three plotchar outputs in declaration order
+          s.markers.push({ time: b.time, position: 'belowBar', shape: 'circle', color: 'transparent', text: '▲',
+            textColor: levels[k][1], size: 'small', id: `char${k}` });
+        }
+      }
+    },
+    copyVars: (v) => ({ xsa1: { ...v.xsa1 }, xsa2: { ...v.xsa2 } }),
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
 }
 
-export const L1MovingAverageFingerprint = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<L1MovingAverageFingerprintInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<L1MovingAverageFingerprintInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const L1MovingAverageFingerprint = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

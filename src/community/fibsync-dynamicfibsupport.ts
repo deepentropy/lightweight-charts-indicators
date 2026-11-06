@@ -11,7 +11,9 @@
  * Original notice: © der chartmeister, © bakeTheCrypto, © mr_uponly
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface FibsyncDynamicfibsupportInputs {
   /** Window of the static levels (highest high / lowest low) */
@@ -75,86 +77,118 @@ export const metadata = {
 /** Pine `==` on floats: equal within 1e-10 (na compares false) */
 const eq = (a: number, b: number) => Math.abs(a - b) <= 1e-10;
 
-export function calculate(bars: Bar[], inputs: Partial<FibsyncDynamicfibsupportInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface FibVars {
+  /** The last swing high / low price */
+  sh: number;
+  slo: number;
+}
+
+interface FibRun extends BarRunState<FibVars> {
+  hh: WindowExtreme;
+  ll: WindowExtreme;
+  winHigh: WindowExtreme;
+  winLow: WindowExtreme;
+  plots: Point[][];
+}
+
+const COLOURS = [YELLOW, RED, BLUE, GREEN, GRAY, GREEN, RED, WHITE, YELLOW50, RED50, BLUE50, GRAY50, GREEN50];
+
+function study(inputs: Partial<FibsyncDynamicfibsupportInputs>): BarStudy<FibRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const high = bars.map((b) => b.high);
-  const low = bars.map((b) => b.low);
-  const highS = Series.fromArray(bars, high);
-  const lowS = Series.fromArray(bars, low);
-
-  // Static levels
-  const hh = A(ta.highest(highS, cfg.n));
-  const ll = A(ta.lowest(lowS, cfg.n));
-
-  // Swings: high[swing_len] == ta.highest(high, swing_len * 2 + 1)
   const sl = cfg.swingLen;
-  const winHigh = A(ta.highest(highS, sl * 2 + 1));
-  const winLow = A(ta.lowest(lowS, sl * 2 + 1));
-  const swingHigh: number[] = new Array(n);
-  const swingLow: number[] = new Array(n);
-  let sh = NaN;
-  let slo = NaN;
-  for (let i = 0; i < n; i++) {
-    const hBack = i - sl >= 0 ? high[i - sl] : NaN;
-    const lBack = i - sl >= 0 ? low[i - sl] : NaN;
-    sh = eq(hBack, winHigh[i]) ? hBack : sh;
-    slo = eq(lBack, winLow[i]) ? lBack : slo;
-    swingHigh[i] = sh;
-    swingLow[i] = slo;
-  }
-
-  // for i = 0 to dyn_lookback: the first non-na swing_high_price[i]
-  const recent = (arr: number[], i: number) => {
-    for (let k = 0; k <= cfg.dynLookback; k++) {
-      if (i - k < 0) break;
-      if (!isNaN(arr[i - k])) return arr[i - k];
-    }
-    return NaN;
-  };
-
-  const plots: Record<string, { time: number; value: number; color: string }[]> = {};
-  for (let p = 0; p <= 12; p++) plots[`plot${p}`] = [];
-  const colours = [YELLOW, RED, BLUE, GREEN, GRAY, GREEN, RED, WHITE, YELLOW50, RED50, BLUE50, GRAY50, GREEN50];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time as number;
-    const range = hh[i] - ll[i];
-    const p1 = ll[i] + range * 0.236;
-    const p2 = ll[i] + range * 0.382;
-    const p3 = ll[i] + range * 0.5;
-    const p4 = ll[i] + range * 0.618;
-    const p5 = ll[i] + range * 0.786;
-
-    const rsh = recent(swingHigh, i);
-    const rsl = recent(swingLow, i);
-    let d236 = NaN;
-    let d382 = NaN;
-    let d500 = NaN;
-    let d618 = NaN;
-    let d786 = NaN;
-    if (!isNaN(rsh) && !isNaN(rsl)) {
-      const fibRange = rsh - rsl;
-      d236 = rsl + fibRange * 0.236;
-      d382 = rsl + fibRange * 0.382;
-      d500 = rsl + fibRange * 0.5;
-      d618 = rsl + fibRange * 0.618;
-      d786 = rsl + fibRange * 0.786;
-    }
-    const dyn = (v: number) => (cfg.showDynamic ? v : NaN);
-    const values = [p1, p2, p4, p5, p3, ll[i], hh[i], bars[i].close,
-      dyn(d236), dyn(d382), dyn(d618), dyn(d500), dyn(d786)];
-    values.forEach((v, p) => plots[`plot${p}`].push({ time: t, value: v, color: colours[p] }));
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    init() {
+      // Static levels: ta.highest(high, n) / ta.lowest(low, n); swings: ta.highest(high, swing_len * 2 + 1)
+      const hh = new WindowExtreme(false, cfg.n);
+      const ll = new WindowExtreme(true, cfg.n);
+      const winHigh = new WindowExtreme(false, sl * 2 + 1);
+      const winLow = new WindowExtreme(true, sl * 2 + 1);
+      const s: FibRun = {
+        hh, ll, winHigh, winLow, plots: COLOURS.map(() => []),
+        steps: [hh, ll, winHigh, winLow], vars: { sh: NaN, slo: NaN }, lists: [], series: [],
+      };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time as number;
+      const v = s.vars;
+      const hh = s.hh.step(b.high);
+      const ll = s.ll.step(b.low);
+      const wh = s.winHigh.step(b.high);
+      const wl = s.winLow.step(b.low);
+      // Swings: high[swing_len] == ta.highest(high, swing_len * 2 + 1)
+      const hBack = i - sl >= 0 ? bars[i - sl].high : NaN;
+      const lBack = i - sl >= 0 ? bars[i - sl].low : NaN;
+      v.sh = eq(hBack, wh) ? hBack : v.sh;
+      v.slo = eq(lBack, wl) ? lBack : v.slo;
+
+      const range = hh - ll;
+      const p1 = ll + range * 0.236;
+      const p2 = ll + range * 0.382;
+      const p3 = ll + range * 0.5;
+      const p4 = ll + range * 0.618;
+      const p5 = ll + range * 0.786;
+
+      // for i = 0 to dyn_lookback: the first non-na swing_high_price[i] (the kept swing is never na again once set,
+      // so it is the one of this bar)
+      const rsh = 0 <= cfg.dynLookback ? v.sh : NaN;
+      const rsl = 0 <= cfg.dynLookback ? v.slo : NaN;
+      let d236 = NaN;
+      let d382 = NaN;
+      let d500 = NaN;
+      let d618 = NaN;
+      let d786 = NaN;
+      if (!isNaN(rsh) && !isNaN(rsl)) {
+        const fibRange = rsh - rsl;
+        d236 = rsl + fibRange * 0.236;
+        d382 = rsl + fibRange * 0.382;
+        d500 = rsl + fibRange * 0.5;
+        d618 = rsl + fibRange * 0.618;
+        d786 = rsl + fibRange * 0.786;
+      }
+      const dyn = (x: number) => (cfg.showDynamic ? x : NaN);
+      const P = s.plots;
+      P[0][i] = { time: t, value: p1, color: COLOURS[0] };
+      P[1][i] = { time: t, value: p2, color: COLOURS[1] };
+      P[2][i] = { time: t, value: p4, color: COLOURS[2] };
+      P[3][i] = { time: t, value: p5, color: COLOURS[3] };
+      P[4][i] = { time: t, value: p3, color: COLOURS[4] };
+      P[5][i] = { time: t, value: ll, color: COLOURS[5] };
+      P[6][i] = { time: t, value: hh, color: COLOURS[6] };
+      P[7][i] = { time: t, value: b.close, color: COLOURS[7] };
+      P[8][i] = { time: t, value: dyn(d236), color: COLOURS[8] };
+      P[9][i] = { time: t, value: dyn(d382), color: COLOURS[9] };
+      P[10][i] = { time: t, value: dyn(d618), color: COLOURS[10] };
+      P[11][i] = { time: t, value: dyn(d500), color: COLOURS[11] };
+      P[12][i] = { time: t, value: dyn(d786), color: COLOURS[12] };
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FibsyncDynamicfibsupportInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<FibsyncDynamicfibsupportInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const FibsyncDynamicfibsupport = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

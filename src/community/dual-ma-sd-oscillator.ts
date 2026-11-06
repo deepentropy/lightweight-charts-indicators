@@ -13,9 +13,11 @@
  * Original notice: © SchizoQuant
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DualMaSdOscillatorInputs {
   /** Price source of the fast and slow EMAs */
@@ -79,79 +81,116 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DualMaSdOscillatorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface DualVars {
+  /** var int SQ = 0; SQ[1] (na on the first bar) */
+  sq: number;
+  prevSq: number;
+}
+
+interface DualRun extends BarRunState<DualVars> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  smooth: ReturnType<typeof taStep.ema>;
+  upper: WindowStdev;
+  lower: WindowStdev;
+  plots: Point[][];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<DualMaSdOscillatorInputs>): BarStudy<DualRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = getSourceSeries(bars, cfg.src);
-
-  const fastMA = A(ta.ema(src, cfg.maFast));
-  const slowMA = A(ta.ema(src, cfg.maSlow));
-  const spread = fastMA.map((f, i) => f - slowMA[i]);
-  const smoothedMA = A(ta.ema(S(spread), cfg.maSmooth));
-  const upperBand = A(ta.stdev(S(smoothedMA), cfg.upperSDLen));
-  const lowerBand = A(ta.stdev(S(smoothedMA), cfg.lowerSDLen)).map((v) => -v);
-
+  const value = barSource(cfg.src);
   const longCol = cfg.longColor;
   const shortCol = cfg.shortColor;
   const upperCol = String(color.new(longCol, 45));
   const lowerCol = String(color.new(shortCol, 45));
   const histLong = String(color.new(longCol, 70));
   const histShort = String(color.new(shortCol, 70));
-
-  const plot0: Array<{ time: number; value: number; color: string }> = [];
-  const plot1: Array<{ time: number; value: number; color: string }> = [];
-  const plot2: Array<{ time: number; value: number; color: string }> = [];
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const longFlags: boolean[] = [], shortFlags: boolean[] = [];
-  let sq = 0; // var int SQ = 0
-  let prevSq = NaN; // SQ[1] (na on the first bar)
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    if (gt(smoothedMA[i], upperBand[i])) sq = 1; // long
-    if (lt(smoothedMA[i], lowerBand[i])) sq = -1; // short
-    // SQ[1] != 1 is false when SQ[1] is na (first bar)
-    const longSignal = sq === 1 && !isNaN(prevSq) && prevSq !== 1;
-    const shortSignal = sq === -1 && !isNaN(prevSq) && prevSq !== -1;
-    const col = sq === 1 ? longCol : shortCol;
-    longFlags.push(longSignal);
-    shortFlags.push(shortSignal);
-
-    plot0.push({ time: t, value: upperBand[i], color: upperCol });
-    plot1.push({ time: t, value: lowerBand[i], color: lowerCol });
-    plot2.push({ time: t, value: smoothedMA[i], color: sq === 1 ? histLong : histShort });
-    // plotshape(showSignals and longSignal, 'Bull Signal', shape.triangleup, location.belowbar, size.small,
-    //   force_overlay = true, text = 'BULL', textcolor = color.white)
-    if (cfg.showSignals && longSignal) {
-      markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: longCol, size: 'small', text: 'BULL',
-        textColor: color.white, forceOverlay: true });
-    }
-    if (cfg.showSignals && shortSignal) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: shortCol, size: 'small', text: 'BEAR',
-        textColor: color.white, forceOverlay: true });
-    }
-    // barcolor(colorBars ? col : na)
-    if (cfg.colorBars) barColors.push({ time: t, color: col });
-    prevSq = sq;
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    hlines: [{ value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dashed' } }],
-    // fill(upperPlot, lowerPlot, title = 'SD Band Fill', color = color.new(color.gray, 93))
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'SD Band Fill' },
-      colors: new Array<string>(n).fill(String(color.new(color.gray, 93))) }],
-    markers,
-    barColors,
-    // alertcondition(longSignal, "Bull Signal") / alertcondition(shortSignal, "Bear Signal")
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: DualRun = {
+        fast: taStep.ema(cfg.maFast), slow: taStep.ema(cfg.maSlow), smooth: taStep.ema(cfg.maSmooth),
+        upper: new WindowStdev(cfg.upperSDLen), lower: new WindowStdev(cfg.lowerSDLen), plots: [[], [], []],
+        markers: [], barColors: [], flags: [[], []], times: [[], []],
+        vars: { sq: 0, prevSq: NaN }, steps: [], lists: [], series: [],
+      };
+      s.steps = [s.fast, s.slow, s.smooth, s.upper, s.lower];
+      s.lists = [s.markers, s.barColors, ...s.times];
+      s.series = [...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      const x = value(b);
+      const spread = (s.fast.step(x) ?? NaN) - (s.slow.step(x) ?? NaN);
+      const smoothedMA = s.smooth.step(spread) ?? NaN;
+      const upperBand = s.upper.step(smoothedMA);
+      const lowerBand = -s.lower.step(smoothedMA);
+
+      if (gt(smoothedMA, upperBand)) v.sq = 1; // long
+      if (lt(smoothedMA, lowerBand)) v.sq = -1; // short
+      const sq = v.sq;
+      const prevSq = v.prevSq;
+      // SQ[1] != 1 is false when SQ[1] is na (first bar)
+      const longSignal = sq === 1 && !isNaN(prevSq) && prevSq !== 1;
+      const shortSignal = sq === -1 && !isNaN(prevSq) && prevSq !== -1;
+      const col = sq === 1 ? longCol : shortCol;
+      s.flags[0][i] = longSignal;
+      s.flags[1][i] = shortSignal;
+      if (longSignal) s.times[0].push(t as number);
+      if (shortSignal) s.times[1].push(t as number);
+
+      s.plots[0][i] = { time: t, value: upperBand, color: upperCol };
+      s.plots[1][i] = { time: t, value: lowerBand, color: lowerCol };
+      s.plots[2][i] = { time: t, value: smoothedMA, color: sq === 1 ? histLong : histShort };
+      // plotshape(showSignals and longSignal, 'Bull Signal', shape.triangleup, location.belowbar, size.small,
+      //   force_overlay = true, text = 'BULL', textcolor = color.white)
+      if (cfg.showSignals && longSignal) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: longCol, size: 'small', text: 'BULL',
+          textColor: color.white, forceOverlay: true });
+      }
+      if (cfg.showSignals && shortSignal) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: shortCol, size: 'small', text: 'BEAR',
+          textColor: color.white, forceOverlay: true });
+      }
+      // barcolor(colorBars ? col : na)
+      if (cfg.colorBars) s.barColors.push({ time: t, color: col });
+      v.prevSq = sq;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+        hlines: [{ value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dashed' } }],
+        // fill(upperPlot, lowerPlot, title = 'SD Band Fill', color = color.new(color.gray, 93))
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'SD Band Fill' },
+          colors: new Array<string>(n).fill(String(color.new(color.gray, 93))) }],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        // alertcondition(longSignal, "Bull Signal") / alertcondition(shortSignal, "Bear Signal")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DualMaSdOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DualMaSdOscillatorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -162,6 +201,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const DualMaSdOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

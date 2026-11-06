@@ -12,8 +12,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -67,76 +69,109 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(bars: Bar[], inputs: Partial<StcIndicatorABetterMacdInputs> = {}): IndicatorResult & { alertCalls: AlertCall[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { alertCalls: AlertCall[] };
+
+interface StcVars {
+  /** CCCCC[1], DDD[1], and the same of the second stochastic */
+  prevK1: number;
+  prevD: number;
+  prevK2: number;
+  prevE: number;
+}
+
+interface StcRun extends BarRunState<StcVars> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  ccc: WindowExtreme;
+  cHigh: WindowExtreme;
+  dLow: WindowExtreme;
+  dHigh: WindowExtreme;
+  stc: number[];
+  plots: Point[][];
+  alertCalls: AlertCall[];
+}
+
+function study(inputs: Partial<StcIndicatorABetterMacdInputs>): BarStudy<StcRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { length, fastLength, slowLength, factor } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const close = S(bars.map((b) => b.close));
-  const fast = A(ta.ema(close, fastLength));
-  const slow = A(ta.ema(close, slowLength));
-  const macd = fast.map((f, i) => f - slow[i]);
-  const ccc = A(ta.lowest(S(macd), length));
-  const cHigh = A(ta.highest(S(macd), length));
-
-  // First stochastic + smoothing (DDD), then the lowest / highest of DDD
-  const k1: number[] = new Array(n);
-  const ddd: number[] = new Array(n);
-  let prevK1 = NaN;
-  let prevD = NaN;
-  for (let i = 0; i < n; i++) {
-    const range = cHigh[i] - ccc[i];
-    // CCCCC := CCCC > 0 ? (BBBBBB - CCC) / CCCC * 100 : nz(CCCCC[1])
-    k1[i] = gt(range, 0) ? ((macd[i] - ccc[i]) / range) * 100 : (isNaN(prevK1) ? 0 : prevK1);
-    // DDD := na(DDD[1]) ? CCCCC : DDD[1] + AAA * (CCCCC - DDD[1])
-    ddd[i] = isNaN(prevD) ? k1[i] : prevD + factor * (k1[i] - prevD);
-    prevK1 = k1[i];
-    prevD = ddd[i];
-  }
-  const dLow = A(ta.lowest(S(ddd), length));
-  const dHigh = A(ta.highest(S(ddd), length));
-
-  const stc: number[] = new Array(n);
-  let prevK2 = NaN;
-  let prevE = NaN;
-  for (let i = 0; i < n; i++) {
-    const range = dHigh[i] - dLow[i];
-    const k2 = gt(range, 0) ? ((ddd[i] - dLow[i]) / range) * 100 : (isNaN(prevK2) ? 0 : prevK2);
-    stc[i] = isNaN(prevE) ? k2 : prevE + factor * (k2 - prevE);
-    prevK2 = k2;
-    prevE = stc[i];
-  }
-
-  // if m[3] <= m[2] and m[2] > m[1] and m > 75: alert("Red", alert.freq_once_per_bar)
-  // if m[3] >= m[2] and m[2] < m[1] and m < 25: alert("Green", alert.freq_once_per_bar)
-  const alertCalls: AlertCall[] = [];
-  const m = (i: number) => (i >= 0 ? stc[i] : NaN);
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time as number;
-    if (le(m(i - 3), m(i - 2)) && gt(m(i - 2), m(i - 1)) && gt(m(i), 75)) alertCalls.push({ time: t, message: 'Red', freq: 'once_per_bar' });
-    if (ge(m(i - 3), m(i - 2)) && lt(m(i - 2), m(i - 1)) && lt(m(i), 25)) alertCalls.push({ time: t, message: 'Green', freq: 'once_per_bar' });
-  }
-
-  const plot0 = bars.map((b, i) => ({
-    time: b.time,
-    value: Number.isFinite(stc[i]) ? stc[i] : NaN,
-    color: i > 0 && gt(stc[i], stc[i - 1]) ? UP_COLOR : DOWN_COLOR,
-  }));
-  const plot1 = bars.map((b) => ({ time: b.time, value: 25 }));
-  const plot2 = bars.map((b) => ({ time: b.time, value: 75 }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    fills: [{ plot1: 'plot1', plot2: 'plot2', options: { color: FILL_COLOR } }],
-    alertCalls,
+    init() {
+      const s: StcRun = {
+        fast: taStep.ema(fastLength), slow: taStep.ema(slowLength),
+        ccc: new WindowExtreme(true, length), cHigh: new WindowExtreme(false, length),
+        dLow: new WindowExtreme(true, length), dHigh: new WindowExtreme(false, length),
+        stc: [], plots: [[], [], []], alertCalls: [],
+        vars: { prevK1: NaN, prevD: NaN, prevK2: NaN, prevE: NaN }, steps: [], lists: [], series: [],
+      };
+      s.steps = [s.fast, s.slow, s.ccc, s.cHigh, s.dLow, s.dHigh];
+      s.lists = [s.alertCalls];
+      s.series = [s.stc, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const macd = (s.fast.step(b.close) ?? NaN) - (s.slow.step(b.close) ?? NaN);
+      const ccc = s.ccc.step(macd);
+      const cHigh = s.cHigh.step(macd);
+
+      // First stochastic + smoothing (DDD), then the lowest / highest of DDD
+      const range1 = cHigh - ccc;
+      // CCCCC := CCCC > 0 ? (BBBBBB - CCC) / CCCC * 100 : nz(CCCCC[1])
+      const k1 = gt(range1, 0) ? ((macd - ccc) / range1) * 100 : (isNaN(v.prevK1) ? 0 : v.prevK1);
+      // DDD := na(DDD[1]) ? CCCCC : DDD[1] + AAA * (CCCCC - DDD[1])
+      const ddd = isNaN(v.prevD) ? k1 : v.prevD + factor * (k1 - v.prevD);
+      v.prevK1 = k1;
+      v.prevD = ddd;
+      const dLow = s.dLow.step(ddd);
+      const dHigh = s.dHigh.step(ddd);
+
+      const range = dHigh - dLow;
+      const k2 = gt(range, 0) ? ((ddd - dLow) / range) * 100 : (isNaN(v.prevK2) ? 0 : v.prevK2);
+      const stc = isNaN(v.prevE) ? k2 : v.prevE + factor * (k2 - v.prevE);
+      v.prevK2 = k2;
+      v.prevE = stc;
+      s.stc[i] = stc;
+
+      // if m[3] <= m[2] and m[2] > m[1] and m > 75: alert("Red", alert.freq_once_per_bar)
+      // if m[3] >= m[2] and m[2] < m[1] and m < 25: alert("Green", alert.freq_once_per_bar)
+      const m = (j: number) => (j >= 0 ? s.stc[j] : NaN);
+      const t = b.time as number;
+      if (le(m(i - 3), m(i - 2)) && gt(m(i - 2), m(i - 1)) && gt(m(i), 75)) s.alertCalls.push({ time: t, message: 'Red', freq: 'once_per_bar' });
+      if (ge(m(i - 3), m(i - 2)) && lt(m(i - 2), m(i - 1)) && lt(m(i), 25)) s.alertCalls.push({ time: t, message: 'Green', freq: 'once_per_bar' });
+
+      s.plots[0][i] = {
+        time: b.time,
+        value: Number.isFinite(stc) ? stc : NaN,
+        color: i > 0 && gt(stc, s.stc[i - 1]) ? UP_COLOR : DOWN_COLOR,
+      };
+      s.plots[1][i] = { time: b.time, value: 25 };
+      s.plots[2][i] = { time: b.time, value: 75 };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+        fills: [{ plot1: 'plot1', plot2: 'plot2', options: { color: FILL_COLOR } }],
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<StcIndicatorABetterMacdInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<StcIndicatorABetterMacdInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const StcIndicatorABetterMacd = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

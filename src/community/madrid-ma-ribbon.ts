@@ -8,7 +8,9 @@
  * Reference: "Madrid Moving Average Ribbon"
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MadridMaRibbonInputs {
   maType: string;
@@ -58,32 +60,68 @@ function maColor(maVal: number, prevMaVal: number, ma100Val: number): string {
   return '#808080'; // GRAY
 }
 
-export function calculate(bars: Bar[], inputs: Partial<MadridMaRibbonInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface MadridRun extends BarRunState<Record<string, never>> {
+  mas: Array<{ step(v: number): number; commit(): void }>;
+  /** The MA values per bar */
+  values: number[][];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<MadridMaRibbonInputs>): BarStudy<MadridRun, IndicatorResult> {
   const { maType, src } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
-
-  const maFn = maType === 'ema' ? ta.ema : ta.sma;
+  const value = barSource(src);
   const warmup = lengths[lengths.length - 1]; // 100
-
-  // Compute ma100 reference for color logic
-  const ma100Arr = maFn(source, 100).toArray();
-
-  const plots: Record<string, { time: number; value: number; color?: string }[]> = {};
-
-  for (let idx = 0; idx < lengths.length; idx++) {
-    const arr = maFn(source, lengths[idx]).toArray();
-    plots[`plot${idx}`] = arr.map((v, i) => {
-      if (i < warmup || v == null) return { time: bars[i].time, value: NaN };
-      const prev = (i > 0 && arr[i - 1] != null) ? arr[i - 1]! : v;
-      const ref = ma100Arr[i] ?? v;
-      return { time: bars[i].time, value: v, color: maColor(v, prev, ref) };
-    });
-  }
-
+  const last = lengths.length - 1;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      // maFn = ta.ema or ta.sma; the ma100 reference of the colours is the MA of length 100 (the last one)
+      const mas = lengths.map((len) => (maType === 'ema' ? taStep.ema(len) : new WindowSma(len)));
+      const s: MadridRun = {
+        mas,
+        values: lengths.map(() => []),
+        plots: lengths.map(() => []),
+        steps: mas, vars: {}, lists: [], series: [],
+      };
+      s.series = [...s.values, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      const x = value(bars[i]);
+      for (let idx = 0; idx < lengths.length; idx++) s.values[idx]![i] = s.mas[idx]!.step(x);
+      const ref = s.values[last]![i]!;
+      for (let idx = 0; idx < lengths.length; idx++) {
+        const arr = s.values[idx]!;
+        const v = arr[i]!;
+        if (i < warmup) {
+          s.plots[idx]![i] = { time, value: NaN };
+          continue;
+        }
+        const prev = i > 0 ? arr[i - 1]! : v;
+        s.plots[idx]![i] = { time, value: v, color: maColor(v, prev, ref) };
+      }
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      for (let idx = 0; idx < lengths.length; idx++) plots[`plot${idx}`] = s.plots[idx]!.slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
 }
 
-export const MadridMaRibbon = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MadridMaRibbonInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MadridMaRibbonInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MadridMaRibbon = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

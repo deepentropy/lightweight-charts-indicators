@@ -12,8 +12,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumePositiveNegativeInputs {
   /** Period length */
@@ -85,74 +87,104 @@ export const metadata = {
   overlay: false,
 };
 
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface VpnRun extends BarRunState<Record<string, never>> {
+  atr: ReturnType<typeof taStep.atr>;
+  ema: ReturnType<typeof taStep.ema>;
+  ma: { step(v: number): number; commit(): void };
+  hlc3: number[];
+  volume: number[];
+  critical: Point[];
+  line: Point[];
+  maPlot: Point[];
+  fillColors: string[];
+}
+
+function study(inputs: Partial<VolumePositiveNegativeInputs>): BarStudy<VpnRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const period = cfg.period;
+  return {
+    init() {
+      const s: VpnRun = {
+        atr: taStep.atr(period), ema: taStep.ema(3),
+        // movingAverage = iMAType == 'SMA' ? ta.sma(vpn, iMALength) : ta.ema(vpn, iMALength)
+        ma: cfg.maType === 'SMA' ? new WindowSma(cfg.maLength) : taStep.ema(cfg.maLength),
+        hlc3: [], volume: [], critical: [], line: [], maPlot: [], fillColors: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.atr, s.ema, s.ma];
+      s.series = [s.hlc3, s.volume, s.critical, s.line, s.maPlot, s.fillColors];
+      return s;
+    },
+    bar(s, k, bars) {
+      const b = bars[k];
+      const hlc3 = s.hlc3;
+      const volume = s.volume;
+      hlc3[k] = (b.high + b.low + b.close) / 3;
+      volume[k] = b.volume ?? NaN;
+      const at = (a: number[], j: number) => (j >= 0 ? a[j] : NaN);
+
+      // f_VPN(_period): dist = ta.atr(_period) * iATR; for i = 0 to _period - 1:
+      //   hlc3[i] > hlc3[i + 1] + dist -> vp += volume[i]; else hlc3[i] < hlc3[i + 1] - dist -> vn += volume[i]
+      //   vtot += volume[i]
+      // (vp - vn) / (vtot / _period) / _period * 100   (a comparison with na is false; x / 0 is na)
+      const dist = s.atr.step(b.high, b.low, b.close) * cfg.atrFraction;
+      let vp = 0;
+      let vn = 0;
+      let vtot = 0;
+      for (let i = 0; i <= period - 1; i++) {
+        const h0 = at(hlc3, k - i);
+        const h1 = at(hlc3, k - i - 1);
+        const v = at(volume, k - i);
+        if (h0 > h1 + dist) vp = vp + v;
+        else if (h0 < h1 - dist) vn = vn + v;
+        vtot = vtot + v;
+      }
+      const avg = vtot / period;
+      const raw = avg === 0 || isNaN(avg) ? NaN : (vp - vn) / avg / period * 100;
+
+      // vpn = ta.ema(f_VPN(iPeriod), 3)
+      const vpn = s.ema.step(raw);
+      const ma = s.ma.step(vpn);
+
+      const t = b.time;
+      // lColor = vpn > iCriticalValueLine ? iUpColor : iDownColor
+      const lColor = vpn > cfg.criticalValue ? cfg.upColor : cfg.downColor;
+      s.critical[k] = { time: t, value: cfg.criticalValue, color: cfg.criticalValueColor };
+      s.line[k] = { time: t, value: vpn, color: lColor };
+      // plot(iMAVisible ? movingAverage : na, color = iMAColor)
+      s.maPlot[k] = { time: t, value: cfg.maVisible ? ma : NaN, color: cfg.maColor };
+      // fill(plot1, plot2, color = iFill ? lColor : na)
+      s.fillColors[k] = cfg.fill ? lColor : 'transparent';
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.critical.slice(), plot1: s.line.slice(), plot2: s.maPlot.slice() },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', colors: s.fillColors.slice() }],
+        markers: [],
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumePositiveNegativeInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<VolumePositiveNegativeInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const period = cfg.period;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const hlc3 = bars.map((b) => (b.high + b.low + b.close) / 3);
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const at = (a: number[], j: number) => (j >= 0 ? a[j] : NaN);
-
-  // f_VPN(_period): dist = ta.atr(_period) * iATR; for i = 0 to _period - 1:
-  //   hlc3[i] > hlc3[i + 1] + dist -> vp += volume[i]; else hlc3[i] < hlc3[i + 1] - dist -> vn += volume[i]
-  //   vtot += volume[i]
-  // (vp - vn) / (vtot / _period) / _period * 100   (a comparison with na is false; x / 0 is na)
-  const atr = A(ta.atr(bars, period));
-  const raw: number[] = new Array(n);
-  for (let k = 0; k < n; k++) {
-    const dist = atr[k] * cfg.atrFraction;
-    let vp = 0;
-    let vn = 0;
-    let vtot = 0;
-    for (let i = 0; i <= period - 1; i++) {
-      const h0 = at(hlc3, k - i);
-      const h1 = at(hlc3, k - i - 1);
-      const v = at(volume, k - i);
-      if (h0 > h1 + dist) vp = vp + v;
-      else if (h0 < h1 - dist) vn = vn + v;
-      vtot = vtot + v;
-    }
-    const avg = vtot / period;
-    raw[k] = avg === 0 || isNaN(avg) ? NaN : (vp - vn) / avg / period * 100;
-  }
-
-  // vpn = ta.ema(f_VPN(iPeriod), 3)
-  const vpn = A(ta.ema(S(raw), 3));
-  // movingAverage = iMAType == 'SMA' ? ta.sma(vpn, iMALength) : ta.ema(vpn, iMALength)
-  const ma = A(cfg.maType === 'SMA' ? ta.sma(S(vpn), cfg.maLength) : ta.ema(S(vpn), cfg.maLength));
-
-  const critical: { time: number; value: number; color: string }[] = [];
-  const line: { time: number; value: number; color: string }[] = [];
-  const maPlot: { time: number; value: number; color: string }[] = [];
-  const fillColors: string[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // lColor = vpn > iCriticalValueLine ? iUpColor : iDownColor
-    const lColor = vpn[i] > cfg.criticalValue ? cfg.upColor : cfg.downColor;
-    critical.push({ time: t, value: cfg.criticalValue, color: cfg.criticalValueColor });
-    line.push({ time: t, value: vpn[i], color: lColor });
-    // plot(iMAVisible ? movingAverage : na, color = iMAColor)
-    maPlot.push({ time: t, value: cfg.maVisible ? ma[i] : NaN, color: cfg.maColor });
-    // fill(plot1, plot2, color = iFill ? lColor : na)
-    fillColors.push(cfg.fill ? lColor : 'transparent');
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: critical, plot1: line, plot2: maPlot },
-    fills: [{ plot1: 'plot0', plot2: 'plot1', colors: fillColors }],
-    markers: [],
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const VolumePositiveNegative = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

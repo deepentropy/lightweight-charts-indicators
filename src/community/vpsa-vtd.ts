@@ -19,7 +19,11 @@
  * Original notice: © CatTheTrader
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import {
+  createBarRun, fullResult, WindowExtreme, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 import type { AlertCall, MarkerData, PlotCandleData } from '../types';
 
 /** The original makes alert() calls */
@@ -111,141 +115,184 @@ const PINE_TEXT = '#2962FF';
 const CANDLE_WICK = '#737375';
 const CANDLE_BORDER = '#000000';
 
+type Result = Omit<IndicatorResult, 'markers'> & {
+  markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]>; alertCalls: AlertCall[];
+};
+type Point = { time: number; value: number; color: string };
+
+interface VpsaVars {
+  /** var float sma_max_global = 0.0 */
+  smaMaxGlobal: number;
+  /** The counter of ta.rising / ta.falling (rises / falls in a row of the called volumes) */
+  stepCount: number;
+}
+
+interface VpsaRun extends BarRunState<VpsaVars> {
+  spreadEma: ReturnType<typeof taStep.ema>;
+  spreadSd: WindowStdev;
+  volumeEma: ReturnType<typeof taStep.ema>;
+  volumeSd: WindowStdev;
+  spreadLo: WindowExtreme;
+  spreadHi: WindowExtreme;
+  volumeLo: WindowExtreme;
+  volumeHi: WindowExtreme;
+  smaVol: WindowSma;
+  smaVolume: number[];
+  /** Bars of the candle type in a row up to each bar */
+  typeRun: number[];
+  /** The volume where f_checkStepTrend calls ta.rising / ta.falling, else na */
+  called: number[];
+  plot0: Point[];
+  plot1: Point[];
+  candles: PlotCandleData[];
+  markers: MarkerData[];
+  alertCalls: AlertCall[];
+}
+
+function study(inputs: Partial<VpsaVtdInputs>): BarStudy<VpsaRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const len = cfg.nvsaPeriod;
+  const vlen = cfg.voldecPeriod;
+  // f_checkAllBarsType(length, bar_type): false while bar_index < length, else every bar of the last length bars
+  // (k = 0 to length - 1) is of the type: the bars of the type in a row reach that count
+  const needed = vlen - 1 >= 0 ? Math.floor(vlen - 1) + 1 : 0;
+  const isBarType = (b: Bar) => {
+    if (cfg.barType === 'Bullish only') return gt(b.close, b.open);
+    if (cfg.barType === 'Bearish only') return lt(b.close, b.open);
+    return cfg.barType === 'Any';
+  };
+  const zColor = (z: number) => (gt(z, 3) ? color.fuchsia : gt(z, 2) ? color.red : lt(z, 1) ? color.blue : color.green);
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+  // Alert conditions: value >= threshold or value <= threshold, as the condition input says
+  const check = (cond: string, v: number, thr: number) =>
+    (cond === 'greater than or equal to' && ge(v, thr)) || (cond === 'less than or equal to' && le(v, thr));
+  const step = cfg.trendType === 'Step By Step';
+  const up = cfg.trendDirection === 'Upward';
+  return {
+    init() {
+      const spreadEma = taStep.ema(len);
+      const spreadSd = new WindowStdev(len);
+      const volumeEma = taStep.ema(len);
+      const volumeSd = new WindowStdev(len);
+      const spreadLo = new WindowExtreme(true, len);
+      const spreadHi = new WindowExtreme(false, len);
+      const volumeLo = new WindowExtreme(true, len);
+      const volumeHi = new WindowExtreme(false, len);
+      const smaVol = new WindowSma(vlen);
+      const s: VpsaRun = {
+        spreadEma, spreadSd, volumeEma, volumeSd, spreadLo, spreadHi, volumeLo, volumeHi, smaVol, smaVolume: [],
+        typeRun: [], called: [], plot0: [], plot1: [], candles: [], markers: [], alertCalls: [],
+        steps: [spreadEma, spreadSd, volumeEma, volumeSd, spreadLo, spreadHi, volumeLo, volumeHi, smaVol],
+        vars: { smaMaxGlobal: 0.0, stepCount: 0 }, lists: [], series: [],
+      };
+      s.lists = [s.candles, s.markers, s.alertCalls];
+      s.series = [s.smaVolume, s.typeRun, s.called, s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const v = s.vars;
+      const spread = b.high - b.low;
+      const volume = b.volume ?? NaN;
+
+      // f_zscore_ema(src, length) = (src - ta.ema(src, length)) / ta.stdev(src, length); plain division
+      const spreadZ = (spread - s.spreadEma.step(spread)) / s.spreadSd.step(spread);
+      const volumeZ = (volume - s.volumeEma.step(volume)) / s.volumeSd.step(volume);
+
+      // f_normalize: diff != 0.0 ? (src - min) / diff : 0.0 (0.0 while diff is na)
+      const sLo = s.spreadLo.step(spread);
+      const sDiff = s.spreadHi.step(spread) - sLo;
+      const spreadNorm = ne(sDiff, 0) ? (spread - sLo) / sDiff : 0.0;
+      const vLo = s.volumeLo.step(volume);
+      const vDiff = s.volumeHi.step(volume) - vLo;
+      const volumeNorm = ne(vDiff, 0) ? (volume - vLo) / vDiff : 0.0;
+
+      // SMA of the volume, scaled by its highest value so far
+      const smaVolume = s.smaVol.step(volume);
+      s.smaVolume[i] = smaVolume;
+      v.smaMaxGlobal = Math.max(v.smaMaxGlobal, isNaN(smaVolume) ? 0.0 : smaVolume);
+      const smaScaled = gt(v.smaMaxGlobal, 0) ? smaVolume / v.smaMaxGlobal : 0.0;
+
+      const run = isBarType(b) ? (i > 0 ? s.typeRun[i - 1] : 0) + 1 : 0;
+      s.typeRun[i] = run;
+      const allType = !(i < vlen) && run >= needed;
+      let conditionVtd: boolean;
+      if (cfg.trendType === 'SMA') {
+        const smaFirst = i - (vlen - 1) >= 0 ? s.smaVolume[i - (vlen - 1)] : NaN;
+        conditionVtd = up ? gt(smaVolume, smaFirst) && allType : lt(smaVolume, smaFirst) && allType;
+      } else {
+        // f_checkStepTrend: ta.rising / ta.falling(volume, length) run only on the bars where all bars are of the type,
+        // so their history holds the volumes of those bars only (na on the other bars: not called)
+        const called = allType ? volume : NaN;
+        s.called[i] = called;
+        const prev = i > 0 ? s.called[i - 1] : NaN;
+        if (Number.isFinite(called) && Number.isFinite(prev)) {
+          v.stepCount = (up ? gt(called, prev) : lt(called, prev)) ? v.stepCount + 1 : 0;
+        }
+        conditionVtd = allType && v.stepCount >= vlen;
+      }
+
+      s.plot0[i] = { time, value: cfg.trendType === 'SMA' ? fin(smaScaled) : NaN, color: SMA_COL };
+      s.plot1[i] = { time, value: fin(volumeNorm), color: zColor(volumeZ) };
+
+      // plotcandle(0, 0, 0, spread_normalized, 'Normalized Spread', color = spread_color)
+      if (Number.isFinite(spreadNorm)) {
+        s.candles.push({ time, open: 0, high: 0, low: 0, close: spreadNorm, color: zColor(spreadZ),
+          wickColor: CANDLE_WICK, borderColor: CANDLE_BORDER });
+      }
+
+      if (conditionVtd) {
+        const markers = s.markers;
+        if (step && up) markers.push({ id: 'shape0', time, position: 'top', shape: 'labelUp', color: color.green, text: 'Step Up', textColor: PINE_TEXT, size: 'auto' });
+        if (step && !up) markers.push({ id: 'shape1', time, position: 'top', shape: 'labelDown', color: color.red, text: 'Step Down', textColor: PINE_TEXT, size: 'auto' });
+        if (!step && up) markers.push({ id: 'shape2', time, position: 'top', shape: 'labelUp', color: color.lime, text: 'SMA Up', textColor: PINE_TEXT, size: 'auto' });
+        if (!step && !up) markers.push({ id: 'shape3', time, position: 'top', shape: 'labelDown', color: color.maroon, text: 'SMA Down', textColor: PINE_TEXT, size: 'auto' });
+      }
+
+      const call = (message: string) => s.alertCalls.push({ time, message, freq: 'once_per_bar' });
+      const spreadAlert = check(cfg.spreadCondition, spreadNorm, cfg.alertSpreadNormalized);
+      const spreadSigmaAlert = check(cfg.spreadSigmaCondition, spreadZ, cfg.alertSpreadSigma);
+      const volumeAlert = check(cfg.volumeCondition, volumeNorm, cfg.alertVolumeNormalized);
+      const volumeSigmaAlert = check(cfg.volumeSigmaCondition, volumeZ, cfg.alertVolumeSigma);
+      if (!cfg.enableCombinedAlert && spreadAlert && spreadSigmaAlert && volumeAlert && volumeSigmaAlert) {
+        call('Conditions met: Spread & Volume.');
+      }
+      if (!cfg.enableCombinedAlert && conditionVtd) call('Condition met: Volume Trend Detector');
+      // combined_alert_condition = spread_alert_condition and condition_vtd
+      if (cfg.enableCombinedAlert && spreadAlert && conditionVtd) {
+        call('Conditions met: Spread, Volume & Volume Trend Detector.');
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        plotCandles: { normalizedSpread: s.candles.slice() },
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VpsaVtdInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<VpsaVtdInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & {
   markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]>; alertCalls: AlertCall[];
 } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const len = cfg.nvsaPeriod;
-  const vlen = cfg.voldecPeriod;
-
-  const spread = bars.map((b) => b.high - b.low);
-  const volume = bars.map((b) => b.volume ?? NaN);
-
-  // f_zscore_ema(src, length) = (src - ta.ema(src, length)) / ta.stdev(src, length); plain division
-  const zscore = (src: number[]) => {
-    const mean = A(ta.ema(S(src), len));
-    const sd = A(ta.stdev(S(src), len));
-    return src.map((v, i) => (v - mean[i]) / sd[i]);
-  };
-  const spreadZ = zscore(spread);
-  const volumeZ = zscore(volume);
-
-  // f_normalize: diff != 0.0 ? (src - min) / diff : 0.0 (0.0 while diff is na)
-  const normalize = (src: number[]) => {
-    const lo = A(ta.lowest(S(src), len));
-    const hi = A(ta.highest(S(src), len));
-    return src.map((v, i) => {
-      const diff = hi[i] - lo[i];
-      return ne(diff, 0) ? (v - lo[i]) / diff : 0.0;
-    });
-  };
-  const spreadNorm = normalize(spread);
-  const volumeNorm = normalize(volume);
-
-  // f_checkAllBarsType(length, bar_type): false while bar_index < length, else every bar of the last length bars
-  // is of the type
-  const isBarType = (j: number) => {
-    if (cfg.barType === 'Bullish only') return gt(bars[j].close, bars[j].open);
-    if (cfg.barType === 'Bearish only') return lt(bars[j].close, bars[j].open);
-    return cfg.barType === 'Any';
-  };
-  const checkAllBarsType = (i: number, length: number) => {
-    if (i < length) return false;
-    for (let k = 0; k <= length - 1; k++) if (!isBarType(i - k)) return false;
-    return true;
-  };
-
-  // SMA of the volume, scaled by its highest value so far
-  const smaVolume = A(ta.sma(S(volume), vlen));
-  const smaScaled: number[] = new Array(n);
-  let smaMaxGlobal = 0.0; // var float sma_max_global = 0.0
-  for (let i = 0; i < n; i++) {
-    smaMaxGlobal = Math.max(smaMaxGlobal, isNaN(smaVolume[i]) ? 0.0 : smaVolume[i]);
-    smaScaled[i] = gt(smaMaxGlobal, 0) ? smaVolume[i] / smaMaxGlobal : 0.0;
-  }
-
-  const allType: boolean[] = bars.map((_b, i) => checkAllBarsType(i, vlen));
-  const conditionVtd: boolean[] = new Array(n).fill(false);
-  if (cfg.trendType === 'SMA') {
-    for (let i = 0; i < n; i++) {
-      const smaFirst = i - (vlen - 1) >= 0 ? smaVolume[i - (vlen - 1)] : NaN;
-      conditionVtd[i] = cfg.trendDirection === 'Upward'
-        ? gt(smaVolume[i], smaFirst) && allType[i]
-        : lt(smaVolume[i], smaFirst) && allType[i];
-    }
-  } else {
-    // f_checkStepTrend: ta.rising / ta.falling(volume, length) run only on the bars where all bars are of the type,
-    // so their history holds the volumes of those bars only (na on the other bars: not called)
-    const called = volume.map((v, i) => (allType[i] ? v : NaN));
-    const step = A(cfg.trendDirection === 'Upward' ? ta.rising(S(called), vlen) : ta.falling(S(called), vlen));
-    for (let i = 0; i < n; i++) conditionVtd[i] = allType[i] && step[i] === 1;
-  }
-
-  const zColor = (z: number) => (gt(z, 3) ? color.fuchsia : gt(z, 2) ? color.red : lt(z, 1) ? color.blue : color.green);
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: cfg.trendType === 'SMA' ? fin(smaScaled[i]) : NaN, color: SMA_COL }));
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: fin(volumeNorm[i]), color: zColor(volumeZ[i]) }));
-
-  // plotcandle(0, 0, 0, spread_normalized, 'Normalized Spread', color = spread_color)
-  const candles: PlotCandleData[] = [];
-  for (let i = 0; i < n; i++) {
-    const c = spreadNorm[i];
-    if (!Number.isFinite(c)) continue;
-    candles.push({ time: bars[i].time, open: 0, high: 0, low: 0, close: c, color: zColor(spreadZ[i]),
-      wickColor: CANDLE_WICK, borderColor: CANDLE_BORDER });
-  }
-
-  const markers: MarkerData[] = [];
-  const step = cfg.trendType === 'Step By Step';
-  const up = cfg.trendDirection === 'Upward';
-  for (let i = 0; i < n; i++) {
-    if (!conditionVtd[i]) continue;
-    const time = bars[i].time;
-    if (step && up) markers.push({ id: 'shape0', time, position: 'top', shape: 'labelUp', color: color.green, text: 'Step Up', textColor: PINE_TEXT, size: 'auto' });
-    if (step && !up) markers.push({ id: 'shape1', time, position: 'top', shape: 'labelDown', color: color.red, text: 'Step Down', textColor: PINE_TEXT, size: 'auto' });
-    if (!step && up) markers.push({ id: 'shape2', time, position: 'top', shape: 'labelUp', color: color.lime, text: 'SMA Up', textColor: PINE_TEXT, size: 'auto' });
-    if (!step && !up) markers.push({ id: 'shape3', time, position: 'top', shape: 'labelDown', color: color.maroon, text: 'SMA Down', textColor: PINE_TEXT, size: 'auto' });
-  }
-
-  // Alert conditions: value >= threshold or value <= threshold, as the condition input says
-  const check = (cond: string, v: number, thr: number) =>
-    (cond === 'greater than or equal to' && ge(v, thr)) || (cond === 'less than or equal to' && le(v, thr));
-  const alertCalls: AlertCall[] = [];
-  const call = (time: number, message: string) => alertCalls.push({ time, message, freq: 'once_per_bar' });
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    const spreadAlert = check(cfg.spreadCondition, spreadNorm[i], cfg.alertSpreadNormalized);
-    const spreadSigmaAlert = check(cfg.spreadSigmaCondition, spreadZ[i], cfg.alertSpreadSigma);
-    const volumeAlert = check(cfg.volumeCondition, volumeNorm[i], cfg.alertVolumeNormalized);
-    const volumeSigmaAlert = check(cfg.volumeSigmaCondition, volumeZ[i], cfg.alertVolumeSigma);
-    if (!cfg.enableCombinedAlert && spreadAlert && spreadSigmaAlert && volumeAlert && volumeSigmaAlert) {
-      call(time, 'Conditions met: Spread & Volume.');
-    }
-    if (!cfg.enableCombinedAlert && conditionVtd[i]) call(time, 'Condition met: Volume Trend Detector');
-    // combined_alert_condition = spread_alert_condition and condition_vtd
-    if (cfg.enableCombinedAlert && spreadAlert && conditionVtd[i]) {
-      call(time, 'Conditions met: Spread, Volume & Volume Trend Detector.');
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    markers,
-    plotCandles: { normalizedSpread: candles },
-    alertCalls,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const VpsaVtd = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

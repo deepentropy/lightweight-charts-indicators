@@ -15,9 +15,14 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import {
+  createBarRun, fullResult, liveAlertStates, WindowExtreme, WindowStdev,
+  type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 
 export interface VolumetricEntropyIndexInputs {
   /** EMA length of the up / down volumes */
@@ -149,36 +154,34 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<VolumetricEntropyIndexInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface VeiRun extends BarRunState<Record<string, never>> {
+  emaUp: ReturnType<typeof taStep.ema>;
+  emaDown: ReturnType<typeof taStep.ema>;
+  rmaUp: ReturnType<typeof taStep.rma>;
+  rmaDn: ReturnType<typeof taStep.rma>;
+  emaDelta: ReturnType<typeof taStep.ema>;
+  emaStrength: ReturnType<typeof taStep.ema>;
+  emaMid: ReturnType<typeof taStep.ema>;
+  stdev: WindowStdev;
+  highest: WindowExtreme;
+  /** emaUp, -emaDown, smoothedDelta, smoothedStrength, ta.highest(smoothedStrength, 50) per bar */
+  up: number[];
+  downF: number[];
+  delta: number[];
+  strength: number[];
+  high50: number[];
+  plots: Point[][];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<VolumetricEntropyIndexInputs>): BarStudy<VeiRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => (v === null || v === undefined ? NaN : v));
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // upVol = close > open ? volume : 0; dnVol = close < open ? -volume : 0
-  const upVol = bars.map((b) => (gt(b.close, b.open) ? b.volume ?? NaN : 0));
-  const dnVol = bars.map((b) => (lt(b.close, b.open) ? -(b.volume ?? NaN) : 0));
-  const emaUp = A(ta.ema(S(upVol), cfg.emaLen));
-  const emaDown = A(ta.ema(S(dnVol), cfg.emaLen));
-  const emaDownF = emaDown.map((v) => -v);
-
-  // DNA drift: x - x[lookback], smoothed by ta.rma
   const lb = cfg.lookback;
-  const rawUpDrift = emaUp.map((v, i) => (i >= lb ? v - emaUp[i - lb] : NaN));
-  const rawDnDrift = emaDownF.map((v, i) => (i >= lb ? v - emaDownF[i - lb] : NaN));
-  const smoothUpDrift = A(ta.rma(S(rawUpDrift), cfg.driftSmoothLen));
-  const smoothDnDrift = A(ta.rma(S(rawDnDrift), cfg.driftSmoothLen));
-
-  // Net drift, strength, baseline and bands
-  const driftDelta = emaUp.map((v, i) => v - emaDownF[i]);
-  const smoothedDelta = A(ta.ema(S(driftDelta), 10));
-  const smoothedStrength = A(ta.ema(S(driftDelta.map((d) => Math.abs(d))), 10));
-  const smoothedMid = A(ta.ema(S(emaUp.map((v, i) => (v + emaDownF[i]) / 2)), 10));
-  const stdevDelta = A(ta.stdev(S(driftDelta), 10));
-
   const bgUp = String(color.new(cfg.bgGreen, 100 - cfg.bgAlpha));
   const bgDn = String(color.new(cfg.bgRed, 100 - cfg.bgAlpha));
   const upActive = String(color.new(cfg.emaUpColor, 0));
@@ -189,53 +192,119 @@ export function calculate(
   const strengthCol = String(color.new(cfg.driftStrengthColor, cfg.driftStrengthAlpha));
   const bandUp = String(color.new(cfg.bandUpColor, cfg.bandAlpha));
   const bandDn = String(color.new(cfg.bandDownColor, cfg.bandAlpha));
-
-  type Point = { time: number; value: number; color?: string };
-  const plots: Record<string, Point[]> = {};
-  for (let k = 0; k < 9; k++) plots[`plot${k}`] = [];
-  const bgColors: BgColorData[] = [];
-  const agreeUp: boolean[] = [];
-  const agreeDown: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // upR = smoothUpDrift > 0; dnR = smoothDnDrift > 0 (na is false: both false gives the red background)
-    const upR = gt(smoothUpDrift[i], 0);
-    const dnR = gt(smoothDnDrift[i], 0);
-    agreeUp.push(upR && dnR);
-    agreeDown.push(!upR && !dnR);
-    if (cfg.showBg) {
-      if (upR && dnR) bgColors.push({ time: t, color: bgUp });
-      else if (!upR && !dnR) bgColors.push({ time: t, color: bgDn });
-    }
-
-    const greenDominant = gt(emaUp[i], emaDownF[i]);
-    plots.plot0.push({ time: t, value: cfg.showEMAs ? emaUp[i] : NaN, color: greenDominant ? upActive : upFaded });
-    plots.plot1.push({ time: t, value: cfg.showEMAs ? emaDownF[i] : NaN, color: greenDominant ? dnFaded : dnActive });
-    plots.plot2.push({ time: t, value: cfg.showNetDrift ? smoothedDelta[i] : NaN, color: netCol });
-    plots.plot3.push({ time: t, value: cfg.showDriftStrength ? smoothedStrength[i] : NaN, color: strengthCol });
-
-    const mid = smoothedMid[i];
-    const rangeBand = stdevDelta[i] * cfg.bandMult;
-    const envelopeOffset = mid * cfg.envelopePercent;
-    const positive = gt(driftDelta[i], 0);
-    plots.plot4.push({ time: t, value: cfg.showBaseline ? mid : NaN, color: cfg.baselineColor });
-    plots.plot5.push({ time: t, value: cfg.showBaseline ? mid + envelopeOffset : NaN, color: cfg.baselineColor });
-    plots.plot6.push({ time: t, value: cfg.showBaseline ? mid - envelopeOffset : NaN, color: cfg.baselineColor });
-    plots.plot7.push({ time: t, value: cfg.showBaseline ? mid + rangeBand : NaN, color: positive ? bandUp : bandDn });
-    plots.plot8.push({ time: t, value: cfg.showBaseline ? mid - rangeBand : NaN, color: positive ? bandDn : bandUp });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    bgColors,
-    alerts: alertStates(alertConditions, bars, [
-      agreeUp, agreeDown,
-      crossedOver(emaUp, emaDownF), crossedUnder(emaUp, emaDownF),
-      crossedOver(smoothedDelta, 0), crossedUnder(smoothedDelta, 0),
-      crossedOver(smoothedStrength, A(ta.highest(S(smoothedStrength), 50))),
-    ]),
+    init() {
+      const s: VeiRun = {
+        emaUp: taStep.ema(cfg.emaLen),
+        emaDown: taStep.ema(cfg.emaLen),
+        rmaUp: taStep.rma(cfg.driftSmoothLen),
+        rmaDn: taStep.rma(cfg.driftSmoothLen),
+        emaDelta: taStep.ema(10),
+        emaStrength: taStep.ema(10),
+        emaMid: taStep.ema(10),
+        stdev: new WindowStdev(10),
+        highest: new WindowExtreme(false, 50),
+        up: [], downF: [], delta: [], strength: [], high50: [],
+        plots: Array.from({ length: 9 }, () => []),
+        bgColors: [],
+        flags: alertConditions.map(() => []),
+        times: alertConditions.map(() => []),
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.emaUp, s.emaDown, s.rmaUp, s.rmaDn, s.emaDelta, s.emaStrength, s.emaMid, s.stdev, s.highest];
+      s.lists = [s.bgColors, ...s.times];
+      s.series = [s.up, s.downF, s.delta, s.strength, s.high50, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      // upVol = close > open ? volume : 0; dnVol = close < open ? -volume : 0
+      const upVol = gt(b.close, b.open) ? b.volume ?? NaN : 0;
+      const dnVol = lt(b.close, b.open) ? -(b.volume ?? NaN) : 0;
+      const emaUp = s.emaUp.step(upVol);
+      const emaDownF = -s.emaDown.step(dnVol);
+      s.up[i] = emaUp;
+      s.downF[i] = emaDownF;
+
+      // DNA drift: x - x[lookback], smoothed by ta.rma
+      const rawUpDrift = i >= lb ? emaUp - s.up[i - lb]! : NaN;
+      const rawDnDrift = i >= lb ? emaDownF - s.downF[i - lb]! : NaN;
+      const smoothUpDrift = s.rmaUp.step(rawUpDrift);
+      const smoothDnDrift = s.rmaDn.step(rawDnDrift);
+
+      // Net drift, strength, baseline and bands
+      const driftDelta = emaUp - emaDownF;
+      const smoothedDelta = s.emaDelta.step(driftDelta);
+      const smoothedStrength = s.emaStrength.step(Math.abs(driftDelta));
+      const mid = s.emaMid.step((emaUp + emaDownF) / 2);
+      const stdevDelta = s.stdev.step(driftDelta);
+      const high50 = s.highest.step(smoothedStrength);
+      s.delta[i] = smoothedDelta;
+      s.strength[i] = smoothedStrength;
+      s.high50[i] = high50;
+
+      // upR = smoothUpDrift > 0; dnR = smoothDnDrift > 0 (na is false: both false gives the red background)
+      const upR = gt(smoothUpDrift, 0);
+      const dnR = gt(smoothDnDrift, 0);
+      if (cfg.showBg) {
+        if (upR && dnR) s.bgColors.push({ time: t, color: bgUp });
+        else if (!upR && !dnR) s.bgColors.push({ time: t, color: bgDn });
+      }
+
+      const p = s.plots;
+      const greenDominant = gt(emaUp, emaDownF);
+      p[0]![i] = { time: t, value: cfg.showEMAs ? emaUp : NaN, color: greenDominant ? upActive : upFaded };
+      p[1]![i] = { time: t, value: cfg.showEMAs ? emaDownF : NaN, color: greenDominant ? dnFaded : dnActive };
+      p[2]![i] = { time: t, value: cfg.showNetDrift ? smoothedDelta : NaN, color: netCol };
+      p[3]![i] = { time: t, value: cfg.showDriftStrength ? smoothedStrength : NaN, color: strengthCol };
+
+      const rangeBand = stdevDelta * cfg.bandMult;
+      const envelopeOffset = mid * cfg.envelopePercent;
+      const positive = gt(driftDelta, 0);
+      p[4]![i] = { time: t, value: cfg.showBaseline ? mid : NaN, color: cfg.baselineColor };
+      p[5]![i] = { time: t, value: cfg.showBaseline ? mid + envelopeOffset : NaN, color: cfg.baselineColor };
+      p[6]![i] = { time: t, value: cfg.showBaseline ? mid - envelopeOffset : NaN, color: cfg.baselineColor };
+      p[7]![i] = { time: t, value: cfg.showBaseline ? mid + rangeBand : NaN, color: positive ? bandUp : bandDn };
+      p[8]![i] = { time: t, value: cfg.showBaseline ? mid - rangeBand : NaN, color: positive ? bandDn : bandUp };
+
+      // crossover / crossunder against the bar before (crossedOver / crossedUnder of the alert states)
+      const prev = (a: number[]) => (i > 0 ? a[i - 1]! : NaN);
+      const pu = prev(s.up), pd = prev(s.downF), pDelta = prev(s.delta), pStr = prev(s.strength), pHigh = prev(s.high50);
+      const f = s.flags;
+      f[0]![i] = upR && dnR;
+      f[1]![i] = !upR && !dnR;
+      f[2]![i] = emaUp > emaDownF && pu <= pd;
+      f[3]![i] = emaUp < emaDownF && pu >= pd;
+      f[4]![i] = smoothedDelta > 0 && pDelta <= 0;
+      f[5]![i] = smoothedDelta < 0 && pDelta >= 0;
+      f[6]![i] = smoothedStrength > high50 && pStr <= pHigh;
+      for (let k = 0; k < 7; k++) if (f[k]![i]) s.times[k]!.push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      for (let k = 0; k < 9; k++) plots[`plot${k}`] = s.plots[k]!.slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumetricEntropyIndexInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<VolumetricEntropyIndexInputs> = {},
+): IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -251,6 +320,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const VolumetricEntropyIndex = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

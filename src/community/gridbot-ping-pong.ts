@@ -15,9 +15,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, array, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { array, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type GridbotTrigger = 'Auto' | 'Wick Touch' | 'Wick Reverse' | 'SWMA' | 'Close';
 
@@ -91,231 +93,286 @@ const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<GridbotPingPongInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const trigger = cfg.trigger;
-  const swma = ta.swma(Series.fromArray(bars, bars.map((b) => b.close))).toArray().map((v) => v ?? NaN);
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
 
+interface GridVars {
+  bPrice: number; // var B_Price = close
+  bIndex: number; // var int B_Index = bar_index
+  slope: number;
+  intercept: number;
+  shiftCount: number;
+  anchorUp: number;
+  anchorDown: number;
+  LSI: number;
+  P: number;
+  prevShift: number; // Shift[1] (na on the first bar)
+  prevBuySource: number; // BuySource[1]
+  prevSellSource: number; // SellSource[1]
+}
+
+interface GridRun extends BarRunState<GridVars> {
+  plots: Point[][];
+  /** fill0 / fill1: top value, bottom value, top colour, bottom colour per bar */
+  fill0: [number[], number[], (string | null)[], (string | null)[]];
+  fill1: [number[], number[], (string | null)[], (string | null)[]];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<GridbotPingPongInputs>): BarStudy<GridRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const trigger = cfg.trigger;
   const colUpperBot = String(color.new(cfg.colUpperTop, 88));
   const colLowerBot = String(color.new(cfg.colLowerTop, 88));
   const buyCol = String(color.new('#32CD32', 0));
   const sellCol = String(color.new('#EE4B2B', 0));
-
-  // var state
   const GI = cfg.intervals / 100;
-  let bPrice = n > 0 ? bars[0].close : NaN; // var B_Price = close
-  let bIndex = 0; // var int B_Index = bar_index
-  let slope = 0;
-  let intercept = NaN;
-  let shiftCount = 0;
-  let anchorUp = 0;
-  let anchorDown = 0;
-  let LSI = 2;
-  let P = 0;
-  let prevShift = NaN; // Shift[1] (na on the first bar)
-  let prevBuySource = NaN; // BuySource[1]
-  let prevSellSource = NaN; // SellSource[1]
-
-  const plots: Point[][] = [[], [], [], [], [], []];
-  const fill0 = { topValue: [] as number[], bottomValue: [] as number[], topColor: [] as (string | null)[], bottomColor: [] as (string | null)[] };
-  const fill1 = { topValue: [] as number[], bottomValue: [] as number[], topColor: [] as (string | null)[], bottomColor: [] as (string | null)[] };
-  const markers: MarkerData[] = [];
-  // Buy, Sell, BuyTP, SellTP, BuyStop, SellStop per bar (the alertcondition() order)
-  const flags: boolean[][] = [[], [], [], [], [], []];
-
-  for (let i = 0; i < n; i++) {
-    const bar = bars[i];
-    const t = bar.time as number;
-    const SWMA = swma[i];
-    let shift = 0; // int Shift = 0
-    let buy = false;
-    let sell = false;
-    let buyTP = false;
-    let sellTP = false;
-    let buyStop = false;
-    let sellStop = false;
-    const dir = shiftCount >= 0 ? 1 : -1;
-    const g2Color = dir === 1 ? cfg.supportCol : cfg.resistCol;
-    const colorArray = [cfg.supportCol, cfg.supportCol, g2Color, cfg.resistCol, cfg.resistCol];
-
-    // Grid calculations
-    let basePrice: number;
-    if (Math.abs(cfg.tilt - 0) > EPS) { // Tilt != 0
-      const normTilt = (cfg.tilt * GI * bPrice) / 10000;
-      slope = normTilt * dir;
-      intercept = bPrice - slope * bIndex;
-      basePrice = slope * i + intercept;
-    } else {
-      basePrice = bPrice;
-    }
-    const grid = [
-      basePrice - GI * 2 * bPrice,
-      basePrice - GI * 1 * bPrice,
-      basePrice,
-      basePrice + GI * 1 * bPrice,
-      basePrice + GI * 2 * bPrice,
-    ];
-
-    const buySource = trigger === 'Wick Touch' || trigger === 'Wick Reverse' ? bar.low
-      : trigger === 'SWMA' ? SWMA
-        : trigger === 'Auto' ? (dir === 1 ? bar.low : bar.close)
-          : bar.close;
-    const sellSource = trigger === 'Wick Touch' || trigger === 'Wick Reverse' ? bar.high
-      : trigger === 'SWMA' ? SWMA
-        : trigger === 'Auto' ? (dir === -1 ? bar.high : bar.close)
-          : bar.close;
-
-    // Signal detection
-    const RMB = array.binary_search_rightmost(grid, buySource);
-    const LMS = array.binary_search_leftmost(grid, sellSource);
-    let buyIndex = -1;
-    let sellIndex = -1;
-    if (trigger === 'Wick Touch') {
-      buyIndex = RMB < LSI ? RMB : buyIndex;
-      sellIndex = LMS > LSI ? LMS : sellIndex;
-    } else {
-      for (let k = 0; k <= 4; k++) {
-        const value = grid[k];
-        if (le(buySource, value) && gt(prevBuySource, value) && buyIndex === -1) {
-          buyIndex = k;
-          break;
-        }
-      }
-      for (let k = 4; k >= 0; k--) {
-        const value = grid[k];
-        if (ge(sellSource, value) && lt(prevSellSource, value) && sellIndex === -1) {
-          sellIndex = k;
-          break;
-        }
-      }
-    }
-
-    // Signal filtering
-    buy = buyIndex >= 0;
-    sell = sellIndex >= 0;
-    buy = buyIndex >= LSI ? false : buy;
-    sell = sellIndex <= LSI ? false : sell;
-    if (buy && sell) {
-      buy = dir > 0;
-      sell = !(dir > 0);
-    }
-    if (sell && dir > 0) {
-      sellTP = P > 0;
-      sell = false;
-    }
-    if (buy && dir < 0) {
-      buyTP = P < 0;
-      buy = false;
-    }
-    if (P === 0) {
-      buy = buy && dir > 0;
-      sell = sell && dir < 0;
-    }
-    // Shift != Shift[1]: Shift is still 0 here (false on the first bar, Shift[1] na)
-    if (!isNaN(prevShift) && shift !== prevShift) {
-      buy = false;
-      sell = false;
-      buyTP = false;
-      sellTP = false;
-      buyStop = shiftCount >= 1 && P < 0;
-      sellStop = shiftCount <= -1 && P > 0;
-    }
-    if (sellIndex >= 4) sell = false;
-    if (buyIndex <= 0) buy = false;
-    if (P === 0 && buyIndex >= 3) buy = false;
-    if (P === 0 && sellIndex <= 1) sell = false;
-    buyTP = P >= 0 ? false : buyTP;
-    sellTP = P <= 0 ? false : sellTP;
-    buyStop = P >= 0 ? false : buyStop;
-    sellStop = P <= 0 ? false : sellStop;
-
-    // Grid shifting (historical bars are confirmed)
-    const normAnchor = (cfg.anchor * GI * bPrice) / 100;
-    anchorUp = shiftCount > 1 ? normAnchor / Math.max(Math.abs(shiftCount), 1) : normAnchor;
-    anchorDown = shiftCount < -1 ? normAnchor / Math.max(Math.abs(shiftCount), 1) : normAnchor;
-    if (gt(bar.low, grid[4] + anchorUp)) {
-      bPrice = grid[3] + anchorUp;
-      bIndex = i;
-      shiftCount = shiftCount >= 0 ? shiftCount + 1 : 1;
-      shift = 1;
-    }
-    if (lt(bar.high, grid[0] - anchorDown)) {
-      bPrice = grid[1] - anchorDown;
-      bIndex = i;
-      shiftCount = shiftCount <= 0 ? shiftCount - 1 : -1;
-      shift = -1;
-    }
-
-    // Plots: grid lines hidden when Shift != Shift[1]
-    const plt = !isNaN(prevShift) && shift === prevShift;
-    for (let k = 0; k < 5; k++) {
-      const p: Point = { time: t, value: plt ? grid[k] : NaN };
-      if (plt) p.color = colorArray[k];
-      plots[k].push(p);
-    }
-    plots[5].push({ time: t, value: SWMA, color: cfg.colSWMA });
-    // fill(maLine, p0, SWMA, Price0, colLowerBot, colLowerTop); fill(maLine, p4, SWMA, Price4, colUpperBot, colUpperTop)
-    fill0.topValue.push(SWMA);
-    fill0.bottomValue.push(grid[0]);
-    fill0.topColor.push(colLowerBot);
-    fill0.bottomColor.push(cfg.colLowerTop);
-    fill1.topValue.push(SWMA);
-    fill1.bottomValue.push(grid[4]);
-    fill1.topColor.push(colUpperBot);
-    fill1.bottomColor.push(cfg.colUpperTop);
-
-    // plotchar signals: size.tiny, location.belowbar (buy) / abovebar (sell)
-    const char = (on: boolean, below: boolean, text: string) => {
-      if (on) {
-        markers.push({ time: t, position: below ? 'belowBar' : 'aboveBar', shape: 'circle', color: 'transparent',
-          text, textColor: below ? buyCol : sellCol, size: 'tiny' });
-      }
-    };
-    char(buy, true, '▲');
-    char(sell, false, '▼');
-    char(buyTP, true, '△');
-    char(sellTP, false, '▽');
-    char(buyStop, true, '⦿');
-    char(sellStop, false, '⦿');
-    [buy, sell, buyTP, sellTP, buyStop, sellStop].forEach((f, k) => flags[k].push(f));
-
-    // Position tracking
-    if (buy) P = P > 0 ? P + 1 : 1;
-    else if (sell) P = P < 0 ? P - 1 : -1;
-    else if (buyTP || sellTP || buyStop || sellStop) P = 0;
-
-    LSI = buy ? buyIndex : sell ? sellIndex : LSI;
-    LSI = buyTP ? buyIndex : sellTP ? sellIndex : LSI;
-    LSI = buyStop ? 4 : sellStop ? 0 : LSI;
-    if (P === 0 && LMS > LSI) LSI = LMS;
-    if (P === 0 && RMB < LSI) LSI = RMB;
-    if (P !== 0 && LMS === 4) LSI = 4;
-    if (P !== 0 && RMB === 0) LSI = 0;
-    if (shift === 1 && P > 0) LSI = 0;
-    else if (shift === 1 && P < 0) LSI = 4;
-    else if (shift === -1 && P > 0) LSI = 0;
-    else if (shift === -1 && P < 0) LSI = 4;
-    if (!isNaN(prevShift) && shift !== prevShift && P === 0 && Math.abs(shiftCount) === 1) LSI = 2;
-
-    prevShift = shift;
-    prevBuySource = buySource;
-    prevSellSource = sellSource;
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: Object.fromEntries(plots.map((p, k) => [`plot${k}`, p])),
-    fills: [
-      { plot1: 'plot5', plot2: 'plot0', options: { title: 'Lower Fill' }, gradient: fill0 },
-      { plot1: 'plot5', plot2: 'plot4', options: { title: 'Upper Fill' }, gradient: fill1 },
-    ],
-    markers,
-    alerts: alertStates(alertConditions, bars, flags),
+    init() {
+      const s: GridRun = {
+        plots: [[], [], [], [], [], []],
+        fill0: [[], [], [], []],
+        fill1: [[], [], [], []],
+        markers: [],
+        // Buy, Sell, BuyTP, SellTP, BuyStop, SellStop per bar (the alertcondition() order)
+        flags: [[], [], [], [], [], []],
+        times: [[], [], [], [], [], []],
+        steps: [],
+        vars: {
+          bPrice: NaN, bIndex: 0, slope: 0, intercept: NaN, shiftCount: 0, anchorUp: 0, anchorDown: 0, LSI: 2, P: 0,
+          prevShift: NaN, prevBuySource: NaN, prevSellSource: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [...s.plots, ...s.fill0, ...s.fill1, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const bar = bars[i];
+      const t = bar.time as number;
+      if (i === 0) v.bPrice = bar.close;
+      // ta.swma(close): (close + 2 * close[1] + 2 * close[2] + close[3]) / 6
+      const SWMA = i < 3 ? NaN : (bar.close + 2 * bars[i - 1].close + 2 * bars[i - 2].close + bars[i - 3].close) / 6;
+      let shift = 0; // int Shift = 0
+      let buy = false;
+      let sell = false;
+      let buyTP = false;
+      let sellTP = false;
+      let buyStop = false;
+      let sellStop = false;
+      const dir = v.shiftCount >= 0 ? 1 : -1;
+      const g2Color = dir === 1 ? cfg.supportCol : cfg.resistCol;
+      const colorArray = [cfg.supportCol, cfg.supportCol, g2Color, cfg.resistCol, cfg.resistCol];
+      const bPrice = v.bPrice;
+
+      // Grid calculations
+      let basePrice: number;
+      if (Math.abs(cfg.tilt - 0) > EPS) { // Tilt != 0
+        const normTilt = (cfg.tilt * GI * bPrice) / 10000;
+        v.slope = normTilt * dir;
+        v.intercept = bPrice - v.slope * v.bIndex;
+        basePrice = v.slope * i + v.intercept;
+      } else {
+        basePrice = bPrice;
+      }
+      const grid = [
+        basePrice - GI * 2 * bPrice,
+        basePrice - GI * 1 * bPrice,
+        basePrice,
+        basePrice + GI * 1 * bPrice,
+        basePrice + GI * 2 * bPrice,
+      ];
+
+      const buySource = trigger === 'Wick Touch' || trigger === 'Wick Reverse' ? bar.low
+        : trigger === 'SWMA' ? SWMA
+          : trigger === 'Auto' ? (dir === 1 ? bar.low : bar.close)
+            : bar.close;
+      const sellSource = trigger === 'Wick Touch' || trigger === 'Wick Reverse' ? bar.high
+        : trigger === 'SWMA' ? SWMA
+          : trigger === 'Auto' ? (dir === -1 ? bar.high : bar.close)
+            : bar.close;
+
+      // Signal detection
+      const RMB = array.binary_search_rightmost(grid, buySource);
+      const LMS = array.binary_search_leftmost(grid, sellSource);
+      let buyIndex = -1;
+      let sellIndex = -1;
+      const LSI0 = v.LSI;
+      if (trigger === 'Wick Touch') {
+        buyIndex = RMB < LSI0 ? RMB : buyIndex;
+        sellIndex = LMS > LSI0 ? LMS : sellIndex;
+      } else {
+        for (let k = 0; k <= 4; k++) {
+          const value = grid[k];
+          if (le(buySource, value) && gt(v.prevBuySource, value) && buyIndex === -1) {
+            buyIndex = k;
+            break;
+          }
+        }
+        for (let k = 4; k >= 0; k--) {
+          const value = grid[k];
+          if (ge(sellSource, value) && lt(v.prevSellSource, value) && sellIndex === -1) {
+            sellIndex = k;
+            break;
+          }
+        }
+      }
+
+      // Signal filtering
+      const P0 = v.P;
+      const shiftCount0 = v.shiftCount;
+      buy = buyIndex >= 0;
+      sell = sellIndex >= 0;
+      buy = buyIndex >= LSI0 ? false : buy;
+      sell = sellIndex <= LSI0 ? false : sell;
+      if (buy && sell) {
+        buy = dir > 0;
+        sell = !(dir > 0);
+      }
+      if (sell && dir > 0) {
+        sellTP = P0 > 0;
+        sell = false;
+      }
+      if (buy && dir < 0) {
+        buyTP = P0 < 0;
+        buy = false;
+      }
+      if (P0 === 0) {
+        buy = buy && dir > 0;
+        sell = sell && dir < 0;
+      }
+      // Shift != Shift[1]: Shift is still 0 here (false on the first bar, Shift[1] na)
+      if (!isNaN(v.prevShift) && shift !== v.prevShift) {
+        buy = false;
+        sell = false;
+        buyTP = false;
+        sellTP = false;
+        buyStop = shiftCount0 >= 1 && P0 < 0;
+        sellStop = shiftCount0 <= -1 && P0 > 0;
+      }
+      if (sellIndex >= 4) sell = false;
+      if (buyIndex <= 0) buy = false;
+      if (P0 === 0 && buyIndex >= 3) buy = false;
+      if (P0 === 0 && sellIndex <= 1) sell = false;
+      buyTP = P0 >= 0 ? false : buyTP;
+      sellTP = P0 <= 0 ? false : sellTP;
+      buyStop = P0 >= 0 ? false : buyStop;
+      sellStop = P0 <= 0 ? false : sellStop;
+
+      // Grid shifting (historical bars are confirmed)
+      const normAnchor = (cfg.anchor * GI * bPrice) / 100;
+      v.anchorUp = v.shiftCount > 1 ? normAnchor / Math.max(Math.abs(v.shiftCount), 1) : normAnchor;
+      v.anchorDown = v.shiftCount < -1 ? normAnchor / Math.max(Math.abs(v.shiftCount), 1) : normAnchor;
+      if (gt(bar.low, grid[4] + v.anchorUp)) {
+        v.bPrice = grid[3] + v.anchorUp;
+        v.bIndex = i;
+        v.shiftCount = v.shiftCount >= 0 ? v.shiftCount + 1 : 1;
+        shift = 1;
+      }
+      if (lt(bar.high, grid[0] - v.anchorDown)) {
+        v.bPrice = grid[1] - v.anchorDown;
+        v.bIndex = i;
+        v.shiftCount = v.shiftCount <= 0 ? v.shiftCount - 1 : -1;
+        shift = -1;
+      }
+
+      // Plots: grid lines hidden when Shift != Shift[1]
+      const plt = !isNaN(v.prevShift) && shift === v.prevShift;
+      for (let k = 0; k < 5; k++) {
+        const p: Point = { time: t, value: plt ? grid[k] : NaN };
+        if (plt) p.color = colorArray[k];
+        s.plots[k]![i] = p;
+      }
+      s.plots[5]![i] = { time: t, value: SWMA, color: cfg.colSWMA };
+      // fill(maLine, p0, SWMA, Price0, colLowerBot, colLowerTop); fill(maLine, p4, SWMA, Price4, colUpperBot, colUpperTop)
+      s.fill0[0][i] = SWMA;
+      s.fill0[1][i] = grid[0];
+      s.fill0[2][i] = colLowerBot;
+      s.fill0[3][i] = cfg.colLowerTop;
+      s.fill1[0][i] = SWMA;
+      s.fill1[1][i] = grid[4];
+      s.fill1[2][i] = colUpperBot;
+      s.fill1[3][i] = cfg.colUpperTop;
+
+      // plotchar signals: size.tiny, location.belowbar (buy) / abovebar (sell)
+      const char = (on: boolean, below: boolean, text: string) => {
+        if (on) {
+          s.markers.push({ time: t, position: below ? 'belowBar' : 'aboveBar', shape: 'circle', color: 'transparent',
+            text, textColor: below ? buyCol : sellCol, size: 'tiny' });
+        }
+      };
+      char(buy, true, '▲');
+      char(sell, false, '▼');
+      char(buyTP, true, '△');
+      char(sellTP, false, '▽');
+      char(buyStop, true, '⦿');
+      char(sellStop, false, '⦿');
+      const f = s.flags;
+      f[0]![i] = buy;
+      f[1]![i] = sell;
+      f[2]![i] = buyTP;
+      f[3]![i] = sellTP;
+      f[4]![i] = buyStop;
+      f[5]![i] = sellStop;
+      for (let k = 0; k < 6; k++) if (f[k]![i]) s.times[k]!.push(t);
+
+      // Position tracking
+      if (buy) v.P = v.P > 0 ? v.P + 1 : 1;
+      else if (sell) v.P = v.P < 0 ? v.P - 1 : -1;
+      else if (buyTP || sellTP || buyStop || sellStop) v.P = 0;
+
+      let LSI = v.LSI;
+      const P = v.P;
+      LSI = buy ? buyIndex : sell ? sellIndex : LSI;
+      LSI = buyTP ? buyIndex : sellTP ? sellIndex : LSI;
+      LSI = buyStop ? 4 : sellStop ? 0 : LSI;
+      if (P === 0 && LMS > LSI) LSI = LMS;
+      if (P === 0 && RMB < LSI) LSI = RMB;
+      if (P !== 0 && LMS === 4) LSI = 4;
+      if (P !== 0 && RMB === 0) LSI = 0;
+      if (shift === 1 && P > 0) LSI = 0;
+      else if (shift === 1 && P < 0) LSI = 4;
+      else if (shift === -1 && P > 0) LSI = 0;
+      else if (shift === -1 && P < 0) LSI = 4;
+      if (!isNaN(v.prevShift) && shift !== v.prevShift && P === 0 && Math.abs(v.shiftCount) === 1) LSI = 2;
+      v.LSI = LSI;
+
+      v.prevShift = shift;
+      v.prevBuySource = buySource;
+      v.prevSellSource = sellSource;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const gradient = (f: GridRun['fill0']) => ({
+        topValue: f[0].slice(), bottomValue: f[1].slice(), topColor: f[2].slice(), bottomColor: f[3].slice(),
+      });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: Object.fromEntries(s.plots.map((p, k) => [`plot${k}`, p.slice()])),
+        fills: [
+          { plot1: 'plot5', plot2: 'plot0', options: { title: 'Lower Fill' }, gradient: gradient(s.fill0) },
+          { plot1: 'plot5', plot2: 'plot4', options: { title: 'Upper Fill' }, gradient: gradient(s.fill1) },
+        ],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GridbotPingPongInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<GridbotPingPongInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -330,6 +387,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const GridbotPingPong = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

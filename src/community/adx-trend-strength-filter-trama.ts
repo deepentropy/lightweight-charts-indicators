@@ -13,9 +13,13 @@
  */
 
 import {
-  ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
+  taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import {
+  barSource, createBarRun, fullResult, isBarSource, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 
 export interface AdxTrendStrengthFilterTramaInputs {
   tramaLength: number;
@@ -78,96 +82,141 @@ const ne0 = (a: number) => !isNaN(a) && Math.abs(a) > EPS;
 const pmin = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.min(a, b));
 const pmax = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.max(a, b));
 
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+interface TramaVars {
+  /** var int signalState = 0 */
+  signalState: number;
+}
+
+interface TramaRun extends BarRunState<TramaVars> {
+  hh: WindowExtreme;
+  ll: WindowExtreme;
+  tc: WindowSma;
+  rsi: ReturnType<typeof taStep.rsi>;
+  rsiSma: WindowSma;
+  rsiEma: ReturnType<typeof taStep.ema>;
+  tr: ReturnType<typeof taStep.tr>;
+  trur: ReturnType<typeof taStep.rma>;
+  plusRma: ReturnType<typeof taStep.rma>;
+  minusRma: ReturnType<typeof taStep.rma>;
+  adx: ReturnType<typeof taStep.rma>;
+  sma: WindowSma;
+  hhArr: number[];
+  llArr: number[];
+  ama: number[];
+  plot0: Point[];
+  plot1: Point[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<AdxTrendStrengthFilterTramaInputs>): BarStudy<TramaRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.tramaSrc);
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+  return {
+    fullRunReason: () => (isBarSource(cfg.tramaSrc) ? null : 'source of another study'),
+    init() {
+      const s: TramaRun = {
+        hh: new WindowExtreme(false, cfg.tramaLength), ll: new WindowExtreme(true, cfg.tramaLength),
+        tc: new WindowSma(cfg.tramaLength), rsi: taStep.rsi(cfg.rsiLength), rsiSma: new WindowSma(cfg.rsiSmaLength),
+        rsiEma: taStep.ema(cfg.rsiEmaLength), tr: taStep.tr(true), trur: taStep.rma(cfg.adxLength),
+        plusRma: taStep.rma(cfg.adxLength), minusRma: taStep.rma(cfg.adxLength), adx: taStep.rma(cfg.adxLength),
+        sma: new WindowSma(cfg.smaLength), hhArr: [], llArr: [], ama: [], plot0: [], plot1: [], barColors: [],
+        steps: [], vars: { signalState: 0 }, lists: [], series: [],
+      };
+      s.steps = [s.hh, s.ll, s.tc, s.rsi, s.rsiSma, s.rsiEma, s.tr, s.trur, s.plusRma, s.minusRma, s.adx, s.sma];
+      s.series = [s.hhArr, s.llArr, s.ama, s.plot0, s.plot1, s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const c = b.close;
+
+      // TRAMA
+      const hh = s.hh.step(b.high);
+      const ll = s.ll.step(b.low);
+      s.hhArr[i] = hh;
+      s.llArr[i] = ll;
+      const hhChange = i > 0 ? hh - s.hhArr[i - 1] : NaN;
+      const llChange = i > 0 ? ll - s.llArr[i - 1] : NaN;
+      const hhf = pmax(Math.sign(hhChange), 0);
+      const llf = pmax(Math.sign(-llChange), 0);
+      const flag = ne0(hhf) || ne0(llf) ? 1.0 : 0.0;
+      const tcSma = s.tc.step(flag);
+      const src = value(b);
+      const prev = i > 0 ? s.ama[i - 1] : NaN;
+      // ama := nz(ama[1] + tc * (tramaSrc - ama[1]), tramaSrc)
+      const v = prev + Math.pow(tcSma, 2) * (src - prev);
+      const ama = Number.isFinite(v) ? v : src;
+      s.ama[i] = ama;
+
+      // RSI and its moving averages
+      const rsi = s.rsi.step(c);
+      const rsiSma = s.rsiSma.step(rsi);
+      const rsiEma = s.rsiEma.step(rsi);
+
+      // Hand-made ADX
+      const up = i > 0 ? b.high - bars[i - 1].high : NaN;
+      const down = i > 0 ? bars[i - 1].low - b.low : NaN;
+      const plusDM = gt(up, down) && gt(up, 0) ? up : 0;
+      const minusDM = gt(down, up) && gt(down, 0) ? down : 0;
+      const trur = s.trur.step(s.tr.step(b.high, b.low, c));
+      const plusRma = s.plusRma.step(plusDM);
+      const minusRma = s.minusRma.step(minusDM);
+      const plusDI = (100 * plusRma) / trur;
+      const minusDI = (100 * minusRma) / trur;
+      const dx = (100 * Math.abs(plusDI - minusDI)) / (plusDI + minusDI);
+      const adx = s.adx.step(dx);
+      const sma = s.sma.step(c);
+
+      let signalState = s.vars.signalState;
+      const adxCondition = gt(adx, cfg.adxThreshold);
+      const priceBetween = gt(c, pmin(ama, sma)) && lt(c, pmax(ama, sma));
+      const bull = gt(c, ama) && gt(rsiEma, rsiSma) && adxCondition;
+      const bear = lt(c, ama) && lt(rsiEma, rsiSma) && adxCondition;
+      if (priceBetween) signalState = 0;
+      else if (signalState === 1) {
+        if (bull) signalState = 1;
+        else if (bear) signalState = -1;
+      } else if (signalState === -1) {
+        if (bear) signalState = -1;
+        else if (bull) signalState = 1;
+      } else if (bull) signalState = 1;
+      else if (bear) signalState = -1;
+      s.vars.signalState = signalState;
+      s.barColors[i] = { time: b.time, color: signalState === 1 ? color.green : signalState === -1 ? color.red : color.orange };
+      s.plot0[i] = { time: b.time, value: fin(ama), color: TRAMA_COL };
+      s.plot1[i] = { time: b.time, value: cfg.showSma ? fin(sma) : NaN, color: SMA_COL };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        // fill(plotTrama, plotSma, color = color.new(color.orange, 80))
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: FILL_COL } }],
+        barColors: s.barColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdxTrendStrengthFilterTramaInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<AdxTrendStrengthFilterTramaInputs> = {},
 ): IndicatorResult & { barColors: BarColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = A(getSourceSeries(bars, cfg.tramaSrc));
-  const close = bars.map((b) => b.close);
-
-  // TRAMA
-  const hhChange = A(ta.change(ta.highest(S(bars.map((b) => b.high)), cfg.tramaLength)));
-  const llChange = A(ta.change(ta.lowest(S(bars.map((b) => b.low)), cfg.tramaLength)));
-  const flag = bars.map((_b, i) => {
-    const hh = pmax(Math.sign(hhChange[i]), 0);
-    const ll = pmax(Math.sign(-llChange[i]), 0);
-    return ne0(hh) || ne0(ll) ? 1.0 : 0.0;
-  });
-  const tcSma = A(ta.sma(S(flag), cfg.tramaLength));
-  const ama = new Array<number>(n);
-  for (let i = 0; i < n; i++) {
-    const prev = i > 0 ? ama[i - 1] : NaN;
-    // ama := nz(ama[1] + tc * (tramaSrc - ama[1]), tramaSrc)
-    const v = prev + Math.pow(tcSma[i], 2) * (src[i] - prev);
-    ama[i] = Number.isFinite(v) ? v : src[i];
-  }
-
-  // RSI and its moving averages
-  const rsi = ta.rsi(S(close), cfg.rsiLength);
-  const rsiSma = A(ta.sma(rsi, cfg.rsiSmaLength));
-  const rsiEma = A(ta.ema(rsi, cfg.rsiEmaLength));
-
-  // Hand-made ADX
-  const plusDM = bars.map((b, i) => {
-    const up = i > 0 ? b.high - bars[i - 1].high : NaN;
-    const down = i > 0 ? bars[i - 1].low - b.low : NaN;
-    return gt(up, down) && gt(up, 0) ? up : 0;
-  });
-  const minusDM = bars.map((b, i) => {
-    const up = i > 0 ? b.high - bars[i - 1].high : NaN;
-    const down = i > 0 ? bars[i - 1].low - b.low : NaN;
-    return gt(down, up) && gt(down, 0) ? down : 0;
-  });
-  const trur = A(ta.rma(ta.tr(bars, true), cfg.adxLength));
-  const plusRma = A(ta.rma(S(plusDM), cfg.adxLength));
-  const minusRma = A(ta.rma(S(minusDM), cfg.adxLength));
-  const dx = bars.map((_b, i) => {
-    const plusDI = (100 * plusRma[i]) / trur[i];
-    const minusDI = (100 * minusRma[i]) / trur[i];
-    return (100 * Math.abs(plusDI - minusDI)) / (plusDI + minusDI);
-  });
-  const adx = A(ta.rma(S(dx), cfg.adxLength));
-  const sma = A(ta.sma(S(close), cfg.smaLength));
-
-  const barColors: BarColorData[] = [];
-  let signalState = 0; // var int signalState = 0
-  for (let i = 0; i < n; i++) {
-    const c = close[i];
-    const adxCondition = gt(adx[i], cfg.adxThreshold);
-    const priceBetween = gt(c, pmin(ama[i], sma[i])) && lt(c, pmax(ama[i], sma[i]));
-    const bull = gt(c, ama[i]) && gt(rsiEma[i], rsiSma[i]) && adxCondition;
-    const bear = lt(c, ama[i]) && lt(rsiEma[i], rsiSma[i]) && adxCondition;
-    if (priceBetween) signalState = 0;
-    else if (signalState === 1) {
-      if (bull) signalState = 1;
-      else if (bear) signalState = -1;
-    } else if (signalState === -1) {
-      if (bear) signalState = -1;
-      else if (bull) signalState = 1;
-    } else if (bull) signalState = 1;
-    else if (bear) signalState = -1;
-    barColors.push({ time: bars[i].time, color: signalState === 1 ? color.green : signalState === -1 ? color.red : color.orange });
-  }
-
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: fin(ama[i]), color: TRAMA_COL })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: cfg.showSma ? fin(sma[i]) : NaN, color: SMA_COL })),
-    },
-    // fill(plotTrama, plotSma, color = color.new(color.orange, 80))
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: FILL_COL } }],
-    barColors,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AdxTrendStrengthFilterTrama = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -17,10 +17,12 @@
  * Original notice: © TradeVizion
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { barInterval, barTime } from '../bar-time';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { barTime } from '../bar-time';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AdxExtremeZonesDivergencesInputs {
   /** DI length (first argument of ta.dmi) */
@@ -161,177 +163,210 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AdxExtremeZonesDivergencesInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface AdxEzVars {
+  /** ta.valuewhen(found, x, 1): the last two values of x on the found bars (older first) */
+  plAdx: readonly number[];
+  plLow: readonly number[];
+  phAdx: readonly number[];
+  phHigh: readonly number[];
+  /** ta.barssince(plFound[1]) / ta.barssince(phFound[1]) */
+  bsPl: number;
+  bsPh: number;
+}
+
+interface AdxEzRun extends BarRunState<AdxEzVars> {
+  dmi: ReturnType<typeof taStep.dmi>;
+  ph: PivotStep;
+  pl: PivotStep;
+  adx: number[];
+  diPlus: number[];
+  diMinus: number[];
+  plFound: boolean[];
+  phFound: boolean[];
+  plots: Point[][];
+  divLines: Point[][];
+  fillColors: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+/** ta.valuewhen history: the value added on a found bar */
+const pushed = (h: readonly number[], v: number): readonly number[] => (h.length < 2 ? [...h, v] : [h[1]!, v]);
+/** occurrence 1 of the history (na before two values) */
+const second = (h: readonly number[]): number => (h.length >= 2 ? h[h.length - 2]! : NaN);
+
+function study(inputs: Partial<AdxExtremeZonesDivergencesInputs>): BarStudy<AdxEzRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const interval = barInterval(bars);
-  const t = (i: number) => bars[i].time;
-
-  // [diPlus, diMinus, adxValue] = ta.dmi(diLen, adxSmooth)
-  const [plusS, minusS, adxS] = ta.dmi(bars, cfg.diLen, cfg.adxSmooth);
-  const diPlus = A(plusS);
-  const diMinus = A(minusS);
-  const adx = A(adxS);
-
   // Divergence engine
   const bullSens = 1.0 + cfg.sensitivity / 100.0;
   const bearSens = 1.0 - cfg.sensitivity / 100.0;
   const divR = cfg.fastPivotConfirm ? 1 : cfg.pivotRightBars;
-  const adxPH = A(ta.pivothigh(S(adx), cfg.pivotLeftBars, divR));
-  const adxPL = A(ta.pivotlow(S(adx), cfg.pivotLeftBars, divR));
-
-  const back = (a: number[], i: number) => (i - divR >= 0 ? a[i - divR] : NaN);
-  const highs = bars.map((b) => b.high);
-  const lows = bars.map((b) => b.low);
-
-  const plFound: boolean[] = new Array(n).fill(false);
-  const phFound: boolean[] = new Array(n).fill(false);
-  const bullPlot: boolean[] = new Array(n).fill(false);
-  const hiBullPlot: boolean[] = new Array(n).fill(false);
-  const bearPlot: boolean[] = new Array(n).fill(false);
-  const hiBearPlot: boolean[] = new Array(n).fill(false);
-  // div*Alert: the conditions without the per-kind display toggles (div*Plot = toggle and div*Alert)
-  const bullAlert: boolean[] = new Array(n).fill(false);
-  const hiBullAlert: boolean[] = new Array(n).fill(false);
-  const bearAlert: boolean[] = new Array(n).fill(false);
-  const hiBearAlert: boolean[] = new Array(n).fill(false);
-  // ta.valuewhen(found, x, 1): x on the found bar before the latest one (the latest can be the current bar)
-  const plAdx: number[] = [];
-  const plLow: number[] = [];
-  const phAdx: number[] = [];
-  const phHigh: number[] = [];
-  let bsPl = NaN; // ta.barssince(plFound[1])
-  let bsPh = NaN; // ta.barssince(phFound[1])
-  for (let i = 0; i < n; i++) {
-    const a = back(adx, i);
-    const lo = back(lows, i);
-    const hi = back(highs, i);
-    plFound[i] = !isNaN(adxPL[i]);
-    phFound[i] = !isNaN(adxPH[i]);
-
-    const prevPl = i > 0 && plFound[i - 1];
-    const prevPh = i > 0 && phFound[i - 1];
-    bsPl = prevPl ? 0 : isNaN(bsPl) ? NaN : bsPl + 1;
-    bsPh = prevPh ? 0 : isNaN(bsPh) ? NaN : bsPh + 1;
-    const plSpaced = cfg.minBarsBetweenPivots <= bsPl && bsPl <= cfg.maxBarsBetweenPivots;
-    const phSpaced = cfg.minBarsBetweenPivots <= bsPh && bsPh <= cfg.maxBarsBetweenPivots;
-
-    if (plFound[i]) {
-      plAdx.push(a);
-      plLow.push(lo);
-    }
-    if (phFound[i]) {
-      phAdx.push(a);
-      phHigh.push(hi);
-    }
-    const vwPlAdx = plAdx.length >= 2 ? plAdx[plAdx.length - 2] : NaN;
-    const vwPlLow = plLow.length >= 2 ? plLow[plLow.length - 2] : NaN;
-    const vwPhAdx = phAdx.length >= 2 ? phAdx[phAdx.length - 2] : NaN;
-    const vwPhHigh = phHigh.length >= 2 ? phHigh[phHigh.length - 2] : NaN;
-
-    // Regular bullish: price LL, ADX HL
-    const adxHlReg = gt(a, bullSens * vwPlAdx) && plSpaced;
-    const priceLlReg = lt(lo, bearSens * vwPlLow);
-    bullAlert[i] = cfg.showDivergences && priceLlReg && adxHlReg && plFound[i];
-    bullPlot[i] = cfg.showRegularBullish && bullAlert[i];
-    // Hidden bullish: price HL, ADX LL
-    const adxLlHi = lt(a, bearSens * vwPlAdx) && plSpaced;
-    const priceHlHi = gt(lo, bullSens * vwPlLow);
-    hiBullAlert[i] = cfg.showDivergences && priceHlHi && adxLlHi && plFound[i];
-    hiBullPlot[i] = cfg.showHiddenBullish && hiBullAlert[i];
-    // Regular bearish: price HH, ADX LH
-    const adxLhReg = lt(a, bearSens * vwPhAdx) && phSpaced;
-    const priceHhReg = gt(hi, bullSens * vwPhHigh);
-    bearAlert[i] = cfg.showDivergences && priceHhReg && adxLhReg && phFound[i];
-    bearPlot[i] = cfg.showRegularBearish && bearAlert[i];
-    // Hidden bearish: price LH, ADX HH
-    const adxHhHi = gt(a, bullSens * vwPhAdx) && phSpaced;
-    const priceLhHi = lt(hi, bearSens * vwPhHigh);
-    hiBearAlert[i] = cfg.showDivergences && priceLhHi && adxHhHi && phFound[i];
-    hiBearPlot[i] = cfg.showHiddenBearish && hiBearAlert[i];
-  }
-
-  // Plots
   const extLvl = cfg.extremeLevel;
-  const isExtreme = (i: number) => !isNaN(adx[i]) && ge(adx[i], extLvl);
   const divNone = String(color.new(color.white, 100));
-  const P = (f: (i: number) => Point | null): Point[] => {
-    const out: Point[] = [];
-    for (let i = 0; i < n; i++) {
-      const p = f(i);
-      if (p) out.push(p);
-    }
-    return out;
-  };
-  // plot(..., offset = -divR): the value of bar i is drawn on bar i - divR
-  const divLine = (found: boolean[], on: boolean[], col: string) => P((i) => (i - divR < 0 ? null : {
-    time: barTime(bars, i - divR, interval),
-    value: found[i] ? back(adx, i) : NaN,
-    color: on[i] ? col : divNone,
-  }));
-  const plots: Record<string, Point[]> = {
-    plot0: P((i) => ({ time: t(i), value: adx[i], color: isExtreme(i) ? cfg.adxExtremeColor : cfg.adxNormalColor })),
-    plot1: P((i) => ({ time: t(i), value: extLvl })),
-    plot2: P((i) => ({ time: t(i), value: diPlus[i], color: cfg.showPlusDI ? cfg.plusDIColor : 'transparent' })),
-    plot3: P((i) => ({ time: t(i), value: diMinus[i], color: cfg.showMinusDI ? cfg.minusDIColor : 'transparent' })),
-    plot4: divLine(plFound, bullPlot, cfg.regularBullishColor),
-    plot5: divLine(plFound, hiBullPlot, cfg.hiddenBullishColor),
-    plot6: divLine(phFound, bearPlot, cfg.regularBearishColor),
-    plot7: divLine(phFound, hiBearPlot, cfg.hiddenBearishColor),
-  };
-
-  // fill(adxPlot, extPlotForFill, showExtFill and not na(adx) and adx >= extLvl ? cExtFill : na)
-  const fills = [{
-    plot1: 'plot0', plot2: 'plot1',
-    colors: bars.map((_b, i) => (cfg.showExtremeFill && isExtreme(i) ? cfg.extremeFillColor : 'transparent')),
-  }];
-
-  // plotshape(cond ? adxValue[divR] : na, offset = -divR, location.absolute, size.tiny)
-  const markers: MarkerData[] = [];
-  for (let i = divR; i < n; i++) {
-    const price = back(adx, i);
-    if (isNaN(price)) continue;
-    const time = barTime(bars, i - divR, interval);
-    const add = (id: string, on: boolean, text: string, up: boolean, col: string) => {
-      if (on) {
-        markers.push({ id, time, position: up ? 'atPriceBottom' : 'atPriceTop', price, shape: up ? 'labelUp' : 'labelDown',
-          color: col, text, textColor: cfg.divTextColor, size: 'tiny' });
-      }
-    };
-    add('shape0', bullPlot[i], 'Bull', true, cfg.regularBullishColor);
-    add('shape1', hiBullPlot[i], 'H Bull', true, cfg.hiddenBullishColor);
-    add('shape2', bearPlot[i], 'Bear', false, cfg.regularBearishColor);
-    add('shape3', hiBearPlot[i], 'H Bear', false, cfg.hiddenBearishColor);
-  }
-
-  // hline(showCutoff ? midLvl : na, ...), hline(showExtreme ? extLvl : na, ...): an na level draws no line
-  const hlines = [];
-  if (cfg.showCutoff) {
-    hlines.push({ value: cfg.cutoffLevel, options: { title: 'ADX cutoff', color: String(color.new(color.gray, 40)), linestyle: 'dashed' as const } });
-  }
-  if (cfg.showExtreme) {
-    hlines.push({ value: extLvl, options: { title: 'ADX extreme', color: String(color.new(cfg.adxExtremeColor, 60)), linestyle: 'dotted' as const } });
-  }
-
+  const divColors = [cfg.regularBullishColor, cfg.hiddenBullishColor, cfg.regularBearishColor, cfg.hiddenBearishColor];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    hlines,
-    fills,
-    markers,
-    // adxEnterExt / adxExitExt = ta.crossover / ta.crossunder(adxValue, extLvl);
-    // diBullCross / diBearCross = ta.crossover / ta.crossunder(diPlus, diMinus)
-    alerts: alertStates(alertConditions, bars, [
-      bullAlert, bearAlert, hiBullAlert, hiBearAlert,
-      crossedOver(adx, extLvl), crossedUnder(adx, extLvl),
-      crossedOver(diPlus, diMinus), crossedUnder(diPlus, diMinus),
-    ]),
+    init() {
+      const s: AdxEzRun = {
+        dmi: taStep.dmi(cfg.diLen, cfg.adxSmooth), ph: new PivotStep(cfg.pivotLeftBars, divR, true),
+        pl: new PivotStep(cfg.pivotLeftBars, divR, false), adx: [], diPlus: [], diMinus: [], plFound: [], phFound: [],
+        plots: [[], [], [], []], divLines: [[], [], [], []], fillColors: [], markers: [],
+        flags: Array.from({ length: 8 }, () => []), times: Array.from({ length: 8 }, () => []),
+        steps: [], vars: { plAdx: [], plLow: [], phAdx: [], phHigh: [], bsPl: NaN, bsPh: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.dmi, s.ph, s.pl];
+      s.lists = [...s.divLines, s.markers, ...s.times];
+      s.series = [s.adx, s.diPlus, s.diMinus, s.plFound, s.phFound, ...s.plots, s.fillColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const v = s.vars;
+      // [diPlus, diMinus, adxValue] = ta.dmi(diLen, adxSmooth)
+      const [diPlus, diMinus, adx] = s.dmi.step(b.high, b.low, b.close);
+      s.adx[i] = adx;
+      s.diPlus[i] = diPlus;
+      s.diMinus[i] = diMinus;
+      const adxPH = s.ph.step(i, adx);
+      const adxPL = s.pl.step(i, adx);
+
+      const a = i - divR >= 0 ? s.adx[i - divR] : NaN;
+      const lo = i - divR >= 0 ? bars[i - divR].low : NaN;
+      const hi = i - divR >= 0 ? bars[i - divR].high : NaN;
+      const plFound = !isNaN(adxPL);
+      const phFound = !isNaN(adxPH);
+      s.plFound[i] = plFound;
+      s.phFound[i] = phFound;
+      const prevPl = i > 0 && s.plFound[i - 1];
+      const prevPh = i > 0 && s.phFound[i - 1];
+      v.bsPl = prevPl ? 0 : isNaN(v.bsPl) ? NaN : v.bsPl + 1;
+      v.bsPh = prevPh ? 0 : isNaN(v.bsPh) ? NaN : v.bsPh + 1;
+      const plSpaced = cfg.minBarsBetweenPivots <= v.bsPl && v.bsPl <= cfg.maxBarsBetweenPivots;
+      const phSpaced = cfg.minBarsBetweenPivots <= v.bsPh && v.bsPh <= cfg.maxBarsBetweenPivots;
+      if (plFound) {
+        v.plAdx = pushed(v.plAdx, a);
+        v.plLow = pushed(v.plLow, lo);
+      }
+      if (phFound) {
+        v.phAdx = pushed(v.phAdx, a);
+        v.phHigh = pushed(v.phHigh, hi);
+      }
+      const vwPlAdx = second(v.plAdx);
+      const vwPlLow = second(v.plLow);
+      const vwPhAdx = second(v.phAdx);
+      const vwPhHigh = second(v.phHigh);
+      // Regular bullish: price LL, ADX HL
+      const adxHlReg = gt(a, bullSens * vwPlAdx) && plSpaced;
+      const priceLlReg = lt(lo, bearSens * vwPlLow);
+      const bullAlert = cfg.showDivergences && priceLlReg && adxHlReg && plFound;
+      const bullPlot = cfg.showRegularBullish && bullAlert;
+      // Hidden bullish: price HL, ADX LL
+      const adxLlHi = lt(a, bearSens * vwPlAdx) && plSpaced;
+      const priceHlHi = gt(lo, bullSens * vwPlLow);
+      const hiBullAlert = cfg.showDivergences && priceHlHi && adxLlHi && plFound;
+      const hiBullPlot = cfg.showHiddenBullish && hiBullAlert;
+      // Regular bearish: price HH, ADX LH
+      const adxLhReg = lt(a, bearSens * vwPhAdx) && phSpaced;
+      const priceHhReg = gt(hi, bullSens * vwPhHigh);
+      const bearAlert = cfg.showDivergences && priceHhReg && adxLhReg && phFound;
+      const bearPlot = cfg.showRegularBearish && bearAlert;
+      // Hidden bearish: price LH, ADX HH
+      const adxHhHi = gt(a, bullSens * vwPhAdx) && phSpaced;
+      const priceLhHi = lt(hi, bearSens * vwPhHigh);
+      const hiBearAlert = cfg.showDivergences && priceLhHi && adxHhHi && phFound;
+      const hiBearPlot = cfg.showHiddenBearish && hiBearAlert;
+
+      // Plots
+      const isExtreme = !isNaN(adx) && ge(adx, extLvl);
+      s.plots[0][i] = { time, value: adx, color: isExtreme ? cfg.adxExtremeColor : cfg.adxNormalColor };
+      s.plots[1][i] = { time, value: extLvl };
+      s.plots[2][i] = { time, value: diPlus, color: cfg.showPlusDI ? cfg.plusDIColor : 'transparent' };
+      s.plots[3][i] = { time, value: diMinus, color: cfg.showMinusDI ? cfg.minusDIColor : 'transparent' };
+      // fill(adxPlot, extPlotForFill, showExtFill and not na(adx) and adx >= extLvl ? cExtFill : na)
+      s.fillColors[i] = cfg.showExtremeFill && isExtreme ? cfg.extremeFillColor : 'transparent';
+
+      if (i - divR >= 0) {
+        // plot(..., offset = -divR): the value of bar i is drawn on bar i - divR
+        const t = barTime(bars, i - divR);
+        const ons = [bullPlot, hiBullPlot, bearPlot, hiBearPlot];
+        const founds = [plFound, plFound, phFound, phFound];
+        for (let k = 0; k < 4; k++) {
+          s.divLines[k].push({ time: t, value: founds[k] ? a : NaN, color: ons[k] ? divColors[k] : divNone });
+        }
+        // plotshape(cond ? adxValue[divR] : na, offset = -divR, location.absolute, size.tiny)
+        if (!isNaN(a)) {
+          const add = (id: string, on: boolean, text: string, up: boolean, col: string) => {
+            if (on) {
+              s.markers.push({ id, time: t, position: up ? 'atPriceBottom' : 'atPriceTop', price: a, shape: up ? 'labelUp' : 'labelDown',
+                color: col, text, textColor: cfg.divTextColor, size: 'tiny' });
+            }
+          };
+          add('shape0', bullPlot, 'Bull', true, cfg.regularBullishColor);
+          add('shape1', hiBullPlot, 'H Bull', true, cfg.hiddenBullishColor);
+          add('shape2', bearPlot, 'Bear', false, cfg.regularBearishColor);
+          add('shape3', hiBearPlot, 'H Bear', false, cfg.hiddenBearishColor);
+        }
+      }
+
+      // adxEnterExt / adxExitExt = ta.crossover / ta.crossunder(adxValue, extLvl);
+      // diBullCross / diBearCross = ta.crossover / ta.crossunder(diPlus, diMinus)
+      const pAdx = i > 0 ? s.adx[i - 1] : NaN;
+      const pPlus = i > 0 ? s.diPlus[i - 1] : NaN;
+      const pMinus = i > 0 ? s.diMinus[i - 1] : NaN;
+      const flags = [
+        bullAlert, bearAlert, hiBullAlert, hiBearAlert,
+        adx > extLvl && pAdx <= extLvl, adx < extLvl && pAdx >= extLvl,
+        diPlus > diMinus && pPlus <= pMinus, diPlus < diMinus && pPlus >= pMinus,
+      ];
+      for (let k = 0; k < 8; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // hline(showCutoff ? midLvl : na, ...), hline(showExtreme ? extLvl : na, ...): an na level draws no line
+      const hlines = [];
+      if (cfg.showCutoff) {
+        hlines.push({ value: cfg.cutoffLevel, options: { title: 'ADX cutoff', color: String(color.new(color.gray, 40)), linestyle: 'dashed' as const } });
+      }
+      if (cfg.showExtreme) {
+        hlines.push({ value: extLvl, options: { title: 'ADX extreme', color: String(color.new(cfg.adxExtremeColor, 60)), linestyle: 'dotted' as const } });
+      }
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(),
+          plot1: s.plots[1].slice(),
+          plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(),
+          plot4: s.divLines[0].slice(),
+          plot5: s.divLines[1].slice(),
+          plot6: s.divLines[2].slice(),
+          plot7: s.divLines[3].slice(),
+        },
+        hlines,
+        fills: [{ plot1: 'plot0', plot2: 'plot1', colors: s.fillColors.slice() }],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdxExtremeZonesDivergencesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<AdxExtremeZonesDivergencesInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -348,6 +383,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const AdxExtremeZonesDivergences = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

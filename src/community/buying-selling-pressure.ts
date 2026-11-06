@@ -13,8 +13,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type BSPAveragingType = 'Gaussian 10 Polar' | 'Linear Regression' | 'HMA' | 'RMA' | 'EMA' | 'WMA' | 'SMA';
 
@@ -91,136 +93,187 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const nz = (v: number) => (isNaN(v) ? 0 : v);
 
-/** gaus(source, length) of the script: 10-pole Gaussian filter with `var float filter`, then (filter + nz(filter[1])) / 2 */
-function gaus(source: number[], length: number): number[] {
-  const n = source.length;
-  const beta = (1 - Math.cos((2 * Math.PI) / length)) / (Math.pow(2, 0.1) - 1);
-  const alpha = -beta + Math.sqrt(Math.pow(beta, 2) + 2 * beta);
-  const filter: number[] = new Array(n);
-  const out: number[] = new Array(n);
-  const f = (i: number, k: number) => nz(i - k >= 0 ? filter[i - k] : NaN);
-  const p = (k: number) => Math.pow(1 - alpha, k);
-  for (let i = 0; i < n; i++) {
-    filter[i] = Math.pow(alpha, 10) * source[i]
-      + 10 * (1 - alpha) * f(i, 1)
-      - 45 * p(2) * f(i, 2)
-      + 120 * p(3) * f(i, 3)
-      - 210 * p(4) * f(i, 4)
-      + 252 * p(5) * f(i, 5)
-      - 210 * p(6) * f(i, 6)
-      + 120 * p(7) * f(i, 7)
-      - 45 * p(8) * f(i, 8)
-      + 10 * p(9) * f(i, 9)
-      - p(10) * f(i, 10);
-    // fShift = (filter + nz(filter[1])) / 2
-    out[i] = (filter[i] + f(i, 1)) / 2;
+/**
+ * gaus(source, length) of the script, one bar at a time: 10-pole Gaussian filter with `var float filter`, then
+ * (filter + nz(filter[1])) / 2. The filter values are kept by bar (a bar calculated again writes its own slot).
+ */
+class GausStep {
+  private readonly filter: number[] = [];
+  private readonly alpha: number;
+  private readonly p: number[];
+
+  constructor(length: number) {
+    const beta = (1 - Math.cos((2 * Math.PI) / length)) / (Math.pow(2, 0.1) - 1);
+    const alpha = -beta + Math.sqrt(Math.pow(beta, 2) + 2 * beta);
+    this.alpha = alpha;
+    this.p = Array.from({ length: 11 }, (_v, k) => Math.pow(1 - alpha, k));
   }
-  return out;
+
+  step(i: number, source: number): number {
+    const { alpha, p, filter } = this;
+    const f = (k: number) => nz(i - k >= 0 ? filter[i - k] : NaN);
+    const v = Math.pow(alpha, 10) * source
+      + 10 * (1 - alpha) * f(1)
+      - 45 * p[2] * f(2)
+      + 120 * p[3] * f(3)
+      - 210 * p[4] * f(4)
+      + 252 * p[5] * f(5)
+      - 210 * p[6] * f(6)
+      + 120 * p[7] * f(7)
+      - 45 * p[8] * f(8)
+      + 10 * p[9] * f(9)
+      - p[10] * f(10);
+    filter[i] = v;
+    // fShift = (filter + nz(filter[1])) / 2
+    return (v + f(1)) / 2;
+  }
+
+  commit(): void {}
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<BuyingSellingPressureInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
+type Ma = { step(i: number, v: number): number; commit(): void };
+
+interface BspRun extends BarRunState<Record<string, never>> {
+  tr: ReturnType<typeof taStep.tr>;
+  mas: (Ma | null)[];
+  bsmax: WindowExtreme;
+  bpma: number[];
+  spma: number[];
+  avg: number[];
+  bsmaxArr: number[];
+  plots: Point[][];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<BuyingSellingPressureInputs>): BarStudy<BspRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { typeMA, ln, typeCM } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-  const prevClose = (i: number) => (i > 0 ? close[i - 1] : NaN);
-
-  // Candle metrics
-  const tr = A(ta.tr(bars, false)); // ta.tr: na on the first bar
-  const br = bars.map((b) => Math.abs(b.close - b.open));
-  const hw = bars.map((b) => b.high - Math.max(b.open, b.close));
-  const lw = bars.map((b) => Math.min(b.open, b.close) - b.low);
-  const tw = bars.map((b, i) => b.high - b.low - br[i]);
-  const aw = hw.map((h, i) => (h + lw[i]) / 2);
-  // bp = close - math.min(low, close[1]) - (typeCM == 'Pressure' ? 0 : lw) (math.min with na is na)
-  const bp = bars.map((b, i) => b.close - Math.min(b.low, prevClose(i)) - (typeCM === 'Pressure' ? 0 : lw[i]));
-  // sp = math.max(high, close[1]) - close - (typeCM == 'Pressure' ? 0 : hw)
-  const sp = bars.map((b, i) => Math.max(b.high, prevClose(i)) - b.close - (typeCM === 'Pressure' ? 0 : hw[i]));
-
-  const ma = (source: number[], length: number): number[] => {
+  const ma = (length: number): Ma => {
     switch (typeMA) {
-      case 'Gaussian 10 Polar': return gaus(source, length);
-      case 'Linear Regression': return A(ta.linreg(S(source), length, 0));
-      case 'SMA': return A(ta.sma(S(source), length));
-      case 'EMA': return A(ta.ema(S(source), length));
-      case 'HMA': return A(ta.hma(S(source), length));
-      case 'RMA': return A(ta.rma(S(source), length));
-      case 'WMA': return A(ta.wma(S(source), length));
-      default: return new Array(n).fill(NaN);
+      case 'Gaussian 10 Polar': return new GausStep(length);
+      case 'Linear Regression': { const m = taStep.linreg(length, 0); return { step: (_i, v) => m.step(v), commit: () => m.commit() }; }
+      case 'SMA': { const m = new WindowSma(length); return { step: (_i, v) => m.step(v), commit: () => m.commit() }; }
+      case 'EMA': { const m = taStep.ema(length); return { step: (_i, v) => m.step(v), commit: () => m.commit() }; }
+      case 'HMA': { const m = taStep.hma(length); return { step: (_i, v) => m.step(v), commit: () => m.commit() }; }
+      case 'RMA': { const m = taStep.rma(length); return { step: (_i, v) => m.step(v), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (_i, v) => m.step(v, length), commit: () => m.commit() }; }
+      default: return { step: () => NaN, commit: () => {} };
     }
   };
-  const none = new Array(n).fill(NaN);
-  const atr = cfg.trsw ? ma(tr, ln) : none;
-  const brma = cfg.brsw ? ma(br, ln) : none;
-  const bpma = ma(bp, ln);
-  const spma = ma(sp, ln);
-  const awma = cfg.awsw ? ma(aw, ln) : none;
-  const lwma = cfg.wksw ? ma(lw, ln) : none;
-  const hwma = cfg.wksw ? ma(hw, ln) : none;
-  const twma = cfg.twsw ? ma(tw, ln) : none;
-
-  // bsmx = math.max(bpma, spma); bsmax = ta.highest(bsmx, ln * 3)
-  const bsmx = bpma.map((b, i) => Math.max(b, spma[i]));
-  const bsmax = A(ta.highest(S(bsmx), ln * 3));
-  const avg = bpma.map((b, i) => (b + spma[i]) / 2);
-
-  const bpPlot: { time: number; value: number; color: string }[] = [];
-  const spPlot: { time: number; value: number; color: string }[] = [];
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const bpPrev = i > 0 ? bpma[i - 1] : NaN;
-    const spPrev = i > 0 ? spma[i - 1] : NaN;
-    // color = bpma > bpma[1] ? bpgrow : bpfall; color = spma > spma[1] ? spgrow : spfall
-    bpPlot.push({ time: t, value: bpma[i], color: gt(bpma[i], bpPrev) ? BP_GROW : BP_FALL });
-    spPlot.push({ time: t, value: spma[i], color: gt(spma[i], spPrev) ? SP_GROW : SP_FALL });
-    // barcolor(bg and bpma < bpma[1] and close > close[1] ? color.new(bpfall, 0) : na)
-    // barcolor(bg and spma < spma[1] and close < close[1] ? color.new(spfall, 0) : na)  (drawn over the first)
-    if (cfg.bg) {
-      let c: string | null = null;
-      if (gt(bpPrev, bpma[i]) && gt(close[i], prevClose(i))) c = BP_FALL;
-      if (gt(spPrev, spma[i]) && gt(prevClose(i), close[i])) c = SP_FALL;
-      if (c !== null) barColors.push({ time: t, color: c });
-    }
-  }
-
-  const line = (v: number[]) => bars.map((b, i) => ({ time: b.time, value: v[i] }));
+  // the averages: atr, brma, bpma, spma, awma, lwma, hwma, twma (null: not shown, na)
+  const shown = [cfg.trsw, cfg.brsw, true, true, cfg.awsw, cfg.wksw, cfg.wksw, cfg.twsw];
+  // the sources and averages of one bar (scratch arrays)
+  const src: number[] = new Array(8).fill(NaN);
+  const out: number[] = new Array(8).fill(NaN);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(atr),
-      plot1: line(brma),
-      plot2: line(awma),
-      plot3: line(hwma),
-      plot4: line(lwma),
-      plot5: line(twma),
-      plot6: bpPlot,
-      plot7: spPlot,
+    init() {
+      const s: BspRun = {
+        tr: taStep.tr(false), mas: shown.map((on) => (on ? ma(ln) : null)), bsmax: new WindowExtreme(false, ln * 3),
+        bpma: [], spma: [], avg: [], bsmaxArr: [], plots: Array.from({ length: 8 }, () => []), barColors: [],
+        vars: {}, steps: [], lists: [], series: [],
+      };
+      s.steps = [s.tr, ...s.mas.filter((m): m is Ma => m !== null), s.bsmax];
+      s.lists = [s.barColors];
+      s.series = [s.bpma, s.spma, s.avg, s.bsmaxArr, ...s.plots];
+      return s;
     },
-    fills: [
-      // fill(trp, awmap, color.new(#ffffff, 90), 'ATR AWR ZONE')
-      { plot1: 'plot0', plot2: 'plot2', options: { title: 'ATR AWR ZONE', color: String(color.new('#ffffff', 90)) } },
-      // fill(lwp, hwp, color.new(#2a2e39, 40), 'LH Wicks ZONE')
-      { plot1: 'plot4', plot2: 'plot3', options: { title: 'LH Wicks ZONE', color: String(color.new('#2a2e39', 40)) } },
-      // fill(bpp, spp, math.avg(bpma, spma), bsmax, na, color.rgb(0, 0, 0, 25), 'High Shades')
-      { plot1: 'plot6', plot2: 'plot7', options: { title: 'High Shades' }, gradient: {
-        topValue: avg, bottomValue: bsmax,
-        topColor: new Array<string | null>(n).fill(null),
-        bottomColor: new Array<string | null>(n).fill(String(color.rgb(0, 0, 0, 25))),
-      } },
-    ],
-    markers: [],
-    barColors,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const prevClose = i > 0 ? bars[i - 1].close : NaN;
+      // Candle metrics
+      const tr = s.tr.step(b.high, b.low, b.close) ?? NaN; // ta.tr: na on the first bar
+      const br = Math.abs(b.close - b.open);
+      const hw = b.high - Math.max(b.open, b.close);
+      const lw = Math.min(b.open, b.close) - b.low;
+      const tw = b.high - b.low - br;
+      const aw = (hw + lw) / 2;
+      // bp = close - math.min(low, close[1]) - (typeCM == 'Pressure' ? 0 : lw) (math.min with na is na)
+      const bp = b.close - Math.min(b.low, prevClose) - (typeCM === 'Pressure' ? 0 : lw);
+      // sp = math.max(high, close[1]) - close - (typeCM == 'Pressure' ? 0 : hw)
+      const sp = Math.max(b.high, prevClose) - b.close - (typeCM === 'Pressure' ? 0 : hw);
+      src[0] = tr; src[1] = br; src[2] = bp; src[3] = sp; src[4] = aw; src[5] = lw; src[6] = hw; src[7] = tw;
+      for (let k = 0; k < 8; k++) {
+        const m = s.mas[k];
+        out[k] = m ? m.step(i, src[k]) ?? NaN : NaN;
+      }
+      const bpma = out[2];
+      const spma = out[3];
+      s.bpma[i] = bpma;
+      s.spma[i] = spma;
+
+      // bsmx = math.max(bpma, spma); bsmax = ta.highest(bsmx, ln * 3)
+      s.bsmaxArr[i] = s.bsmax.step(Math.max(bpma, spma));
+      s.avg[i] = (bpma + spma) / 2;
+
+      const bpPrev = i > 0 ? s.bpma[i - 1] : NaN;
+      const spPrev = i > 0 ? s.spma[i - 1] : NaN;
+      // plot order: atr, brma, awma, hwma, lwma, twma
+      s.plots[0][i] = { time: t, value: out[0] };
+      s.plots[1][i] = { time: t, value: out[1] };
+      s.plots[2][i] = { time: t, value: out[4] };
+      s.plots[3][i] = { time: t, value: out[6] };
+      s.plots[4][i] = { time: t, value: out[5] };
+      s.plots[5][i] = { time: t, value: out[7] };
+      // color = bpma > bpma[1] ? bpgrow : bpfall; color = spma > spma[1] ? spgrow : spfall
+      s.plots[6][i] = { time: t, value: bpma, color: gt(bpma, bpPrev) ? BP_GROW : BP_FALL };
+      s.plots[7][i] = { time: t, value: spma, color: gt(spma, spPrev) ? SP_GROW : SP_FALL };
+      // barcolor(bg and bpma < bpma[1] and close > close[1] ? color.new(bpfall, 0) : na)
+      // barcolor(bg and spma < spma[1] and close < close[1] ? color.new(spfall, 0) : na)  (drawn over the first)
+      if (cfg.bg) {
+        let c: string | null = null;
+        if (gt(bpPrev, bpma) && gt(b.close, prevClose)) c = BP_FALL;
+        if (gt(spPrev, spma) && gt(prevClose, b.close)) c = SP_FALL;
+        if (c !== null) s.barColors.push({ time: t, color: c });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(),
+          plot1: s.plots[1].slice(),
+          plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(),
+          plot4: s.plots[4].slice(),
+          plot5: s.plots[5].slice(),
+          plot6: s.plots[6].slice(),
+          plot7: s.plots[7].slice(),
+        },
+        fills: [
+          // fill(trp, awmap, color.new(#ffffff, 90), 'ATR AWR ZONE')
+          { plot1: 'plot0', plot2: 'plot2', options: { title: 'ATR AWR ZONE', color: String(color.new('#ffffff', 90)) } },
+          // fill(lwp, hwp, color.new(#2a2e39, 40), 'LH Wicks ZONE')
+          { plot1: 'plot4', plot2: 'plot3', options: { title: 'LH Wicks ZONE', color: String(color.new('#2a2e39', 40)) } },
+          // fill(bpp, spp, math.avg(bpma, spma), bsmax, na, color.rgb(0, 0, 0, 25), 'High Shades')
+          { plot1: 'plot6', plot2: 'plot7', options: { title: 'High Shades' }, gradient: {
+            topValue: s.avg.slice(), bottomValue: s.bsmaxArr.slice(),
+            topColor: new Array<string | null>(n).fill(null),
+            bottomColor: new Array<string | null>(n).fill(String(color.rgb(0, 0, 0, 25))),
+          } },
+        ],
+        markers: [],
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BuyingSellingPressureInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BuyingSellingPressureInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const BuyingSellingPressure = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

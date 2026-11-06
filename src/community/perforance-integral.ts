@@ -13,7 +13,9 @@
  * Original notice: © Majimbi
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PerforanceIntegralInputs {
   /** Number of bars of the calculation */
@@ -65,78 +67,110 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<PerforanceIntegralInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface PerfVars {
+  /** var trend_1 */
+  trend: number;
+}
+
+interface PerfRun extends BarRunState<PerfVars> {
+  trStep: ReturnType<typeof taStep.tr>;
+  ema: ReturnType<typeof taStep.ema>;
+  up: ReturnType<typeof taStep.crossover>;
+  down: ReturnType<typeof taStep.crossunder>;
+  tr: number[];
+  close: number[];
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<PerforanceIntegralInputs>): BarStudy<PerfRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const { length, weightStart, weightMiddle, positionMiddle, weightEnd } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  // `for i = 0 to length_h - 1` counts down when length_h < 1: open[-1] is a Pine runtime error on the first bar
-  if (n > 0 && length < 1) {
-    throw new Error('The script attempts to reference historical data that is too far from the current bar (-1 bars '
-      + 'back). The history-referencing length for the expression must be a value between 0 and 10000.');
-  }
-
-  // ta.tr(true) is called in a loop; it has the same value on every call of a bar, so tr[i] is the true range of
-  // bar - i (high - low on the first bar)
-  const tr = A(ta.tr(bars, true));
-  const at = (a: number[], j: number) => (j >= 0 ? a[j] : NaN);
-  const open = bars.map((b) => b.open);
-  const close = bars.map((b) => b.close);
-
-  const rawSum: number[] = new Array(n);
-  const vol: number[] = new Array(n);
   const performance: number[] = new Array(length);
   const volatility: number[] = new Array(length);
-  for (let bar = 0; bar < n; bar++) {
-    for (let i = 0; i < length; i++) {
-      // Plain divisions: x / 0 is +-infinity, 0 / 0 is na
-      performance[i] = i === 0
-        ? (open[bar] - close[bar]) / open[bar]
-        : (close[bar] - at(close, bar - i)) / at(close, bar - i) / (i + 1);
-      volatility[i] = Math.abs(at(tr, bar - i)) / at(close, bar - i);
-    }
-    let v = 0.0;
-    for (let i = 0; i < length; i++) v = v + volatility[i];
-    vol[bar] = v;
-    let sum = 0.0;
-    for (let i = 0; i < length; i++) {
-      if (i <= positionMiddle) {
-        sum = sum + (performance[i] * (((weightMiddle - weightEnd) / positionMiddle) * i + weightEnd)) / volatility[i];
-      } else {
-        sum = sum + (performance[i] * (((weightStart - weightMiddle) / positionMiddle) * (i - weightMiddle) + weightMiddle))
-          / volatility[i];
-      }
-    }
-    rawSum[bar] = sum;
-  }
-
-  // sum_ratio := ta.ema(sum_ratio, ema_v): ta.ema skips the na / infinite values as Pine
-  const sumRatio = A(ta.ema(S(rawSum), cfg.emaLength));
-  const up = A(ta.crossover(S(sumRatio), cfg.upperThreshold));
-  const down = A(ta.crossunder(S(sumRatio), cfg.lowerThreshold));
-
   const fin = (x: number) => (Number.isFinite(x) ? x : NaN);
-  let trend = 0; // var trend_1 = 0
-  const plot0 = bars.map((b, i) => {
-    if (up[i]) trend = 1;
-    if (down[i]) trend = -1;
-    return { time: b.time, value: fin(sumRatio[i]), color: trend > 0 ? color.green : color.red };
-  });
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: fin(vol[i]) }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    hlines: [
-      { value: cfg.upperThreshold, options: { title: 'lower threshold', color: String(color.rgb(30, 148, 245, 50)), linestyle: 'solid' } },
-      { value: cfg.lowerThreshold, options: { title: 'upper threshold', color: String(color.rgb(252, 153, 4, 50)), linestyle: 'solid' } },
-    ],
+    init() {
+      const trStep = taStep.tr(true);
+      const ema = taStep.ema(cfg.emaLength);
+      const up = taStep.crossover();
+      const down = taStep.crossunder();
+      const s: PerfRun = {
+        trStep, ema, up, down, tr: [], close: [], plot0: [], plot1: [],
+        steps: [trStep, ema, up, down], vars: { trend: 0 }, lists: [], series: [],
+      };
+      s.series = [s.tr, s.close, s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, bar, bars) {
+      // `for i = 0 to length_h - 1` counts down when length_h < 1: open[-1] is a Pine runtime error on the first bar
+      if (length < 1) {
+        throw new Error('The script attempts to reference historical data that is too far from the current bar (-1 bars '
+          + 'back). The history-referencing length for the expression must be a value between 0 and 10000.');
+      }
+      const b = bars[bar];
+      // ta.tr(true) is called in a loop; it has the same value on every call of a bar, so tr[i] is the true range of
+      // bar - i (high - low on the first bar)
+      const tr = s.tr;
+      const close = s.close;
+      tr[bar] = s.trStep.step(b.high, b.low, b.close);
+      close[bar] = b.close;
+      const at = (a: number[], j: number) => (j >= 0 ? a[j] : NaN);
+      for (let i = 0; i < length; i++) {
+        // Plain divisions: x / 0 is +-infinity, 0 / 0 is na
+        performance[i] = i === 0
+          ? (b.open - b.close) / b.open
+          : (close[bar] - at(close, bar - i)) / at(close, bar - i) / (i + 1);
+        volatility[i] = Math.abs(at(tr, bar - i)) / at(close, bar - i);
+      }
+      let v = 0.0;
+      for (let i = 0; i < length; i++) v = v + volatility[i];
+      let sum = 0.0;
+      for (let i = 0; i < length; i++) {
+        if (i <= positionMiddle) {
+          sum = sum + (performance[i] * (((weightMiddle - weightEnd) / positionMiddle) * i + weightEnd)) / volatility[i];
+        } else {
+          sum = sum + (performance[i] * (((weightStart - weightMiddle) / positionMiddle) * (i - weightMiddle) + weightMiddle))
+            / volatility[i];
+        }
+      }
+
+      // sum_ratio := ta.ema(sum_ratio, ema_v): ta.ema skips the na / infinite values as Pine
+      const sumRatio = s.ema.step(sum);
+      const up = s.up.step(sumRatio, cfg.upperThreshold);
+      const down = s.down.step(sumRatio, cfg.lowerThreshold);
+      if (up) s.vars.trend = 1;
+      if (down) s.vars.trend = -1;
+      s.plot0[bar] = { time: b.time, value: fin(sumRatio), color: s.vars.trend > 0 ? color.green : color.red };
+      s.plot1[bar] = { time: b.time, value: fin(v) };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [
+          { value: cfg.upperThreshold, options: { title: 'lower threshold', color: String(color.rgb(30, 148, 245, 50)), linestyle: 'solid' } },
+          { value: cfg.lowerThreshold, options: { title: 'upper threshold', color: String(color.rgb(252, 153, 4, 50)), linestyle: 'solid' } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PerforanceIntegralInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PerforanceIntegralInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PerforanceIntegral = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

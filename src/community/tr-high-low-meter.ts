@@ -15,9 +15,11 @@
  * Original notice: © dman103
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrHighLowMeterInputs {
   /** Look-back of the highest / lowest source and length of the true range list */
@@ -84,107 +86,154 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TrHighLowMeterInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface TrVars {
+  /** var float[] arr: +TR on a new highest, -TR on a new lowest, the last lookBack entries kept (changed in place) */
+  arr: number[];
+  /** var float _maxAdvDec = 0. */
+  maxAdvDec: number;
+  /** var float _qtyAdvDec = 0. */
+  qtyAdvDec: number;
+  /** var color _return = na */
+  ret: string | null;
+  /** ta.crossover / crossunder: the last bar where the source was not na */
+  last: number;
+}
+
+interface TrRun extends BarRunState<TrVars> {
+  highest: WindowExtreme;
+  lowest: WindowExtreme;
+  tr: ReturnType<typeof taStep.tr>;
+  ema: ReturnType<typeof taStep.ema> | null;
+  hi: number[];
+  lo: number[];
+  result: number[];
+  plots: Point[][];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<TrHighLowMeterInputs>): BarStudy<TrRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = getSourceSeries(bars, cfg.src);
-  const highest = A(ta.highest(src, cfg.lookBack));
-  const lowest = A(ta.lowest(src, cfg.lookBack));
-  const tr = A(ta.tr(bars, false));
-
-  // var float[] arr: +TR on a new highest, -TR on a new lowest, the last lookBack entries kept
-  const arr: number[] = [];
-  const sumTotal: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    if (i > 0 && gt(highest[i], highest[i - 1])) {
-      arr.push(tr[i]);
-      while (arr.length > cfg.lookBack) arr.shift();
-    }
-    if (i > 0 && lt(lowest[i], lowest[i - 1])) {
-      arr.push(-tr[i]);
-      while (arr.length > cfg.lookBack) arr.shift();
-    }
-    // array.sum: na for an empty array, na values skipped
-    let s = NaN;
-    for (const v of arr) if (!isNaN(v)) s = isNaN(s) ? v : s + v;
-    sumTotal[i] = s;
-  }
-  const result = cfg.emaSmooth ? A(ta.ema(Series.fromArray(bars, sumTotal), cfg.emaLength)) : sumTotal;
-
-  // f_c_gradientAdvDec(plot_result, 0, color.red, color.green)
-  const plotColor: (string | null)[] = new Array(n);
-  let maxAdvDec = 0; // var float _maxAdvDec = 0.
-  let qtyAdvDec = 0; // var float _qtyAdvDec = 0.
-  let ret: string | null = null; // var color _return = na
-  let last = NaN; // ta.crossover / crossunder: the last bar where the source was not na
-  for (let i = 0; i < n; i++) {
-    const x = result[i];
-    // ta.crossover(_source, 0) / ta.crossunder(_source, 0) compare exactly (no 1e-10 tolerance)
-    const xUp = !isNaN(x) && !isNaN(last) && x > 0 && last <= 0;
-    const xDn = !isNaN(x) && !isNaN(last) && x < 0 && last >= 0;
-    if (!isNaN(x)) last = x;
-    const chg = i > 0 ? x - result[i - 1] : NaN;
-    const up = gt(chg, 0);
-    const dn = lt(chg, 0);
-    const srcBull = gt(x, 0);
-    const srcBear = lt(x, 0);
-    qtyAdvDec = srcBull
-      ? (xUp ? 1 : up ? qtyAdvDec + 1 : dn ? Math.max(1, qtyAdvDec - 1) : qtyAdvDec)
-      : srcBear
-        ? (xDn ? 1 : dn ? qtyAdvDec + 1 : up ? Math.max(1, qtyAdvDec - 1) : qtyAdvDec)
-        : qtyAdvDec;
-    maxAdvDec = Math.max(maxAdvDec, qtyAdvDec);
-    // 0 / 0 (no advance yet) gives na: color.new(c, na) is transparent
-    const transp = 100 - (qtyAdvDec * 100) / maxAdvDec - 50;
-    const withT = (c: string) => (isNaN(transp) ? 'transparent' : String(color.new(c, transp)));
-    ret = srcBull ? withT(color.green) : srcBear ? withT(color.red) : ret;
-    plotColor[i] = ret;
-  }
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const plot2: { time: number; value: number; color: string }[] = [];
-  const plot3: { time: number; value: number; color: string }[] = [];
-  const plot4: { time: number; value: number; color: string }[] = [];
-  const barColors: BarColorData[] = [];
+  const source = barSource(cfg.src);
   const zoneLines = cfg.useThreshold && cfg.displayTradeZoneLines;
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const x = result[i];
-    plot0.push({ time: t, value: x, color: plotColor[i] ?? 'transparent' });
-    if (cfg.colorBars && plotColor[i] !== null) barColors.push({ time: t, color: plotColor[i] as string });
-    plot1.push({ time: t, value: zoneLines ? cfg.longThreshold : NaN, color: ZONE_COL });
-    plot2.push({ time: t, value: zoneLines ? cfg.shortThreshold : NaN, color: ZONE_COL });
-    // plot(plot_result > 0 ? 1 : -1, "External Indicator 1 or -1]", editable = false)
-    plot3.push({ time: t, value: gt(x, 0) ? 1 : -1, color: color.blue });
-    // neutral_plot = plot_result < LongThreshold and plot_result > ShortThreshold
-    const neutral = lt(x, cfg.longThreshold) && gt(x, cfg.shortThreshold);
-    plot4.push({ time: t, value: cfg.useThreshold && neutral ? 0 : NaN, color: NEUTRAL_COL });
-  }
-
   // long_Condition / short_Condition / neutral_Condition of the original
   const L = cfg.longThreshold;
   const S = cfg.shortThreshold;
   const useT = cfg.useThreshold;
-  const longFlags: boolean[] = [], shortFlags: boolean[] = [], neutralFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const x = result[i];
-    const x1 = i > 0 ? result[i - 1] : NaN;
-    longFlags.push((ge(x, 0) && gt(x, L) && lt(x1, L) && useT) || (ge(x, 0) && lt(x1, 0) && !useT));
-    shortFlags.push((le(x, 0) && lt(x, S) && gt(x1, S) && useT) || (le(x, 0) && gt(x1, 0) && !useT));
-    neutralFlags.push((lt(x, L) && gt(x1, L)) || (gt(x, S) && lt(x1, S) && useT));
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3, plot4 },
-    barColors,
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags, neutralFlags]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: TrRun = {
+        highest: new WindowExtreme(false, cfg.lookBack), lowest: new WindowExtreme(true, cfg.lookBack),
+        tr: taStep.tr(false), ema: cfg.emaSmooth ? taStep.ema(cfg.emaLength) : null,
+        hi: [], lo: [], result: [], plots: Array.from({ length: 5 }, () => []), barColors: [],
+        flags: [[], [], []], times: [[], [], []],
+        steps: [], vars: { arr: [], maxAdvDec: 0, qtyAdvDec: 0, ret: null, last: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.highest, s.lowest, s.tr, ...(s.ema ? [s.ema] : [])];
+      s.lists = [s.barColors, ...s.times];
+      s.series = [s.hi, s.lo, s.result, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const src = source(b);
+      const hi = s.hi;
+      const lo = s.lo;
+      hi[i] = s.highest.step(src);
+      lo[i] = s.lowest.step(src);
+      const tr = s.tr.step(b.high, b.low, b.close);
+
+      const arr = v.arr;
+      if (i > 0 && gt(hi[i], hi[i - 1])) {
+        arr.push(tr);
+        while (arr.length > cfg.lookBack) arr.shift();
+      }
+      if (i > 0 && lt(lo[i], lo[i - 1])) {
+        arr.push(-tr);
+        while (arr.length > cfg.lookBack) arr.shift();
+      }
+      // array.sum: na for an empty array, na values skipped
+      let sum = NaN;
+      for (const a of arr) if (!isNaN(a)) sum = isNaN(sum) ? a : sum + a;
+      const x = s.ema ? s.ema.step(sum) : sum;
+      s.result[i] = x;
+
+      // f_c_gradientAdvDec(plot_result, 0, color.red, color.green)
+      // ta.crossover(_source, 0) / ta.crossunder(_source, 0) compare exactly (no 1e-10 tolerance)
+      const xUp = !isNaN(x) && !isNaN(v.last) && x > 0 && v.last <= 0;
+      const xDn = !isNaN(x) && !isNaN(v.last) && x < 0 && v.last >= 0;
+      if (!isNaN(x)) v.last = x;
+      const x1 = i > 0 ? s.result[i - 1] : NaN;
+      const chg = i > 0 ? x - x1 : NaN;
+      const up = gt(chg, 0);
+      const dn = lt(chg, 0);
+      const srcBull = gt(x, 0);
+      const srcBear = lt(x, 0);
+      const qty = v.qtyAdvDec;
+      v.qtyAdvDec = srcBull
+        ? (xUp ? 1 : up ? qty + 1 : dn ? Math.max(1, qty - 1) : qty)
+        : srcBear
+          ? (xDn ? 1 : dn ? qty + 1 : up ? Math.max(1, qty - 1) : qty)
+          : qty;
+      v.maxAdvDec = Math.max(v.maxAdvDec, v.qtyAdvDec);
+      // 0 / 0 (no advance yet) gives na: color.new(c, na) is transparent
+      const transp = 100 - (v.qtyAdvDec * 100) / v.maxAdvDec - 50;
+      const withT = (c: string) => (isNaN(transp) ? 'transparent' : String(color.new(c, transp)));
+      v.ret = srcBull ? withT(color.green) : srcBear ? withT(color.red) : v.ret;
+      const plotColor = v.ret;
+
+      const t = b.time;
+      const p = s.plots;
+      p[0][i] = { time: t, value: x, color: plotColor ?? 'transparent' };
+      if (cfg.colorBars && plotColor !== null) s.barColors.push({ time: t, color: plotColor });
+      p[1][i] = { time: t, value: zoneLines ? cfg.longThreshold : NaN, color: ZONE_COL };
+      p[2][i] = { time: t, value: zoneLines ? cfg.shortThreshold : NaN, color: ZONE_COL };
+      // plot(plot_result > 0 ? 1 : -1, "External Indicator 1 or -1]", editable = false)
+      p[3][i] = { time: t, value: gt(x, 0) ? 1 : -1, color: color.blue };
+      // neutral_plot = plot_result < LongThreshold and plot_result > ShortThreshold
+      const neutral = lt(x, cfg.longThreshold) && gt(x, cfg.shortThreshold);
+      p[4][i] = { time: t, value: cfg.useThreshold && neutral ? 0 : NaN, color: NEUTRAL_COL };
+
+      const flags = [
+        (ge(x, 0) && gt(x, L) && lt(x1, L) && useT) || (ge(x, 0) && lt(x1, 0) && !useT),
+        (le(x, 0) && lt(x, S) && gt(x1, S) && useT) || (le(x, 0) && gt(x1, 0) && !useT),
+        (lt(x, L) && gt(x1, L)) || (gt(x, S) && lt(x1, S) && useT),
+      ];
+      for (let k = 0; k < 3; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+    },
+    copyVars: (v) => ({ ...v, arr: v.arr.slice() }),
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice() },
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrHighLowMeterInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<TrHighLowMeterInputs> = {},
+): IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -196,6 +245,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const TrHighLowMeter = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

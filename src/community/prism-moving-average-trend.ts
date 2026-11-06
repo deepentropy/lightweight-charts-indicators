@@ -13,8 +13,10 @@
  * Original notice: © MisinkoMaster
  */
 
-import { ta, Series, math, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, math, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BgColorData, PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PrismMovingAverageTrendInputs {
   /** Source */
@@ -66,108 +68,135 @@ const lt = (a: number, b: number) => b - a > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<PrismMovingAverageTrendInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[]; plotCandles: Record<string, PlotCandleData[]> } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { bgColors: BgColorData[]; plotCandles: Record<string, PlotCandleData[]> };
+
+interface PrismVars {
+  /** var trend = 0, var col, var colT, var colC */
+  trend: number;
+  c: string;
+  cT: string;
+  cC: string;
+}
+
+interface PrismRun extends BarRunState<PrismVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  lowest: WindowExtreme;
+  src: number[];
+  base: number[];
+  prism: number[];
+  plots: Point[][];
+  colT: string[];
+  candles: PlotCandleData[];
+  bgColors: BgColorData[];
+}
+
+/** The PRISM weights (sin(a) + cos(a) + 1) / 2 of one length and their sum (added in the same order) */
+function prismWeights(length: number): { weights: number[]; w: number } {
+  const weights: number[] = [];
+  let w = 0.0;
+  for (let i = 0; i <= length - 1; i++) {
+    const angle = ((i + 1) * Math.PI) / (length + 1);
+    const weight = ((math.sin(angle) as number) + (math.cos(angle) as number) + 1) / 2;
+    weights.push(weight);
+    w += weight;
+  }
+  return { weights, w };
+}
+
+function study(inputs: Partial<PrismMovingAverageTrendInputs>): BarStudy<PrismRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { len, mul } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = A(getSourceSeries(bars, cfg.src));
-
+  const value = barSource(cfg.src);
   const sqrtlen = math.round(math.sqrt(len) as number) as number;
   // PRISM(source, length); alpha uses the Lookback input `len`, not `length` (as the Pine source)
-  const PRISM = (source: number[], length: number): number[] => {
-    const alpha = 2 / (1 + len);
-    const out: number[] = new Array(n);
-    for (let k = 0; k < n; k++) {
-      let sum = 0.0;
-      let w = 0.0;
-      for (let i = 0; i <= length - 1; i++) {
-        const angle = ((i + 1) * Math.PI) / (length + 1);
-        const weight = ((math.sin(angle) as number) + (math.cos(angle) as number) + 1) / 2;
-        sum += (k - i >= 0 ? source[k - i] : NaN) * weight;
-        w += weight;
-      }
-      // w != 0 (Pine: not within 1e-10 of 0)
-      const base = !eq(w, 0) ? sum / w : source[k];
-      out[k] = base * (1 - alpha) + source[k] * alpha;
-    }
-    return out;
+  const alpha = 2 / (1 + len);
+  const w1 = prismWeights(len);
+  const w2 = prismWeights(sqrtlen);
+  const PRISM = (source: number[], k: number, { weights, w }: { weights: number[]; w: number }): number => {
+    let sum = 0.0;
+    for (let i = 0; i < weights.length; i++) sum += (k - i >= 0 ? source[k - i] : NaN) * weights[i];
+    // w != 0 (Pine: not within 1e-10 of 0)
+    const base = !eq(w, 0) ? sum / w : source[k];
+    return base * (1 - alpha) + source[k] * alpha;
   };
-  const base = PRISM(src, len);
-  const prism = PRISM(base, sqrtlen);
-
-  const atr = A(ta.atr(bars, len));
-  const upper: number[] = new Array(n);
-  const lower: number[] = new Array(n);
-  const change: number[] = new Array(n);
-  const dist: number[] = new Array(n);
-  const trendArr: number[] = new Array(n);
-  const col: string[] = new Array(n);
-  const colT: string[] = new Array(n);
-  const colC: string[] = new Array(n);
-  let trend = 0; // var trend = 0
-  let c = NEUTRAL; // var col
-  let cT = NEUTRAL_T; // var colT
-  let cC = NEUTRAL; // var colC
-  for (let i = 0; i < n; i++) {
-    const vol = atr[i] * mul;
-    upper[i] = prism[i] + vol;
-    lower[i] = prism[i] - vol;
-    change[i] = prism[i] - (i > 0 ? prism[i - 1] : NaN);
-    if (gt(src[i], upper[i]) && gt(change[i], 0)) trend = 1;
-    if (lt(src[i], lower[i]) && lt(change[i], 0)) trend = -1;
-    trendArr[i] = trend;
-    if (trend === 1) {
-      c = UP;
-      cT = UP_T;
-    }
-    if (trend === -1) {
-      c = DOWN;
-      cT = DOWN_T;
-    }
-    if (gt(change[i], 0)) cC = UP;
-    if (lt(change[i], 0)) cC = DOWN;
-    col[i] = c;
-    colT[i] = cT;
-    colC[i] = cC;
-    dist[i] = (src[i] - prism[i]) * trend;
-  }
-  // (src - prism) * trend == ta.lowest((src - prism) * trend, len)
-  const lowestDist = A(ta.lowest(Series.fromArray(bars, dist), len));
-
-  const plot0 = [];
-  const plot1 = [];
-  const plot2 = [];
-  const plot3 = [];
-  const candles: PlotCandleData[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const time = b.time;
-    // plotcandle(open, high, low, close, color = col, bordercolor = col, wickcolor = col, display = display.pane)
-    candles.push({ time, open: b.open, high: b.high, low: b.low, close: b.close, color: col[i], wickColor: col[i], borderColor: col[i] });
-    plot0.push({ time, value: fin(prism[i]), color: col[i] });
-    plot1.push({ time, value: fin(upper[i]), color: col[i] });
-    plot2.push({ time, value: fin(lower[i]), color: col[i] });
-    plot3.push({ time, value: fin(change[i]), color: colC[i] });
-    if (eq(dist[i], lowestDist[i])) bgColors.push({ time, color: DANGER });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
-    // fill(u, l, colT, "Band Filling")
-    fills: [{ plot1: 'plot1', plot2: 'plot2', options: { title: 'Band Filling' }, colors: colT }],
-    bgColors,
-    plotCandles: { prismCandles: candles },
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: PrismRun = {
+        atr: taStep.atr(len), lowest: new WindowExtreme(true, len), src: [], base: [], prism: [],
+        plots: [[], [], [], []], colT: [], candles: [], bgColors: [],
+        vars: { trend: 0, c: NEUTRAL, cT: NEUTRAL_T, cC: NEUTRAL }, steps: [], lists: [], series: [],
+      };
+      s.steps = [s.atr, s.lowest];
+      s.lists = [s.bgColors];
+      s.series = [s.src, s.base, s.prism, ...s.plots, s.colT, s.candles];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const time = b.time;
+      const src = value(b);
+      s.src[i] = src;
+      s.base[i] = PRISM(s.src, i, w1);
+      const prism = PRISM(s.base, i, w2);
+      s.prism[i] = prism;
+      const vol = s.atr.step(b.high, b.low, b.close) * mul;
+      const upper = prism + vol;
+      const lower = prism - vol;
+      const change = prism - (i > 0 ? s.prism[i - 1] : NaN);
+      if (gt(src, upper) && gt(change, 0)) v.trend = 1;
+      if (lt(src, lower) && lt(change, 0)) v.trend = -1;
+      const trend = v.trend;
+      if (trend === 1) {
+        v.c = UP;
+        v.cT = UP_T;
+      }
+      if (trend === -1) {
+        v.c = DOWN;
+        v.cT = DOWN_T;
+      }
+      if (gt(change, 0)) v.cC = UP;
+      if (lt(change, 0)) v.cC = DOWN;
+      const col = v.c;
+      s.colT[i] = v.cT;
+      const dist = (src - prism) * trend;
+      // (src - prism) * trend == ta.lowest((src - prism) * trend, len)
+      const lowestDist = s.lowest.step(dist);
+      // plotcandle(open, high, low, close, color = col, bordercolor = col, wickcolor = col, display = display.pane)
+      s.candles[i] = { time, open: b.open, high: b.high, low: b.low, close: b.close, color: col, wickColor: col, borderColor: col };
+      s.plots[0][i] = { time, value: fin(prism), color: col };
+      s.plots[1][i] = { time, value: fin(upper), color: col };
+      s.plots[2][i] = { time, value: fin(lower), color: col };
+      s.plots[3][i] = { time, value: fin(change), color: v.cC };
+      if (eq(dist, lowestDist)) s.bgColors.push({ time, color: DANGER });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice() },
+        // fill(u, l, colT, "Band Filling")
+        fills: [{ plot1: 'plot1', plot2: 'plot2', options: { title: 'Band Filling' }, colors: s.colT.slice() }],
+        bgColors: s.bgColors.slice(),
+        plotCandles: { prismCandles: s.candles.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PrismMovingAverageTrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PrismMovingAverageTrendInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PrismMovingAverageTrend = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

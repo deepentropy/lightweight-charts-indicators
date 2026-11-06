@@ -7,8 +7,10 @@
  * Reference: "Vervoort Heiken Ashi Longterm Candlestick Oscillator [LazyBear]"
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VervoortHAOscillatorInputs {
   temaLength: number;
@@ -32,115 +34,91 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VervoortHAOscillatorInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
+
+type Ema = ReturnType<typeof taStep.ema>;
+
+interface VhoRun extends BarRunState<Record<string, never>> {
+  /** [open, high, low, close] x [ema1, ema2, ema3] */
+  emas: Ema[][];
+  haOpen: number[];
+  haClose: number[];
+  plot0: Point[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<VervoortHAOscillatorInputs>): BarStudy<VhoRun, Result> {
   const { temaLength } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const openSeries = new Series(bars, (b) => b.open);
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-  const closeSeries = new Series(bars, (b) => b.close);
-
-  // TEMA for each OHLC component: TEMA = 3*ema1 - 3*ema2 + ema3
-  const ema1O = ta.ema(openSeries, temaLength).toArray();
-  const ema1H = ta.ema(highSeries, temaLength).toArray();
-  const ema1L = ta.ema(lowSeries, temaLength).toArray();
-  const ema1C = ta.ema(closeSeries, temaLength).toArray();
-
-  const ema1OSeries = new Series(bars, (_b, i) => isNaN(ema1O[i]) ? bars[i].open : ema1O[i]);
-  const ema1HSeries = new Series(bars, (_b, i) => isNaN(ema1H[i]) ? bars[i].high : ema1H[i]);
-  const ema1LSeries = new Series(bars, (_b, i) => isNaN(ema1L[i]) ? bars[i].low : ema1L[i]);
-  const ema1CSeries = new Series(bars, (_b, i) => isNaN(ema1C[i]) ? bars[i].close : ema1C[i]);
-
-  const ema2O = ta.ema(ema1OSeries, temaLength).toArray();
-  const ema2H = ta.ema(ema1HSeries, temaLength).toArray();
-  const ema2L = ta.ema(ema1LSeries, temaLength).toArray();
-  const ema2C = ta.ema(ema1CSeries, temaLength).toArray();
-
-  const ema2OSeries = new Series(bars, (_b, i) => isNaN(ema2O[i]) ? bars[i].open : ema2O[i]);
-  const ema2HSeries = new Series(bars, (_b, i) => isNaN(ema2H[i]) ? bars[i].high : ema2H[i]);
-  const ema2LSeries = new Series(bars, (_b, i) => isNaN(ema2L[i]) ? bars[i].low : ema2L[i]);
-  const ema2CSeries = new Series(bars, (_b, i) => isNaN(ema2C[i]) ? bars[i].close : ema2C[i]);
-
-  const ema3O = ta.ema(ema2OSeries, temaLength).toArray();
-  const ema3H = ta.ema(ema2HSeries, temaLength).toArray();
-  const ema3L = ta.ema(ema2LSeries, temaLength).toArray();
-  const ema3C = ta.ema(ema2CSeries, temaLength).toArray();
-
-  // Compute TEMA values for each bar
-  const temaO: number[] = new Array(n);
-  const temaH: number[] = new Array(n);
-  const temaL: number[] = new Array(n);
-  const temaC: number[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    const e1o = isNaN(ema1O[i]) ? bars[i].open : ema1O[i];
-    const e2o = isNaN(ema2O[i]) ? bars[i].open : ema2O[i];
-    const e3o = isNaN(ema3O[i]) ? bars[i].open : ema3O[i];
-    temaO[i] = 3 * e1o - 3 * e2o + e3o;
-
-    const e1h = isNaN(ema1H[i]) ? bars[i].high : ema1H[i];
-    const e2h = isNaN(ema2H[i]) ? bars[i].high : ema2H[i];
-    const e3h = isNaN(ema3H[i]) ? bars[i].high : ema3H[i];
-    temaH[i] = 3 * e1h - 3 * e2h + e3h;
-
-    const e1l = isNaN(ema1L[i]) ? bars[i].low : ema1L[i];
-    const e2l = isNaN(ema2L[i]) ? bars[i].low : ema2L[i];
-    const e3l = isNaN(ema3L[i]) ? bars[i].low : ema3L[i];
-    temaL[i] = 3 * e1l - 3 * e2l + e3l;
-
-    const e1c = isNaN(ema1C[i]) ? bars[i].close : ema1C[i];
-    const e2c = isNaN(ema2C[i]) ? bars[i].close : ema2C[i];
-    const e3c = isNaN(ema3C[i]) ? bars[i].close : ema3C[i];
-    temaC[i] = 3 * e1c - 3 * e2c + e3c;
-  }
-
-  // Build Heiken Ashi on TEMA-smoothed OHLC
-  const haClose: number[] = new Array(n);
-  const haOpen: number[] = new Array(n);
-  const haHigh: number[] = new Array(n);
-  const haLow: number[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    haClose[i] = (temaO[i] + temaH[i] + temaL[i] + temaC[i]) / 4;
-
-    if (i === 0) {
-      haOpen[i] = (temaO[i] + temaC[i]) / 2;
-    } else {
-      haOpen[i] = (haOpen[i - 1] + haClose[i - 1]) / 2;
-    }
-
-    haHigh[i] = Math.max(temaH[i], haOpen[i], haClose[i]);
-    haLow[i] = Math.min(temaL[i], haOpen[i], haClose[i]);
-  }
-
   // Oscillator = (haClose - haOpen) / haClose * 100
   const warmup = temaLength * 3;
-
-  const plot0 = bars.map((b, i) => {
-    if (i < warmup) return { time: b.time, value: NaN };
-    const osc = haClose[i] !== 0 ? (haClose[i] - haOpen[i]) / haClose[i] * 100 : 0;
-    const color = osc >= 0 ? '#26A69A' : '#EF5350';
-    return { time: b.time, value: osc, color };
-  });
-
-  // Pine: barcolor(overlayMode ? hacolt>0?green : hacolt<0?red : blue : na)
-  // hacolt maps to oscillator sign: >0 = green, <0 = red, 0 = blue
-  const barColors: BarColorData[] = [];
-  for (let i = warmup; i < n; i++) {
-    const osc = haClose[i] !== 0 ? (haClose[i] - haOpen[i]) / haClose[i] * 100 : 0;
-    const color = osc > 0 ? '#008000' : osc < 0 ? '#FF0000' : '#0000FF'; // green/red/blue
-    barColors.push({ time: bars[i].time as number, color });
-  }
-
+  // TEMA for each OHLC component: TEMA = 3*ema1 - 3*ema2 + ema3; each ema of the previous one (the price while
+  // it is na)
+  const tema = (e: Ema[], price: number) => {
+    const v1 = e[0].step(price);
+    const e1 = isNaN(v1) ? price : v1;
+    const v2 = e[1].step(e1);
+    const e2 = isNaN(v2) ? price : v2;
+    const v3 = e[2].step(e2);
+    const e3 = isNaN(v3) ? price : v3;
+    return 3 * e1 - 3 * e2 + e3;
+  };
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
-    hlines: [
-      { value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } },
-    ],
-    barColors,
+    init() {
+      const s: VhoRun = {
+        emas: Array.from({ length: 4 }, () => [taStep.ema(temaLength), taStep.ema(temaLength), taStep.ema(temaLength)]),
+        haOpen: [], haClose: [], plot0: [], barColors: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = s.emas.flat();
+      s.lists = [s.barColors];
+      s.series = [s.haOpen, s.haClose, s.plot0];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const temaO = tema(s.emas[0], b.open);
+      const temaH = tema(s.emas[1], b.high);
+      const temaL = tema(s.emas[2], b.low);
+      const temaC = tema(s.emas[3], b.close);
+
+      // Build Heiken Ashi on TEMA-smoothed OHLC
+      const haClose = (temaO + temaH + temaL + temaC) / 4;
+      const haOpen = i === 0 ? (temaO + temaC) / 2 : (s.haOpen[i - 1] + s.haClose[i - 1]) / 2;
+      s.haClose[i] = haClose;
+      s.haOpen[i] = haOpen;
+
+      if (i < warmup) {
+        s.plot0[i] = { time: b.time, value: NaN };
+        return;
+      }
+      const osc = haClose !== 0 ? (haClose - haOpen) / haClose * 100 : 0;
+      s.plot0[i] = { time: b.time, value: osc, color: osc >= 0 ? '#26A69A' : '#EF5350' };
+      // Pine: barcolor(overlayMode ? hacolt>0?green : hacolt<0?red : blue : na)
+      // hacolt maps to oscillator sign: >0 = green, <0 = red, 0 = blue
+      const color = osc > 0 ? '#008000' : osc < 0 ? '#FF0000' : '#0000FF'; // green/red/blue
+      s.barColors.push({ time: b.time as number, color });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice() },
+        hlines: [
+          { value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } },
+        ],
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const VervoortHAOscillator = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VervoortHAOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VervoortHAOscillatorInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const VervoortHAOscillator = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

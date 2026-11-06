@@ -21,12 +21,16 @@
  * Reference: "IDEAL BB with MA (With Alerts) by Adarsh" (community)
  */
 
-import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
 import type { ChartContext } from '../chart-context';
-import { hasCalendar, periodChanges } from '../anchor-period';
+import { chartTimeframe, hasCalendar, periodChanges } from '../anchor-period';
 import { barInterval } from '../bar-time';
+import {
+  barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma,
+  type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 
 export interface IdealBbMaInputs {
   length1: number;
@@ -74,196 +78,243 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<IdealBbMaInputs> = {}, chart?: ChartContext): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Ma = { step(v: number, volume: number): number; commit(): void };
+
+interface IdealVars {
+  /** ta.vwap sums */
+  sumPV: number;
+  sumV: number;
+  /** Kahlman filter states of hull A and B */
+  kfA: number;
+  veloA: number;
+  kfB: number;
+  veloB: number;
+}
+
+interface IdealRun extends BarRunState<IdealVars> {
+  ma1: Ma;
+  ma2: Ma;
+  bb: ReturnType<typeof taStep.bb>;
+  hmaHalf: ReturnType<typeof taStep.wma>;
+  hmaFull: ReturnType<typeof taStep.wma>;
+  hmaRaw: ReturnType<typeof taStep.wma>;
+  wmaP3: ReturnType<typeof taStep.wma>;
+  wmaP2: ReturnType<typeof taStep.wma>;
+  wmaP1: ReturnType<typeof taStep.wma>;
+  hma3Raw: ReturnType<typeof taStep.wma>;
+  hullA: number[];
+  hullB: number[];
+  plots: Point[][];
+  hullFillColors: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<IdealBbMaInputs>): BarStudy<IdealRun, Result> {
   const { length1, length2, maType, src, hullLength, hullGain, useKahlman } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const source = getSourceSeries(bars, src);
-
-  // --- NMA (3rd generation MA) ---
-  const volSeries = new Series(bars, (b) => b.volume ?? 0);
-
+  const value = barSource(src);
   // getMA based on maType (Pine: EMA/SMA/VWMA/WMA)
-  function getMA(srcArr: number[], length: number): number[] {
-    const s = Series.fromArray(bars, srcArr);
+  const getMA = (length: number): Ma => {
     switch (maType) {
-      case 'SMA': return ta.sma(s, length).toArray();
-      case 'VWMA': return ta.vwma(s, length, volSeries).toArray();
-      case 'WMA': return ta.wma(s, length).toArray();
-      default: return ta.ema(s, length).toArray();
+      case 'SMA': { const m = new WindowSma(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'VWMA': { const m = taStep.vwma(length); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, length), commit: () => m.commit() }; }
+      default: { const m = taStep.ema(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
     }
-  }
-
-  const srcArr = source.toArray ? source.toArray() : source as unknown as number[];
-  const ma1 = getMA(srcArr, length1);
-  const ma2 = getMA(ma1, length2);
+  };
   const lambda = length1 / length2;
   const alpha = lambda * (length1 - 1) / (length1 - lambda);
-  const nmaArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    nmaArr[i] = (1 + alpha) * (ma1[i] ?? NaN) - alpha * (ma2[i] ?? NaN);
-  }
-
-  // --- VWAP ---
-  const hlc3Series = new Series(bars, (b) => (b.high + b.low + b.close) / 3);
-  // vwap(hlc3): the anchor is a new trading day (timeframe.change("1D")). With the chart context: the trading days of
-  // the exchange (and the first bar); every bar on daily and higher bars. Without it: no anchor.
-  const daily = barInterval(bars) >= 86400;
-  const dayChanges = hasCalendar(chart) ? periodChanges(bars, '1D', chart) : null;
-  const anchor = dayChanges ? Series.fromArray(bars, dayChanges.map((c, i) => Number(i === 0 || daily || c))) : undefined;
-  const vwapArr = ta.vwap(hlc3Series, volSeries, anchor).toArray();
-
-  // --- Bollinger Bands (SMA 20, mult 2) ---
-  const closeSeries = new Series(bars, (b) => b.close);
   const bbLen = 20;
   const bbMult = 2;
-  const [bbMiddle, bbUpper, bbLower] = ta.bb(closeSeries, bbLen, bbMult);
-  const bbMidArr = bbMiddle.toArray();
-  const bbUpArr = bbUpper.toArray();
-  const bbLoArr = bbLower.toArray();
-
-  // --- Hull MA Trend with Kahlman filter ---
-  const hl2Series = new Series(bars, (b) => (b.high + b.low) / 2);
-  // hma(src, len) of the original: wma(2 * wma(src, len / 2) - wma(src, len), round(sqrt(len))) (round, not floor)
-  const hmaHalf = ta.wma(hl2Series, Math.max(Math.floor(hullLength / 2), 1)).toArray();
-  const hmaFull = ta.wma(hl2Series, hullLength).toArray();
-  const hmaDiff = hmaHalf.map((v, i) => 2 * (v ?? NaN) - (hmaFull[i] ?? NaN));
-  const hmaRaw = ta.wma(Series.fromArray(bars, hmaDiff), Math.max(Math.round(Math.sqrt(hullLength)), 1)).toArray();
-
-  // HMA3: wma(wma(close,p/3)*3 - wma(close,p/2) - wma(close,p), p)
   const p = Math.floor(hullLength / 2);
-  const wmaP3 = ta.wma(closeSeries, Math.max(Math.floor(p / 3), 1)).toArray();
-  const wmaP2 = ta.wma(closeSeries, Math.max(Math.floor(p / 2), 1)).toArray();
-  const wmaP1 = ta.wma(closeSeries, Math.max(p, 1)).toArray();
-  const hma3Src: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    hma3Src[i] = (wmaP3[i] ?? 0) * 3 - (wmaP2[i] ?? 0) - (wmaP1[i] ?? 0);
-  }
-  const hma3Raw = ta.wma(Series.fromArray(bars, hma3Src), Math.max(p, 1)).toArray();
-
-  // Kahlman filter
-  function applyKahlman(rawArr: (number | null)[], gain: number): number[] {
-    const result: number[] = new Array(n);
-    let kf = NaN;
-    let velo = 0;
-    for (let i = 0; i < n; i++) {
-      const x = rawArr[i] ?? NaN;
-      if (isNaN(x)) { result[i] = NaN; continue; }
-      if (isNaN(kf)) { kf = x; velo = 0; }
-      const dk = x - kf;
-      const smooth = kf + dk * Math.sqrt((gain / 10000) * 2);
-      velo = velo + (gain / 10000) * dk;
-      kf = smooth + velo;
-      result[i] = kf;
-    }
-    return result;
-  }
-
-  const hullA = useKahlman ? applyKahlman(hmaRaw, hullGain) : hmaRaw.map(v => v ?? NaN);
-  const hullB = useKahlman ? applyKahlman(hma3Raw, hullGain) : hma3Raw.map(v => v ?? NaN);
-
   const warmup = Math.max(length1, length2, bbLen, hullLength + p);
-
   // Hull coloring: lime when b > a, red otherwise
   const LIME = '#00E676';
   const RED_HULL = '#EF5350';
-
-  const nmaPlot = nmaArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < Math.max(length1, length2) ? NaN : (isNaN(v) ? NaN : v),
-  }));
-
-  const vwapPlot = vwapArr.map((v, i) => ({
-    time: bars[i].time,
-    value: v ?? NaN,
-  }));
-
-  const bbBasisPlot = bbMidArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < bbLen ? NaN : (v ?? NaN),
-  }));
-
-  const bbUpperPlot = bbUpArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < bbLen ? NaN : (v ?? NaN),
-  }));
-
-  const bbLowerPlot = bbLoArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < bbLen ? NaN : (v ?? NaN),
-  }));
-
-  const hullAPlot = hullA.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : v,
-    color: (!isNaN(hullB[i]) && hullB[i] > v) ? LIME : RED_HULL,
-  }));
-
-  const hullBPlot = hullB.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : v,
-    color: (v > (hullA[i] ?? 0)) ? LIME : RED_HULL,
-  }));
-
-  // Dynamic hull fill colors: lime when b > a, red otherwise (Pine: c = b > a ? color.lime : color.red)
-  const hullFillColors: string[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    if (i < warmup || isNaN(hullA[i]) || isNaN(hullB[i])) {
-      hullFillColors[i] = 'transparent';
-    } else {
-      hullFillColors[i] = hullB[i] > hullA[i] ? '#00E67638' : '#EF535038';
-    }
-  }
-
-  // Buy/Sell markers from Hull crossover (Pine offset=-1: marker placed one bar back)
-  const markers: MarkerData[] = [];
-  for (let i = warmup + 1; i < n; i++) {
-    const a = hullA[i];
-    const b = hullB[i];
-    const prevA = hullA[i - 1];
-    const prevB = hullB[i - 1];
-    if (isNaN(a) || isNaN(b) || isNaN(prevA) || isNaN(prevB)) continue;
-
-    // crossup: b > a and b[1] < a[1]  (offset=-1 → place at i-1)
-    if (b > a && prevB < prevA) {
-      markers.push({ time: bars[i - 1].time, position: 'belowBar', shape: 'labelUp', color: '#4CAF50', text: 'Buy' });
-    }
-    // crossdn: a > b and a[1] < b[1]  (offset=-1 → place at i-1)
-    if (a > b && prevA < prevB) {
-      markers.push({ time: bars[i - 1].time, position: 'aboveBar', shape: 'labelDown', color: '#F44336', text: 'Sell' });
-    }
-  }
-
   // alertcondition(crossup, 'Buy', 'Go Long') / alertcondition(crossdn, 'Sell', 'Go Short'), on every bar (na is false)
   const EPS = 1e-10;
   const gt = (x: number, y: number) => x - y > EPS;
   const lt = (x: number, y: number) => y - x > EPS;
-  const crossUp: boolean[] = [];
-  const crossDn: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const a = hullA[i], b = hullB[i];
-    const prevA = i > 0 ? hullA[i - 1] : NaN, prevB = i > 0 ? hullB[i - 1] : NaN;
-    crossUp.push(gt(b, a) && lt(prevB, prevA));
-    crossDn.push(gt(a, b) && lt(prevA, prevB));
-  }
+  /** Chart context of the day changes (with the chart timeframe), daily or higher bars, set by init */
+  let calChart: ChartContext | null = null;
+  let daily = false;
+
+  /** timeframe.change("1D") of bar i (periodChanges(bars, "1D", chart)[i]): the one of bars i - 1 and i */
+  const dayChange = (bars: Bar[], i: number): boolean =>
+    i > 0 && periodChanges([bars[i - 1], bars[i]], '1D', calChart!)[1]!;
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      nma: nmaPlot,
-      vwap: vwapPlot,
-      bbBasis: bbBasisPlot,
-      bbUpper: bbUpperPlot,
-      bbLower: bbLowerPlot,
-      hullA: hullAPlot,
-      hullB: hullBPlot,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    // the day changes read the chart timeframe (from the bar gaps or the context), the bar gap and the time unit
+    key: (bars, chart) => (hasCalendar(chart)
+      ? `${chartTimeframe(bars, chart)}|${barInterval(bars)}|${bars.length > 0 && bars[0].time >= 1e12}`
+      : ''),
+    init(bars, chart) {
+      if (hasCalendar(chart)) {
+        // vwap(hlc3): the anchor is a new trading day (timeframe.change("1D")). With the chart context: the trading
+        // days of the exchange (and the first bar); every bar on daily and higher bars. Without it: no anchor.
+        daily = barInterval(bars) >= 86400;
+        const tfName = chartTimeframe(bars, chart);
+        calChart = tfName === '' || chart.timeframe ? chart : { ...chart, timeframe: tfName };
+      } else {
+        calChart = null;
+      }
+      const s: IdealRun = {
+        ma1: getMA(length1),
+        ma2: getMA(length2),
+        bb: taStep.bb(bbLen, bbMult),
+        hmaHalf: taStep.wma(), hmaFull: taStep.wma(), hmaRaw: taStep.wma(),
+        wmaP3: taStep.wma(), wmaP2: taStep.wma(), wmaP1: taStep.wma(), hma3Raw: taStep.wma(),
+        hullA: [], hullB: [],
+        plots: Array.from({ length: 7 }, () => []),
+        hullFillColors: [],
+        markers: [],
+        flags: [[], []],
+        times: [[], []],
+        steps: [],
+        vars: { sumPV: NaN, sumV: NaN, kfA: NaN, veloA: 0, kfB: NaN, veloB: 0 },
+        lists: [], series: [],
+      };
+      s.steps = [s.ma1, s.ma2, s.bb, s.hmaHalf, s.hmaFull, s.hmaRaw, s.wmaP3, s.wmaP2, s.wmaP1, s.hma3Raw];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.hullA, s.hullB, ...s.plots, s.hullFillColors, ...s.flags];
+      return s;
     },
-    fills: [
-      { plot1: 'bbUpper', plot2: 'bbLower', options: { color: '#2962FF1A' } },
-      { plot1: 'hullA', plot2: 'hullB', options: { color: '#00E67638' }, colors: hullFillColors },
-    ],
-    markers,
-    alerts: alertStates(alertConditions, bars, [crossUp, crossDn]),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const time = b.time;
+      const vol = b.volume ?? 0;
+
+      // --- NMA (3rd generation MA) ---
+      const ma1 = s.ma1.step(value(b), vol);
+      const ma2 = s.ma2.step(ma1, vol);
+      const nma = (1 + alpha) * ma1 - alpha * ma2;
+
+      // --- VWAP ---
+      const hlc3 = (b.high + b.low + b.close) / 3;
+      const anchor = calChart ? i === 0 || daily || dayChange(bars, i) : i === 0;
+      if (anchor) {
+        v.sumPV = hlc3 * vol;
+        v.sumV = vol;
+      } else {
+        // An na source or volume makes the sums na until the next anchor
+        v.sumPV += hlc3 * vol;
+        v.sumV += vol;
+      }
+      const vwap = v.sumV === 0 ? NaN : v.sumPV / v.sumV;
+
+      // --- Bollinger Bands (SMA 20, mult 2) ---
+      const [bbMid, bbUp, bbLo] = s.bb.step(b.close);
+
+      // --- Hull MA Trend with Kahlman filter ---
+      const hl2 = (b.high + b.low) / 2;
+      // hma(src, len) of the original: wma(2 * wma(src, len / 2) - wma(src, len), round(sqrt(len))) (round, not floor)
+      const hmaHalf = s.hmaHalf.step(hl2, Math.max(Math.floor(hullLength / 2), 1));
+      const hmaFull = s.hmaFull.step(hl2, hullLength);
+      const hmaRaw = s.hmaRaw.step(2 * hmaHalf - hmaFull, Math.max(Math.round(Math.sqrt(hullLength)), 1));
+
+      // HMA3: wma(wma(close,p/3)*3 - wma(close,p/2) - wma(close,p), p)
+      const wmaP3 = s.wmaP3.step(b.close, Math.max(Math.floor(p / 3), 1));
+      const wmaP2 = s.wmaP2.step(b.close, Math.max(Math.floor(p / 2), 1));
+      const wmaP1 = s.wmaP1.step(b.close, Math.max(p, 1));
+      const hma3Raw = s.hma3Raw.step(wmaP3 * 3 - wmaP2 - wmaP1, Math.max(p, 1));
+
+      // Kahlman filter
+      const g = hullGain / 10000;
+      let a = hmaRaw;
+      let bh = hma3Raw;
+      if (useKahlman) {
+        if (isNaN(hmaRaw)) a = NaN;
+        else {
+          if (isNaN(v.kfA)) { v.kfA = hmaRaw; v.veloA = 0; }
+          const dk = hmaRaw - v.kfA;
+          const smooth = v.kfA + dk * Math.sqrt((hullGain / 10000) * 2);
+          v.veloA = v.veloA + g * dk;
+          v.kfA = smooth + v.veloA;
+          a = v.kfA;
+        }
+        if (isNaN(hma3Raw)) bh = NaN;
+        else {
+          if (isNaN(v.kfB)) { v.kfB = hma3Raw; v.veloB = 0; }
+          const dk = hma3Raw - v.kfB;
+          const smooth = v.kfB + dk * Math.sqrt((hullGain / 10000) * 2);
+          v.veloB = v.veloB + g * dk;
+          v.kfB = smooth + v.veloB;
+          bh = v.kfB;
+        }
+      }
+      s.hullA[i] = a;
+      s.hullB[i] = bh;
+
+      const pl = s.plots;
+      pl[0]![i] = { time, value: i < Math.max(length1, length2) ? NaN : (isNaN(nma) ? NaN : nma) };
+      pl[1]![i] = { time, value: vwap };
+      pl[2]![i] = { time, value: i < bbLen ? NaN : bbMid };
+      pl[3]![i] = { time, value: i < bbLen ? NaN : bbUp };
+      pl[4]![i] = { time, value: i < bbLen ? NaN : bbLo };
+      pl[5]![i] = { time, value: i < warmup ? NaN : a, color: (!isNaN(bh) && bh > a) ? LIME : RED_HULL };
+      pl[6]![i] = { time, value: i < warmup ? NaN : bh, color: (bh > (a ?? 0)) ? LIME : RED_HULL };
+
+      // Dynamic hull fill colors: lime when b > a, red otherwise (Pine: c = b > a ? color.lime : color.red)
+      s.hullFillColors[i] = i < warmup || isNaN(a) || isNaN(bh) ? 'transparent' : bh > a ? '#00E67638' : '#EF535038';
+
+      const prevA = i > 0 ? s.hullA[i - 1]! : NaN;
+      const prevB = i > 0 ? s.hullB[i - 1]! : NaN;
+      // Buy/Sell markers from Hull crossover (Pine offset=-1: marker placed one bar back)
+      if (i >= warmup + 1 && !(isNaN(a) || isNaN(bh) || isNaN(prevA) || isNaN(prevB))) {
+        // crossup: b > a and b[1] < a[1]  (offset=-1 → place at i-1)
+        if (bh > a && prevB < prevA) {
+          s.markers.push({ time: bars[i - 1].time, position: 'belowBar', shape: 'labelUp', color: '#4CAF50', text: 'Buy' });
+        }
+        // crossdn: a > b and a[1] < b[1]  (offset=-1 → place at i-1)
+        if (a > bh && prevA < prevB) {
+          s.markers.push({ time: bars[i - 1].time, position: 'aboveBar', shape: 'labelDown', color: '#F44336', text: 'Sell' });
+        }
+      }
+
+      const up = gt(bh, a) && lt(prevB, prevA);
+      const dn = gt(a, bh) && lt(prevA, prevB);
+      s.flags[0]![i] = up;
+      s.flags[1]![i] = dn;
+      if (up) s.times[0]!.push(time as number);
+      if (dn) s.times[1]!.push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const pl = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          nma: pl[0]!.slice(),
+          vwap: pl[1]!.slice(),
+          bbBasis: pl[2]!.slice(),
+          bbUpper: pl[3]!.slice(),
+          bbLower: pl[4]!.slice(),
+          hullA: pl[5]!.slice(),
+          hullB: pl[6]!.slice(),
+        },
+        fills: [
+          { plot1: 'bbUpper', plot2: 'bbLower', options: { color: '#2962FF1A' } },
+          { plot1: 'hullA', plot2: 'hullB', options: { color: '#00E67638' }, colors: s.hullFillColors.slice() },
+        ],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IdealBbMaInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<IdealBbMaInputs> = {}, chart?: ChartContext): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 /** The original's alertconditions */
@@ -272,4 +323,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'Sell', message: 'Go Short' },
 ];
 
-export const IdealBbMa = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const IdealBbMa = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

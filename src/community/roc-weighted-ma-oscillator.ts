@@ -14,9 +14,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, taCore, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowExtreme, WindowSma, WindowStdev, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export type RocWeightedMAType = 'SMA' | 'EMA' | 'SMMA' | 'WMA' | 'VWMA' | 'TEMA' | 'DEMA' | 'LSMA' | 'HMA' | 'ALMA';
 export type RocWeightedColorScheme = 'Default' | 'Modern' | 'Cool' | 'Alternate' | 'Bright';
@@ -94,86 +96,234 @@ const div = (a: number, b: number) => (b === 0 ? NaN : a / b);
 /** Pine na() / plots / ta.ema treat +-infinity as na */
 const finite = (v: number) => (Number.isFinite(v) ? v : NaN);
 
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+/** One moving average stepped bar by bar: step(value, volume) */
+interface MaStep extends Committable {
+  step(value: number, volume: number): number;
+}
+
+/** ta.alma(source, length, offset, sigma): the weighted sum of the last `length` values, in the order of the oakscriptjs function */
+class AlmaStep implements MaStep {
+  private readonly weights: number[] = [];
+  private readonly values: number[] = [];
+  private current = NaN;
+  private stepped = false;
+
+  constructor(private readonly length: number, offset: number, sigma: number) {
+    // the length check of ta.alma (an error for a length below 1)
+    taCore.alma([], length, offset, sigma);
+    const m = offset * (length - 1);
+    const s = length / sigma;
+    let weightSum = 0;
+    for (let i = 0; i < length; i++) {
+      const weight = Math.exp(-1 * Math.pow(i - m, 2) / (2 * Math.pow(s, 2)));
+      this.weights.push(weight);
+      weightSum += weight;
+    }
+    for (let i = 0; i < length; i++) this.weights[i]! /= weightSum;
+  }
+
+  step(value: number): number {
+    this.stepped = true;
+    this.current = value;
+    const i = this.values.length;
+    const length = this.length;
+    if (i < length - 1) return NaN;
+    let almaValue = 0;
+    for (let j = 0; j < length; j++) {
+      const k = i - length + 1 + j;
+      almaValue += (k === i ? value : this.values[k]!) * this.weights[j]!;
+    }
+    return almaValue;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.values.push(this.current);
+  }
+}
+
+/** ma(source, length, type) of the script, one bar at a time */
+function maStep(length: number, type: RocWeightedMAType): MaStep {
+  const of = (ms: Committable[], step: (v: number, vol: number) => number): MaStep => ({
+    step,
+    commit: () => { for (const m of ms) m.commit(); },
+  });
+  switch (type) {
+    case 'SMA': { const m = taStep.sma(); return of([m], (v) => m.step(v, length)); }
+    case 'EMA': { const m = taStep.ema(length); return of([m], (v) => m.step(v)); }
+    case 'SMMA': { const m = taStep.rma(length); return of([m], (v) => m.step(v)); }
+    case 'WMA': { const m = taStep.wma(); return of([m], (v) => m.step(v, length)); }
+    case 'VWMA': { const m = taStep.vwma(length); return of([m], (v, vol) => m.step(v, vol)); }
+    case 'TEMA': {
+      const e1 = taStep.ema(length);
+      const e2 = taStep.ema(length);
+      const e3 = taStep.ema(length);
+      return of([e1, e2, e3], (v) => {
+        const a1 = e1.step(v);
+        const a2 = e2.step(a1);
+        const a3 = e3.step(a2);
+        return 3 * (a1 - a2) + a3;
+      });
+    }
+    case 'DEMA': {
+      const e1 = taStep.ema(length);
+      const e2 = taStep.ema(length);
+      return of([e1, e2], (v) => {
+        const a1 = e1.step(v);
+        return 2 * a1 - e2.step(a1);
+      });
+    }
+    case 'LSMA': { const m = taStep.linreg(length, 0); return of([m], (v) => m.step(v)); }
+    case 'HMA': {
+      // ta.wma(2 * ta.wma(source, length / 2) - ta.wma(source, length), math.floor(math.sqrt(length)))
+      // (length / 2 is fractional for an odd length; the WMA length is its integer part, as ta.wma here)
+      const half = taStep.wma();
+      const full = taStep.wma();
+      const out = taStep.wma();
+      const len = Math.floor(Math.sqrt(length));
+      return of([half, full, out], (v) => out.step(2 * half.step(v, length / 2) - full.step(v, length), len));
+    }
+    case 'ALMA': return new AlmaStep(length, 0.85, 6);
+  }
+}
+
+interface RocwVars {
+  /** currentCol of the bar before */
+  prevColor: string | null;
+}
+
+interface RocwRun extends BarRunState<RocwVars> {
+  roc: ReturnType<typeof taStep.roc>;
+  rocLo: WindowExtreme;
+  rocHi: WindowExtreme;
+  ma: MaStep;
+  mean: WindowSma;
+  sd: WindowStdev;
+  sig: ReturnType<typeof taStep.ema>;
+  plots: Point[][];
+  upperFill: string[];
+  lowerFill: string[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<RocWeightedMAOscillatorInputs>): BarStudy<RocwRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { rocLen, maLen, sigLen, neutralThr, paint } = cfg;
+  const [bull, bear] = SCHEMES[cfg.colScheme];
+  const neutral = SCHEMES[cfg.colScheme][2];
+  const value = barSource(cfg.src);
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const roc = taStep.roc(rocLen);
+      // the length checks of ta.lowest / ta.highest (of the ROC), ta.sma and ta.stdev
+      taStep.lowest().step(0, rocLen);
+      const ma = maStep(maLen, cfg.maType);
+      taStep.sma().step(0, rocLen);
+      taStep.stdev().step(0, rocLen);
+      const s: RocwRun = {
+        roc, rocLo: new WindowExtreme(true, rocLen), rocHi: new WindowExtreme(false, rocLen), ma,
+        mean: new WindowSma(rocLen), sd: new WindowStdev(rocLen), sig: taStep.ema(sigLen),
+        plots: Array.from({ length: 6 }, () => []), upperFill: [], lowerFill: [], markers: [], barColors: [],
+        flags: [[], []], times: [[], []], steps: [], vars: { prevColor: null }, lists: [], series: [],
+      };
+      s.steps = [s.roc, s.rocLo, s.rocHi, s.ma, s.mean, s.sd, s.sig];
+      s.lists = [s.markers, s.barColors, ...s.times];
+      s.series = [...s.plots, s.upperFill, s.lowerFill, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      const src = value(b);
+      // roc = ta.roc(src, rocLen); normalized_roc = (roc - lowest(roc)) / (highest(roc) - lowest(roc))
+      const roc = s.roc.step(src);
+      const rocLo = s.rocLo.step(roc);
+      const rocHi = s.rocHi.step(roc);
+      const normRoc = div(roc - rocLo, rocHi - rocLo);
+
+      const m = s.ma.step(src, b.volume ?? NaN);
+      // rwma = base_ma + normalized_roc * (src - base_ma)
+      const rwma = m + normRoc * (src - m);
+      // oscillator = zscore(rwma, rocLen) = (rwma - sma) / stdev
+      const mean = s.mean.step(rwma);
+      const sd = s.sd.step(rwma);
+      // a non-zero value / 0 stays +-infinity (comparisons and fill gradients use it), 0 / 0 is na
+      const o = (rwma - mean) / sd;
+      const signal = s.sig.step(finite(o));
+
+      // inNeutralZone = oscillator > -neutralThr and oscillator < neutralThr (na: false)
+      const prevColor = v.prevColor;
+      const inNeutralZone = gt(o, -neutralThr) && gt(neutralThr, o);
+      const currentCol: string | null = inNeutralZone ? prevColor : gt(o, neutralThr) ? bull : gt(-neutralThr, o) ? bear : neutral;
+      const longSignal = currentCol === bull && prevColor === bear;
+      const shortSignal = currentCol === bear && prevColor === bull;
+      v.prevColor = currentCol;
+
+      const p = s.plots;
+      p[0][i] = { time: t, value: finite(o), color: currentCol ?? 'transparent' };
+      p[1][i] = { time: t, value: signal, color: color.white };
+      p[2][i] = { time: t, value: 3, color: '#606060' };
+      p[3][i] = { time: t, value: 2.5, color: '#606060' };
+      p[4][i] = { time: t, value: -3, color: '#606060' };
+      p[5][i] = { time: t, value: -2.5, color: '#606060' };
+      // oscillator > 0 ? color.from_gradient(oscillator, 0, 3, #0e0e0e, bear) : na
+      s.upperFill[i] = gt(o, 0) ? String(color.from_gradient(o, 0, 3, '#0e0e0e', bear)) : 'transparent';
+      // oscillator < 0 ? color.from_gradient(oscillator, -3, 0, bull, #0e0e0e) : na
+      s.lowerFill[i] = gt(0, o) ? String(color.from_gradient(o, -3, 0, bull, '#0e0e0e')) : 'transparent';
+      // barcolor(paint ? currentCol : na)
+      if (paint && currentCol !== null) s.barColors.push({ time: t, color: currentCol });
+      // plotshape(longSignal, triangleup, bull, belowbar, text "𝐋", textcolor bull, size.small, force_overlay)
+      if (longSignal) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: bull, text: '𝐋', textColor: bull, size: 'small', forceOverlay: true });
+      }
+      if (shortSignal) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: bear, text: '𝐒', textColor: bear, size: 'small', forceOverlay: true });
+      }
+      // alertcondition(oscillator > neutralThr) / alertcondition(oscillator < neutralThr)
+      const up = gt(o, neutralThr);
+      const dn = gt(neutralThr, o);
+      s.flags[0][i] = up;
+      s.flags[1][i] = dn;
+      if (up) s.times[0].push(t as number);
+      if (dn) s.times[1].push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const [plot0, plot1, plot2, plot3, plot4, plot5] = s.plots.map((p) => p.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0, plot1, plot2, plot3, plot4, plot5 },
+        fills: [
+          { plot1: 'plot2', plot2: 'plot3', colors: s.upperFill.slice() },
+          { plot1: 'plot4', plot2: 'plot5', colors: s.lowerFill.slice() },
+        ],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RocWeightedMAOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<RocWeightedMAOscillatorInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const { rocLen, maLen, sigLen, neutralThr, paint } = cfg;
-  const [bull, bear, neutral] = SCHEMES[cfg.colScheme];
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = A(getSourceSeries(bars, cfg.src));
-
-  // roc = ta.roc(src, rocLen); normalized_roc = (roc - lowest(roc)) / (highest(roc) - lowest(roc))
-  const roc = A(ta.roc(S(src), rocLen));
-  const rocLo = A(ta.lowest(S(roc), rocLen));
-  const rocHi = A(ta.highest(S(roc), rocLen));
-  const normRoc = roc.map((v, i) => div(v - rocLo[i], rocHi[i] - rocLo[i]));
-
-  const baseMa = movingAverage(bars, src, maLen, cfg.maType);
-  // rwma = base_ma + normalized_roc * (src - base_ma)
-  const rwma = baseMa.map((m, i) => m + normRoc[i] * (src[i] - m));
-  // oscillator = zscore(rwma, rocLen) = (rwma - sma) / stdev
-  const mean = A(ta.sma(S(rwma), rocLen));
-  const sd = A(ta.stdev(S(rwma), rocLen));
-  // a non-zero value / 0 stays +-infinity (comparisons and fill gradients use it), 0 / 0 is na
-  const osc = rwma.map((v, i) => (v - mean[i]) / sd[i]);
-  const signal = A(ta.ema(S(osc.map(finite)), sigLen));
-
-  const oscPlot: { time: number; value: number; color: string }[] = [];
-  const upperFill: string[] = [];
-  const lowerFill: string[] = [];
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  let prevColor: string | null = null;
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const o = osc[i];
-    // inNeutralZone = oscillator > -neutralThr and oscillator < neutralThr (na: false)
-    const inNeutralZone = gt(o, -neutralThr) && gt(neutralThr, o);
-    const currentCol: string | null = inNeutralZone ? prevColor : gt(o, neutralThr) ? bull : gt(-neutralThr, o) ? bear : neutral;
-    const longSignal = currentCol === bull && prevColor === bear;
-    const shortSignal = currentCol === bear && prevColor === bull;
-    prevColor = currentCol;
-
-    oscPlot.push({ time: t, value: finite(o), color: currentCol ?? 'transparent' });
-    // oscillator > 0 ? color.from_gradient(oscillator, 0, 3, #0e0e0e, bear) : na
-    upperFill.push(gt(o, 0) ? String(color.from_gradient(o, 0, 3, '#0e0e0e', bear)) : 'transparent');
-    // oscillator < 0 ? color.from_gradient(oscillator, -3, 0, bull, #0e0e0e) : na
-    lowerFill.push(gt(0, o) ? String(color.from_gradient(o, -3, 0, bull, '#0e0e0e')) : 'transparent');
-    // barcolor(paint ? currentCol : na)
-    if (paint && currentCol !== null) barColors.push({ time: t, color: currentCol });
-    // plotshape(longSignal, triangleup, bull, belowbar, text "𝐋", textcolor bull, size.small, force_overlay)
-    if (longSignal) {
-      markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: bull, text: '𝐋', textColor: bull, size: 'small', forceOverlay: true });
-    }
-    if (shortSignal) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: bear, text: '𝐒', textColor: bear, size: 'small', forceOverlay: true });
-    }
-  }
-
-  const level = (v: number) => bars.map((b) => ({ time: b.time, value: v, color: '#606060' }));
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: oscPlot,
-      plot1: bars.map((b, i) => ({ time: b.time, value: signal[i], color: color.white })),
-      plot2: level(3),
-      plot3: level(2.5),
-      plot4: level(-3),
-      plot5: level(-2.5),
-    },
-    fills: [
-      { plot1: 'plot2', plot2: 'plot3', colors: upperFill },
-      { plot1: 'plot4', plot2: 'plot5', colors: lowerFill },
-    ],
-    markers,
-    barColors,
-    // alertcondition(oscillator > neutralThr) / alertcondition(oscillator < neutralThr)
-    alerts: alertStates(alertConditions, bars, [osc.map((o) => gt(o, neutralThr)), osc.map((o) => gt(neutralThr, o))]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -182,40 +332,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'ROC Weighted MA Negative Trend', message: 'ROC Weighted MA Bearish Signal on: {{exchange}}:{{ticker}}' },
 ];
 
-/** ma(source, length, type) of the script */
-function movingAverage(bars: Bar[], src: number[], length: number, type: RocWeightedMAType): number[] {
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  switch (type) {
-    case 'SMA': return A(ta.sma(S(src), length));
-    case 'EMA': return A(ta.ema(S(src), length));
-    case 'SMMA': return A(ta.rma(S(src), length));
-    case 'WMA': return A(ta.wma(S(src), length));
-    case 'VWMA': return A(ta.vwma(S(src), length, new Series(bars, (b) => b.volume ?? NaN)));
-    case 'TEMA': {
-      const e1 = ta.ema(S(src), length);
-      const e2 = ta.ema(e1, length);
-      const a1 = A(e1);
-      const a2 = A(e2);
-      const a3 = A(ta.ema(e2, length));
-      return a1.map((v, i) => 3 * (v - a2[i]) + a3[i]);
-    }
-    case 'DEMA': {
-      const e1 = ta.ema(S(src), length);
-      const a1 = A(e1);
-      const a2 = A(ta.ema(e1, length));
-      return a1.map((v, i) => 2 * v - a2[i]);
-    }
-    case 'LSMA': return A(ta.linreg(S(src), length, 0));
-    case 'HMA': {
-      // ta.wma(2 * ta.wma(source, length / 2) - ta.wma(source, length), math.floor(math.sqrt(length)))
-      // (length / 2 is fractional for an odd length; the WMA length is its integer part, as ta.wma here)
-      const half = A(ta.wma(S(src), length / 2));
-      const full = A(ta.wma(S(src), length));
-      return A(ta.wma(S(half.map((v, i) => 2 * v - full[i])), Math.floor(Math.sqrt(length))));
-    }
-    case 'ALMA': return A(ta.alma(S(src), length, 0.85, 6));
-  }
-}
-
-export const RocWeightedMAOscillator = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const RocWeightedMAOscillator = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

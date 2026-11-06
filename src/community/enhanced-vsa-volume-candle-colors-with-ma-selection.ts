@@ -13,9 +13,13 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import {
+  createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type Committable, type IndicatorRun,
+} from '../live-run';
 
 export interface EnhancedVsaVolumeCandleColorsInputs {
   /** Volume lookback period (MA and percentile window) */
@@ -91,59 +95,137 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<EnhancedVsaVolumeCandleColorsInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const vol = bars.map((b) => b.volume ?? NaN);
-  const volS = Series.fromArray(bars, vol);
+/**
+ * `ta.percentile_nearest_rank(source, length, percentage)` one bar at a time, with the rules of the oakscriptjs
+ * function (same doubles): the window kept sorted (a new value goes before the first value >= it, na last), the value
+ * of the bar leaving it removed, the value at rank `ceil(percentage / 100 * length)`; na for the first `length - 1`
+ * bars. A step reads the committed window without changing it.
+ */
+class PercentileNearestRank implements Committable {
+  private readonly values: number[] = [];
+  private readonly bars: number[] = [];
+  private readonly rank: number;
+  private pending: { i: number; v: number; k: number } | null = null;
 
-  const userMa = A(cfg.maType === 'SMA' ? ta.sma(volS, cfg.length)
-    : cfg.maType === 'EMA' ? ta.ema(volS, cfg.length)
-      : ta.vwma(volS, cfg.length, volS));
-  const pct = A(ta.percentile_nearest_rank(volS, cfg.length, cfg.percentileThreshold));
-  const refEma = A(ta.ema(volS, cfg.refEmaLength));
-
-  const neutral = String(color.new(cfg.neutralColor, cfg.neutralTransp));
-  const veryHigh = String(color.new(cfg.veryHighColor, 40));
-
-  const plot0 = [];
-  const plot1 = [];
-  const plot2 = [];
-  const barColors: BarColorData[] = [];
-  const extremeFlags: boolean[] = [], highFlags: boolean[] = [], lowFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const v = vol[i];
-    const ma = userMa[i];
-    const veryHighVol = gt(v, pct[i]);
-    const isHighVol = gt(v, ma * cfg.highMult) && !veryHighVol;
-    const isLowVol = lt(v, ma * cfg.lowMult);
-    extremeFlags.push(veryHighVol);
-    highFlags.push(isHighVol);
-    lowFlags.push(isLowVol);
-    // transp_level = 60 - math.min(math.max(volume / user_ma * 30, 0), 40) (na when user_ma is na)
-    const r = (v / ma) * 30;
-    const transp = 60 - Math.min(Math.max(r, 0), 40);
-    const highC = String(color.new(cfg.highColor, transp));
-    const lowC = String(color.new(cfg.lowColor, Math.min(transp + cfg.lowTranspOffset, 100)));
-    const c = veryHighVol ? veryHigh : isHighVol ? highC : isLowVol ? lowC : neutral;
-    plot0.push({ time: t, value: Number.isFinite(v) ? v : NaN, color: c });
-    plot1.push({ time: t, value: Number.isFinite(ma) ? ma : NaN });
-    plot2.push({ time: t, value: Number.isFinite(refEma[i]) ? refEma[i] : NaN });
-    if (cfg.colorBars && (veryHighVol || isHighVol || isLowVol)) barColors.push({ time: t, color: c });
+  constructor(private readonly length: number, percentage: number) {
+    this.rank = Math.min(length, Math.max(1, Math.ceil((percentage / 100) * length)));
   }
 
+  step(i: number, v: number): number {
+    const values = this.values;
+    let k = 0;
+    while (k < values.length && !(values[k]! >= v)) k++;
+    this.pending = { i, v, k };
+    if (i < this.length - 1) return NaN;
+    // the window with v inserted at k, without the value of bar i - length
+    const removed = i >= this.length ? this.bars.indexOf(i - this.length) : -1;
+    const removedW = removed < 0 ? -1 : removed < k ? removed : removed + 1;
+    const j = this.rank - 1;
+    const w = removedW >= 0 && j >= removedW ? j + 1 : j;
+    return w < k ? values[w]! : w === k ? v : values[w - 1]!;
+  }
+
+  commit(): void {
+    const p = this.pending;
+    if (!p) return;
+    this.pending = null;
+    this.values.splice(p.k, 0, p.v);
+    this.bars.splice(p.k, 0, p.i);
+    if (p.i >= this.length) {
+      const old = this.bars.indexOf(p.i - this.length);
+      this.values.splice(old, 1);
+      this.bars.splice(old, 1);
+    }
+  }
+}
+
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface VsaRun extends BarRunState<Record<string, never>> {
+  userMa: { step(v: number): number; commit(): void };
+  pct: PercentileNearestRank;
+  refEma: ReturnType<typeof taStep.ema>;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<EnhancedVsaVolumeCandleColorsInputs>): BarStudy<VsaRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const neutral = String(color.new(cfg.neutralColor, cfg.neutralTransp));
+  const veryHigh = String(color.new(cfg.veryHighColor, 40));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    barColors,
-    // alertcondition(very_high_vol) / alertcondition(is_high_vol) / alertcondition(is_low_vol)
-    alerts: alertStates(alertConditions, bars, [extremeFlags, highFlags, lowFlags]),
+    init() {
+      let userMa: VsaRun['userMa'];
+      if (cfg.maType === 'SMA') userMa = new WindowSma(cfg.length);
+      else if (cfg.maType === 'EMA') userMa = taStep.ema(cfg.length);
+      else {
+        // ta.vwma(volume, length) of the volume weighted by itself
+        const m = taStep.vwma(cfg.length);
+        userMa = { step: (v) => m.step(v, v), commit: () => m.commit() };
+      }
+      const s: VsaRun = {
+        userMa,
+        pct: new PercentileNearestRank(cfg.length, cfg.percentileThreshold),
+        refEma: taStep.ema(cfg.refEmaLength),
+        plot0: [], plot1: [], plot2: [], barColors: [], flags: [[], [], []], times: [[], [], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.userMa, s.pct, s.refEma];
+      s.lists = [s.barColors, ...s.times];
+      s.series = [s.plot0, s.plot1, s.plot2, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i]!.time;
+      const v = bars[i]!.volume ?? NaN;
+      const ma = s.userMa.step(v);
+      const pct = s.pct.step(i, v);
+      const refEma = s.refEma.step(v);
+      const veryHighVol = gt(v, pct);
+      const isHighVol = gt(v, ma * cfg.highMult) && !veryHighVol;
+      const isLowVol = lt(v, ma * cfg.lowMult);
+      // transp_level = 60 - math.min(math.max(volume / user_ma * 30, 0), 40) (na when user_ma is na)
+      const r = (v / ma) * 30;
+      const transp = 60 - Math.min(Math.max(r, 0), 40);
+      const highC = String(color.new(cfg.highColor, transp));
+      const lowC = String(color.new(cfg.lowColor, Math.min(transp + cfg.lowTranspOffset, 100)));
+      const c = veryHighVol ? veryHigh : isHighVol ? highC : isLowVol ? lowC : neutral;
+      s.plot0[i] = { time: t, value: Number.isFinite(v) ? v : NaN, color: c };
+      s.plot1[i] = { time: t, value: Number.isFinite(ma) ? ma : NaN };
+      s.plot2[i] = { time: t, value: Number.isFinite(refEma) ? refEma : NaN };
+      if (cfg.colorBars && (veryHighVol || isHighVol || isLowVol)) s.barColors.push({ time: t, color: c });
+      // alertcondition(very_high_vol) / alertcondition(is_high_vol) / alertcondition(is_low_vol)
+      s.flags[0]![i] = veryHighVol;
+      s.flags[1]![i] = isHighVol;
+      s.flags[2]![i] = isLowVol;
+      if (veryHighVol) s.times[0]!.push(t as number);
+      if (isHighVol) s.times[1]!.push(t as number);
+      if (isLowVol) s.times[2]!.push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EnhancedVsaVolumeCandleColorsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EnhancedVsaVolumeCandleColorsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -155,6 +237,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const EnhancedVsaVolumeCandleColorsWithMaSelection = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

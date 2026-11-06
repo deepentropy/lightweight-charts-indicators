@@ -13,7 +13,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ParabolicStochSarVisualizerInputs {
   stochLen: number;
@@ -109,133 +111,160 @@ function rgbOf(c: string): [number, number, number] {
   return [color.r(c), color.g(c), color.b(c)];
 }
 
-export function calculate(bars: Bar[], inputs: Partial<ParabolicStochSarVisualizerInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface PsarVars {
+  /** f_parabolic state */
+  sar: number;
+  ep: number;
+  af: number;
+  isUp: boolean;
+  /** var lastDotIdx / lastDotVal (bar_index differences do not depend on the first bar index) */
+  lastDotIdx: number;
+  lastDotVal: number;
+}
+
+interface PsarRun extends BarRunState<PsarVars> {
+  stoch: ReturnType<typeof taStep.stoch>;
+  sma1: WindowSma;
+  sma2: WindowSma;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<ParabolicStochSarVisualizerInputs>): BarStudy<PsarRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
-  const high = S(bars.map((b) => b.high));
-  const low = S(bars.map((b) => b.low));
-
-  // smoothedStoch = ta.sma(ta.sma(ta.stoch(close, high, low, stochLen), 3), 3)
-  const rawStoch = ta.stoch(close, high, low, cfg.stochLen);
-  const stoch = A(ta.sma(ta.sma(rawStoch, 3), 3));
-
-  // f_parabolic(smoothedStoch, accelStart, accelStep, accelMax)
-  const sarVal: number[] = new Array(n);
-  const sarUp: boolean[] = new Array(n);
-  {
-    let sar = NaN;
-    let ep = NaN;
-    let af = cfg.accelStart;
-    let isUp = true;
-    for (let i = 0; i < n; i++) {
-      const src = stoch[i];
-      if (isNaN(sar)) {
-        sar = src;
-        ep = src;
-        isUp = true;
-        af = cfg.accelStart;
-      } else if (isUp) {
-        sar += af * (ep - sar);
-        if (gt(src, ep)) {
-          ep = src;
-          af = min(af + cfg.accelStep, cfg.accelMax);
-        }
-        if (lt(src, sar)) {
-          isUp = false;
-          sar = src + 5;
-          ep = src;
-          af = cfg.accelStart;
-        }
-      } else {
-        sar -= af * (sar - ep);
-        if (lt(src, ep)) {
-          ep = src;
-          af = min(af + cfg.accelStep, cfg.accelMax);
-        }
-        if (gt(src, sar)) {
-          isUp = true;
-          sar = src - 5;
-          ep = src;
-          af = cfg.accelStart;
-        }
-      }
-      sar = max(0.0, min(100.0, sar));
-      sarVal[i] = sar;
-      sarUp[i] = isUp;
-    }
-  }
-
-  // Dot placement: var lastDotIdx / lastDotVal (bar_index differences do not depend on the first bar index)
-  const canDraw: boolean[] = new Array(n).fill(false);
-  {
-    let lastDotIdx = NaN;
-    let lastDotVal = NaN;
-    for (let i = 0; i < n; i++) {
-      if (!cfg.showSAR) continue;
-      if (isNaN(lastDotIdx) || i - lastDotIdx >= cfg.minBarsGap) {
-        if (isNaN(lastDotVal) || ge(Math.abs(sarVal[i] - lastDotVal), cfg.minSARMove)) {
-          canDraw[i] = true;
-          lastDotIdx = i;
-          lastDotVal = sarVal[i];
-        }
-      }
-    }
-  }
-
   // gradColor(clrDowntrend, clrUptrend, oscPct): color.rgb(math.round(r1 + (r2 - r1) * pct), ...); an na channel
   // (pct na) is 0 in color.rgb
   const [r1, g1, b1] = rgbOf(cfg.clrDowntrend);
   const [r2, g2, b2] = rgbOf(cfg.clrUptrend);
-  const lineColors = stoch.map((s) => {
-    const pct = min(1, max(0, (s - cfg.lowerThresh) / (cfg.upperThresh - cfg.lowerThresh)));
-    const ch = (a: number, b: number) => Math.round(a + (b - a) * pct);
-    return String(color.rgb(ch(r1, r2), ch(g1, g2), ch(b1, b2)));
-  });
-
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const dotValue = (i: number) => {
-    if (!(cfg.showSAR && canDraw[i])) return NaN;
-    return fin(sarUp[i] ? sarVal[i] + 12.0 : sarVal[i] - 12.0);
-  };
-  const dotMain = (i: number) => (sarUp[i] ? cfg.clrUptrend : cfg.clrDowntrend);
-  const dotShadow = (i: number) => String(color.new(dotMain(i), 20));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: fin(stoch[i]), color: lineColors[i] })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: fin(stoch[i] + 0.15), color: String(color.new(lineColors[i], 90)) })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: fin(stoch[i] - 0.15), color: String(color.new(lineColors[i], 90)) })),
-      // midPlot = plot(50, color = na, editable = false, display = display.none)
-      plot3: bars.map((b) => ({ time: b.time, value: 50 })),
-      // the two plot(smoothedStoch) calls inside the fill() calls (default colour, shown)
-      plot4: bars.map((b, i) => ({ time: b.time, value: fin(stoch[i]) })),
-      plot5: bars.map((b, i) => ({ time: b.time, value: fin(stoch[i]) })),
-      plot6: bars.map((b, i) => ({ time: b.time, value: dotValue(i), color: dotShadow(i) })),
-      plot7: bars.map((b, i) => ({ time: b.time, value: dotValue(i), color: dotShadow(i) })),
-      plot8: bars.map((b, i) => ({ time: b.time, value: dotValue(i), color: dotMain(i) })),
+    init() {
+      const stoch = taStep.stoch(cfg.stochLen);
+      const sma1 = new WindowSma(3);
+      const sma2 = new WindowSma(3);
+      const s: PsarRun = {
+        stoch, sma1, sma2, plots: Array.from({ length: 9 }, () => []),
+        steps: [stoch, sma1, sma2],
+        vars: { sar: NaN, ep: NaN, af: cfg.accelStart, isUp: true, lastDotIdx: NaN, lastDotVal: NaN },
+        lists: [], series: [],
+      };
+      s.series = s.plots;
+      return s;
     },
-    hlines: [
-      { value: cfg.upperThresh, options: { title: 'Upper Band', color: '#787B86', linestyle: 'dashed' } },
-      { value: 50, options: { title: 'Mid Band', color: String(color.new('#787B86', 50)), linestyle: 'dashed' } },
-      { value: cfg.lowerThresh, options: { title: 'Lower Band', color: '#787B86', linestyle: 'dashed' } },
-    ],
-    fills: [
-      { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'Background Fill', color: BAND_FILL },
-        colors: new Array<string>(n).fill(BAND_FILL) },
-      { plot1: 'plot4', plot2: 'plot3', options: { title: 'Overbought Gradient', color: OB_FILL },
-        colors: new Array<string>(n).fill(OB_FILL) },
-      { plot1: 'plot3', plot2: 'plot5', options: { title: 'Oversold Gradient', color: OS_FILL },
-        colors: new Array<string>(n).fill(OS_FILL) },
-    ],
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      // smoothedStoch = ta.sma(ta.sma(ta.stoch(close, high, low, stochLen), 3), 3)
+      const stoch = s.sma2.step(s.sma1.step(s.stoch.step(b.close, b.high, b.low)));
+
+      // f_parabolic(smoothedStoch, accelStart, accelStep, accelMax)
+      const src = stoch;
+      if (isNaN(v.sar)) {
+        v.sar = src;
+        v.ep = src;
+        v.isUp = true;
+        v.af = cfg.accelStart;
+      } else if (v.isUp) {
+        v.sar += v.af * (v.ep - v.sar);
+        if (gt(src, v.ep)) {
+          v.ep = src;
+          v.af = min(v.af + cfg.accelStep, cfg.accelMax);
+        }
+        if (lt(src, v.sar)) {
+          v.isUp = false;
+          v.sar = src + 5;
+          v.ep = src;
+          v.af = cfg.accelStart;
+        }
+      } else {
+        v.sar -= v.af * (v.sar - v.ep);
+        if (lt(src, v.ep)) {
+          v.ep = src;
+          v.af = min(v.af + cfg.accelStep, cfg.accelMax);
+        }
+        if (gt(src, v.sar)) {
+          v.isUp = true;
+          v.sar = src - 5;
+          v.ep = src;
+          v.af = cfg.accelStart;
+        }
+      }
+      v.sar = max(0.0, min(100.0, v.sar));
+      const sarVal = v.sar;
+      const sarUp = v.isUp;
+
+      // Dot placement
+      let canDraw = false;
+      if (cfg.showSAR) {
+        if (isNaN(v.lastDotIdx) || i - v.lastDotIdx >= cfg.minBarsGap) {
+          if (isNaN(v.lastDotVal) || ge(Math.abs(sarVal - v.lastDotVal), cfg.minSARMove)) {
+            canDraw = true;
+            v.lastDotIdx = i;
+            v.lastDotVal = sarVal;
+          }
+        }
+      }
+
+      const pct = min(1, max(0, (stoch - cfg.lowerThresh) / (cfg.upperThresh - cfg.lowerThresh)));
+      const ch = (a: number, c: number) => Math.round(a + (c - a) * pct);
+      const lineColor = String(color.rgb(ch(r1, r2), ch(g1, g2), ch(b1, b2)));
+
+      const dotValue = !(cfg.showSAR && canDraw) ? NaN : fin(sarUp ? sarVal + 12.0 : sarVal - 12.0);
+      const dotMain = sarUp ? cfg.clrUptrend : cfg.clrDowntrend;
+      const dotShadow = String(color.new(dotMain, 20));
+
+      const time = b.time;
+      const P = s.plots;
+      P[0][i] = { time, value: fin(stoch), color: lineColor };
+      P[1][i] = { time, value: fin(stoch + 0.15), color: String(color.new(lineColor, 90)) };
+      P[2][i] = { time, value: fin(stoch - 0.15), color: String(color.new(lineColor, 90)) };
+      // midPlot = plot(50, color = na, editable = false, display = display.none)
+      P[3][i] = { time, value: 50 };
+      // the two plot(smoothedStoch) calls inside the fill() calls (default colour, shown)
+      P[4][i] = { time, value: fin(stoch) };
+      P[5][i] = { time, value: fin(stoch) };
+      P[6][i] = { time, value: dotValue, color: dotShadow };
+      P[7][i] = { time, value: dotValue, color: dotShadow };
+      P[8][i] = { time, value: dotValue, color: dotMain };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        hlines: [
+          { value: cfg.upperThresh, options: { title: 'Upper Band', color: '#787B86', linestyle: 'dashed' } },
+          { value: 50, options: { title: 'Mid Band', color: String(color.new('#787B86', 50)), linestyle: 'dashed' } },
+          { value: cfg.lowerThresh, options: { title: 'Lower Band', color: '#787B86', linestyle: 'dashed' } },
+        ],
+        fills: [
+          { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'Background Fill', color: BAND_FILL },
+            colors: new Array<string>(n).fill(BAND_FILL) },
+          { plot1: 'plot4', plot2: 'plot3', options: { title: 'Overbought Gradient', color: OB_FILL },
+            colors: new Array<string>(n).fill(OB_FILL) },
+          { plot1: 'plot3', plot2: 'plot5', options: { title: 'Oversold Gradient', color: OS_FILL },
+            colors: new Array<string>(n).fill(OS_FILL) },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ParabolicStochSarVisualizerInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ParabolicStochSarVisualizerInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const ParabolicStochSarVisualizer = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

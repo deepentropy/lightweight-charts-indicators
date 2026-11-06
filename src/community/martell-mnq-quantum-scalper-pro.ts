@@ -15,8 +15,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, math, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall, BgColorData, MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSum, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls (`alertCalls` of the result) */
 export const hasAlertFunction = true;
@@ -62,122 +64,204 @@ const TSI_SIGNAL = 7;
 const ATR_PERIOD = 14;
 const ATR_MULT = 2.5;
 
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[]; alertCalls: AlertCall[] };
+
+/** ta.alma(source, length, offset, sigma): the weighted sum of the last `length` values, in the order of the oakscriptjs function */
+class AlmaStep implements Committable {
+  private readonly weights: number[] = [];
+  private readonly values: number[] = [];
+  private current = NaN;
+  private stepped = false;
+
+  constructor(private readonly length: number, offset: number, sigma: number) {
+    const m = offset * (length - 1);
+    const s = length / sigma;
+    let weightSum = 0;
+    for (let i = 0; i < length; i++) {
+      const weight = Math.exp(-1 * Math.pow(i - m, 2) / (2 * Math.pow(s, 2)));
+      this.weights.push(weight);
+      weightSum += weight;
+    }
+    for (let i = 0; i < length; i++) this.weights[i]! /= weightSum;
+  }
+
+  step(value: number): number {
+    this.stepped = true;
+    this.current = value;
+    const i = this.values.length;
+    const length = this.length;
+    if (i < length - 1) return NaN;
+    let almaValue = 0;
+    for (let j = 0; j < length; j++) {
+      const k = i - length + 1 + j;
+      almaValue += (k === i ? value : this.values[k]!) * this.weights[j]!;
+    }
+    return almaValue;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.values.push(this.current);
+  }
+}
+
+interface MartellVars {
+  /** var int tradeState = 0, var float slPrice = na, var float tpPrice = na */
+  tradeState: number;
+  slPrice: number;
+  tpPrice: number;
+}
+
+interface MartellRun extends BarRunState<MartellVars> {
+  alma: AlmaStep;
+  atr1: ReturnType<typeof taStep.atr>;
+  atrSum: WindowSum;
+  hh: WindowExtreme;
+  ll: WindowExtreme;
+  pc: ReturnType<typeof taStep.change>;
+  pcS: ReturnType<typeof taStep.ema>;
+  pcL: ReturnType<typeof taStep.ema>;
+  absS: ReturnType<typeof taStep.ema>;
+  absL: ReturnType<typeof taStep.ema>;
+  sig: ReturnType<typeof taStep.ema>;
+  up: ReturnType<typeof taStep.crossover>;
+  dn: ReturnType<typeof taStep.crossunder>;
+  atr: ReturnType<typeof taStep.atr>;
+  plots: Point[][];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  alertCalls: AlertCall[];
+}
+
+function study(): BarStudy<MartellRun, Result> {
+  const bgLong = String(color.new(color.green, 90));
+  const bgShort = String(color.new(color.red, 90));
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+  return {
+    init() {
+      const s: MartellRun = {
+        alma: new AlmaStep(ALMA_LENGTH, ALMA_OFFSET, ALMA_SIGMA),
+        atr1: taStep.atr(1), atrSum: new WindowSum(CHOP_LENGTH),
+        hh: new WindowExtreme(false, CHOP_LENGTH), ll: new WindowExtreme(true, CHOP_LENGTH),
+        pc: taStep.change(), pcS: taStep.ema(TSI_SHORT), pcL: taStep.ema(TSI_LONG),
+        absS: taStep.ema(TSI_SHORT), absL: taStep.ema(TSI_LONG), sig: taStep.ema(TSI_SIGNAL),
+        up: taStep.crossover(), dn: taStep.crossunder(), atr: taStep.atr(ATR_PERIOD),
+        plots: [[], [], [], [], []], markers: [], bgColors: [], alertCalls: [],
+        steps: [], vars: { tradeState: 0, slPrice: NaN, tpPrice: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.alma, s.atr1, s.atrSum, s.hh, s.ll, s.pc, s.pcS, s.pcL, s.absS, s.absL, s.sig, s.up, s.dn, s.atr];
+      s.lists = [s.markers, s.bgColors, s.alertCalls];
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      // macroTrend = ta.alma(close, almaLength, almaOffset, almaSigma)
+      const macroTrend = s.alma.step(b.close);
+
+      // Choppiness index
+      const atrSum = s.atrSum.step(s.atr1.step(b.high, b.low, b.close));
+      const rangeChop = s.hh.step(b.high) - s.ll.step(b.low);
+      const chop = eq(rangeChop, 0) ? 50 : (100 * Math.log10(atrSum / rangeChop)) / Math.log10(CHOP_LENGTH);
+
+      // TSI: double_smooth(src, long, short) => ta.ema(ta.ema(src, short), long)
+      const pc = s.pc.step(b.close);
+      const dsPc = s.pcL.step(s.pcS.step(pc));
+      const dsAbsPc = s.absL.step(s.absS.step(Math.abs(pc)));
+      // A plain division: 0 / 0 is na; ta.ema skips non-finite values
+      const tsi = 100 * (dsPc / dsAbsPc);
+      const tsiEma = s.sig.step(tsi);
+      const crossUp = s.up.step(tsi, tsiEma);
+      const crossDn = s.dn.step(tsi, tsiEma);
+      const atr = s.atr.step(b.high, b.low, b.close);
+
+      const isTrending = lt(chop, CHOP_LIMIT);
+      const bullishCross = crossUp && lt(tsi, 0);
+      const bearishCross = crossDn && gt(tsi, 0);
+      const longCond = gt(b.close, macroTrend) && isTrending && bullishCross;
+      const shortCond = lt(b.close, macroTrend) && isTrending && bearishCross;
+
+      // A. Close the open trade when the bar touches the SL or the TP
+      if (v.tradeState === 1) {
+        if (ge(b.high, v.tpPrice) || le(b.low, v.slPrice)) v.tradeState = 0;
+      }
+      if (v.tradeState === -1) {
+        if (le(b.low, v.tpPrice) || ge(b.high, v.slPrice)) v.tradeState = 0;
+      }
+
+      // B. New entries only without an open trade
+      const triggerLong = longCond && v.tradeState === 0;
+      const triggerShort = shortCond && v.tradeState === 0;
+      if (triggerLong) {
+        v.tradeState = 1;
+        v.slPrice = b.close - atr * ATR_MULT;
+        v.tpPrice = b.close + atr * ATR_MULT;
+      }
+      if (triggerShort) {
+        v.tradeState = -1;
+        v.slPrice = b.close + atr * ATR_MULT;
+        v.tpPrice = b.close - atr * ATR_MULT;
+      }
+      const { tradeState, slPrice, tpPrice } = v;
+
+      s.plots[0][i] = { time: b.time, value: fin(macroTrend) };
+      s.plots[1][i] = { time: b.time, value: tradeState === 1 ? fin(slPrice) : NaN };
+      s.plots[2][i] = { time: b.time, value: tradeState === 1 ? fin(tpPrice) : NaN };
+      s.plots[3][i] = { time: b.time, value: tradeState === -1 ? fin(slPrice) : NaN };
+      s.plots[4][i] = { time: b.time, value: tradeState === -1 ? fin(tpPrice) : NaN };
+
+      if (triggerLong) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.rgb(0, 255, 128),
+          text: 'BUY', textColor: '#2962FF', size: 'normal' });
+      }
+      if (triggerShort) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.rgb(255, 0, 64),
+          text: 'SELL', textColor: '#2962FF', size: 'normal' });
+      }
+
+      // bgcolor(tradeState == 1 ? green 90 : tradeState == -1 ? red 90 : na, title = "Trade Window")
+      if (tradeState === 1) s.bgColors.push({ time: b.time, color: bgLong });
+      else if (tradeState === -1) s.bgColors.push({ time: b.time, color: bgShort });
+
+      // if triggerLong / triggerShort: alert(..., alert.freq_once_per_bar_close)
+      if (triggerLong) {
+        s.alertCalls.push({ time: b.time, message: '¡COMPRA MNQ! RR 1:1. Entrada detectada. Gestiona el riesgo.', freq: 'once_per_bar_close' });
+      }
+      if (triggerShort) {
+        s.alertCalls.push({ time: b.time, message: '¡VENTA MNQ! RR 1:1. Entrada detectada. Gestiona el riesgo.', freq: 'once_per_bar_close' });
+      }
+    },
+    result(s) {
+      const [plot0, plot1, plot2, plot3, plot4] = s.plots.map((p) => p.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0, plot1, plot2, plot3, plot4 },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<MartellMnqQuantumScalperProInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
 export function calculate(
   bars: Bar[],
   _inputs: Partial<MartellMnqQuantumScalperProInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[]; alertCalls: AlertCall[] } {
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
-
-  // macroTrend = ta.alma(close, almaLength, almaOffset, almaSigma)
-  const macroTrend = A(ta.alma(close, ALMA_LENGTH, ALMA_OFFSET, ALMA_SIGMA));
-
-  // Choppiness index
-  const atrSum = A(math.sum(ta.atr(bars, 1), CHOP_LENGTH));
-  const hh = A(ta.highest(S(bars.map((b) => b.high)), CHOP_LENGTH));
-  const ll = A(ta.lowest(S(bars.map((b) => b.low)), CHOP_LENGTH));
-  const chop = bars.map((_b, i) => {
-    const rangeChop = hh[i] - ll[i];
-    return eq(rangeChop, 0) ? 50 : (100 * Math.log10(atrSum[i] / rangeChop)) / Math.log10(CHOP_LENGTH);
-  });
-
-  // TSI: double_smooth(src, long, short) => ta.ema(ta.ema(src, short), long)
-  const pc = A(ta.change(close));
-  const doubleSmooth = (v: number[]) => ta.ema(ta.ema(S(v), TSI_SHORT), TSI_LONG);
-  const dsPc = A(doubleSmooth(pc));
-  const dsAbsPc = A(doubleSmooth(pc.map((v) => Math.abs(v))));
-  // A plain division: 0 / 0 is na; ta.ema skips non-finite values
-  const tsi = dsPc.map((v, i) => 100 * (v / dsAbsPc[i]));
-  const tsiEma = A(ta.ema(S(tsi), TSI_SIGNAL));
-  const crossUp = A(ta.crossover(S(tsi), S(tsiEma)));
-  const crossDn = A(ta.crossunder(S(tsi), S(tsiEma)));
-  const atr = A(ta.atr(bars, ATR_PERIOD));
-
-  let tradeState = 0; // var int tradeState = 0
-  let slPrice = NaN; // var float slPrice = na
-  let tpPrice = NaN; // var float tpPrice = na
-
-  const plots: Record<string, { time: number; value: number }[]> = {
-    plot0: [], plot1: [], plot2: [], plot3: [], plot4: [],
-  };
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  const alertCalls: AlertCall[] = [];
-  const bgLong = String(color.new(color.green, 90));
-  const bgShort = String(color.new(color.red, 90));
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const isTrending = lt(chop[i], CHOP_LIMIT);
-    const bullishCross = crossUp[i] === 1 && lt(tsi[i], 0);
-    const bearishCross = crossDn[i] === 1 && gt(tsi[i], 0);
-    const longCond = gt(b.close, macroTrend[i]) && isTrending && bullishCross;
-    const shortCond = lt(b.close, macroTrend[i]) && isTrending && bearishCross;
-
-    // A. Close the open trade when the bar touches the SL or the TP
-    if (tradeState === 1) {
-      if (ge(b.high, tpPrice) || le(b.low, slPrice)) tradeState = 0;
-    }
-    if (tradeState === -1) {
-      if (le(b.low, tpPrice) || ge(b.high, slPrice)) tradeState = 0;
-    }
-
-    // B. New entries only without an open trade
-    const triggerLong = longCond && tradeState === 0;
-    const triggerShort = shortCond && tradeState === 0;
-    if (triggerLong) {
-      tradeState = 1;
-      slPrice = b.close - atr[i] * ATR_MULT;
-      tpPrice = b.close + atr[i] * ATR_MULT;
-    }
-    if (triggerShort) {
-      tradeState = -1;
-      slPrice = b.close + atr[i] * ATR_MULT;
-      tpPrice = b.close - atr[i] * ATR_MULT;
-    }
-
-    plots.plot0.push({ time: b.time, value: fin(macroTrend[i]) });
-    plots.plot1.push({ time: b.time, value: tradeState === 1 ? fin(slPrice) : NaN });
-    plots.plot2.push({ time: b.time, value: tradeState === 1 ? fin(tpPrice) : NaN });
-    plots.plot3.push({ time: b.time, value: tradeState === -1 ? fin(slPrice) : NaN });
-    plots.plot4.push({ time: b.time, value: tradeState === -1 ? fin(tpPrice) : NaN });
-
-    if (triggerLong) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.rgb(0, 255, 128),
-        text: 'BUY', textColor: '#2962FF', size: 'normal' });
-    }
-    if (triggerShort) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.rgb(255, 0, 64),
-        text: 'SELL', textColor: '#2962FF', size: 'normal' });
-    }
-
-    // bgcolor(tradeState == 1 ? green 90 : tradeState == -1 ? red 90 : na, title = "Trade Window")
-    if (tradeState === 1) bgColors.push({ time: b.time, color: bgLong });
-    else if (tradeState === -1) bgColors.push({ time: b.time, color: bgShort });
-
-    // if triggerLong / triggerShort: alert(..., alert.freq_once_per_bar_close)
-    if (triggerLong) {
-      alertCalls.push({ time: b.time, message: '¡COMPRA MNQ! RR 1:1. Entrada detectada. Gestiona el riesgo.', freq: 'once_per_bar_close' });
-    }
-    if (triggerShort) {
-      alertCalls.push({ time: b.time, message: '¡VENTA MNQ! RR 1:1. Entrada detectada. Gestiona el riesgo.', freq: 'once_per_bar_close' });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    markers,
-    bgColors,
-    alertCalls,
-  };
+  return fullResult(createRun(_inputs).update(bars));
 }
 
 export const MartellMnqQuantumScalperPro = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

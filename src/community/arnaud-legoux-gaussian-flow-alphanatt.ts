@@ -16,8 +16,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type AlmaGaussianEnvelopeMode = 'Fixed' | 'Adaptive' | 'Hybrid';
 
@@ -98,122 +100,167 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ArnaudLegouxGaussianFlowAlphanattInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface AlmaRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  atr: ReturnType<typeof taStep.atr>;
+  avgAccel: WindowSma;
+  std: WindowStdev;
+  momEma: ReturnType<typeof taStep.ema>;
+  trendEma: ReturnType<typeof taStep.ema>;
+  close: number[];
+  almaSmooth: number[];
+  strongUp: boolean[];
+  strongDown: boolean[];
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<ArnaudLegouxGaussianFlowAlphanattInputs>): BarStudy<AlmaRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
   const len = cfg.almaLength;
-
-  // Gaussian weighted average of close[0 .. len - 1]
+  // Gaussian weighted average of close[0 .. len - 1]: the weights, and their sum added in the same order
   const m = cfg.almaOffset * (len - 1);
-  const s = len / cfg.almaSigma;
-  const alma: number[] = new Array(n);
-  for (let bar = 0; bar < n; bar++) {
-    let wtdSum = 0.0;
-    let weightSum = 0.0;
-    for (let i = 0; i <= len - 1; i++) {
-      const weight = Math.exp(-Math.pow(i - m, 2) / (2 * Math.pow(s, 2)));
-      wtdSum = wtdSum + (bar - i >= 0 ? close[bar - i] : NaN) * weight;
-      weightSum = weightSum + weight;
-    }
-    alma[bar] = wtdSum / weightSum;
+  const sg = len / cfg.almaSigma;
+  const weights: number[] = [];
+  let weightSum = 0.0;
+  for (let i = 0; i <= len - 1; i++) {
+    const weight = Math.exp(-Math.pow(i - m, 2) / (2 * Math.pow(sg, 2)));
+    weights.push(weight);
+    weightSum = weightSum + weight;
   }
-  const almaSmooth = A(ta.ema(S(alma), cfg.signalSmoothing));
   const prev = (a: number[], i: number, k = 1) => (i - k >= 0 ? a[i - k] : NaN);
-
   // baseWidth = switch envelopeMode (the mode is the same on every bar: each branch runs on all bars or on none)
   const p = cfg.adaptivePeriod;
   const mult = cfg.envelopeMultiplier;
-  let baseWidth: number[];
-  if (cfg.envelopeMode === 'Adaptive') {
-    const accel = almaSmooth.map((v, i) => Math.abs(v - prev(almaSmooth, i)));
-    const avgAccel = A(ta.sma(S(accel), p));
-    const atr = A(ta.atr(bars, p));
-    baseWidth = atr.map((a, i) => a * mult * (1 + accel[i] / avgAccel[i]));
-  } else if (cfg.envelopeMode === 'Hybrid') {
-    const atr = A(ta.atr(bars, p));
-    const std = A(ta.stdev(S(close.map((c, i) => c - almaSmooth[i])), p));
-    baseWidth = atr.map((a, i) => ((a + std[i]) / 2) * mult);
-  } else {
-    baseWidth = A(ta.atr(bars, p)).map((a) => a * mult);
-  }
-
   const gaussianMult = Math.exp(-Math.pow(0.5, 2) / (2 * Math.pow(0.3, 2)));
-  const momentum = almaSmooth.map((v, i) => v - prev(almaSmooth, i, cfg.momentumLength));
-  const momentumNorm = A(ta.ema(S(momentum), 5));
-
-  const upper: number[] = new Array(n);
-  const lower: number[] = new Array(n);
-  const finalEnv: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const envelopeWidth = baseWidth[i] * gaussianMult;
-    const momentumAdjust = 1 + (Math.abs(momentumNorm[i]) / almaSmooth[i]) * 10;
-    const finalEnvelope = envelopeWidth * momentumAdjust;
-    finalEnv[i] = finalEnvelope;
-    upper[i] = almaSmooth[i] + 2 * finalEnvelope;
-    lower[i] = almaSmooth[i] - 2 * finalEnvelope;
-  }
-
-  // Alerts: trendStrength = (almaSmooth - almaSmooth[momentumLength]) / almaSmooth * 100, trendMA = ta.ema(trendStrength, 5)
-  const trendMA = A(ta.ema(S(momentum.map((v, i) => (v / almaSmooth[i]) * 100)), 5));
-  const strongUp = close.map((c, i) => gt(trendMA[i], 0.5) && gt(c, almaSmooth[i]));
-  const strongDown = close.map((c, i) => lt(trendMA[i], -0.5) && lt(c, almaSmooth[i]));
-  const crossUp = crossedOver(close, almaSmooth);
-  const crossDown = crossedUnder(close, almaSmooth);
-  const alertFlags: boolean[][] = [
-    // trendLong = ta.crossover(close, almaSmooth) and strongUptrend / trendShort
-    crossUp.map((f, i) => f && strongUp[i]),
-    crossDown.map((f, i) => f && strongDown[i]),
-    // meanRevLong = close < almaSmooth - finalEnvelope * 0.95 and trendMA > -0.5 / meanRevShort
-    close.map((c, i) => lt(c, almaSmooth[i] - finalEnv[i] * 0.95) && gt(trendMA[i], -0.5)),
-    close.map((c, i) => gt(c, almaSmooth[i] + finalEnv[i] * 0.95) && lt(trendMA[i], 0.5)),
-    // strongUptrend and not strongUptrend[1] (false before the first bar) / the same for the down trend
-    strongUp.map((f, i) => f && !(i > 0 && strongUp[i - 1])),
-    strongDown.map((f, i) => f && !(i > 0 && strongDown[i - 1])),
-  ];
-
+  const depth = cfg.gradientDepth;
+  const cu = LEVEL_TRANSP.map((tr) => String(color.new(BEAR, tr)));
+  const cl = LEVEL_TRANSP.map((tr) => String(color.new(BULL, tr)));
   // Plot values: na for na and +-infinity
   const pv = (x: number) => (Number.isFinite(x) ? x : NaN);
-  const plots: Record<string, Array<{ time: number; value: number; color: string }>> = {};
-  plots.plot0 = bars.map((b, i) => ({
-    time: b.time, value: pv(almaSmooth[i]), color: gt(close[i], almaSmooth[i]) ? BULL : BEAR,
-  }));
-  // Upper: upperEnvelope - upperGradStep * k (k = 0 .. 9); lower: lowerEnvelope + lowerGradStep * k
-  const depth = cfg.gradientDepth;
-  LEVEL_TRANSP.forEach((t, k) => {
-    const cu = String(color.new(BEAR, t));
-    const cl = String(color.new(BULL, t));
-    plots[`plot${1 + k}`] = bars.map((b, i) => {
-      const step = (upper[i] - almaSmooth[i]) / depth;
-      return { time: b.time, value: pv(k === 0 ? upper[i] : k === 1 ? upper[i] - step : upper[i] - step * k), color: cu };
-    });
-    plots[`plot${11 + k}`] = bars.map((b, i) => {
-      const step = (almaSmooth[i] - lower[i]) / depth;
-      return { time: b.time, value: pv(k === 0 ? lower[i] : k === 1 ? lower[i] + step : lower[i] + step * k), color: cl };
-    });
-  });
-
-  // fill(upperMain, ub2), ..., fill(ub10, almaPlot); the same on the lower side
-  const fills = [
-    ...FILL_TRANSP.map((t, k) => ({
-      plot1: `plot${1 + k}`, plot2: k === 9 ? 'plot0' : `plot${2 + k}`, options: { color: String(color.new(BEAR, t)) },
-    })),
-    ...FILL_TRANSP.map((t, k) => ({
-      plot1: `plot${11 + k}`, plot2: k === 9 ? 'plot0' : `plot${12 + k}`, options: { color: String(color.new(BULL, t)) },
-    })),
-  ];
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    alerts: alertStates(alertConditions, bars, alertFlags),
+    init() {
+      const s: AlmaRun = {
+        ema: taStep.ema(cfg.signalSmoothing), atr: taStep.atr(p), avgAccel: new WindowSma(p), std: new WindowStdev(p),
+        momEma: taStep.ema(5), trendEma: taStep.ema(5), close: [], almaSmooth: [], strongUp: [], strongDown: [],
+        plots: Array.from({ length: 21 }, () => []), flags: alertConditions.map(() => []),
+        times: alertConditions.map(() => []), vars: {}, steps: [], lists: [], series: [],
+      };
+      s.steps = [
+        s.ema, s.atr, ...(cfg.envelopeMode === 'Adaptive' ? [s.avgAccel] : []),
+        ...(cfg.envelopeMode === 'Hybrid' ? [s.std] : []), s.momEma, s.trendEma,
+      ];
+      s.lists = s.times;
+      s.series = [s.close, s.almaSmooth, s.strongUp, s.strongDown, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, bar, bars) {
+      const b = bars[bar];
+      const time = b.time;
+      const close = s.close;
+      const c = b.close;
+      close[bar] = c;
+      let wtdSum = 0.0;
+      for (let i = 0; i <= len - 1; i++) wtdSum = wtdSum + (bar - i >= 0 ? close[bar - i] : NaN) * weights[i];
+      const alma = wtdSum / weightSum;
+      const almaSmooth = s.ema.step(alma) ?? NaN;
+      s.almaSmooth[bar] = almaSmooth;
+
+      const atr = s.atr.step(b.high, b.low, b.close) ?? NaN;
+      let baseWidth: number;
+      if (cfg.envelopeMode === 'Adaptive') {
+        const accel = Math.abs(almaSmooth - prev(s.almaSmooth, bar));
+        const avgAccel = s.avgAccel.step(accel);
+        baseWidth = atr * mult * (1 + accel / avgAccel);
+      } else if (cfg.envelopeMode === 'Hybrid') {
+        const std = s.std.step(c - almaSmooth);
+        baseWidth = ((atr + std) / 2) * mult;
+      } else {
+        baseWidth = atr * mult;
+      }
+
+      const momentum = almaSmooth - prev(s.almaSmooth, bar, cfg.momentumLength);
+      const momentumNorm = s.momEma.step(momentum) ?? NaN;
+      const envelopeWidth = baseWidth * gaussianMult;
+      const momentumAdjust = 1 + (Math.abs(momentumNorm) / almaSmooth) * 10;
+      const finalEnvelope = envelopeWidth * momentumAdjust;
+      const upper = almaSmooth + 2 * finalEnvelope;
+      const lower = almaSmooth - 2 * finalEnvelope;
+
+      // Alerts: trendStrength = (almaSmooth - almaSmooth[momentumLength]) / almaSmooth * 100, trendMA = ta.ema(trendStrength, 5)
+      const trendMA = s.trendEma.step((momentum / almaSmooth) * 100) ?? NaN;
+      const strongUp = gt(trendMA, 0.5) && gt(c, almaSmooth);
+      const strongDown = lt(trendMA, -0.5) && lt(c, almaSmooth);
+      s.strongUp[bar] = strongUp;
+      s.strongDown[bar] = strongDown;
+      // ta.crossover / ta.crossunder(close, almaSmooth)
+      const pc = prev(close, bar);
+      const pa = prev(s.almaSmooth, bar);
+      const crossUp = c > almaSmooth && pc <= pa;
+      const crossDown = c < almaSmooth && pc >= pa;
+      const flags = [
+        // trendLong = ta.crossover(close, almaSmooth) and strongUptrend / trendShort
+        crossUp && strongUp,
+        crossDown && strongDown,
+        // meanRevLong = close < almaSmooth - finalEnvelope * 0.95 and trendMA > -0.5 / meanRevShort
+        lt(c, almaSmooth - finalEnvelope * 0.95) && gt(trendMA, -0.5),
+        gt(c, almaSmooth + finalEnvelope * 0.95) && lt(trendMA, 0.5),
+        // strongUptrend and not strongUptrend[1] (false before the first bar) / the same for the down trend
+        strongUp && !(bar > 0 && s.strongUp[bar - 1]),
+        strongDown && !(bar > 0 && s.strongDown[bar - 1]),
+      ];
+      for (let k = 0; k < flags.length; k++) {
+        s.flags[k][bar] = flags[k];
+        if (flags[k]) s.times[k].push(time as number);
+      }
+
+      s.plots[0][bar] = { time, value: pv(almaSmooth), color: gt(c, almaSmooth) ? BULL : BEAR };
+      // Upper: upperEnvelope - upperGradStep * k (k = 0 .. 9); lower: lowerEnvelope + lowerGradStep * k
+      const upStep = (upper - almaSmooth) / depth;
+      const loStep = (almaSmooth - lower) / depth;
+      for (let k = 0; k < LEVEL_TRANSP.length; k++) {
+        s.plots[1 + k][bar] = { time, value: pv(k === 0 ? upper : k === 1 ? upper - upStep : upper - upStep * k), color: cu[k] };
+        s.plots[11 + k][bar] = { time, value: pv(k === 0 ? lower : k === 1 ? lower + loStep : lower + loStep * k), color: cl[k] };
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      plots.plot0 = s.plots[0].slice();
+      for (let k = 0; k < LEVEL_TRANSP.length; k++) {
+        plots[`plot${1 + k}`] = s.plots[1 + k].slice();
+        plots[`plot${11 + k}`] = s.plots[11 + k].slice();
+      }
+      // fill(upperMain, ub2), ..., fill(ub10, almaPlot); the same on the lower side
+      const fills = [
+        ...FILL_TRANSP.map((tr, k) => ({
+          plot1: `plot${1 + k}`, plot2: k === 9 ? 'plot0' : `plot${2 + k}`, options: { color: String(color.new(BEAR, tr)) },
+        })),
+        ...FILL_TRANSP.map((tr, k) => ({
+          plot1: `plot${11 + k}`, plot2: k === 9 ? 'plot0' : `plot${12 + k}`, options: { color: String(color.new(BULL, tr)) },
+        })),
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ArnaudLegouxGaussianFlowAlphanattInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ArnaudLegouxGaussianFlowAlphanattInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -228,6 +275,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const ArnaudLegouxGaussianFlowAlphanatt = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

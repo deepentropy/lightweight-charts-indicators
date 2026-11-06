@@ -13,8 +13,10 @@
  * Original notice: © MisinkoMaster
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeBandsInputs {
   /** Source */
@@ -71,90 +73,131 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> };
+
+interface BandsVars {
+  /** var trend = 0 */
+  trend: number;
+}
+
+interface BandsRun extends BarRunState<BandsVars> {
+  hma: ReturnType<typeof taStep.hma>;
+  hv: WindowExtreme;
+  median: ReturnType<typeof taStep.median>;
+  atr: ReturnType<typeof taStep.atr>;
+  vol: number[];
+  xm: number[];
+  trend: number[];
+  plots: Point[][];
+  markers: MarkerData[];
+  candles: PlotCandleData[];
+}
+
+function study(inputs: Partial<VolumeBandsInputs>): BarStudy<BandsRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const source = barSource(cfg.src);
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: BandsRun = {
+        // xm = ta.hma(src, math.round(math.sqrt(len)))
+        hma: taStep.hma(Math.round(Math.sqrt(cfg.len))), hv: new WindowExtreme(false, cfg.len),
+        median: taStep.median(cfg.mlen), atr: taStep.atr(cfg.vlen), vol: [], xm: [], trend: [],
+        plots: [[], [], []], markers: [], candles: [],
+        steps: [], vars: { trend: 0 }, lists: [], series: [],
+      };
+      s.steps = [s.hma, s.hv, s.median, s.atr];
+      s.lists = [s.markers];
+      s.series = [s.vol, s.xm, s.trend, ...s.plots, s.candles];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const src = source(b);
+      const vol = s.vol;
+      const xm = s.xm;
+      vol[i] = b.volume ?? NaN;
+      xm[i] = s.hma.step(src);
+      const hv = s.hv.step(vol[i]);
+      // xr = 0.0; for i = 0 to len - 1: if volume[i] == ta.highest(volume, len): xr := xm[i] (the last match wins)
+      let xr = 0.0;
+      for (let k = 0; k <= cfg.len - 1; k++) {
+        if (i - k >= 0 && eq(vol[i - k], hv)) xr = xm[i - k];
+      }
+      const x = s.median.step(xr);
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const upper = x + atr * cfg.mulu;
+      const lower = x - atr * cfg.muld;
+
+      const L = gt(src, upper);
+      const Sh = lt(src, lower);
+      if (L && !Sh) s.vars.trend = 1;
+      if (Sh) s.vars.trend = -1;
+      const dir = s.vars.trend;
+      s.trend[i] = dir;
+      const upSeries = dir === 1 ? lower : NaN;
+      const downSeries = dir === -1 ? upper : NaN;
+      // var col = gray; trend == 1 -> green; trend == -1 -> pink
+      const col = dir === 1 ? LONG_COL : dir === -1 ? SHORT_COL : NEUTRAL_COL;
+
+      s.plots[0][i] = { time, value: upSeries, color: LONG_COL };
+      s.plots[1][i] = { time, value: downSeries, color: SHORT_COL };
+      // c = plot(close, display = display.none, editable = false)
+      s.plots[2][i] = { time, value: b.close };
+
+      if (i >= 1) {
+        // plotshape(trend > trend[1] ? upSeries : na, shape.labelup, location.absolute, size.normal, ...)
+        if (dir > s.trend[i - 1] && !isNaN(upSeries)) {
+          s.markers.push({ time, position: 'atPriceBottom', price: upSeries, shape: 'labelUp', color: LONG_COL,
+            size: 'normal', text: '𝓛𝓸𝓷𝓰', textColor: String(color.rgb(7, 83, 63)) });
+        }
+        // plotshape(trend < trend[1] ? downSeries : na, shape.labeldown, location.absolute, size.normal, ...)
+        if (dir < s.trend[i - 1] && !isNaN(downSeries)) {
+          s.markers.push({ time, position: 'atPriceTop', price: downSeries, shape: 'labelDown', color: SHORT_COL,
+            size: 'normal', text: '𝓢𝓱𝓸𝓻𝓽', textColor: String(color.rgb(146, 11, 94)) });
+        }
+      }
+
+      // plotcandle(open, high, low, close, color = col, bordercolor = col, wickcolor = col)
+      s.candles[i] = {
+        time, open: b.open, high: b.high, low: b.low, close: b.close,
+        color: col, borderColor: col, wickColor: col,
+      };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice() },
+        // fill(a, c, color.rgb(0, 255, 187, 50)); fill(b, c, color.rgb(255, 0, 157, 50))
+        fills: [
+          { plot1: 'plot0', plot2: 'plot2', options: { color: String(color.rgb(0, 255, 187, 50)) } },
+          { plot1: 'plot1', plot2: 'plot2', options: { color: String(color.rgb(255, 0, 157, 50)) } },
+        ],
+        markers: s.markers.slice(),
+        plotCandles: { PlotCandle: s.candles.slice() },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeBandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<VolumeBandsInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const srcS = getSourceSeries(bars, cfg.src);
-  const src = A(srcS);
-  const vol = bars.map((b) => b.volume ?? NaN);
-
-  // xm = ta.hma(src, math.round(math.sqrt(len)))
-  const xm = A(ta.hma(srcS, Math.round(Math.sqrt(cfg.len))));
-  const hv = A(ta.highest(S(vol), cfg.len));
-  // xr = 0.0; for i = 0 to len - 1: if volume[i] == ta.highest(volume, len): xr := xm[i] (the last match wins)
-  const xr = new Array<number>(n);
-  for (let i = 0; i < n; i++) {
-    let v = 0.0;
-    for (let k = 0; k <= cfg.len - 1; k++) {
-      if (i - k >= 0 && eq(vol[i - k], hv[i])) v = xm[i - k];
-    }
-    xr[i] = v;
-  }
-  const x = A(ta.median(S(xr), cfg.mlen));
-  const atr = A(ta.atr(bars, cfg.vlen));
-  const upper = x.map((v, i) => v + atr[i] * cfg.mulu);
-  const lower = x.map((v, i) => v - atr[i] * cfg.muld);
-
-  const trend = new Array<number>(n);
-  let tr = 0; // var trend = 0
-  for (let i = 0; i < n; i++) {
-    const L = gt(src[i], upper[i]);
-    const Sh = lt(src[i], lower[i]);
-    if (L && !Sh) tr = 1;
-    if (Sh) tr = -1;
-    trend[i] = tr;
-  }
-  const upSeries = trend.map((dir, i) => (dir === 1 ? lower[i] : NaN));
-  const downSeries = trend.map((dir, i) => (dir === -1 ? upper[i] : NaN));
-  // var col = gray; trend == 1 -> green; trend == -1 -> pink
-  const col = trend.map((dir) => (dir === 1 ? LONG_COL : dir === -1 ? SHORT_COL : NEUTRAL_COL));
-
-  const t = (i: number) => bars[i].time;
-  const plot0 = bars.map((_b, i) => ({ time: t(i), value: upSeries[i], color: LONG_COL }));
-  const plot1 = bars.map((_b, i) => ({ time: t(i), value: downSeries[i], color: SHORT_COL }));
-  // c = plot(close, display = display.none, editable = false)
-  const plot2 = bars.map((b) => ({ time: b.time, value: b.close }));
-
-  const markers: MarkerData[] = [];
-  for (let i = 1; i < n; i++) {
-    // plotshape(trend > trend[1] ? upSeries : na, shape.labelup, location.absolute, size.normal, ...)
-    if (trend[i] > trend[i - 1] && !isNaN(upSeries[i])) {
-      markers.push({ time: t(i), position: 'atPriceBottom', price: upSeries[i], shape: 'labelUp', color: LONG_COL,
-        size: 'normal', text: '𝓛𝓸𝓷𝓰', textColor: String(color.rgb(7, 83, 63)) });
-    }
-    // plotshape(trend < trend[1] ? downSeries : na, shape.labeldown, location.absolute, size.normal, ...)
-    if (trend[i] < trend[i - 1] && !isNaN(downSeries[i])) {
-      markers.push({ time: t(i), position: 'atPriceTop', price: downSeries[i], shape: 'labelDown', color: SHORT_COL,
-        size: 'normal', text: '𝓢𝓱𝓸𝓻𝓽', textColor: String(color.rgb(146, 11, 94)) });
-    }
-  }
-
-  // plotcandle(open, high, low, close, color = col, bordercolor = col, wickcolor = col)
-  const candles: PlotCandleData[] = bars.map((b, i) => ({
-    time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
-    color: col[i], borderColor: col[i], wickColor: col[i],
-  }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    // fill(a, c, color.rgb(0, 255, 187, 50)); fill(b, c, color.rgb(255, 0, 157, 50))
-    fills: [
-      { plot1: 'plot0', plot2: 'plot2', options: { color: String(color.rgb(0, 255, 187, 50)) } },
-      { plot1: 'plot1', plot2: 'plot2', options: { color: String(color.rgb(255, 0, 157, 50)) } },
-    ],
-    markers,
-    plotCandles: { PlotCandle: candles },
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const VolumeBands = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

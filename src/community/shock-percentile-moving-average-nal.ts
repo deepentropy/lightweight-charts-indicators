@@ -11,8 +11,10 @@
  * Original notice: © NordicAlphaLab
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData, PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ShockPercentileMovingAverageNalInputs {
   /** Colour set: 'Standard', 'Nordic' or 'Simple' */
@@ -68,71 +70,91 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ShockPercentileMovingAverageNalInputs> = {},
-): IndicatorResult & { barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]> } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]> };
 
+interface ShockVars {
+  /** NAL := ... nz(NAL[1], 0) */
+  nal: number;
+}
+
+interface ShockRun extends BarRunState<ShockVars> {
+  per: ReturnType<typeof taStep.percentrank>;
+  ema: ReturnType<typeof taStep.ema>;
+  spma: number[];
+  plot0: Point[];
+  candles: PlotCandleData[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<ShockPercentileMovingAverageNalInputs>): BarStudy<ShockRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const [colUp, colDn, colNu] = cfg.colMode === 'Nordic'
     ? [String(color.rgb(0, 96, 175)), String(color.rgb(150, 154, 169)), color.gray]
     : cfg.colMode === 'Simple'
       ? [color.lime, color.red, color.gray]
       : [STANDARD_UP, String(color.rgb(32, 94, 144)), color.gray];
-
-  // f_SPMA: Ret = close - close[1]; Per = ta.percentrank(Ret, lookback); Gate = Per > gate; ta.ema(close, length)
-  const ret = bars.map((b, i) => (i > 0 ? b.close - bars[i - 1].close : NaN));
-  const per = A(ta.percentrank(S(ret), cfg.lookback));
-  const ema = A(ta.ema(S(bars.map((b) => b.close)), cfg.length));
-
-  const spma: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    // MA := na(MA[1]) ? emaValue : Gate ? emaValue : MA[1]
-    const prev = i > 0 ? spma[i - 1] : NaN;
-    spma[i] = isNaN(prev) ? ema[i] : gt(per[i], cfg.gate) ? ema[i] : prev;
-  }
-
-  const col: string[] = new Array(n);
-  let nal = 0;
-  for (let i = 0; i < n; i++) {
-    const prev = i > 0 ? spma[i - 1] : NaN;
-    const back = i >= cfg.slopeLen ? spma[i - cfg.slopeLen] : NaN;
-    // SlopePer = (SPMA - SPMA[SlopeLen]) / SPMA[SlopeLen] * 100: a plain division
-    const slopePer = ((spma[i] - back) / back) * 100;
-    const slopeOk = cfg.useSlope ? gt(slopePer, cfg.slopeGate) : true;
-    // NAL := SPMA > SPMA[1] and (UseSlope ? SlopeGate : true) ? 1 : SPMA < SPMA[1] ? -1 : nz(NAL[1], 0)
-    nal = gt(spma[i], prev) && slopeOk ? 1 : lt(spma[i], prev) ? -1 : nal;
-    col[i] = nal === 1 ? colUp : nal === -1 ? colDn : colNu;
-  }
-
-  const candles: PlotCandleData[] = [];
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    // plotcandle(open, high, low, close, "Candles", col, col, bordercolor = col, display = display.pane,
-    //            force_overlay = true)
-    candles.push({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
-      color: col[i], wickColor: col[i], borderColor: col[i], forceOverlay: true });
-    // barcolor(col)
-    barColors.push({ time: b.time, color: col[i] });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(SPMA, "Shock Percentile Moving Average", color = col, linewidth = 2)
-      plot0: bars.map((b, i) => ({ time: b.time, value: Number.isFinite(spma[i]) ? spma[i] : NaN, color: col[i] })),
+    init() {
+      const s: ShockRun = {
+        per: taStep.percentrank(cfg.lookback), ema: taStep.ema(cfg.length), spma: [], plot0: [], candles: [],
+        barColors: [], vars: { nal: 0 }, steps: [], lists: [], series: [],
+      };
+      s.steps = [s.per, s.ema];
+      s.series = [s.spma, s.plot0, s.candles, s.barColors];
+      return s;
     },
-    plotCandles: { candles },
-    barColors,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const spma = s.spma;
+      // f_SPMA: Ret = close - close[1]; Per = ta.percentrank(Ret, lookback); Gate = Per > gate; ta.ema(close, length)
+      const ret = i > 0 ? b.close - bars[i - 1].close : NaN;
+      const per = s.per.step(ret) ?? NaN;
+      const ema = s.ema.step(b.close) ?? NaN;
+      // MA := na(MA[1]) ? emaValue : Gate ? emaValue : MA[1]
+      const prev = i > 0 ? spma[i - 1] : NaN;
+      spma[i] = isNaN(prev) ? ema : gt(per, cfg.gate) ? ema : prev;
+
+      const back = i >= cfg.slopeLen ? spma[i - cfg.slopeLen] : NaN;
+      // SlopePer = (SPMA - SPMA[SlopeLen]) / SPMA[SlopeLen] * 100: a plain division
+      const slopePer = ((spma[i] - back) / back) * 100;
+      const slopeOk = cfg.useSlope ? gt(slopePer, cfg.slopeGate) : true;
+      // NAL := SPMA > SPMA[1] and (UseSlope ? SlopeGate : true) ? 1 : SPMA < SPMA[1] ? -1 : nz(NAL[1], 0)
+      const nal = gt(spma[i], prev) && slopeOk ? 1 : lt(spma[i], prev) ? -1 : s.vars.nal;
+      s.vars.nal = nal;
+      const col = nal === 1 ? colUp : nal === -1 ? colDn : colNu;
+      // plotcandle(open, high, low, close, "Candles", col, col, bordercolor = col, display = display.pane,
+      //            force_overlay = true)
+      s.candles[i] = { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
+        color: col, wickColor: col, borderColor: col, forceOverlay: true };
+      // barcolor(col)
+      s.barColors[i] = { time: b.time, color: col };
+      // plot(SPMA, "Shock Percentile Moving Average", color = col, linewidth = 2)
+      s.plot0[i] = { time: b.time, value: Number.isFinite(spma[i]) ? spma[i] : NaN, color: col };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        plotCandles: { candles: s.candles.slice() },
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ShockPercentileMovingAverageNalInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ShockPercentileMovingAverageNalInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const ShockPercentileMovingAverageNal = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

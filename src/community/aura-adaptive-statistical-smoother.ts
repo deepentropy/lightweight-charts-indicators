@@ -13,8 +13,12 @@
  * Original notice: © Pineify
  */
 
-import { ta, Series, color, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import {
+  barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 
 export interface AuraAdaptiveStatisticalSmootherInputs {
   /** Statistical window: R² and stdev length, backward EMA pass length */
@@ -64,94 +68,175 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const nz = (x: number, y: number) => (isNaN(x) ? y : x);
 
+/**
+ * `ta.correlation(a, b, length)` with a constant length from the fast window steps: the doubles of
+ * taStep.correlation (covariance over the square root of the two biased variances).
+ */
+class Correlation {
+  private readonly meanXY: WindowSma;
+  private readonly meanX: WindowSma;
+  private readonly meanY: WindowSma;
+  private readonly varX: WindowStdev;
+  private readonly varY: WindowStdev;
+
+  constructor(length: number) {
+    this.meanXY = new WindowSma(length);
+    this.meanX = new WindowSma(length);
+    this.meanY = new WindowSma(length);
+    this.varX = new WindowStdev(length);
+    this.varY = new WindowStdev(length);
+  }
+
+  step(a: number, b: number): number {
+    const product = a === null || a === undefined || b === null || b === undefined ? NaN : a * b;
+    const mxy = this.meanXY.step(product);
+    const cov = mxy - this.meanX.step(a) * this.meanY.step(b);
+    const vx = this.varX.variance(a);
+    const vy = this.varY.variance(b);
+    if (Number.isNaN(cov)) return NaN;
+    if (Math.abs(cov) <= 1e-10) return 0;
+    const denominator = Math.sqrt(vx * vy);
+    return denominator === 0 ? NaN : cov / denominator;
+  }
+
+  commit(): void {
+    this.meanXY.commit();
+    this.meanX.commit();
+    this.meanY.commit();
+    this.varX.commit();
+    this.varY.commit();
+  }
+}
+
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
+
+interface AuraVars {
+  /** var float aura_ma = 0.0 */
+  auraMa: number;
+  /** var float os = 0.0 */
+  os: number;
+  /** var int trend = 1 */
+  trend: number;
+}
+
+interface AuraRun extends BarRunState<AuraVars> {
+  ema: ReturnType<typeof taStep.ema>;
+  corr: Correlation;
+  dev: WindowStdev;
+  xUp: ReturnType<typeof taStep.crossover>;
+  xDown: ReturnType<typeof taStep.crossunder>;
+  ema1: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  areaColors: string[];
+  barColors: BarColorData[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<AuraAdaptiveStatisticalSmootherInputs>): BarStudy<AuraRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { length, smooth, mult } = cfg;
+  const value = barSource(cfg.src);
+  const alpha = 2 / (smooth + 1);
+  // the band (70) and cloud (85) colours of each trend colour
+  const bullBand = String(color.new(cfg.bullCss, 70));
+  const bearBand = String(color.new(cfg.bearCss, 70));
+  const bullArea = String(color.new(cfg.bullCss, 85));
+  const bearArea = String(color.new(cfg.bearCss, 85));
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: AuraRun = {
+        ema: taStep.ema(smooth), corr: new Correlation(length), dev: new WindowStdev(length),
+        xUp: taStep.crossover(), xDown: taStep.crossunder(), ema1: [], plot0: [], plot1: [], plot2: [],
+        areaColors: [], barColors: [], markers: [],
+        steps: [], vars: { auraMa: 0.0, os: 0.0, trend: 1 }, lists: [], series: [],
+      };
+      s.steps = [s.ema, s.corr, s.dev, s.xUp, s.xDown];
+      s.lists = [s.markers];
+      s.series = [s.ema1, s.plot0, s.plot1, s.plot2, s.areaColors, s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const close = b.close;
+      const src = value(b);
+      const v = s.vars;
+
+      // Forward-backward zero-lag approximation
+      const e1 = s.ema.step(src);
+      s.ema1[i] = e1;
+      let ema2 = e1;
+      // for i = 1 to length - 1 (a loop from 1 down to a lower bound counts down)
+      const step = length - 1 >= 1 ? 1 : -1;
+      for (let k = 1; step > 0 ? k <= length - 1 : k >= length - 1; k += step) {
+        const past = i - k >= 0 ? s.ema1[i - k] : NaN;
+        ema2 += alpha * (nz(past, e1) - ema2);
+      }
+      const t = ema2;
+
+      // r2 = nz(math.pow(ta.correlation(close, bar_index, length), 2), 0)
+      const r2 = nz(Math.pow(s.corr.step(close, i), 2), 0);
+      const stdev = s.dev.step(src) * mult;
+
+      // abs_diff = math.abs(target - nz(target, target)): 0, or na while the target is na
+      const absDiff = Math.abs(t - nz(t, t));
+      v.os = gt(r2, 0.5) ? Math.sign(nz(src, src) - nz(t, t)) : nz(v.os, 0);
+      v.auraMa = gt(r2, 0.5) ? r2 * t + (1 - r2) * nz(v.auraMa, t) : nz(v.auraMa, t) - absDiff * v.os;
+      const auraMa = v.auraMa;
+      v.trend = gt(close, auraMa) ? 1 : lt(close, auraMa) ? -1 : nz(v.trend, 1);
+
+      const lineColor = v.trend === 1 ? cfg.bullCss : cfg.bearCss;
+      const bandColor = v.trend === 1 ? bullBand : bearBand;
+      s.areaColors[i] = v.trend === 1 ? bullArea : bearArea;
+
+      // ta.crossover(close, aura_ma) / ta.crossunder(close, aura_ma): exact comparisons
+      const xUp = s.xUp.step(close, auraMa);
+      const xDown = s.xDown.step(close, auraMa);
+      if (xUp && gt(r2, 0.3)) {
+        s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: cfg.bullCss, text: 'BUY',
+          textColor: color.white, size: 'small' });
+      }
+      if (xDown && gt(r2, 0.3)) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: cfg.bearCss, text: 'SELL',
+          textColor: color.white, size: 'small' });
+      }
+      s.barColors[i] = { time, color: lineColor };
+      s.plot0[i] = { time, value: auraMa + stdev, color: bandColor };
+      s.plot1[i] = { time, value: auraMa - stdev, color: bandColor };
+      s.plot2[i] = { time, value: auraMa, color: lineColor };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        // fill(p_upper, p_lower, areaColor, title = "Volatility Cloud")
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Volatility Cloud' }, colors: s.areaColors.slice() }],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AuraAdaptiveStatisticalSmootherInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<AuraAdaptiveStatisticalSmootherInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const { length, smooth, mult } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const srcSeries = getSourceSeries(bars, cfg.src);
-  const src = A(srcSeries);
-  const close = bars.map((b) => b.close);
-
-  // Forward-backward zero-lag approximation
-  const ema1 = A(ta.ema(srcSeries, smooth));
-  const alpha = 2 / (smooth + 1);
-  const target: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    let ema2 = ema1[i];
-    // for i = 1 to length - 1 (a loop from 1 down to a lower bound counts down)
-    const step = length - 1 >= 1 ? 1 : -1;
-    for (let k = 1; step > 0 ? k <= length - 1 : k >= length - 1; k += step) {
-      const past = i - k >= 0 ? ema1[i - k] : NaN;
-      ema2 += alpha * (nz(past, ema1[i]) - ema2);
-    }
-    target[i] = ema2;
-  }
-
-  // r2 = nz(math.pow(ta.correlation(close, bar_index, length), 2), 0)
-  const corr = A(ta.correlation(S(close), S(bars.map((_b, i) => i)), length));
-  const r2 = corr.map((c) => nz(Math.pow(c, 2), 0));
-
-  const stdev = A(ta.stdev(srcSeries, length)).map((v) => v * mult);
-
-  const aura: number[] = new Array(n);
-  const trendArr: number[] = new Array(n);
-  let auraMa = 0.0; // var float aura_ma = 0.0
-  let os = 0.0; // var float os = 0.0
-  let trend = 1; // var int trend = 1
-  for (let i = 0; i < n; i++) {
-    const t = target[i];
-    // abs_diff = math.abs(target - nz(target, target)): 0, or na while the target is na
-    const absDiff = Math.abs(t - nz(t, t));
-    os = gt(r2[i], 0.5) ? Math.sign(nz(src[i], src[i]) - nz(t, t)) : nz(os, 0);
-    auraMa = gt(r2[i], 0.5) ? r2[i] * t + (1 - r2[i]) * nz(auraMa, t) : nz(auraMa, t) - absDiff * os;
-    aura[i] = auraMa;
-    trend = gt(close[i], auraMa) ? 1 : lt(close[i], auraMa) ? -1 : nz(trend, 1);
-    trendArr[i] = trend;
-  }
-
-  const lineColor = (i: number) => (trendArr[i] === 1 ? cfg.bullCss : cfg.bearCss);
-  const bandColor = (i: number) => String(color.new(lineColor(i), 70));
-  const areaColor = (i: number) => String(color.new(lineColor(i), 85));
-
-  // ta.crossover(close, aura_ma) / ta.crossunder(close, aura_ma): exact comparisons
-  const xUp = A(ta.crossover(S(close), S(aura)));
-  const xDown = A(ta.crossunder(S(close), S(aura)));
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    if (xUp[i] === 1 && gt(r2[i], 0.3)) {
-      markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: cfg.bullCss, text: 'BUY',
-        textColor: color.white, size: 'small' });
-    }
-    if (xDown[i] === 1 && gt(r2[i], 0.3)) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: cfg.bearCss, text: 'SELL',
-        textColor: color.white, size: 'small' });
-    }
-    barColors.push({ time: t, color: lineColor(i) });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: aura[i] + stdev[i], color: bandColor(i) })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: aura[i] - stdev[i], color: bandColor(i) })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: aura[i], color: lineColor(i) })),
-    },
-    // fill(p_upper, p_lower, areaColor, title = "Volatility Cloud")
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Volatility Cloud' }, colors: bars.map((_b, i) => areaColor(i)) }],
-    markers,
-    barColors,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AuraAdaptiveStatisticalSmoother = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -14,8 +14,10 @@
  * Reference: "RedK Trader Pressure Index (TPX)" by RedKTrader
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RedKTPXInputs {
   length: number;
@@ -61,127 +63,144 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RedKTPXInputs> = {}): Omit<IndicatorResult, 'markers'> & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color?: string };
+type Wma = ReturnType<typeof taStep.wma>;
+
+interface TpxRun extends BarRunState<Record<string, never>> {
+  highest2: WindowExtreme;
+  lowest2: WindowExtreme;
+  hiChange: ReturnType<typeof taStep.change>;
+  loChange: ReturnType<typeof taStep.change>;
+  bullWma: Wma;
+  bearWma: Wma;
+  bullPre: Wma | null;
+  bearPre: Wma | null;
+  tpxWma: Wma;
+  tpxAlert: number[];
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<RedKTPXInputs>): BarStudy<TpxRun, Result> {
   const { length, smooth, controlLevel, preSmooth, preSmoothLen, slevelOn, slevel } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const high = new Series(bars, (b) => b.high);
-  const low = new Series(bars, (b) => b.low);
-
-  // 2-bar range: R = highest(2) - lowest(2)
-  const highest2Arr = ta.highest(high, 2).toArray();
-  const lowest2Arr = ta.lowest(low, 2).toArray();
-
-  // Change in high and low (1-bar)
-  const hiChangeArr = ta.change(high, 1).toArray();
-  const loChangeArr = ta.change(low, 1).toArray();
-
-  // Calculate raw bull and bear pressure bar-by-bar
-  const bullsArr: number[] = new Array(n);
-  const bearsArr: number[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    const h2 = highest2Arr[i];
-    const l2 = lowest2Arr[i];
-    const R = (h2 != null && l2 != null && !isNaN(h2) && !isNaN(l2)) ? h2 - l2 : 0;
-
-    const hiChg = hiChangeArr[i];
-    const loChg = loChangeArr[i];
-
-    if (R === 0 || i === 0) {
-      bullsArr[i] = 0;
-      bearsArr[i] = 0;
-      continue;
-    }
-
-    // Bull pressure: how far bulls pull high and low up
-    const hiup = Math.max(hiChg != null && !isNaN(hiChg) ? hiChg : 0, 0);
-    const loup = Math.max(loChg != null && !isNaN(loChg) ? loChg : 0, 0);
-    bullsArr[i] = Math.min((hiup + loup) / R, 1) * 100;
-
-    // Bear pressure: how far bears push high and low down (converted to positive)
-    const hidn = Math.min(hiChg != null && !isNaN(hiChg) ? hiChg : 0, 0);
-    const lodn = Math.min(loChg != null && !isNaN(loChg) ? loChg : 0, 0);
-    bearsArr[i] = Math.max((hidn + lodn) / R, -1) * -100;
-  }
-
-  // WMA of bull and bear pressure
-  const bullsSeries = Series.fromArray(bars, bullsArr);
-  const bearsSeries = Series.fromArray(bars, bearsArr);
-  const avgBullRaw = ta.wma(bullsSeries, length);
-  const avgBearRaw = ta.wma(bearsSeries, length);
-
-  // Pine v3.0: optional pre-smoothing (avgbulls = pre_s ? wma(avgbull, pre_sv) : avgbull)
-  const avgBullsArr = preSmooth ? ta.wma(avgBullRaw, preSmoothLen).toArray() : avgBullRaw.toArray();
-  const avgBearsArr = preSmooth ? ta.wma(avgBearRaw, preSmoothLen).toArray() : avgBearRaw.toArray();
-
-  // Net = avgBulls - avgBears, then WMA smooth
-  const netArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const ab = avgBullsArr[i];
-    const abear = avgBearsArr[i];
-    const abVal = (ab != null && !isNaN(ab)) ? ab : 0;
-    const abearVal = (abear != null && !isNaN(abear)) ? abear : 0;
-    netArr[i] = abVal - abearVal;
-  }
-
-  const netSeries = Series.fromArray(bars, netArr);
-  const tpxArr = ta.wma(netSeries, smooth).toArray();
-
   const warmup = length + smooth;
-
-  const plot0 = avgBullsArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || v == null || isNaN(v)) ? NaN : v,
-  }));
-
-  const plot1 = avgBearsArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || v == null || isNaN(v)) ? NaN : v,
-  }));
-
-  // Pine: TPX colored by direction: TPX > 0 ? white : gray
-  const plot2 = tpxArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || v == null || isNaN(v)) ? NaN : v,
-    color: (v != null && !isNaN(v) && v > 0) ? '#ffffff' : '#808080',
-  }));
-
-  // Pine: plot(maxbears and slevel_on ? slevel : na, 'Cold', style=circles, color=maroon, linewidth=3)
-  // Pine: plot(maxbulls and slevel_on ? slevel : na, 'Hot', style=cross, color=green, linewidth=3)
-  const plot3 = bars.map((b, i) => {
-    if (!slevelOn || i < warmup) return { time: b.time, value: NaN };
-    const avgBear = avgBearsArr[i];
-    const maxbears = avgBear != null && !isNaN(avgBear) && avgBear >= controlLevel;
-    return { time: b.time, value: maxbears ? slevel : NaN };
-  });
-
-  const plot4 = bars.map((b, i) => {
-    if (!slevelOn || i < warmup) return { time: b.time, value: NaN };
-    const avgBull = avgBullsArr[i];
-    const maxbulls = avgBull != null && !isNaN(avgBull) && avgBull >= controlLevel;
-    return { time: b.time, value: maxbulls ? slevel : NaN };
-  });
-
-  // maxbulls = avgbulls >= clevel; maxbears = avgbears >= clevel; TPXswing = ta.cross(TPX, 0)
-  const maxBulls = avgBullsArr.map((v) => v != null && !isNaN(v) && v >= controlLevel);
-  const maxBears = avgBearsArr.map((v) => v != null && !isNaN(v) && v >= controlLevel);
   // TPX of the original is na until its averages are known: the port's zeros before that are not crossed
   const tpxFirst = (length - 1) + (preSmooth ? preSmoothLen - 1 : 0) + (smooth - 1);
-  const tpxAlert = tpxArr.map((v, i) => (i < tpxFirst ? NaN : v ?? NaN));
-  const tpxUp = crossedOver(tpxAlert, 0);
-  const tpxDn = crossedUnder(tpxAlert, 0);
-  const tpxSwing = tpxUp.map((f, i) => f || tpxDn[i]);
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3, 'plot4': plot4 },
-    hlines: [
-      { value: 0, options: { color: '#ffee00', linestyle: 'solid' as const, title: 'Zero' } },
-      { value: controlLevel, options: { color: '#ffee00', linestyle: 'dotted' as const, title: 'Control Level' } },
-    ],
-    alerts: alertStates(alertConditions, bars, [maxBulls, maxBears, tpxSwing]),
+    init() {
+      // 2-bar range: R = highest(2) - lowest(2)
+      const highest2 = new WindowExtreme(false, 2);
+      const lowest2 = new WindowExtreme(true, 2);
+      // Change in high and low (1-bar)
+      const hiChange = taStep.change(1);
+      const loChange = taStep.change(1);
+      const bullWma = taStep.wma();
+      const bearWma = taStep.wma();
+      const bullPre = preSmooth ? taStep.wma() : null;
+      const bearPre = preSmooth ? taStep.wma() : null;
+      const tpxWma = taStep.wma();
+      const s: TpxRun = {
+        highest2, lowest2, hiChange, loChange, bullWma, bearWma, bullPre, bearPre, tpxWma, tpxAlert: [],
+        plots: [[], [], [], [], []], flags: [[], [], []], times: [[], [], []],
+        steps: [highest2, lowest2, hiChange, loChange, bullWma, bearWma, ...(bullPre && bearPre ? [bullPre, bearPre] : []), tpxWma],
+        vars: {}, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.tpxAlert, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const h2 = s.highest2.step(b.high);
+      const l2 = s.lowest2.step(b.low);
+      const R = (h2 != null && l2 != null && !isNaN(h2) && !isNaN(l2)) ? h2 - l2 : 0;
+      const hiChg = s.hiChange.step(b.high);
+      const loChg = s.loChange.step(b.low);
+
+      // Calculate raw bull and bear pressure bar-by-bar
+      let bulls = 0;
+      let bears = 0;
+      if (!(R === 0 || i === 0)) {
+        // Bull pressure: how far bulls pull high and low up
+        const hiup = Math.max(hiChg != null && !isNaN(hiChg) ? hiChg : 0, 0);
+        const loup = Math.max(loChg != null && !isNaN(loChg) ? loChg : 0, 0);
+        bulls = Math.min((hiup + loup) / R, 1) * 100;
+
+        // Bear pressure: how far bears push high and low down (converted to positive)
+        const hidn = Math.min(hiChg != null && !isNaN(hiChg) ? hiChg : 0, 0);
+        const lodn = Math.min(loChg != null && !isNaN(loChg) ? loChg : 0, 0);
+        bears = Math.max((hidn + lodn) / R, -1) * -100;
+      }
+
+      // WMA of bull and bear pressure
+      const avgBullRaw = s.bullWma.step(bulls, length);
+      const avgBearRaw = s.bearWma.step(bears, length);
+      // Pine v3.0: optional pre-smoothing (avgbulls = pre_s ? wma(avgbull, pre_sv) : avgbull)
+      const avgBulls = s.bullPre ? s.bullPre.step(avgBullRaw, preSmoothLen) : avgBullRaw;
+      const avgBears = s.bearPre ? s.bearPre.step(avgBearRaw, preSmoothLen) : avgBearRaw;
+
+      // Net = avgBulls - avgBears, then WMA smooth
+      const abVal = (avgBulls != null && !isNaN(avgBulls)) ? avgBulls : 0;
+      const abearVal = (avgBears != null && !isNaN(avgBears)) ? avgBears : 0;
+      const tpx = s.tpxWma.step(abVal - abearVal, smooth);
+
+      const time = b.time;
+      s.plots[0][i] = { time, value: (i < warmup || avgBulls == null || isNaN(avgBulls)) ? NaN : avgBulls };
+      s.plots[1][i] = { time, value: (i < warmup || avgBears == null || isNaN(avgBears)) ? NaN : avgBears };
+      // Pine: TPX colored by direction: TPX > 0 ? white : gray
+      s.plots[2][i] = {
+        time,
+        value: (i < warmup || tpx == null || isNaN(tpx)) ? NaN : tpx,
+        color: (tpx != null && !isNaN(tpx) && tpx > 0) ? '#ffffff' : '#808080',
+      };
+      // maxbulls = avgbulls >= clevel; maxbears = avgbears >= clevel
+      const maxBulls = avgBulls != null && !isNaN(avgBulls) && avgBulls >= controlLevel;
+      const maxBears = avgBears != null && !isNaN(avgBears) && avgBears >= controlLevel;
+      // Pine: plot(maxbears and slevel_on ? slevel : na, 'Cold', style=circles, color=maroon, linewidth=3)
+      // Pine: plot(maxbulls and slevel_on ? slevel : na, 'Hot', style=cross, color=green, linewidth=3)
+      const off = !slevelOn || i < warmup;
+      s.plots[3][i] = { time, value: off ? NaN : maxBears ? slevel : NaN };
+      s.plots[4][i] = { time, value: off ? NaN : maxBulls ? slevel : NaN };
+
+      // TPXswing = ta.cross(TPX, 0)
+      const tpxAlert = i < tpxFirst ? NaN : tpx ?? NaN;
+      s.tpxAlert[i] = tpxAlert;
+      const prev = i > 0 ? s.tpxAlert[i - 1] : NaN;
+      const tpxUp = tpxAlert > 0 && prev <= 0;
+      const tpxDn = tpxAlert < 0 && prev >= 0;
+      const flags = [maxBulls, maxBears, tpxUp || tpxDn];
+      for (let k = 0; k < 3; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          'plot0': s.plots[0].slice(), 'plot1': s.plots[1].slice(), 'plot2': s.plots[2].slice(),
+          'plot3': s.plots[3].slice(), 'plot4': s.plots[4].slice(),
+        },
+        hlines: [
+          { value: 0, options: { color: '#ffee00', linestyle: 'solid' as const, title: 'Zero' } },
+          { value: controlLevel, options: { color: '#ffee00', linestyle: 'dotted' as const, title: 'Control Level' } },
+        ],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RedKTPXInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RedKTPXInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -191,4 +210,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert2', title: 'Net Pressure Swing', message: 'Net Pressure Swing Detected!' },
 ];
 
-export const RedKTPX = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const RedKTPX = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

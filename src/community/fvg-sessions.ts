@@ -35,11 +35,12 @@
  * Original notice: © LuxAlgo
  */
 
-import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { periodStarts } from '../anchor-period';
+import { chartSessions, color, periodTime, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SessionContext } from 'oakscriptjs';
+import { chartTimeframe, hasCalendar } from '../anchor-period';
 import type { BoxData, LineDrawingData } from '../types';
 import { foregroundColorOf, mintickOf, type ChartContext } from '../chart-context';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface FvgSessionsInputs {
   /** FVG Level (bullish) */
@@ -106,156 +107,275 @@ class Live<T extends { dead: boolean }> {
     if (this.list.length > MAX_COUNT + 5) for (const old of this.list.splice(0, this.list.length - MAX_COUNT)) old.dead = true;
     return o;
   }
+
+  /** A copy of the drawings (`map`: each drawing to its copy) */
+  clone(map: Map<object, object>): Live<T> {
+    const c = new Live<T>();
+    for (const o of this.list) {
+      const k = { ...o };
+      map.set(o, k);
+      c.list.push(k);
+    }
+    return c;
+  }
 }
 
 /** Pine type fvg (mitigated / isbull are na before the first gap) */
 interface Fvg { top: number; btm: number; mitigated: boolean; isnew: boolean; isbull: boolean; lvl: Ln | null; area: Bx | null }
+
+type Result = IndicatorResult & { lines: LineDrawingData[]; boxes: BoxData[] } & { alerts: AlertConditionState[] };
+
+const DAY_MS = 86400000;
+
+/** A copy of the drawings and of the objects that point to them (a deleted drawing is never changed: kept as is) */
+function cloneDrawings(v: FvgVars): FvgVars {
+  const map = new Map<object, object>();
+  const lines = v.lines.clone(map);
+  const boxes = v.boxes.clone(map);
+  const get = <T extends object>(o: T | null): T | null => (o === null ? null : ((map.get(o) as T | undefined) ?? o));
+  return {
+    ...v,
+    lines,
+    boxes,
+    sfvg: { ...v.sfvg, lvl: get(v.sfvg.lvl), area: get(v.sfvg.area) },
+    sesr: v.sesr === null ? null : { max: get(v.sesr.max)!, min: get(v.sesr.min)! },
+  };
+}
+
+interface FvgVars {
+  lines: Live<Ln>;
+  boxes: Live<Bx>;
+  sfvg: Fvg;
+  sesr: { max: Ln; min: Ln } | null;
+}
+
+interface FvgRun extends BarRunState<FvgVars> {
+  /** periodStarts(bars, 'D', chart) of each bar (the UTC day without the exchange calendar) */
+  dayStart: number[];
+  /** math.avg(sfvg.top, sfvg.btm) and isbull / isnew of the gap of the day at the end of each bar */
+  gapAvg: number[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+/** One calendar per chart context, timeframe and unit (the library caches its calendars per object) */
+const calendars = new WeakMap<ChartContext, Map<string, { context: SessionContext; sessions: ReturnType<typeof chartSessions> } | null>>();
+
+/**
+ * The exchange calendar of periodStarts (src/anchor-period.ts): the time zone and the session of the context and the
+ * chart timeframe; null without them, with fewer than 2 bars and no timeframe, or when the library cannot read them
+ */
+function calendarOf(bars: Bar[], chart: ChartContext) {
+  const tf = chartTimeframe(bars, chart);
+  if (!hasCalendar(chart) || bars.length === 0 || tf === '') return null;
+  const ms = bars[0].time >= 1e12;
+  const key = `${tf}|${ms ? 'ms' : 's'}`;
+  let contexts = calendars.get(chart);
+  if (!contexts) {
+    contexts = new Map();
+    calendars.set(chart, contexts);
+  }
+  let cal = contexts.get(key);
+  if (cal === undefined) {
+    const context = {
+      timeframe: tf, timezone: chart.timezone, session: chart.session, regularSession: chart.regularSession,
+      timeUnit: ms ? 'ms' : 's',
+    } as SessionContext;
+    // a time zone or a session that the library does not read: no calendar, the UTC days
+    try {
+      const sessions = chartSessions(context);
+      periodTime(bars[0].time, '1D', context);
+      cal = { context, sessions };
+    } catch {
+      cal = null;
+    }
+    contexts.set(key, cal);
+  }
+  return cal;
+}
+
+function study(inputs: Partial<FvgSessionsInputs>): BarStudy<FvgRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  let mintick = 0.01;
+  let chartCss = '';
+  let ms = false;
+  /** The exchange calendar of periodStarts (src/anchor-period.ts), null for the UTC days */
+  let calendar: SessionContext | null = null;
+  let sessions: ReturnType<typeof chartSessions> | null = null;
+  return {
+    // the chart timeframe comes from the bar gaps (or the context), the time unit from the first bar
+    key: (bars, chart) => `${chartTimeframe(bars, chart)}|${bars.length > 0 && bars[0].time >= 1e12}`,
+    init(bars, chart) {
+      // syminfo.mintick
+      mintick = mintickOf(chart);
+      chartCss = String(color.new(foregroundColorOf(chart), 50));
+      ms = bars.length > 0 && bars[0].time >= 1e12;
+      // the calendar of periodStarts
+      const cal = calendarOf(bars, chart);
+      calendar = cal?.context ?? null;
+      sessions = cal?.sessions ?? null;
+      const s: FvgRun = {
+        dayStart: [], gapAvg: [], flags: Array.from({ length: 8 }, () => []), times: Array.from({ length: 8 }, () => []),
+        steps: [],
+        vars: {
+          lines: new Live<Ln>(), boxes: new Live<Bx>(),
+          sfvg: { top: NaN, btm: NaN, mitigated: false, isnew: true, isbull: false, lvl: null, area: null },
+          sesr: null,
+        },
+        lists: [], series: [],
+      };
+      s.lists = [...s.times];
+      s.series = [s.dayStart, s.gapAvg, ...s.flags];
+      return s;
+    },
+    copyVars: cloneDrawings,
+    bar(s, i, bars) {
+      const v = s.vars;
+      const { lines, boxes } = v;
+      const { high, low, close, time } = bars[i];
+      const H = (k: number) => (k >= 0 ? bars[k].high : NaN);
+      const L = (k: number) => (k >= 0 ? bars[k].low : NaN);
+      const C = (k: number) => (k >= 0 ? bars[k].close : NaN);
+
+      // periodStarts(bars, 'D', chart): with the calendar, time("D") of the bar (a stray bar keeps the period of the
+      // bar before, another bar without a trading day is its own period); else the UTC day
+      if (calendar && sessions) {
+        const unit = ms ? 1 : 1000;
+        const t = periodTime(time, 'D', calendar);
+        s.dayStart[i] = !Number.isNaN(t) ? t / unit : i > 0 && sessions.bars.stray(time * unit) ? s.dayStart[i - 1] : time;
+      } else {
+        s.dayStart[i] = Math.floor((ms ? time : time * 1000) / DAY_MS) * DAY_MS;
+      }
+
+      // set_fvg(): a new box and a new middle line from `offset` bars back to the current bar
+      const setFvg = (id: Fvg, offset: number, bgCss: string, lCss: string) => {
+        const avg = (id.top + id.btm) / 2;
+        id.area = boxes.add({ left: i - offset, top: id.top, right: i, bottom: id.btm, bg: bgCss, dead: false });
+        id.lvl = lines.add({ x1: i - offset, y1: avg, x2: i, y2: avg, color: lCss, style: 'dashed', dead: false });
+      };
+
+      const bullFvg = gt(low, H(i - 2)) && gt(C(i - 1), H(i - 2));
+      const bearFvg = lt(high, L(i - 2)) && lt(C(i - 1), L(i - 2));
+      const dtf = i > 0 && s.dayStart[i] !== s.dayStart[i - 1];
+
+      if (dtf) {
+        // Delimiter, new range, end of the gap of the prior day
+        lines.add({ x1: i, y1: high + mintick, x2: i, y2: low - mintick, color: chartCss, style: 'dashed', extend: 'both', dead: false });
+        v.sesr = {
+          max: lines.add({ x1: i, y1: high, x2: i, y2: high, color: chartCss, dead: false }),
+          min: lines.add({ x1: i, y1: low, x2: i, y2: low, color: chartCss, dead: false }),
+        };
+        v.sfvg.isnew = true;
+        if (v.sfvg.lvl !== null) {
+          if (!v.sfvg.lvl.dead) v.sfvg.lvl.x2 = i - 2;
+          if (v.sfvg.area !== null && !v.sfvg.area.dead) v.sfvg.area.right = i - 2;
+        }
+      } else if (v.sesr !== null) {
+        const sesr = v.sesr;
+        // set_range(): math.max / math.min give na with an na argument (a deleted line)
+        const max = sesr.max.dead ? NaN : Math.max(high, sesr.max.y2);
+        const min = sesr.min.dead ? NaN : Math.min(low, sesr.min.y2);
+        const css = v.sfvg.isbull ? cfg.bullCss : cfg.bearCss;
+        if (!sesr.max.dead) {
+          sesr.max.x2 = i;
+          sesr.max.y2 = max;
+          sesr.max.y1 = max;
+          sesr.max.color = css;
+        }
+        if (!sesr.min.dead) {
+          sesr.min.x2 = i;
+          sesr.min.y2 = min;
+          sesr.min.y1 = min;
+          sesr.min.color = css;
+        }
+      }
+
+      // First gap of the day
+      let bullIsNew = false;
+      let bearIsNew = false;
+      let bullMitigated = false;
+      let bearMitigated = false;
+      if (bullFvg && v.sfvg.isnew) {
+        v.sfvg = { top: low, btm: H(i - 2), mitigated: false, isnew: false, isbull: true, lvl: null, area: null };
+        setFvg(v.sfvg, 2, cfg.bullAreaCss, cfg.bullCss);
+        bullIsNew = true;
+      } else if (bearFvg && v.sfvg.isnew) {
+        v.sfvg = { top: L(i - 2), btm: high, mitigated: false, isnew: false, isbull: false, lvl: null, area: null };
+        setFvg(v.sfvg, 2, cfg.bearAreaCss, cfg.bearCss);
+        bearIsNew = true;
+      }
+      const sfvg = v.sfvg;
+
+      // Mitigation
+      if (!sfvg.mitigated) {
+        if (sfvg.isbull && lt(close, sfvg.btm)) {
+          setFvg(sfvg, 1, cfg.bullMitigatedCss, cfg.bullCss);
+          sfvg.mitigated = true;
+          bullMitigated = true;
+        } else if (!sfvg.isbull && gt(close, sfvg.top)) {
+          setFvg(sfvg, 1, cfg.bearMitigatedCss, cfg.bearCss);
+          sfvg.mitigated = true;
+          bearMitigated = true;
+        }
+      }
+      // close >= sfvg.btm and close <= sfvg.top and (not) sfvg.isbull and not sfvg.isnew
+      const within = ge(close, sfvg.btm) && le(close, sfvg.top) && !sfvg.isnew;
+      const gapAvg = (sfvg.top + sfvg.btm) / 2;
+      s.gapAvg[i] = gapAvg;
+      // ta.cross(close, math.avg(sfvg.top, sfvg.btm)) and (not) sfvg.isbull and not sfvg.isnew
+      const prevClose = i > 0 ? bars[i - 1].close : NaN;
+      const prevAvg = i > 0 ? s.gapAvg[i - 1] : NaN;
+      const over = close > gapAvg && prevClose <= prevAvg;
+      const under = close < gapAvg && prevClose >= prevAvg;
+      const avgCross = (over || under) && !sfvg.isnew;
+      const flags = [
+        bullIsNew, bearIsNew, bullMitigated, bearMitigated, within && sfvg.isbull, within && !sfvg.isbull,
+        avgCross && sfvg.isbull, avgCross && !sfvg.isbull,
+      ];
+      for (let k = 0; k < flags.length; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(time as number);
+      }
+
+      // The gap of the day follows the current bar
+      if (!sfvg.isnew) {
+        if (sfvg.lvl !== null && !sfvg.lvl.dead) sfvg.lvl.x2 = i;
+        if (sfvg.area !== null && !sfvg.area.dead) sfvg.area.right = i;
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const outLines: LineDrawingData[] = s.vars.lines.list.map((l) => ({
+        time1: bars[l.x1].time, price1: l.y1, time2: bars[l.x2].time, price2: l.y2, color: l.color,
+        ...(l.style ? { style: l.style } : {}),
+        ...(l.extend ? { extend: l.extend } : {}),
+      }));
+      const outBoxes: BoxData[] = s.vars.boxes.list.map((b) => ({
+        time1: bars[b.left].time, price1: b.top, time2: bars[b.right].time, price2: b.bottom,
+        borderColor: 'transparent', bgColor: b.bg,
+      }));
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        lines: outLines,
+        boxes: outBoxes,
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FvgSessionsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
 
 export function calculate(
   bars: Bar[],
   inputs: Partial<FvgSessionsInputs> = {},
   chart?: ChartContext,
 ): IndicatorResult & { lines: LineDrawingData[]; boxes: BoxData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  // syminfo.mintick
-  const mintick = mintickOf(chart);
-  const chartCss = String(color.new(foregroundColorOf(chart), 50));
-  const dayStarts = periodStarts(bars, 'D', chart);
-
-  const lines = new Live<Ln>();
-  const boxes = new Live<Bx>();
-  const H = (i: number) => (i >= 0 ? bars[i].high : NaN);
-  const L = (i: number) => (i >= 0 ? bars[i].low : NaN);
-  const C = (i: number) => (i >= 0 ? bars[i].close : NaN);
-
-  let sfvg: Fvg = { top: NaN, btm: NaN, mitigated: false, isnew: true, isbull: false, lvl: null, area: null };
-  let sesr: { max: Ln; min: Ln } | null = null;
-  // Alert flags (bull_isnew, bear_isnew, bull_mitigated, bear_mitigated, within bull / bear) and the state of the
-  // gap of the day at the end of each bar (math.avg(sfvg.top, sfvg.btm), isbull, isnew)
-  const flags: boolean[][] = Array.from({ length: 6 }, () => []);
-  const gapAvg: number[] = [];
-  const gapBull: boolean[] = [];
-  const gapNew: boolean[] = [];
-
-  for (let i = 0; i < n; i++) {
-    const { high, low, close } = bars[i];
-
-    // set_fvg(): a new box and a new middle line from `offset` bars back to the current bar
-    const setFvg = (id: Fvg, offset: number, bgCss: string, lCss: string) => {
-      const avg = (id.top + id.btm) / 2;
-      id.area = boxes.add({ left: i - offset, top: id.top, right: i, bottom: id.btm, bg: bgCss, dead: false });
-      id.lvl = lines.add({ x1: i - offset, y1: avg, x2: i, y2: avg, color: lCss, style: 'dashed', dead: false });
-    };
-
-    const bullFvg = gt(low, H(i - 2)) && gt(C(i - 1), H(i - 2));
-    const bearFvg = lt(high, L(i - 2)) && lt(C(i - 1), L(i - 2));
-    const dtf = i > 0 && dayStarts[i] !== dayStarts[i - 1];
-
-    if (dtf) {
-      // Delimiter, new range, end of the gap of the prior day
-      lines.add({ x1: i, y1: high + mintick, x2: i, y2: low - mintick, color: chartCss, style: 'dashed', extend: 'both', dead: false });
-      sesr = {
-        max: lines.add({ x1: i, y1: high, x2: i, y2: high, color: chartCss, dead: false }),
-        min: lines.add({ x1: i, y1: low, x2: i, y2: low, color: chartCss, dead: false }),
-      };
-      sfvg.isnew = true;
-      if (sfvg.lvl !== null) {
-        if (!sfvg.lvl.dead) sfvg.lvl.x2 = i - 2;
-        if (sfvg.area !== null && !sfvg.area.dead) sfvg.area.right = i - 2;
-      }
-    } else if (sesr !== null) {
-      // set_range(): math.max / math.min give na with an na argument (a deleted line)
-      const max = sesr.max.dead ? NaN : Math.max(high, sesr.max.y2);
-      const min = sesr.min.dead ? NaN : Math.min(low, sesr.min.y2);
-      const css = sfvg.isbull ? cfg.bullCss : cfg.bearCss;
-      if (!sesr.max.dead) {
-        sesr.max.x2 = i;
-        sesr.max.y2 = max;
-        sesr.max.y1 = max;
-        sesr.max.color = css;
-      }
-      if (!sesr.min.dead) {
-        sesr.min.x2 = i;
-        sesr.min.y2 = min;
-        sesr.min.y1 = min;
-        sesr.min.color = css;
-      }
-    }
-
-    // First gap of the day
-    let bullIsNew = false;
-    let bearIsNew = false;
-    let bullMitigated = false;
-    let bearMitigated = false;
-    if (bullFvg && sfvg.isnew) {
-      sfvg = { top: low, btm: H(i - 2), mitigated: false, isnew: false, isbull: true, lvl: null, area: null };
-      setFvg(sfvg, 2, cfg.bullAreaCss, cfg.bullCss);
-      bullIsNew = true;
-    } else if (bearFvg && sfvg.isnew) {
-      sfvg = { top: L(i - 2), btm: high, mitigated: false, isnew: false, isbull: false, lvl: null, area: null };
-      setFvg(sfvg, 2, cfg.bearAreaCss, cfg.bearCss);
-      bearIsNew = true;
-    }
-
-    // Mitigation
-    if (!sfvg.mitigated) {
-      if (sfvg.isbull && lt(close, sfvg.btm)) {
-        setFvg(sfvg, 1, cfg.bullMitigatedCss, cfg.bullCss);
-        sfvg.mitigated = true;
-        bullMitigated = true;
-      } else if (!sfvg.isbull && gt(close, sfvg.top)) {
-        setFvg(sfvg, 1, cfg.bearMitigatedCss, cfg.bearCss);
-        sfvg.mitigated = true;
-        bearMitigated = true;
-      }
-    }
-    // close >= sfvg.btm and close <= sfvg.top and (not) sfvg.isbull and not sfvg.isnew
-    const within = ge(close, sfvg.btm) && le(close, sfvg.top) && !sfvg.isnew;
-    flags[0].push(bullIsNew);
-    flags[1].push(bearIsNew);
-    flags[2].push(bullMitigated);
-    flags[3].push(bearMitigated);
-    flags[4].push(within && sfvg.isbull);
-    flags[5].push(within && !sfvg.isbull);
-    gapAvg.push((sfvg.top + sfvg.btm) / 2);
-    gapBull.push(sfvg.isbull);
-    gapNew.push(sfvg.isnew);
-
-    // The gap of the day follows the current bar
-    if (!sfvg.isnew) {
-      if (sfvg.lvl !== null && !sfvg.lvl.dead) sfvg.lvl.x2 = i;
-      if (sfvg.area !== null && !sfvg.area.dead) sfvg.area.right = i;
-    }
-  }
-
-  const outLines: LineDrawingData[] = lines.list.map((l) => ({
-    time1: bars[l.x1].time, price1: l.y1, time2: bars[l.x2].time, price2: l.y2, color: l.color,
-    ...(l.style ? { style: l.style } : {}),
-    ...(l.extend ? { extend: l.extend } : {}),
-  }));
-  const outBoxes: BoxData[] = boxes.list.map((b) => ({
-    time1: bars[b.left].time, price1: b.top, time2: bars[b.right].time, price2: b.bottom,
-    borderColor: 'transparent', bgColor: b.bg,
-  }));
-
-  // ta.cross(close, math.avg(sfvg.top, sfvg.btm)) and (not) sfvg.isbull and not sfvg.isnew
-  const closes = bars.map((b) => b.close);
-  const over = crossedOver(closes, gapAvg);
-  const under = crossedUnder(closes, gapAvg);
-  const avgCross = bars.map((_b, i) => (over[i] || under[i]) && !gapNew[i]);
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    lines: outLines,
-    boxes: outBoxes,
-    alerts: alertStates(alertConditions, bars, [
-      ...flags,
-      avgCross.map((c, i) => c && gapBull[i]),
-      avgCross.map((c, i) => c && !gapBull[i]),
-    ]),
-  };
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 /** The original's alertconditions */
@@ -270,4 +390,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert7', title: 'Bearish FVG AVG Cross', message: 'Price crossed bearish fvg average' },
 ];
 
-export const FvgSessions = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const FvgSessions = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

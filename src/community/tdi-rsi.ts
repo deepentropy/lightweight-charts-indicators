@@ -15,9 +15,14 @@
  * Reference: "TDI - Traders Dynamic Index [Goldminds]" by thienlovv (TDI by Goldminds, modified by Jakub a Babo)
  */
 
-import { ta, Series, str, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, str, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall, MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import {
+  createBarRun, fullResult, liveAlertStates, PivotStep, WindowSma, WindowStdev,
+  type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -136,127 +141,205 @@ const lt = (a: number, b: number) => b - a > EPS;
 
 type PlotPoint = { time: number; value: number; color?: string };
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alerts: AlertConditionState[]; alertCalls: AlertCall[] };
+
+interface TdiVars {
+  /** _inRange(plFound[1]): barssince(plFound[1] == true) */
+  plBars: number;
+  phBars: number;
+  /** valuewhen(plFound, osc[lbR], 1) / valuewhen(plFound, low[lbR], 1) on a pivot bar: the previous pivot's values */
+  plLastOsc: number;
+  plLastLow: number;
+  phLastOsc: number;
+  phLastHigh: number;
+}
+
+interface TdiRun extends BarRunState<TdiVars> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  ma: WindowSma;
+  sd: WindowStdev;
+  fast: WindowSma;
+  slow: WindowSma;
+  pl: PivotStep;
+  ph: PivotStep;
+  osc: number[];
+  plFound: boolean[];
+  phFound: boolean[];
+  lines: PlotPoint[][];
+  regBull: PlotPoint[];
+  hidBull: PlotPoint[];
+  regBear: PlotPoint[];
+  hidBear: PlotPoint[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+  alertCalls: AlertCall[];
+}
+
+function study(inputs: Partial<TdiRsiInputs>): BarStudy<TdiRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { lbR, lbL, rangeUpper, rangeLower } = cfg;
+  const fastValid = Math.floor(cfg.fastMALength) > 0;
+  return {
+    init() {
+      const s: TdiRun = {
+        rsi: taStep.rsi(cfg.rsiPeriod),
+        ma: new WindowSma(cfg.bandLength),
+        sd: new WindowStdev(cfg.bandLength),
+        fast: new WindowSma(cfg.fastMALength),
+        slow: new WindowSma(cfg.slowMALength),
+        pl: new PivotStep(lbL, lbR, false),
+        ph: new PivotStep(lbL, lbR, true),
+        osc: [], plFound: [], phFound: [],
+        lines: Array.from({ length: 5 }, () => []),
+        regBull: [], hidBull: [], regBear: [], hidBear: [],
+        markers: [],
+        flags: [[], [], [], []],
+        times: [[], [], [], []],
+        alertCalls: [],
+        steps: [],
+        vars: { plBars: NaN, phBars: NaN, plLastOsc: NaN, plLastLow: NaN, phLastOsc: NaN, phLastHigh: NaN },
+        lists: [], series: [],
+      };
+      s.steps = [s.rsi, s.ma, s.sd, s.fast, s.slow, s.pl, s.ph];
+      s.lists = [s.markers, s.alertCalls, ...s.times];
+      s.series = [s.osc, s.plFound, s.phFound, ...s.lines, s.regBull, s.hidBull, s.regBear, s.hidBear, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const t = bars[i].time as number;
+      const r = s.rsi.step(bars[i].close);
+      const ma = s.ma.step(r);
+      const sd = s.sd.step(r);
+      const up = ma + 1.6185 * sd;
+      const dn = ma - 1.6185 * sd;
+      const mid = (up + dn) / 2;
+      // a length of 0 (the input's minimum) is the error of ta.sma
+      const fastMA = fastValid ? s.fast.step(r) : taStep.sma().step(r, cfg.fastMALength);
+      const osc = s.slow.step(r);
+      s.osc[i] = osc;
+      const time = bars[i].time;
+      s.lines[0]![i] = { time, value: up };
+      s.lines[1]![i] = { time, value: dn };
+      s.lines[2]![i] = { time, value: mid };
+      s.lines[3]![i] = { time, value: osc };
+      s.lines[4]![i] = { time, value: fastMA };
+
+      // plFound / phFound: pivotlow / pivothigh(osc, lbL, lbR) found (on the confirmation bar, lbR bars after the pivot)
+      const plFound = !isNaN(s.pl.step(i, osc));
+      const phFound = !isNaN(s.ph.step(i, osc));
+      s.plFound[i] = plFound;
+      s.phFound[i] = phFound;
+
+      // the divergence plots: bar i sets its own point to na and the point of bar i - lbR (offset = -lbR), so a new
+      // price of the forming bar writes both again
+      s.regBull[i] = { time: t, value: NaN };
+      s.hidBull[i] = { time: t, value: NaN };
+      s.regBear[i] = { time: t, value: NaN };
+      s.hidBear[i] = { time: t, value: NaN };
+      const p = i - lbR;
+      if (p >= 0 && p < i) {
+        const pt = bars[p].time as number;
+        s.regBull[p] = { time: pt, value: NaN };
+        s.hidBull[p] = { time: pt, value: NaN };
+        s.regBear[p] = { time: pt, value: NaN };
+        s.hidBear[p] = { time: pt, value: NaN };
+      }
+
+      if (i > 0 && s.plFound[i - 1]) v.plBars = 0;
+      else if (!isNaN(v.plBars)) v.plBars++;
+      if (i > 0 && s.phFound[i - 1]) v.phBars = 0;
+      else if (!isNaN(v.phBars)) v.phBars++;
+      const plInRange = rangeLower <= v.plBars && v.plBars <= rangeUpper;
+      const phInRange = rangeLower <= v.phBars && v.phBars <= rangeUpper;
+      const closeStr = () => str.tostring(bars[i].close);
+
+      let bullCond = false, hiddenBullCond = false, bearCond = false, hiddenBearCond = false;
+      if (plFound) {
+        const o = s.osc[p]!;
+        const low = bars[p].low;
+        bullCond = cfg.plotBull && lt(low, v.plLastLow) && gt(o, v.plLastOsc) && plInRange;
+        hiddenBullCond = cfg.plotHiddenBull && gt(low, v.plLastLow) && lt(o, v.plLastOsc) && plInRange;
+        // plot(plFound ? osc[lbR] : na, offset = -lbR, color = bullCond ? bullColor : noneColor) (same for hidden)
+        s.regBull[p] = { time: bars[p].time as number, value: o, color: bullCond ? GREEN : NONE_COLOR };
+        s.hidBull[p] = { time: bars[p].time as number, value: o, color: hiddenBullCond ? HIDDEN_BULL_COLOR : NONE_COLOR };
+        if (bullCond && !isNaN(o)) {
+          s.markers.push({ time: bars[p].time as number, id: 'shape0', position: 'atPriceBottom', price: o, shape: 'labelUp',
+            color: GREEN, text: ' Bull ', textColor: WHITE });
+        }
+        if (hiddenBullCond && !isNaN(o)) {
+          s.markers.push({ time: bars[p].time as number, id: 'shape1', position: 'atPriceBottom', price: o, shape: 'labelUp',
+            color: GREEN, text: ' H Bull ', textColor: WHITE });
+        }
+        v.plLastOsc = o;
+        v.plLastLow = low;
+      }
+      if (phFound) {
+        const o = s.osc[p]!;
+        const high = bars[p].high;
+        bearCond = cfg.plotBear && gt(high, v.phLastHigh) && lt(o, v.phLastOsc) && phInRange;
+        hiddenBearCond = cfg.plotHiddenBear && lt(high, v.phLastHigh) && gt(o, v.phLastOsc) && phInRange;
+        s.regBear[p] = { time: bars[p].time as number, value: o, color: bearCond ? RED : NONE_COLOR };
+        s.hidBear[p] = { time: bars[p].time as number, value: o, color: hiddenBearCond ? HIDDEN_BEAR_COLOR : NONE_COLOR };
+        if (bearCond && !isNaN(o)) {
+          s.markers.push({ time: bars[p].time as number, id: 'shape2', position: 'atPriceTop', price: o, shape: 'labelDown',
+            color: RED, text: ' Bear ', textColor: WHITE });
+        }
+        if (hiddenBearCond && !isNaN(o)) {
+          s.markers.push({ time: bars[p].time as number, id: 'shape3', position: 'atPriceTop', price: o, shape: 'labelDown',
+            color: RED, text: ' H Bear ', textColor: WHITE });
+        }
+        v.phLastOsc = o;
+        v.phLastHigh = high;
+      }
+      const f = s.flags;
+      f[0]![i] = bullCond;
+      f[1]![i] = hiddenBullCond;
+      f[2]![i] = bearCond;
+      f[3]![i] = hiddenBearCond;
+      for (let k = 0; k < 4; k++) if (f[k]![i]) s.times[k]!.push(t);
+      // if bullCond: alert("Regular Bullish. Price " + tostring(close)) (default frequency: once per bar), ...
+      if (bullCond) s.alertCalls.push({ time: t, message: 'Regular Bullish. Price ' + closeStr(), freq: 'once_per_bar' });
+      if (hiddenBullCond) s.alertCalls.push({ time: t, message: 'Hidden Bullish. Price ' + closeStr(), freq: 'once_per_bar' });
+      if (bearCond) s.alertCalls.push({ time: t, message: 'Regular Bearish. Price ' + closeStr(), freq: 'once_per_bar' });
+      if (hiddenBearCond) s.alertCalls.push({ time: t, message: 'Hidden Bearish. Price ' + closeStr(), freq: 'once_per_bar' });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.lines[0]!.slice(),
+          plot1: s.lines[1]!.slice(),
+          plot2: s.lines[2]!.slice(),
+          plot3: s.lines[3]!.slice(),
+          plot4: s.lines[4]!.slice(),
+          plot5: s.regBull.slice(),
+          plot6: s.hidBull.slice(),
+          plot7: s.regBear.slice(),
+          plot8: s.hidBear.slice(),
+        },
+        hlines: hlineConfig.map((h) => ({ id: h.id, value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle } })),
+        fills: [{ plot1: 'hline_ob', plot2: 'hline_os', options: { title: 'Background', color: BACKGROUND_FILL } }],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TdiRsiInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<TdiRsiInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alerts: AlertConditionState[]; alertCalls: AlertCall[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const { lbR, lbL, rangeUpper, rangeLower } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const close = new Series(bars, (b) => b.close);
-  const rSeries = ta.rsi(close, cfg.rsiPeriod);
-  const ma = A(ta.sma(rSeries, cfg.bandLength));
-  const sd = A(ta.stdev(rSeries, cfg.bandLength));
-  const up = ma.map((m, i) => m + 1.6185 * sd[i]);
-  const dn = ma.map((m, i) => m - 1.6185 * sd[i]);
-  const mid = up.map((u, i) => (u + dn[i]) / 2);
-  const fastMA = A(ta.sma(rSeries, cfg.fastMALength));
-  const slowSeries = ta.sma(rSeries, cfg.slowMALength);
-  const osc = A(slowSeries);
-
-  // plFound / phFound: pivotlow / pivothigh(osc, lbL, lbR) found (on the confirmation bar, lbR bars after the pivot)
-  const plFound = A(ta.pivotlow(slowSeries, lbL, lbR)).map((v) => !isNaN(v));
-  const phFound = A(ta.pivothigh(slowSeries, lbL, lbR)).map((v) => !isNaN(v));
-
-  const na = (i: number): PlotPoint => ({ time: bars[i].time as number, value: NaN });
-  const regBull = bars.map((_, i) => na(i));
-  const hidBull = bars.map((_, i) => na(i));
-  const regBear = bars.map((_, i) => na(i));
-  const hidBear = bars.map((_, i) => na(i));
-  const markers: MarkerData[] = [];
-  const flags: boolean[][] = [0, 1, 2, 3].map(() => new Array<boolean>(n).fill(false));
-  const alertCalls: AlertCall[] = [];
-
-  // _inRange(plFound[1]): barssince(plFound[1] == true) within [rangeLower, rangeUpper]
-  let plBars = NaN;
-  let phBars = NaN;
-  // valuewhen(plFound, osc[lbR], 1) / valuewhen(plFound, low[lbR], 1) on a pivot bar: the previous pivot's values
-  let plLastOsc = NaN, plLastLow = NaN;
-  let phLastOsc = NaN, phLastHigh = NaN;
-
-  for (let i = 0; i < n; i++) {
-    if (i > 0 && plFound[i - 1]) plBars = 0;
-    else if (!isNaN(plBars)) plBars++;
-    if (i > 0 && phFound[i - 1]) phBars = 0;
-    else if (!isNaN(phBars)) phBars++;
-    const plInRange = rangeLower <= plBars && plBars <= rangeUpper;
-    const phInRange = rangeLower <= phBars && phBars <= rangeUpper;
-    const t = bars[i].time as number;
-    const closeStr = () => str.tostring(bars[i].close);
-
-    let bullCond = false, hiddenBullCond = false, bearCond = false, hiddenBearCond = false;
-    if (plFound[i]) {
-      const p = i - lbR;
-      const o = osc[p];
-      const low = bars[p].low;
-      bullCond = cfg.plotBull && lt(low, plLastLow) && gt(o, plLastOsc) && plInRange;
-      hiddenBullCond = cfg.plotHiddenBull && gt(low, plLastLow) && lt(o, plLastOsc) && plInRange;
-      // plot(plFound ? osc[lbR] : na, offset = -lbR, color = bullCond ? bullColor : noneColor) (same for hidden)
-      regBull[p] = { time: bars[p].time as number, value: o, color: bullCond ? GREEN : NONE_COLOR };
-      hidBull[p] = { time: bars[p].time as number, value: o, color: hiddenBullCond ? HIDDEN_BULL_COLOR : NONE_COLOR };
-      if (bullCond && !isNaN(o)) {
-        markers.push({ time: bars[p].time as number, id: 'shape0', position: 'atPriceBottom', price: o, shape: 'labelUp',
-          color: GREEN, text: ' Bull ', textColor: WHITE });
-      }
-      if (hiddenBullCond && !isNaN(o)) {
-        markers.push({ time: bars[p].time as number, id: 'shape1', position: 'atPriceBottom', price: o, shape: 'labelUp',
-          color: GREEN, text: ' H Bull ', textColor: WHITE });
-      }
-      plLastOsc = o;
-      plLastLow = low;
-    }
-    if (phFound[i]) {
-      const p = i - lbR;
-      const o = osc[p];
-      const high = bars[p].high;
-      bearCond = cfg.plotBear && gt(high, phLastHigh) && lt(o, phLastOsc) && phInRange;
-      hiddenBearCond = cfg.plotHiddenBear && lt(high, phLastHigh) && gt(o, phLastOsc) && phInRange;
-      regBear[p] = { time: bars[p].time as number, value: o, color: bearCond ? RED : NONE_COLOR };
-      hidBear[p] = { time: bars[p].time as number, value: o, color: hiddenBearCond ? HIDDEN_BEAR_COLOR : NONE_COLOR };
-      if (bearCond && !isNaN(o)) {
-        markers.push({ time: bars[p].time as number, id: 'shape2', position: 'atPriceTop', price: o, shape: 'labelDown',
-          color: RED, text: ' Bear ', textColor: WHITE });
-      }
-      if (hiddenBearCond && !isNaN(o)) {
-        markers.push({ time: bars[p].time as number, id: 'shape3', position: 'atPriceTop', price: o, shape: 'labelDown',
-          color: RED, text: ' H Bear ', textColor: WHITE });
-      }
-      phLastOsc = o;
-      phLastHigh = high;
-    }
-    flags[0][i] = bullCond;
-    flags[1][i] = hiddenBullCond;
-    flags[2][i] = bearCond;
-    flags[3][i] = hiddenBearCond;
-    // if bullCond: alert("Regular Bullish. Price " + tostring(close)) (default frequency: once per bar), ...
-    if (bullCond) alertCalls.push({ time: t, message: 'Regular Bullish. Price ' + closeStr(), freq: 'once_per_bar' });
-    if (hiddenBullCond) alertCalls.push({ time: t, message: 'Hidden Bullish. Price ' + closeStr(), freq: 'once_per_bar' });
-    if (bearCond) alertCalls.push({ time: t, message: 'Regular Bearish. Price ' + closeStr(), freq: 'once_per_bar' });
-    if (hiddenBearCond) alertCalls.push({ time: t, message: 'Hidden Bearish. Price ' + closeStr(), freq: 'once_per_bar' });
-  }
-
-  const line = (arr: number[]) => arr.map((v, i) => ({ time: bars[i].time, value: v }));
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(up),
-      plot1: line(dn),
-      plot2: line(mid),
-      plot3: line(osc),
-      plot4: line(fastMA),
-      plot5: regBull,
-      plot6: hidBull,
-      plot7: regBear,
-      plot8: hidBear,
-    },
-    hlines: hlineConfig.map((h) => ({ id: h.id, value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle } })),
-    fills: [{ plot1: 'hline_ob', plot2: 'hline_os', options: { title: 'Background', color: BACKGROUND_FILL } }],
-    markers,
-    alerts: alertStates(alertConditions, bars, flags),
-    alertCalls,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
-export const TdiRsi = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig, alertConditions, hasAlertFunction };
+export const TdiRsi = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig, alertConditions, hasAlertFunction };

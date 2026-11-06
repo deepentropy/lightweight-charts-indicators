@@ -11,7 +11,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, color, getSourceSeries, type Bar, type IndicatorResult, type InputConfig, type PlotConfig } from 'oakscriptjs';
+import { taStep, color, type Bar, type IndicatorResult, type InputConfig, type PlotConfig } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MadridMaRibbonBarV2Inputs {
   /** Exponential MA (else simple) */
@@ -51,42 +53,74 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => a - b > -EPS;
 const le = (a: number, b: number) => b - a > -EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<MadridMaRibbonBarV2Inputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+type Ma = { step(v: number): number; commit(): void };
+
+interface MadridRun extends BarRunState<Record<string, never>> {
+  mas: Ma[];
+  /** The value of each average by bar */
+  vals: number[][];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<MadridMaRibbonBarV2Inputs>): BarStudy<MadridRun, IndicatorResult> {
   const { exponential } = { ...defaultInputs, ...inputs };
-  const src = getSourceSeries(bars, 'close');
-  const mas = LEVELS.map((len) =>
-    (exponential ? ta.ema(src, len) : ta.sma(src, len)).toArray().map((v) => v ?? NaN),
-  );
-  const ma05 = mas[0];
-  const ma100 = mas[19];
-
-  // maColor(ma, maRef): ta.change(ma) against 0, ma05 against the reference
-  const colourOf = (ma: number[], i: number): string => {
-    const ch = i > 0 ? ma[i] - ma[i - 1] : NaN;
-    const above = gt(ma05[i], ma100[i]);
-    const below = lt(ma05[i], ma100[i]);
-    if (ge(ch, 0) && above) return color.lime;
-    if (lt(ch, 0) && above) return color.maroon;
-    if (le(ch, 0) && below) return color.red;
-    if (ge(ch, 0) && below) return color.green;
-    return color.gray;
-  };
-
-  const plots: IndicatorResult['plots'] = {};
-  LEVELS.forEach((lvl, k) => {
-    // MMA95 and MMA100 take the colour of ma90 in the original
-    const ma = mas[Math.min(k, 17)];
-    plots[`plot${k}`] = bars.map((b, i) => ({ time: b.time, value: lvl, color: colourOf(ma, i) }));
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    init() {
+      const mas: Ma[] = LEVELS.map((len) => (exponential ? taStep.ema(len) : new WindowSma(len)));
+      const s: MadridRun = {
+        mas, vals: LEVELS.map(() => []), plots: LEVELS.map(() => []),
+        steps: mas, vars: {}, lists: [], series: [],
+      };
+      s.series = [...s.vals, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const c = b.close;
+      for (let k = 0; k < LEVELS.length; k++) s.vals[k][i] = s.mas[k].step(c);
+      const ma05 = s.vals[0];
+      const ma100 = s.vals[19];
+
+      // maColor(ma, maRef): ta.change(ma) against 0, ma05 against the reference
+      const colourOf = (ma: number[]): string => {
+        const ch = i > 0 ? ma[i] - ma[i - 1] : NaN;
+        const above = gt(ma05[i], ma100[i]);
+        const below = lt(ma05[i], ma100[i]);
+        if (ge(ch, 0) && above) return color.lime;
+        if (lt(ch, 0) && above) return color.maroon;
+        if (le(ch, 0) && below) return color.red;
+        if (ge(ch, 0) && below) return color.green;
+        return color.gray;
+      };
+      for (let k = 0; k < LEVELS.length; k++) {
+        // MMA95 and MMA100 take the colour of ma90 in the original
+        s.plots[k][i] = { time: b.time, value: LEVELS[k], color: colourOf(s.vals[Math.min(k, 17)]) };
+      }
+    },
+    result(s) {
+      const plots: IndicatorResult['plots'] = {};
+      LEVELS.forEach((_, k) => { plots[`plot${k}`] = s.plots[k].slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MadridMaRibbonBarV2Inputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MadridMaRibbonBarV2Inputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MadridMaRibbonBarV2 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -13,9 +13,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type RedKMAType = 'RSS_WMA' | 'WMA' | 'EMA' | 'SMA' | 'HMA';
 const MA_TYPES: RedKMAType[] = ['RSS_WMA', 'WMA', 'EMA', 'SMA', 'HMA'];
@@ -132,68 +134,73 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-type Arr = number[];
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Pt = { time: number; value: number; color: string };
+type Ma = { step(v: number): number; commit(): void };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RedKMagicRibbonInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series): Arr => s.toArray().map((v) => v ?? NaN);
-  const S = (a: Arr) => Series.fromArray(bars, a);
-  const src = (s: SourceType): Arr => A(getSourceSeries(bars, s));
+/** A ta.wma with a constant length as a {@link Ma} */
+function wmaStep(length: number): Ma {
+  const m = taStep.wma();
+  return { step: (v) => m.step(v, length), commit: () => m.commit() };
+}
 
+/** Commits several machines as one */
+function chained(parts: Ma[], step: (v: number) => number): Ma {
+  return { step, commit: () => { for (const p of parts) p.commit(); } };
+}
+
+/** f_getMA(source, length, mtype) one bar at a time */
+function maStep(length: number, mtype: RedKMAType): Ma {
+  if (mtype === 'SMA') return new WindowSma(length);
+  if (mtype === 'EMA') return taStep.ema(length);
+  if (mtype === 'WMA') return wmaStep(length);
+  if (mtype === 'HMA') return taStep.hma(length);
   // f_LazyLine(_data, _length): three chained WMAs when _length > 4, else one WMA
-  const lazyLine = (data: Arr, length: number): Arr => {
-    if (length > 4) {
-      const w = length / 3;
-      const w2 = Math.round(w);
-      const w1 = Math.round((length - w2) / 2);
-      const w3 = Math.trunc((length - w2) / 2);
-      const l1 = A(ta.wma(S(data), w1));
-      const l2 = A(ta.wma(S(l1), w2));
-      return A(ta.wma(S(l2), w3));
-    }
-    return A(ta.wma(S(data), length));
-  };
+  if (length > 4) {
+    const w = length / 3;
+    const w2 = Math.round(w);
+    const w1 = Math.round((length - w2) / 2);
+    const w3 = Math.trunc((length - w2) / 2);
+    const l1 = wmaStep(w1);
+    const l2 = wmaStep(w2);
+    const l3 = wmaStep(w3);
+    return chained([l1, l2, l3], (v) => l3.step(l2.step(l1.step(v))));
+  }
+  return wmaStep(length);
+}
+
+interface RibbonRun extends BarRunState<Record<string, never>> {
+  coraWma: Ma;
+  mas: Ma[];
+  source1: number[];
+  fastLine: number[];
+  slowLine: number[];
+  fastUpF: boolean[];
+  fastDnF: boolean[];
+  slowUpF: boolean[];
+  slowDnF: boolean[];
+  plots: Pt[][];
+  ribbon: string[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<RedKMagicRibbonInputs>): BarStudy<RibbonRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const sources = [cfg.source1, cfg.source2, cfg.moodMASource, cfg.biasMASource, cfg.ma1Source, cfg.ma2Source];
+  const [v1, v2, vMood, vBias, vMa1, vMa2] = sources.map((s) => barSource(s));
 
   // f_CoraWave(source, length, s): compound ratio weights from 0.01 to length, then ta.wma(cora_raw, s)
-  const coraWave = (source: Arr, length: number, s: number): Arr => {
-    const startWt = 0.01;
-    const endWt = length;
-    const rMulti = 2.0;
-    // r = math.pow(End_Wt / Start_Wt, 1 / (length - 1)) - 1: with length 1, 1 / 0 is +infinity and math.pow uses
-    // it (r = base = +infinity, the weight is infinite and cora_raw = inf / inf is na)
-    const r = Math.pow(endWt / startWt, 1 / (length - 1)) - 1;
-    const base = 1 + r * rMulti;
-    const raw = source.map((_v, i) => {
-      let numerator = 0;
-      let denom = 0;
-      for (let k = 0; k <= length - 1; k++) {
-        const cWeight = startWt * Math.pow(base, length - k);
-        numerator += (i - k >= 0 ? source[i - k] : NaN) * cWeight;
-        denom += cWeight;
-      }
-      return numerator / denom;
-    });
-    return A(ta.wma(S(raw), s));
-  };
-
-  // f_getMA(source, length, mtype)
-  const getMA = (source: Arr, length: number, mtype: RedKMAType): Arr =>
-    mtype === 'SMA' ? A(ta.sma(S(source), length))
-      : mtype === 'EMA' ? A(ta.ema(S(source), length))
-        : mtype === 'WMA' ? A(ta.wma(S(source), length))
-          : mtype === 'HMA' ? A(ta.hma(S(source), length))
-            : lazyLine(source, length);
-
-  const fastLine = coraWave(src(cfg.source1), cfg.length1, cfg.smooth);
-  const slowLine = getMA(src(cfg.source2), cfg.length2, cfg.source2Type);
-  const moodMA = getMA(src(cfg.moodMASource), cfg.moodMALength, cfg.moodMAType);
-  const biasMA = getMA(src(cfg.biasMASource), cfg.biasMALength, cfg.biasMAType);
-  const ma1 = getMA(src(cfg.ma1Source), cfg.ma1Length, cfg.ma1Type);
-  const ma2 = getMA(src(cfg.ma2Source), cfg.ma2Length, cfg.ma2Type);
+  const length = cfg.length1;
+  const startWt = 0.01;
+  const endWt = length;
+  const rMulti = 2.0;
+  // r = math.pow(End_Wt / Start_Wt, 1 / (length - 1)) - 1: with length 1, 1 / 0 is +infinity and math.pow uses
+  // it (r = base = +infinity, the weight is infinite and cora_raw = inf / inf is na)
+  const r = Math.pow(endWt / startWt, 1 / (length - 1)) - 1;
+  const base = 1 + r * rMulti;
+  const weights: number[] = [];
+  for (let k = 0; k <= length - 1; k++) weights.push(startWt * Math.pow(base, length - k));
 
   const cFup = String(color.new(color.aqua, 30));
   const cFdn = String(color.new(color.orange, 30));
@@ -206,75 +213,116 @@ export function calculate(
   const biasColor = String(color.new('#2470f0', 20));
   const ma1Color = String(color.new('#ffeb3b', 0));
   const ma2Color = String(color.new('#b2b5be', 35));
-
-  type Pt = { time: number; value: number; color: string };
-  const fastPlot: Pt[] = [];
-  const slowPlot: Pt[] = [];
-  const moodPlot: Pt[] = [];
-  const biasPlot: Pt[] = [];
-  const triPlot: Pt[] = [];
-  const ma1Plot: Pt[] = [];
-  const ma2Plot: Pt[] = [];
-  const ribbon: string[] = [];
-  const fastUpF: boolean[] = [];
-  const fastDnF: boolean[] = [];
-  const slowUpF: boolean[] = [];
-  const slowDnF: boolean[] = [];
-  const swingFastUp: boolean[] = [];
-  const swingFastDn: boolean[] = [];
-  const swingSlowUp: boolean[] = [];
-  const swingSlowDn: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const fastUp = i > 0 && gt(fastLine[i], fastLine[i - 1]);
-    const slowUp = i > 0 && gt(slowLine[i], slowLine[i - 1]);
-    const slowDn = i > 0 && lt(slowLine[i], slowLine[i - 1]);
-    const fastDn = i > 0 && lt(fastLine[i], fastLine[i - 1]);
-    // Alert_Fastup = Fast_up and not Fast_up[1] (and the same for Fast_dn, Slow_up, Slow_dn)
-    swingFastUp.push(fastUp && !(i > 0 && fastUpF[i - 1]));
-    swingFastDn.push(fastDn && !(i > 0 && fastDnF[i - 1]));
-    swingSlowUp.push(slowUp && !(i > 0 && slowUpF[i - 1]));
-    swingSlowDn.push(slowDn && !(i > 0 && slowDnF[i - 1]));
-    fastUpF.push(fastUp);
-    fastDnF.push(fastDn);
-    slowUpF.push(slowUp);
-    slowDnF.push(slowDn);
-    // plot(FastLine, 'Fast Line', color = Fast_up ? c_fup : c_fdn); plot(SlowLine, 'Slow Line', Slow_up ? c_sup : c_sdn)
-    fastPlot.push({ time: t, value: fastLine[i], color: fastUp ? cFup : cFdn });
-    slowPlot.push({ time: t, value: slowLine[i], color: slowUp ? cSup : cSdn });
-    // fill colour: ShowFill ? (Ribbon_up ? c_rup : Ribbon_dn ? c_rdn : c_rsw) : na
-    // Ribbon_up = Fast_up and Slow_up; Ribbon_dn = not Fast_up and not Slow_up
-    ribbon.push(!cfg.showFill ? 'transparent' : fastUp && slowUp ? cRup : !fastUp && !slowUp ? cRdn : cRsw);
-
-    moodPlot.push({ time: t, value: cfg.showMoodMA ? moodMA[i] : NaN, color: moodColor });
-    biasPlot.push({ time: t, value: cfg.showBiasMA ? biasMA[i] : NaN, color: biasColor });
-
-    // triFlag = Slow_up and SlowLine >= Mood_MA and Mood_MA >= Bias_MA ? 1
-    //   : Slow_dn and SlowLine <= Mood_MA and Mood_MA <= Bias_MA ? -1 : 0
-    const triFlag = slowUp && ge(slowLine[i], moodMA[i]) && ge(moodMA[i], biasMA[i]) ? 1
-      : slowDn && le(slowLine[i], moodMA[i]) && le(moodMA[i], biasMA[i]) ? -1 : 0;
-    // plot(triFlag == 0 or not show_triFlag ? na : SlowLine, color = Slow_up ? c_sup : c_sdn, style_circles)
-    triPlot.push({ time: t, value: triFlag === 0 || !cfg.showTriFlag ? NaN : slowLine[i], color: slowUp ? cSup : cSdn });
-
-    ma1Plot.push({ time: t, value: cfg.showMA1 ? ma1[i] : NaN, color: ma1Color });
-    ma2Plot.push({ time: t, value: cfg.showMA2 ? ma2[i] : NaN, color: ma2Color });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: fastPlot,
-      plot1: slowPlot,
-      plot2: moodPlot,
-      plot3: biasPlot,
-      plot4: triPlot,
-      plot5: ma1Plot,
-      plot6: ma2Plot,
+    fullRunReason: () => (sources.every(isBarSource) ? null : 'source of another study'),
+    init() {
+      const coraWma = wmaStep(cfg.smooth);
+      const mas = [
+        maStep(cfg.length2, cfg.source2Type),
+        maStep(cfg.moodMALength, cfg.moodMAType),
+        maStep(cfg.biasMALength, cfg.biasMAType),
+        maStep(cfg.ma1Length, cfg.ma1Type),
+        maStep(cfg.ma2Length, cfg.ma2Type),
+      ];
+      const s: RibbonRun = {
+        coraWma, mas, source1: [], fastLine: [], slowLine: [], fastUpF: [], fastDnF: [], slowUpF: [], slowDnF: [],
+        plots: [[], [], [], [], [], [], []], ribbon: [], flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [coraWma, ...mas], vars: {}, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [
+        s.source1, s.fastLine, s.slowLine, s.fastUpF, s.fastDnF, s.slowUpF, s.slowDnF, ...s.plots, s.ribbon, ...s.flags,
+      ];
+      return s;
     },
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Ribbon Fill' }, colors: ribbon }],
-    markers: [],
-    alerts: alertStates(alertConditions, bars, [swingFastUp, swingFastDn, swingSlowUp, swingSlowDn]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const source = s.source1;
+      source[i] = v1(b);
+      let numerator = 0;
+      let denom = 0;
+      for (let k = 0; k <= length - 1; k++) {
+        const cWeight = weights[k];
+        numerator += (i - k >= 0 ? source[i - k] : NaN) * cWeight;
+        denom += cWeight;
+      }
+      const fast = s.coraWma.step(numerator / denom);
+      const slow = s.mas[0].step(v2(b));
+      const moodMA = s.mas[1].step(vMood(b));
+      const biasMA = s.mas[2].step(vBias(b));
+      const ma1 = s.mas[3].step(vMa1(b));
+      const ma2 = s.mas[4].step(vMa2(b));
+      s.fastLine[i] = fast;
+      s.slowLine[i] = slow;
+
+      const fastUp = i > 0 && gt(fast, s.fastLine[i - 1]);
+      const slowUp = i > 0 && gt(slow, s.slowLine[i - 1]);
+      const slowDn = i > 0 && lt(slow, s.slowLine[i - 1]);
+      const fastDn = i > 0 && lt(fast, s.fastLine[i - 1]);
+      // Alert_Fastup = Fast_up and not Fast_up[1] (and the same for Fast_dn, Slow_up, Slow_dn)
+      const flags = [
+        fastUp && !(i > 0 && s.fastUpF[i - 1]),
+        fastDn && !(i > 0 && s.fastDnF[i - 1]),
+        slowUp && !(i > 0 && s.slowUpF[i - 1]),
+        slowDn && !(i > 0 && s.slowDnF[i - 1]),
+      ];
+      for (let k = 0; k < 4; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+      s.fastUpF[i] = fastUp;
+      s.fastDnF[i] = fastDn;
+      s.slowUpF[i] = slowUp;
+      s.slowDnF[i] = slowDn;
+      // plot(FastLine, 'Fast Line', color = Fast_up ? c_fup : c_fdn); plot(SlowLine, 'Slow Line', Slow_up ? c_sup : c_sdn)
+      s.plots[0][i] = { time: t, value: fast, color: fastUp ? cFup : cFdn };
+      s.plots[1][i] = { time: t, value: slow, color: slowUp ? cSup : cSdn };
+      // fill colour: ShowFill ? (Ribbon_up ? c_rup : Ribbon_dn ? c_rdn : c_rsw) : na
+      // Ribbon_up = Fast_up and Slow_up; Ribbon_dn = not Fast_up and not Slow_up
+      s.ribbon[i] = !cfg.showFill ? 'transparent' : fastUp && slowUp ? cRup : !fastUp && !slowUp ? cRdn : cRsw;
+
+      s.plots[2][i] = { time: t, value: cfg.showMoodMA ? moodMA : NaN, color: moodColor };
+      s.plots[3][i] = { time: t, value: cfg.showBiasMA ? biasMA : NaN, color: biasColor };
+
+      // triFlag = Slow_up and SlowLine >= Mood_MA and Mood_MA >= Bias_MA ? 1
+      //   : Slow_dn and SlowLine <= Mood_MA and Mood_MA <= Bias_MA ? -1 : 0
+      const triFlag = slowUp && ge(slow, moodMA) && ge(moodMA, biasMA) ? 1
+        : slowDn && le(slow, moodMA) && le(moodMA, biasMA) ? -1 : 0;
+      // plot(triFlag == 0 or not show_triFlag ? na : SlowLine, color = Slow_up ? c_sup : c_sdn, style_circles)
+      s.plots[4][i] = { time: t, value: triFlag === 0 || !cfg.showTriFlag ? NaN : slow, color: slowUp ? cSup : cSdn };
+
+      s.plots[5][i] = { time: t, value: cfg.showMA1 ? ma1 : NaN, color: ma1Color };
+      s.plots[6][i] = { time: t, value: cfg.showMA2 ? ma2 : NaN, color: ma2Color };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(),
+          plot1: s.plots[1].slice(),
+          plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(),
+          plot4: s.plots[4].slice(),
+          plot5: s.plots[5].slice(),
+          plot6: s.plots[6].slice(),
+        },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Ribbon Fill' }, colors: s.ribbon.slice() }],
+        markers: [],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RedKMagicRibbonInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RedKMagicRibbonInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -287,6 +335,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const RedKMagicRibbon = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

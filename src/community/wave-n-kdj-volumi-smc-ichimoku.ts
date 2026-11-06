@@ -12,8 +12,10 @@
  * Original notice: © Nikus63
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData, MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 // The Pine script has no inputs
 export type WaveNKdjVolumiSmcIchimokuInputs = Record<string, never>;
@@ -40,81 +42,109 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  _inputs: Partial<WaveNKdjVolumiSmcIchimokuInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const high = S(bars.map((b) => b.high));
-  const low = S(bars.map((b) => b.low));
-  const hi = (len: number) => A(ta.highest(high, len));
-  const lo = (len: number) => A(ta.lowest(low, len));
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] };
 
-  // KDJ; a plain division (x / 0 is +-infinity, 0 / 0 na; ta.sma skips them)
-  const hh = hi(9);
-  const ll = lo(9);
-  const rsv = bars.map((b, i) => ((b.close - ll[i]) / (hh[i] - ll[i])) * 100);
-  const K = A(ta.sma(S(rsv), 3));
-  const D = A(ta.sma(S(K), 3));
-  const J = K.map((k, i) => 3 * k - 2 * D[i]);
+interface WaveRun extends BarRunState<Record<string, never>> {
+  hh: WindowExtreme[];
+  ll: WindowExtreme[];
+  K: WindowSma;
+  D: WindowSma;
+  emaVol: ReturnType<typeof taStep.ema>;
+  earlyUp: ReturnType<typeof taStep.crossover>;
+  earlyDown: ReturnType<typeof taStep.crossunder>;
+  plots: Point[][];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+}
 
-  const emaVol = A(ta.ema(S(bars.map((b) => b.volume ?? NaN)), 20));
+/** ta.highest(high, len) / ta.lowest(low, len) lengths: KDJ 9, Ichimoku 9, 26, 52 (one call each) */
+const LENGTHS = [9, 9, 26, 52];
 
-  // Ichimoku (no offset)
-  const mid = (len: number) => {
-    const h = hi(len);
-    const l = lo(len);
-    return h.map((v, i) => (v + l[i]) / 2);
-  };
-  const conversionLine = mid(9);
-  const baseLine = mid(26);
-  const leadingSpanA = conversionLine.map((v, i) => (v + baseLine[i]) / 2);
-  const leadingSpanB = mid(52);
-
-  const earlyUp = A(ta.crossover(S(J), 50));
-  const earlyDown = A(ta.crossunder(S(J), 50));
-
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
+function study(): BarStudy<WaveRun, Result> {
   const buyBg = String(color.new(color.green, 80));
   const sellBg = String(color.new(color.red, 80));
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const h1 = i >= 1 ? bars[i - 1].high : NaN;
-    const h2 = i >= 2 ? bars[i - 2].high : NaN;
-    const l1 = i >= 1 ? bars[i - 1].low : NaN;
-    const l2 = i >= 2 ? bars[i - 2].low : NaN;
-    const nWaveUp = lt(h2, h1) && gt(l1, l2) && gt(b.high, h1);
-    const nWaveDown = gt(l2, l1) && lt(h1, h2) && lt(b.low, l1);
-    const aboveVol = gt(b.volume ?? NaN, emaVol[i]);
-    const buy = nWaveUp && gt(J[i], 50) && aboveVol && gt(b.close, baseLine[i]);
-    const sell = nWaveDown && lt(J[i], 50) && aboveVol && lt(b.close, baseLine[i]);
-    if (buy) markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.green, size: 'small' });
-    if (sell) markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, size: 'small' });
-    if (earlyUp[i] === 1) markers.push({ time: b.time, position: 'belowBar', shape: 'cross', color: color.green, size: 'tiny' });
-    if (earlyDown[i] === 1) markers.push({ time: b.time, position: 'aboveBar', shape: 'cross', color: color.red, size: 'tiny' });
-    // bgcolor(buySignal ? green 80 : na); bgcolor(sellSignal ? red 80 : na)
-    if (buy) bgColors.push({ time: b.time, color: buyBg });
-    if (sell) bgColors.push({ time: b.time, color: sellBg });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: conversionLine[i], color: color.blue })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: baseLine[i], color: color.red })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: leadingSpanA[i], color: color.green })),
-      plot3: bars.map((b, i) => ({ time: b.time, value: leadingSpanB[i], color: color.maroon })),
+    init() {
+      const s: WaveRun = {
+        hh: LENGTHS.map((l) => new WindowExtreme(false, l)), ll: LENGTHS.map((l) => new WindowExtreme(true, l)),
+        K: new WindowSma(3), D: new WindowSma(3), emaVol: taStep.ema(20),
+        earlyUp: taStep.crossover(), earlyDown: taStep.crossunder(), plots: [[], [], [], []], markers: [], bgColors: [],
+        vars: {}, steps: [], lists: [], series: [],
+      };
+      s.steps = [...s.hh, ...s.ll, s.K, s.D, s.emaVol, s.earlyUp, s.earlyDown];
+      s.lists = [s.markers, s.bgColors];
+      s.series = s.plots;
+      return s;
     },
-    markers,
-    bgColors,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const hi = (k: number) => s.hh[k].step(b.high);
+      // KDJ; a plain division (x / 0 is +-infinity, 0 / 0 na; ta.sma skips them)
+      const hh = hi(0);
+      const ll = s.ll[0].step(b.low);
+      const rsv = ((b.close - ll) / (hh - ll)) * 100;
+      const K = s.K.step(rsv);
+      const D = s.D.step(K);
+      const J = 3 * K - 2 * D;
+
+      const emaVol = s.emaVol.step(b.volume ?? NaN) ?? NaN;
+
+      // Ichimoku (no offset)
+      const mid = (k: number) => (hi(k) + s.ll[k].step(b.low)) / 2;
+      const conversionLine = mid(1);
+      const baseLine = mid(2);
+      const leadingSpanA = (conversionLine + baseLine) / 2;
+      const leadingSpanB = mid(3);
+
+      const earlyUp = s.earlyUp.step(J, 50);
+      const earlyDown = s.earlyDown.step(J, 50);
+
+      const h1 = i >= 1 ? bars[i - 1].high : NaN;
+      const h2 = i >= 2 ? bars[i - 2].high : NaN;
+      const l1 = i >= 1 ? bars[i - 1].low : NaN;
+      const l2 = i >= 2 ? bars[i - 2].low : NaN;
+      const nWaveUp = lt(h2, h1) && gt(l1, l2) && gt(b.high, h1);
+      const nWaveDown = gt(l2, l1) && lt(h1, h2) && lt(b.low, l1);
+      const aboveVol = gt(b.volume ?? NaN, emaVol);
+      const buy = nWaveUp && gt(J, 50) && aboveVol && gt(b.close, baseLine);
+      const sell = nWaveDown && lt(J, 50) && aboveVol && lt(b.close, baseLine);
+      if (buy) s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.green, size: 'small' });
+      if (sell) s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, size: 'small' });
+      if (earlyUp) s.markers.push({ time: b.time, position: 'belowBar', shape: 'cross', color: color.green, size: 'tiny' });
+      if (earlyDown) s.markers.push({ time: b.time, position: 'aboveBar', shape: 'cross', color: color.red, size: 'tiny' });
+      // bgcolor(buySignal ? green 80 : na); bgcolor(sellSignal ? red 80 : na)
+      if (buy) s.bgColors.push({ time: b.time, color: buyBg });
+      if (sell) s.bgColors.push({ time: b.time, color: sellBg });
+
+      s.plots[0][i] = { time: b.time, value: conversionLine, color: color.blue };
+      s.plots[1][i] = { time: b.time, value: baseLine, color: color.red };
+      s.plots[2][i] = { time: b.time, value: leadingSpanA, color: color.green };
+      s.plots[3][i] = { time: b.time, value: leadingSpanB, color: color.maroon };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice() },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<WaveNKdjVolumiSmcIchimokuInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(bars: Bar[], _inputs: Partial<WaveNKdjVolumiSmcIchimokuInputs> = {}): Result {
+  return fullResult(createRun().update(bars));
 }
 
 export const WaveNKdjVolumiSmcIchimoku = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

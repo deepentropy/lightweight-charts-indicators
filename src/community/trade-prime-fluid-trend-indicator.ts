@@ -13,9 +13,13 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import {
+  createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type Committable, type IndicatorRun,
+} from '../live-run';
 
 export interface TradePrimeFluidTrendIndicatorInputs {
   /** Trading Mode */
@@ -74,161 +78,266 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TradePrimeFluidTrendIndicatorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
+/**
+ * `ta.highestbars(source, length)` / `ta.lowestbars` with a constant length, one bar at a time, with the rules of the
+ * oakscriptjs function (same values): the best of the last `length` non-na values, the newest one on equal values,
+ * the offset -(distance in bars); na before bar `length - 1` and while no value was received.
+ */
+class ExtremeBars implements Committable {
+  private values: number[] = [];
+  private bars: number[] = [];
+  private pendingV = NaN;
+  private pendingI = -1;
+  private stepped = false;
+  private readonly len: number;
 
+  constructor(private readonly lowest: boolean, length: number) {
+    this.len = length > 0 ? Math.trunc(length) : 0;
+  }
+
+  step(i: number, v: number): number {
+    const own = Number.isFinite(v);
+    this.stepped = own;
+    this.pendingV = v;
+    this.pendingI = i;
+    const kept = this.values.length;
+    const count = kept + (own ? 1 : 0);
+    if (i < this.len - 1 || count === 0) return NaN;
+    let best = count - 1;
+    let bestV = own ? v : this.values[best]!;
+    for (let j = count - 2; j >= 0 && j > count - 1 - this.len; j--) {
+      const x = this.values[j]!;
+      if (this.lowest ? x < bestV : x > bestV) {
+        best = j;
+        bestV = x;
+      }
+    }
+    const bar = best === kept ? i : this.bars[best]!;
+    return -(i - bar);
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.values.push(this.pendingV);
+    this.bars.push(this.pendingI);
+    if (this.values.length > this.len * 2 + 1024) {
+      this.values = this.values.slice(-this.len);
+      this.bars = this.bars.slice(-this.len);
+    }
+  }
+}
+
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface TpVars {
+  trend: number;
+  nextTrend: number;
+  /** var float maxLowPrice = nz(low[1], low); var float minHighPrice = nz(high[1], high) (set on bar 0) */
+  maxLowPrice: number;
+  minHighPrice: number;
+  up: number;
+  down: number;
+}
+
+interface TpRun extends BarRunState<TpVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  hiBars: ExtremeBars;
+  loBars: ExtremeBars;
+  highma: WindowSma;
+  lowma: WindowSma;
+  htFluid: ReturnType<typeof taStep.hma>;
+  atrHighFluid: ReturnType<typeof taStep.hma>;
+  atrLowFluid: ReturnType<typeof taStep.hma>;
+  trendArr: number[];
+  upArr: number[];
+  downArr: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  upperFill: string[];
+  lowerFill: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<TradePrimeFluidTrendIndicatorInputs>): BarStudy<TpRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const amplitude = cfg.ampLevel * (cfg.opMode === 'Signal Mode' ? 1 : 5);
   const channelDeviation = 2;
   const greenRed = cfg.themeOpt === 'Green & Red';
   const colorBull = greenRed ? GREEN : AQUA;
   const colorBear = greenRed ? RED : ORANGE;
-
-  const high = bars.map((b) => b.high);
-  const low = bars.map((b) => b.low);
-  const atr = A(ta.atr(bars, 100));
-  const hiBars = A(ta.highestbars(S(high), amplitude));
-  const loBars = A(ta.lowestbars(S(low), amplitude));
-  const highma = A(ta.sma(S(high), amplitude));
-  const lowma = A(ta.sma(S(low), amplitude));
-
-  // HalfTrend engine
-  const trendArr: number[] = new Array(n);
-  const upArr: number[] = new Array(n);
-  const downArr: number[] = new Array(n);
-  const htRaw: number[] = new Array(n);
-  const atrHighRaw: number[] = new Array(n);
-  const atrLowRaw: number[] = new Array(n);
-  const arrowUp: number[] = new Array(n).fill(NaN);
-  const arrowDown: number[] = new Array(n).fill(NaN);
-  let trend = 0;
-  let nextTrend = 0;
-  // var float maxLowPrice = nz(low[1], low); var float minHighPrice = nz(high[1], high) (set on bar 0)
-  let maxLowPrice = n > 0 ? low[0] : NaN;
-  let minHighPrice = n > 0 ? high[0] : NaN;
-  let up = 0;
-  let down = 0;
-  for (let i = 0; i < n; i++) {
-    const atr2 = atr[i] / 2;
-    const dev = channelDeviation * atr2;
-    // high[math.abs(ta.highestbars(amplitude))]: an na offset (warm-up) reads the current bar
-    const highPrice = isNaN(hiBars[i]) ? high[i] : high[i - Math.abs(hiBars[i])];
-    const lowPrice = isNaN(loBars[i]) ? low[i] : low[i - Math.abs(loBars[i])];
-    const prevLow = i > 0 ? low[i - 1] : low[i];
-    const prevHigh = i > 0 ? high[i - 1] : high[i];
-    const c = bars[i].close;
-
-    if (nextTrend === 1) {
-      maxLowPrice = Math.max(lowPrice, maxLowPrice);
-      if (lt(highma[i], maxLowPrice) && lt(c, prevLow)) {
-        trend = 1;
-        nextTrend = 0;
-        minHighPrice = highPrice;
-      }
-    } else {
-      minHighPrice = Math.min(highPrice, minHighPrice);
-      if (gt(lowma[i], minHighPrice) && gt(c, prevHigh)) {
-        trend = 0;
-        nextTrend = 1;
-        maxLowPrice = lowPrice;
-      }
-    }
-
-    const prevTrend = i > 0 ? trendArr[i - 1] : NaN;
-    const upPrev = i > 0 ? upArr[i - 1] : NaN;
-    const downPrev = i > 0 ? downArr[i - 1] : NaN;
-    if (trend === 0) {
-      if (!isNaN(prevTrend) && prevTrend !== 0) {
-        up = isNaN(downPrev) ? down : downPrev;
-        arrowUp[i] = up - atr2;
-      } else {
-        up = isNaN(upPrev) ? maxLowPrice : Math.max(maxLowPrice, upPrev);
-      }
-      atrHighRaw[i] = up + dev;
-      atrLowRaw[i] = up - dev;
-    } else {
-      if (!isNaN(prevTrend) && prevTrend !== 1) {
-        down = isNaN(upPrev) ? up : upPrev;
-        arrowDown[i] = down + atr2;
-      } else {
-        down = isNaN(downPrev) ? minHighPrice : Math.min(minHighPrice, downPrev);
-      }
-      atrHighRaw[i] = down + dev;
-      atrLowRaw[i] = down - dev;
-    }
-    trendArr[i] = trend;
-    upArr[i] = up;
-    downArr[i] = down;
-    htRaw[i] = trend === 0 ? up : down;
-  }
-
-  // HMA smoothing
-  const htFluid = A(ta.hma(S(htRaw), cfg.smoothLen));
-  const atrHighFluid = A(ta.hma(S(atrHighRaw), cfg.smoothLen));
-  const atrLowFluid = A(ta.hma(S(atrLowRaw), cfg.smoothLen));
-
   const bearRibbon = String(color.new(colorBear, 50));
   const bullRibbon = String(color.new(colorBull, 50));
   const bearFill = String(color.new(colorBear, 80));
   const bullFill = String(color.new(colorBull, 80));
-  const showUpper = (i: number) => trendArr[i] === 1 && cfg.showChannels;
-  const showLower = (i: number) => trendArr[i] === 0 && cfg.showChannels;
-
-  const markers: MarkerData[] = [];
-  const buyFlags: boolean[] = new Array(n).fill(false);
-  const sellFlags: boolean[] = new Array(n).fill(false);
-  for (let i = 1; i < n; i++) {
-    const t = bars[i].time;
-    const validBuy = !isNaN(arrowUp[i]) && trendArr[i] === 0 && trendArr[i - 1] === 1;
-    const validSell = !isNaN(arrowDown[i]) && trendArr[i] === 1 && trendArr[i - 1] === 0;
-    buyFlags[i] = validBuy;
-    sellFlags[i] = validSell;
-    const lo = atrLowFluid[i];
-    const hi = atrHighFluid[i];
-    // plotshape(showArrows and validBuy ? atrLowFluid : na, style = shape.triangleup, location = location.absolute,
-    //   size = size.small, color = colorBull)
-    if (cfg.showArrows && validBuy && !isNaN(lo)) {
-      markers.push({ time: t, position: 'atPriceMiddle', price: lo, shape: 'triangleUp', color: colorBull, size: 'small' });
-    }
-    if (cfg.showArrows && validSell && !isNaN(hi)) {
-      markers.push({ time: t, position: 'atPriceMiddle', price: hi, shape: 'triangleDown', color: colorBear, size: 'small' });
-    }
-    // plotshape(showLabels and validBuy ? atrLowFluid : na, text = 'BUY', style = shape.labelup,
-    //   location = location.absolute, size = size.small, color = colorBull, textcolor = color.black)
-    if (cfg.showLabels && validBuy && !isNaN(lo)) {
-      markers.push({ time: t, position: 'atPriceBottom', price: lo, shape: 'labelUp', color: colorBull, text: 'BUY',
-        textColor: color.black, size: 'small' });
-    }
-    if (cfg.showLabels && validSell && !isNaN(hi)) {
-      markers.push({ time: t, position: 'atPriceTop', price: hi, shape: 'labelDown', color: colorBear, text: 'SELL',
-        textColor: color.black, size: 'small' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: htFluid[i], color: trendArr[i] === 0 ? colorBull : colorBear })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: showUpper(i) ? atrHighFluid[i] : NaN, color: bearRibbon })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: showLower(i) ? atrLowFluid[i] : NaN, color: bullRibbon })),
+    init() {
+      const s: TpRun = {
+        atr: taStep.atr(100),
+        hiBars: new ExtremeBars(false, amplitude),
+        loBars: new ExtremeBars(true, amplitude),
+        highma: new WindowSma(amplitude),
+        lowma: new WindowSma(amplitude),
+        // HMA smoothing
+        htFluid: taStep.hma(cfg.smoothLen),
+        atrHighFluid: taStep.hma(cfg.smoothLen),
+        atrLowFluid: taStep.hma(cfg.smoothLen),
+        trendArr: [], upArr: [], downArr: [], plot0: [], plot1: [], plot2: [], upperFill: [], lowerFill: [],
+        markers: [], flags: [[], []], times: [[], []],
+        steps: [],
+        vars: { trend: 0, nextTrend: 0, maxLowPrice: NaN, minHighPrice: NaN, up: 0, down: 0 },
+        lists: [], series: [],
+      };
+      s.steps = [s.atr, s.hiBars, s.loBars, s.highma, s.lowma, s.htFluid, s.atrHighFluid, s.atrLowFluid];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.trendArr, s.upArr, s.downArr, s.plot0, s.plot1, s.plot2, s.upperFill, s.lowerFill, ...s.flags];
+      return s;
     },
-    fills: [
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i]!;
+      const t = b.time;
+      const high = b.high;
+      const low = b.low;
+      if (i === 0) {
+        v.maxLowPrice = low;
+        v.minHighPrice = high;
+      }
+      const atr = s.atr.step(high, low, b.close);
+      const hiBars = s.hiBars.step(i, high);
+      const loBars = s.loBars.step(i, low);
+      const highma = s.highma.step(high);
+      const lowma = s.lowma.step(low);
+
+      // HalfTrend engine
+      const atr2 = atr / 2;
+      const dev = channelDeviation * atr2;
+      // high[math.abs(ta.highestbars(amplitude))]: an na offset (warm-up) reads the current bar
+      const highPrice = isNaN(hiBars) ? high : bars[i - Math.abs(hiBars)]!.high;
+      const lowPrice = isNaN(loBars) ? low : bars[i - Math.abs(loBars)]!.low;
+      const prevLow = i > 0 ? bars[i - 1]!.low : low;
+      const prevHigh = i > 0 ? bars[i - 1]!.high : high;
+      const c = b.close;
+
+      if (v.nextTrend === 1) {
+        v.maxLowPrice = Math.max(lowPrice, v.maxLowPrice);
+        if (lt(highma, v.maxLowPrice) && lt(c, prevLow)) {
+          v.trend = 1;
+          v.nextTrend = 0;
+          v.minHighPrice = highPrice;
+        }
+      } else {
+        v.minHighPrice = Math.min(highPrice, v.minHighPrice);
+        if (gt(lowma, v.minHighPrice) && gt(c, prevHigh)) {
+          v.trend = 0;
+          v.nextTrend = 1;
+          v.maxLowPrice = lowPrice;
+        }
+      }
+
+      const trend = v.trend;
+      const prevTrend = i > 0 ? s.trendArr[i - 1]! : NaN;
+      const upPrev = i > 0 ? s.upArr[i - 1]! : NaN;
+      const downPrev = i > 0 ? s.downArr[i - 1]! : NaN;
+      let arrowUp = NaN;
+      let arrowDown = NaN;
+      let atrHighRaw: number;
+      let atrLowRaw: number;
+      if (trend === 0) {
+        if (!isNaN(prevTrend) && prevTrend !== 0) {
+          v.up = isNaN(downPrev) ? v.down : downPrev;
+          arrowUp = v.up - atr2;
+        } else {
+          v.up = isNaN(upPrev) ? v.maxLowPrice : Math.max(v.maxLowPrice, upPrev);
+        }
+        atrHighRaw = v.up + dev;
+        atrLowRaw = v.up - dev;
+      } else {
+        if (!isNaN(prevTrend) && prevTrend !== 1) {
+          v.down = isNaN(upPrev) ? v.up : upPrev;
+          arrowDown = v.down + atr2;
+        } else {
+          v.down = isNaN(downPrev) ? v.minHighPrice : Math.min(v.minHighPrice, downPrev);
+        }
+        atrHighRaw = v.down + dev;
+        atrLowRaw = v.down - dev;
+      }
+      s.trendArr[i] = trend;
+      s.upArr[i] = v.up;
+      s.downArr[i] = v.down;
+      const htRaw = trend === 0 ? v.up : v.down;
+
+      const htFluid = s.htFluid.step(htRaw);
+      const hi = s.atrHighFluid.step(atrHighRaw);
+      const lo = s.atrLowFluid.step(atrLowRaw);
+
+      const showUpper = trend === 1 && cfg.showChannels;
+      const showLower = trend === 0 && cfg.showChannels;
+      s.plot0[i] = { time: t, value: htFluid, color: trend === 0 ? colorBull : colorBear };
+      s.plot1[i] = { time: t, value: showUpper ? hi : NaN, color: bearRibbon };
+      s.plot2[i] = { time: t, value: showLower ? lo : NaN, color: bullRibbon };
       // fill(htPlot, atrHighPlot, color = showUpper ? color.new(colorBear, 80) : na)
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Bearish Ribbon Fill' },
-        colors: bars.map((_b, i) => (showUpper(i) ? bearFill : 'transparent')) },
+      s.upperFill[i] = showUpper ? bearFill : 'transparent';
       // fill(htPlot, atrLowPlot, color = showLower ? color.new(colorBull, 80) : na)
-      { plot1: 'plot0', plot2: 'plot2', options: { title: 'Bullish Ribbon Fill' },
-        colors: bars.map((_b, i) => (showLower(i) ? bullFill : 'transparent')) },
-    ],
-    markers,
-    // alertcondition(validBuy, 'TP Fluid Buy') / alertcondition(validSell, 'TP Fluid Sell')
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
+      s.lowerFill[i] = showLower ? bullFill : 'transparent';
+
+      let validBuy = false;
+      let validSell = false;
+      if (i >= 1) {
+        validBuy = !isNaN(arrowUp) && trend === 0 && prevTrend === 1;
+        validSell = !isNaN(arrowDown) && trend === 1 && prevTrend === 0;
+        // plotshape(showArrows and validBuy ? atrLowFluid : na, style = shape.triangleup, location = location.absolute,
+        //   size = size.small, color = colorBull)
+        if (cfg.showArrows && validBuy && !isNaN(lo)) {
+          s.markers.push({ time: t, position: 'atPriceMiddle', price: lo, shape: 'triangleUp', color: colorBull, size: 'small' });
+        }
+        if (cfg.showArrows && validSell && !isNaN(hi)) {
+          s.markers.push({ time: t, position: 'atPriceMiddle', price: hi, shape: 'triangleDown', color: colorBear, size: 'small' });
+        }
+        // plotshape(showLabels and validBuy ? atrLowFluid : na, text = 'BUY', style = shape.labelup,
+        //   location = location.absolute, size = size.small, color = colorBull, textcolor = color.black)
+        if (cfg.showLabels && validBuy && !isNaN(lo)) {
+          s.markers.push({ time: t, position: 'atPriceBottom', price: lo, shape: 'labelUp', color: colorBull, text: 'BUY',
+            textColor: color.black, size: 'small' });
+        }
+        if (cfg.showLabels && validSell && !isNaN(hi)) {
+          s.markers.push({ time: t, position: 'atPriceTop', price: hi, shape: 'labelDown', color: colorBear, text: 'SELL',
+            textColor: color.black, size: 'small' });
+        }
+      }
+      // alertcondition(validBuy, 'TP Fluid Buy') / alertcondition(validSell, 'TP Fluid Sell')
+      s.flags[0]![i] = validBuy;
+      s.flags[1]![i] = validSell;
+      if (validBuy) s.times[0]!.push(t as number);
+      if (validSell) s.times[1]!.push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Bearish Ribbon Fill' }, colors: s.upperFill.slice() },
+          { plot1: 'plot0', plot2: 'plot2', options: { title: 'Bullish Ribbon Fill' }, colors: s.lowerFill.slice() },
+        ],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TradePrimeFluidTrendIndicatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TradePrimeFluidTrendIndicatorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -239,6 +348,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const TradePrimeFluidTrendIndicator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

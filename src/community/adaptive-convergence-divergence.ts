@@ -16,8 +16,13 @@
  * Attribution-ShareAlike: https://creativecommons.org/licenses/by-sa/4.0/.
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import {
+  barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowExtreme, WindowSma, WindowSum,
+  type BarRunState, type BarStudy, type Committable, type IndicatorRun,
+} from '../live-run';
 
 export type AdaptiveConvergenceDivergenceMaType = 'ACMO' | 'ARSI' | 'FRMA' | 'VOLA';
 
@@ -89,106 +94,212 @@ const neZero = (x: number) => !isNaN(x) && Math.abs(x) > EPS;
 /** math.max / math.min: na when an argument is na */
 const clampAlpha = (alpha: number) => (isNaN(alpha) ? NaN : Math.max(0.01, Math.min(alpha, 1)));
 
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+const getAlphaBase = (len: number) => 2 / (len + 1);
+
+/**
+ * maCalc(src, len, half) one bar at a time: the adaptive average of one length with the factor of the MA type,
+ * adaptiveMA(src, len, alpha): ma = alpha * src + (1 - alpha) * nz(ma[1], sma(src, len)). Committed with the bar.
+ */
+class AdaptiveMa implements Committable {
+  private readonly initSma: WindowSma;
+  private readonly steps: Committable[];
+  // ACMO: ta.cmo(src, len) from math.sum of the up / down changes
+  private up: WindowSum | null = null;
+  private down: WindowSum | null = null;
+  // ARSI
+  private rsi: ReturnType<typeof taStep.rsi> | null = null;
+  // FRMA
+  private hiL: WindowExtreme | null = null;
+  private loL: WindowExtreme | null = null;
+  private hiS: WindowExtreme | null = null;
+  private loS: WindowExtreme | null = null;
+  // VOLA
+  private avgVol: WindowSma | null = null;
+  // normalize(x, len)
+  private normLo: WindowExtreme | null = null;
+  private normHi: WindowExtreme | null = null;
+  /** src[1] and ma[1] */
+  private prevSrc = NaN;
+  private prev = NaN;
+  private nextSrc = NaN;
+  private next = NaN;
+
+  constructor(private readonly maType: AdaptiveConvergenceDivergenceMaType, private readonly len: number, private readonly halfAlpha: boolean) {
+    this.initSma = new WindowSma(len);
+    const steps: Committable[] = [this.initSma];
+    if (maType === 'ACMO') {
+      this.up = new WindowSum(len);
+      this.down = new WindowSum(len);
+      steps.push(this.up, this.down);
+    } else if (maType === 'ARSI') {
+      this.rsi = taStep.rsi(len);
+      steps.push(this.rsi);
+    } else {
+      if (maType === 'FRMA') {
+        const half = Math.floor(len / 2);
+        this.hiL = new WindowExtreme(false, len);
+        this.loL = new WindowExtreme(true, len);
+        this.hiS = new WindowExtreme(false, half);
+        this.loS = new WindowExtreme(true, half);
+        steps.push(this.hiL, this.loL, this.hiS, this.loS);
+      } else {
+        this.avgVol = new WindowSma(len);
+        steps.push(this.avgVol);
+      }
+      this.normLo = new WindowExtreme(true, len);
+      this.normHi = new WindowExtreme(false, len);
+      steps.push(this.normLo, this.normHi);
+    }
+    this.steps = steps;
+  }
+
+  /** normalize(x, len): (x - lowest) / (highest - lowest); 0.5 when the range is 0 or na */
+  private normalize(x: number): number {
+    const lo = this.normLo!.step(x);
+    const hi = this.normHi!.step(x);
+    const fullRange = hi - lo;
+    return neZero(fullRange) ? (x - lo) / fullRange : 0.5;
+  }
+
+  step(src: number, volume: number): number {
+    const len = this.len;
+    let alpha: number;
+    if (this.maType === 'ACMO') {
+      // cmo = math.abs(ta.cmo(src, len) / 100); alpha = clampAlpha(base * cmo)
+      const mom = src - this.prevSrc;
+      const sm1 = this.up!.step(mom >= 0 ? mom : 0);
+      const sm2 = this.down!.step(mom >= 0 ? 0 : -mom);
+      // a flat window is 0 / 0 = na
+      const cmo = (100 * (sm1 - sm2)) / (sm1 + sm2);
+      alpha = clampAlpha(getAlphaBase(len) * Math.abs(cmo / 100));
+    } else if (this.maType === 'ARSI') {
+      // rsi = math.abs(ta.rsi(src, len) - 50) / 50
+      const rsi = this.rsi!.step(src);
+      alpha = clampAlpha(getAlphaBase(len) * (Math.abs(rsi - 50) / 50));
+    } else if (this.maType === 'FRMA') {
+      const rangeLong = this.hiL!.step(src) - this.loL!.step(src);
+      const rangeShort = (this.hiS!.step(src) - this.loS!.step(src)) * 2;
+      const roughness = neZero(rangeLong) ? rangeShort / rangeLong : 1;
+      alpha = clampAlpha(getAlphaBase(len) * this.normalize(roughness));
+    } else {
+      // VOLA: volRatio = avgVol != 0 ? volume / avgVol - 1 : 0
+      const avgVol = this.avgVol!.step(volume);
+      const volRatio = neZero(avgVol) ? volume / avgVol - 1 : 0;
+      alpha = clampAlpha(getAlphaBase(len) * this.normalize(volRatio));
+    }
+    // getHalfAlpha(alpha, half) => half ? alpha / 2 : alpha
+    if (this.halfAlpha) alpha = alpha / 2;
+    const initSMA = this.initSma.step(src);
+    const base = isNaN(this.prev) ? initSMA : this.prev;
+    const ma = alpha * src + (1 - alpha) * base;
+    this.nextSrc = src;
+    this.next = ma;
+    return ma;
+  }
+
+  commit(): void {
+    for (const m of this.steps) m.commit();
+    this.prevSrc = this.nextSrc;
+    this.prev = this.next;
+  }
+}
+
+interface AcdRun extends BarRunState<Record<string, never>> {
+  fast: AdaptiveMa;
+  slow: AdaptiveMa;
+  sig: { step(v: number): number; commit(): void };
+  osc: number[];
+  signal: number[];
+  hist: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  fillColors: string[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<AdaptiveConvergenceDivergenceInputs>): BarStudy<AcdRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const fast = new AdaptiveMa(cfg.maType, cfg.length, false);
+      const slow = new AdaptiveMa(cfg.maType, cfg.slowLen, true);
+      const sig = cfg.useWilders ? taStep.rma(cfg.signalLen) : taStep.ema(cfg.signalLen);
+      const s: AcdRun = {
+        fast, slow, sig, osc: [], signal: [], hist: [], plot0: [], plot1: [], plot2: [], fillColors: [],
+        flags: [[], [], []], times: [[], [], []], steps: [fast, slow, sig], vars: {}, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.osc, s.signal, s.hist, s.plot0, s.plot1, s.plot2, s.fillColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = b.volume ?? NaN;
+      const ma = s.fast.step(value(b), volume);
+      const fama = s.slow.step(ma, volume);
+      // Plain division: x / 0 is +-infinity (0 / 0 na), as Pine
+      const osc = cfg.usePPO ? ((ma - fama) / fama) * 100 : ma - fama;
+      const signal = s.sig.step(osc);
+      const hist = osc - signal;
+      s.osc[i] = osc;
+      s.signal[i] = signal;
+      s.hist[i] = hist;
+
+      const trendColor = gt(osc, signal) ? cfg.bullishColor : cfg.bearishColor;
+      s.plot0[i] = { time: b.time, value: fin(osc), color: trendColor };
+      s.plot1[i] = { time: b.time, value: fin(signal), color: trendColor };
+      // color = hist[1] < hist ? color.new(trendColor, histTransUp) : color.new(trendColor, histTransDown)
+      s.plot2[i] = {
+        time: b.time, value: fin(hist),
+        color: String(color.new(trendColor, i > 0 && lt(s.hist[i - 1], hist) ? cfg.histTransUp : cfg.histTransDown)),
+      };
+      // fill(plotOsc, plotSign, color = color.new(trendColor, fillTrans))
+      s.fillColors[i] = String(color.new(trendColor, cfg.fillTrans));
+
+      // co = ta.crossover(osc, signal); cu = ta.crossunder(osc, signal)
+      const po = i > 0 ? s.osc[i - 1] : NaN;
+      const ps = i > 0 ? s.signal[i - 1] : NaN;
+      const co = osc > signal && po <= ps;
+      const cu = osc < signal && po >= ps;
+      // alertcondition(co, ...), alertcondition(cu, ...), alertcondition(co or cu, ...)
+      const either = co || cu;
+      s.flags[0][i] = co;
+      s.flags[1][i] = cu;
+      s.flags[2][i] = either;
+      if (co) s.times[0].push(b.time as number);
+      if (cu) s.times[1].push(b.time as number);
+      if (either) s.times[2].push(b.time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', colors: s.fillColors.slice() }],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdaptiveConvergenceDivergenceInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<AdaptiveConvergenceDivergenceInputs> = {},
 ): IndicatorResult & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const volume = bars.map((b) => b.volume ?? NaN);
-
-  // normalize(x, len): (x - lowest) / (highest - lowest); 0.5 when the range is 0 or na
-  const normalize = (x: number[], len: number) => {
-    const lo = A(ta.lowest(S(x), len));
-    const hi = A(ta.highest(S(x), len));
-    return x.map((v, i) => {
-      const fullRange = hi[i] - lo[i];
-      return neZero(fullRange) ? (v - lo[i]) / fullRange : 0.5;
-    });
-  };
-  // adaptiveMA(src, len, alpha): ma = alpha * src + (1 - alpha) * nz(ma[1], sma(src, len))
-  const adaptiveMA = (src: number[], len: number, alpha: number[]) => {
-    const initSMA = A(ta.sma(S(src), len));
-    const out: number[] = new Array(n);
-    let prev = NaN;
-    for (let i = 0; i < n; i++) {
-      const base = isNaN(prev) ? initSMA[i] : prev;
-      prev = alpha[i] * src[i] + (1 - alpha[i]) * base;
-      out[i] = prev;
-    }
-    return out;
-  };
-  const getAlphaBase = (len: number) => 2 / (len + 1);
-
-  const maCalc = (src: number[], len: number, halfAlpha: boolean): number[] => {
-    let alpha: number[];
-    if (cfg.maType === 'ACMO') {
-      // cmo = math.abs(ta.cmo(src, len) / 100); alpha = clampAlpha(base * cmo)
-      const cmo = A(ta.cmo(S(src), len));
-      alpha = cmo.map((v) => clampAlpha(getAlphaBase(len) * Math.abs(v / 100)));
-    } else if (cfg.maType === 'ARSI') {
-      // rsi = math.abs(ta.rsi(src, len) - 50) / 50
-      const rsi = A(ta.rsi(S(src), len));
-      alpha = rsi.map((v) => clampAlpha(getAlphaBase(len) * (Math.abs(v - 50) / 50)));
-    } else if (cfg.maType === 'FRMA') {
-      const half = Math.floor(len / 2);
-      const hiL = A(ta.highest(S(src), len));
-      const loL = A(ta.lowest(S(src), len));
-      const hiS = A(ta.highest(S(src), half));
-      const loS = A(ta.lowest(S(src), half));
-      const roughness = src.map((_v, i) => {
-        const rangeLong = hiL[i] - loL[i];
-        const rangeShort = (hiS[i] - loS[i]) * 2;
-        return neZero(rangeLong) ? rangeShort / rangeLong : 1;
-      });
-      const norm = normalize(roughness, len);
-      alpha = norm.map((v) => clampAlpha(getAlphaBase(len) * v));
-    } else {
-      // VOLA: volRatio = avgVol != 0 ? volume / avgVol - 1 : 0
-      const avgVol = A(ta.sma(S(volume), len));
-      const volRatio = volume.map((v, i) => (neZero(avgVol[i]) ? v / avgVol[i] - 1 : 0));
-      const norm = normalize(volRatio, len);
-      alpha = norm.map((v) => clampAlpha(getAlphaBase(len) * v));
-    }
-    // getHalfAlpha(alpha, half) => half ? alpha / 2 : alpha
-    if (halfAlpha) alpha = alpha.map((a) => a / 2);
-    return adaptiveMA(src, len, alpha);
-  };
-
-  const src = A(getSourceSeries(bars, cfg.src));
-  const ma = maCalc(src, cfg.length, false);
-  const fama = maCalc(ma, cfg.slowLen, true);
-  // Plain division: x / 0 is +-infinity (0 / 0 na), as Pine
-  const osc = ma.map((m, i) => (cfg.usePPO ? ((m - fama[i]) / fama[i]) * 100 : m - fama[i]));
-  const signal = A(cfg.useWilders ? ta.rma(S(osc), cfg.signalLen) : ta.ema(S(osc), cfg.signalLen));
-  const hist = osc.map((o, i) => o - signal[i]);
-
-  const trendColor = (i: number) => (gt(osc[i], signal[i]) ? cfg.bullishColor : cfg.bearishColor);
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: fin(osc[i]), color: trendColor(i) }));
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: fin(signal[i]), color: trendColor(i) }));
-  // color = hist[1] < hist ? color.new(trendColor, histTransUp) : color.new(trendColor, histTransDown)
-  const plot2 = bars.map((b, i) => ({
-    time: b.time, value: fin(hist[i]),
-    color: String(color.new(trendColor(i), i > 0 && lt(hist[i - 1], hist[i]) ? cfg.histTransUp : cfg.histTransDown)),
-  }));
-  // fill(plotOsc, plotSign, color = color.new(trendColor, fillTrans))
-  const fills = [{ plot1: 'plot0', plot2: 'plot1', colors: bars.map((_b, i) => String(color.new(trendColor(i), cfg.fillTrans))) }];
-
-  // co = ta.crossover(osc, signal); cu = ta.crossunder(osc, signal)
-  const co = crossedOver(osc, signal);
-  const cu = crossedUnder(osc, signal);
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    fills,
-    // alertcondition(co, ...), alertcondition(cu, ...), alertcondition(co or cu, ...)
-    alerts: alertStates(alertConditions, bars, [co, cu, co.map((c, i) => c || cu[i])]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -200,6 +311,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const AdaptiveConvergenceDivergence = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

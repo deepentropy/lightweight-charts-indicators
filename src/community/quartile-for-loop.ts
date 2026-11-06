@@ -15,9 +15,13 @@
  * Original notice: © SeerQuant
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import {
+  barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -98,95 +102,214 @@ export const metadata = {
 const gt = (a: number, b: number) => a - b > 1e-10;
 const lt = (a: number, b: number) => b - a > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<QuartileForLoopInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+/**
+ * The sorted window of `ta.percentile_nearest_rank` (the oakscriptjs rules: each bar inserts the new value before the
+ * first value `>=` it, then removes the value of the bar leaving the window), read at several ranks, one bar at a
+ * time: the step reads the window with the new value without changing it, the commit changes it.
+ */
+class NearestRanks {
+  private values: number[] = [];
+  private barIds: number[] = [];
+  private bar = 0;
+  private pending = NaN;
+  private stepped = false;
+  private readonly ranks: number[];
+  readonly out: number[];
+
+  constructor(private readonly length: number, percentages: number[]) {
+    if (Math.trunc(length) <= 0) {
+      throw new Error(`Invalid value of the 'length' argument (${Math.trunc(length).toFixed(1)}) in the 'percentile_nearest_rank' function. It must be > 0.`);
+    }
+    this.ranks = percentages.map((p) => Math.min(length, Math.max(1, Math.ceil((p / 100) * length))));
+    this.out = percentages.map(() => NaN);
+  }
+
+  /** The percentiles of the window with `v` (in `out`) */
+  step(v: number): number[] {
+    this.stepped = true;
+    this.pending = v;
+    const i = this.bar;
+    const values = this.values;
+    if (i < this.length - 1) {
+      this.out.fill(NaN);
+      return this.out;
+    }
+    let k = 0;
+    while (k < values.length && !(values[k]! >= v)) k++;
+    // the position of the leaving value in the window with `v` (-1: none)
+    let removed = -1;
+    if (i >= this.length) {
+      const p = this.barIds.indexOf(i - this.length);
+      removed = p < 0 ? -1 : p < k ? p : p + 1;
+    }
+    const inserted = (m: number) => (m < k ? values[m]! : m === k ? v : values[m - 1]!);
+    for (let r = 0; r < this.ranks.length; r++) {
+      const j = this.ranks[r]! - 1;
+      this.out[r] = removed >= 0 && j >= removed ? inserted(j + 1) : inserted(j);
+    }
+    return this.out;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    const i = this.bar++;
+    const v = this.pending;
+    const values = this.values;
+    let k = 0;
+    while (k < values.length && !(values[k]! >= v)) k++;
+    values.splice(k, 0, v);
+    this.barIds.splice(k, 0, i);
+    if (i >= this.length) {
+      const old = this.barIds.indexOf(i - this.length);
+      values.splice(old, 1);
+      this.barIds.splice(old, 1);
+    }
+  }
+}
+
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface QuartileVars {
+  /** var signal = 0 */
+  signal: number;
+  /** var int prevTrendState = 0 */
+  prevTrendState: number;
+}
+
+interface QuartileRun extends BarRunState<QuartileVars> {
+  ranks: NearestRanks;
+  sma: WindowSma;
+  src: number[];
+  aq: number[];
+  smaArr: number[];
+  plots: Point[][];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<QuartileForLoopInputs>): BarStudy<QuartileRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
+  const value = barSource(cfg.src);
   const [bull, bear, neutral] = SCHEMES[cfg.colScheme] ?? SCHEMES.Default;
+  const upCol = String(color.new(bull, 50));
+  const downCol = String(color.new(bear, 50));
+  // a negative loop bound reads the quartile of later bars: the score is calculated from the whole set of bars
+  const later = Math.min(cfg.sl, cfg.el) < 0;
 
-  const srcS = getSourceSeries(bars, cfg.src);
-  const src = A(srcS);
-  // f_quartile: (Q1 + 2 * median + Q3) / 4 with ta.percentile_nearest_rank
-  const q1 = A(ta.percentile_nearest_rank(srcS, cfg.qLength, 25));
-  const med = A(ta.percentile_nearest_rank(srcS, cfg.qLength, 50));
-  const q3 = A(ta.percentile_nearest_rank(srcS, cfg.qLength, 75));
-  const aq = q1.map((v, i) => (v + 2 * med[i] + q3[i]) / 4);
-  const sma = A(ta.sma(Series.fromArray(bars, bars.map((b) => b.close)), 14));
-
-  const score: number[] = new Array(n);
-  const histColor: string[] = new Array(n);
-  const markers: MarkerData[] = [];
-  const signals: number[] = new Array(n);
-  let signal = 0; // var signal = 0
-  let prevTrendState = 0; // var int prevTrendState = 0
-  for (let b = 0; b < n; b++) {
+  /** The score, signal, colours, markers and alerts of bar `b` (`n`: the bar count) */
+  const scoreBar = (s: QuartileRun, b: number, bars: Bar[], n: number) => {
+    const { aq } = s;
+    const v = s.vars;
     // calcScore(sl, el, adaptive_quartile, typeSig): sum of (x > val[i] ? 1 : -1) for i = sl to el
     // (x = src, or the current quartile with the alternate signal; val[i] before bar 0 is na: -1)
-    const x = cfg.typeSig ? aq[b] : src[b];
+    const x = cfg.typeSig ? aq[b] : s.src[b];
     let sum = 0;
     const step = cfg.sl <= cfg.el ? 1 : -1;
     for (let i = cfg.sl; step > 0 ? i <= cfg.el : i >= cfg.el; i += step) {
       const past = b - i >= 0 && b - i < n ? aq[b - i] : NaN;
       sum += gt(x, past) ? 1 : -1;
     }
-    score[b] = sum;
 
     const goLong = gt(sum, cfg.thrUp);
     const goShort = lt(sum, cfg.thrDown);
-    if (goLong && !goShort) signal = 1;
-    if (goShort) signal = -1;
-    signals[b] = signal;
-    histColor[b] = signal === 1 ? bull : signal === -1 ? bear : neutral;
+    if (goLong && !goShort) v.signal = 1;
+    if (goShort) v.signal = -1;
+    const signal = v.signal;
+    const histColor = signal === 1 ? bull : signal === -1 ? bear : neutral;
 
     // currentTrendState: 1 above thrUp, -1 below thrDown, else 0
     const current = gt(sum, cfg.thrUp) ? 1 : lt(sum, cfg.thrDown) ? -1 : 0;
-    const bullishTransition = prevTrendState !== 1 && current === 1;
-    const bearishTransition = prevTrendState !== -1 && current === -1;
-    if (bullishTransition || bearishTransition) prevTrendState = current;
+    const bullishTransition = v.prevTrendState !== 1 && current === 1;
+    const bearishTransition = v.prevTrendState !== -1 && current === -1;
+    if (bullishTransition || bearishTransition) v.prevTrendState = current;
 
     const t = bars[b].time;
     // plotshape(bullishTransition ? aq - aq * 0.075 : na, shape.labelup, location.absolute, color = bull,
     //   text = "▲", textcolor = #000000, size.small, force_overlay = true)
     const lo = aq[b] - aq[b] * 0.075;
     if (bullishTransition && !isNaN(lo)) {
-      markers.push({ time: t, position: 'atPriceBottom', price: lo, shape: 'labelUp', color: bull, text: '▲',
+      s.markers.push({ time: t, position: 'atPriceBottom', price: lo, shape: 'labelUp', color: bull, text: '▲',
         textColor: '#000000', size: 'small', forceOverlay: true });
     }
     // plotshape(bearishTransition ? aq + aq * 0.075 : na, shape.labeldown, ..., color = bear, text = "▼")
     const hi = aq[b] + aq[b] * 0.075;
     if (bearishTransition && !isNaN(hi)) {
-      markers.push({ time: t, position: 'atPriceTop', price: hi, shape: 'labelDown', color: bear, text: '▼',
+      s.markers.push({ time: t, position: 'atPriceTop', price: hi, shape: 'labelDown', color: bear, text: '▼',
         textColor: '#000000', size: 'small', forceOverlay: true });
     }
-  }
 
-  const upCol = String(color.new(bull, 50));
-  const downCol = String(color.new(bear, 50));
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(score, color = color.new(hist_color, 0), linewidth = 3)
-      plot0: bars.map((b, i) => ({ time: b.time, value: score[i], color: histColor[i] })),
-      // plot(thrUp, color = color.new(bull, 50), linewidth = 2)
-      plot1: bars.map((b) => ({ time: b.time, value: cfg.thrUp, color: upCol })),
-      // plot(thrDown, color = color.new(bear, 50), linewidth = 2)
-      plot2: bars.map((b) => ({ time: b.time, value: cfg.thrDown, color: downCol })),
-      // plot(sma, color = hist_color, linewidth = 4, force_overlay = true)
-      plot3: bars.map((b, i) => ({ time: b.time, value: sma[i], color: histColor[i] })),
-    },
-    markers,
+    // plot(score, color = color.new(hist_color, 0), linewidth = 3)
+    s.plots[0][b] = { time: t, value: sum, color: histColor };
+    // plot(sma, color = hist_color, linewidth = 4, force_overlay = true)
+    s.plots[3][b] = { time: t, value: s.smaArr[b], color: histColor };
     // barcolor(paint ? hist_color : na)
-    barColors: cfg.paint ? bars.map((b, i) => ({ time: b.time, color: histColor[i] })) : [],
+    if (cfg.paint) s.barColors[b] = { time: t, color: histColor };
     // alertcondition(signal == 1) / alertcondition(signal == -1)
-    alerts: alertStates(alertConditions, bars, [signals.map((v) => v === 1), signals.map((v) => v === -1)]),
+    [signal === 1, signal === -1].forEach((f, k) => {
+      s.flags[k][b] = f;
+      if (f) s.times[k].push(t as number);
+    });
   };
+
+  return {
+    fullRunReason: () => (!isBarSource(cfg.src) ? 'source of another study' : later ? 'negative loop bound (later bars)' : null),
+    init() {
+      const s: QuartileRun = {
+        ranks: new NearestRanks(cfg.qLength, [25, 50, 75]), sma: new WindowSma(14), src: [], aq: [], smaArr: [],
+        plots: Array.from({ length: 4 }, () => []), barColors: [], flags: [[], []], times: [[], []], markers: [],
+        steps: [], vars: { signal: 0, prevTrendState: 0 }, lists: [], series: [],
+      };
+      s.steps = [s.ranks, s.sma];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.src, s.aq, s.smaArr, ...s.plots, s.barColors, ...s.flags];
+      return s;
+    },
+    bar(s, b, bars) {
+      const bar = bars[b];
+      const src = value(bar);
+      s.src[b] = src;
+      // f_quartile: (Q1 + 2 * median + Q3) / 4 with ta.percentile_nearest_rank
+      const [q1, med, q3] = s.ranks.step(src);
+      s.aq[b] = (q1 + 2 * med + q3) / 4;
+      s.smaArr[b] = s.sma.step(bar.close);
+      // plot(thrUp, color = color.new(bull, 50), linewidth = 2); plot(thrDown, color = color.new(bear, 50), linewidth = 2)
+      s.plots[1][b] = { time: bar.time, value: cfg.thrUp, color: upCol };
+      s.plots[2][b] = { time: bar.time, value: cfg.thrDown, color: downCol };
+      if (!later) scoreBar(s, b, bars, b + 1);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      if (later) for (let b = 0; b < n; b++) scoreBar(s, b, bars, n);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice() },
+        markers: s.markers.slice(),
+        barColors: cfg.paint ? s.barColors.slice() : [],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<QuartileForLoopInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<QuartileForLoopInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const QuartileForLoop = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

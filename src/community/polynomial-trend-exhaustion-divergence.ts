@@ -18,10 +18,12 @@
  */
 
 import {
-  ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
+  taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export interface PolynomialTrendExhaustionDivergenceInputs {
   smoothingType: 'None' | 'LinReg Blend' | 'Kalman';
@@ -158,19 +160,35 @@ const nz = (x: number) => (isNaN(x) ? 0 : x);
 const max = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.max(a, b));
 const min = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.min(a, b));
 
-/** Pine Kalman filter of the script: one state per call site */
-function kalmanFilter(processNoise: number, measurementNoise: number): (src: number) => number {
-  let estimate = NaN;
-  let errorEstimate = 1.0;
-  return (src: number) => {
+/** Pine Kalman filter of the script: one state per call site (committed with the bar) */
+class KalmanStep implements Committable {
+  private estimate = NaN;
+  private errorEstimate = 1.0;
+  private nextEstimate = NaN;
+  private nextError = 1.0;
+  private stepped = false;
+
+  constructor(private readonly processNoise: number, private readonly measurementNoise: number) {}
+
+  step(src: number): number {
+    this.stepped = true;
+    let estimate = this.estimate;
     if (isNaN(estimate)) estimate = src;
     const prediction = estimate;
-    const errorPrediction = errorEstimate + processNoise;
-    const kalmanGain = errorPrediction / (errorPrediction + measurementNoise);
+    const errorPrediction = this.errorEstimate + this.processNoise;
+    const kalmanGain = errorPrediction / (errorPrediction + this.measurementNoise);
     estimate = prediction + kalmanGain * (src - prediction);
-    errorEstimate = (1 - kalmanGain) * errorPrediction;
+    this.nextEstimate = estimate;
+    this.nextError = (1 - kalmanGain) * errorPrediction;
     return estimate;
-  };
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.estimate = this.nextEstimate;
+    this.errorEstimate = this.nextError;
+  }
 }
 
 /**
@@ -236,212 +254,279 @@ function cubicFit(src: number[], i: number, len: number): [number, number, numbe
   return [b0, b1, b2, b3];
 }
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface PolyVars {
+  prevSlope: number;
+  bullExhaustionCount: number;
+  bearExhaustionCount: number;
+  bullExhRepeatCount: number;
+  bearExhRepeatCount: number;
+  bullExhCooldownBars: number;
+  bearExhCooldownBars: number;
+  bullExhInCooldown: boolean;
+  bearExhInCooldown: boolean;
+  bullDivCount: number;
+  bearDivCount: number;
+  barsSinceBullDiv: number;
+  barsSinceBearDiv: number;
+}
+
+interface PolyRun extends BarRunState<PolyVars> {
+  lrOpen: ReturnType<typeof taStep.linreg>;
+  lrHigh: ReturnType<typeof taStep.linreg>;
+  lrLow: ReturnType<typeof taStep.linreg>;
+  lrClose: ReturnType<typeof taStep.linreg>;
+  atr: ReturnType<typeof taStep.atr>;
+  kOpen: KalmanStep;
+  kHigh: KalmanStep;
+  kLow: KalmanStep;
+  kClose: KalmanStep;
+  kTrend: KalmanStep;
+  resolvedSource: number[];
+  trendKalman: number[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<PolynomialTrendExhaustionDivergenceInputs>): BarStudy<PolyRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const blend = cfg.blendPct / 100.0;
+  return {
+    init() {
+      const lrOpen = taStep.linreg(cfg.lrLength, 0);
+      const lrHigh = taStep.linreg(cfg.lrLength, 0);
+      const lrLow = taStep.linreg(cfg.lrLength, 0);
+      const lrClose = taStep.linreg(cfg.lrLength, 0);
+      const atr = taStep.atr(14);
+      const kOpen = new KalmanStep(cfg.kalmanQ, cfg.kalmanR);
+      const kHigh = new KalmanStep(cfg.kalmanQ, cfg.kalmanR);
+      const kLow = new KalmanStep(cfg.kalmanQ, cfg.kalmanR);
+      const kClose = new KalmanStep(cfg.kalmanQ, cfg.kalmanR);
+      const kTrend = new KalmanStep(cfg.trendKalmanQ, cfg.trendKalmanR);
+      const s: PolyRun = {
+        lrOpen, lrHigh, lrLow, lrClose, atr, kOpen, kHigh, kLow, kClose, kTrend, resolvedSource: [], trendKalman: [],
+        markers: [], flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [lrOpen, lrHigh, lrLow, lrClose, atr, kOpen, kHigh, kLow, kClose, kTrend],
+        vars: {
+          prevSlope: NaN, bullExhaustionCount: 0, bearExhaustionCount: 0, bullExhRepeatCount: 0, bearExhRepeatCount: 0,
+          bullExhCooldownBars: 0, bearExhCooldownBars: 0, bullExhInCooldown: false, bearExhInCooldown: false,
+          bullDivCount: 0, bearDivCount: 0, barsSinceBullDiv: 999, barsSinceBearDiv: 999,
+        },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.resolvedSource, s.trendKalman, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const lrOpen = s.lrOpen.step(b.open);
+      const lrHigh = s.lrHigh.step(b.high);
+      const lrLow = s.lrLow.step(b.low);
+      const lrClose = s.lrClose.step(b.close);
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const kalmanOpen = s.kOpen.step(b.open);
+      const kalmanHigh = s.kHigh.step(b.high);
+      const kalmanLow = s.kLow.step(b.low);
+      const kalmanClose = s.kClose.step(b.close);
+      let sOpen: number, sHigh: number, sLow: number, sClose: number;
+      if (cfg.smoothingType === 'LinReg Blend') {
+        sOpen = b.open * (1 - blend) + lrOpen * blend;
+        sHigh = b.high * (1 - blend) + lrHigh * blend;
+        sLow = b.low * (1 - blend) + lrLow * blend;
+        sClose = b.close * (1 - blend) + lrClose * blend;
+      } else if (cfg.smoothingType === 'Kalman') {
+        sOpen = kalmanOpen;
+        sHigh = kalmanHigh;
+        sLow = kalmanLow;
+        sClose = kalmanClose;
+      } else {
+        sOpen = b.open;
+        sHigh = b.high;
+        sLow = b.low;
+        sClose = b.close;
+      }
+      // Ensure high / low integrity
+      sHigh = max(sHigh, max(sOpen, sClose));
+      sLow = min(sLow, min(sOpen, sClose));
+      const smoothHigh = sHigh;
+      const smoothLow = sLow;
+
+      // switch trendSource: the cases compare the source VALUE with open, high, low, close, hl2, hlc3, ohlc4, hlcc4 in
+      // this order (Pine ==), so e.g. with the close source a bar whose close equals its open takes the smoothed open
+      const hl2 = (b.high + b.low) / 2;
+      const hlc3 = (b.high + b.low + b.close) / 3;
+      const ohlc4 = (b.open + b.high + b.low + b.close) / 4;
+      const hlcc4 = (b.high + b.low + b.close + b.close) / 4;
+      let src: number;
+      switch (cfg.trendSource) {
+        case 'open': src = b.open; break;
+        case 'high': src = b.high; break;
+        case 'low': src = b.low; break;
+        case 'close': src = b.close; break;
+        case 'hl2': src = hl2; break;
+        case 'hlc3': src = hlc3; break;
+        case 'ohlc4': src = ohlc4; break;
+        case 'hlcc4': src = hlcc4; break;
+        case 'volume': src = b.volume ?? NaN; break;
+        default: src = b.close;
+      }
+      let rs: number;
+      if (eq(src, b.open)) rs = sOpen;
+      else if (eq(src, b.high)) rs = sHigh;
+      else if (eq(src, b.low)) rs = sLow;
+      else if (eq(src, b.close)) rs = sClose;
+      else if (eq(src, hl2)) rs = (sHigh + sLow) / 2;
+      else if (eq(src, hlc3)) rs = (sHigh + sLow + sClose) / 3;
+      else if (eq(src, ohlc4)) rs = (sOpen + sHigh + sLow + sClose) / 4;
+      else if (eq(src, hlcc4)) rs = (sHigh + sLow + sClose + sClose) / 4;
+      else rs = sClose;
+      s.resolvedSource[i] = rs;
+      const trendKalman = s.kTrend.step(rs);
+      s.trendKalman[i] = trendKalman;
+
+      // Polynomial slope at the newest bar (x = len - 1)
+      const [, p1, p2, p3] = cubicFit(s.resolvedSource, i, cfg.polyLength);
+      const xc = cfg.polyLength - 1;
+      const polySlope = p1 + 2 * p2 * xc + 3 * p3 * xc * xc;
+      const trendKalmanSlope = trendKalman - nz(i > 0 ? s.trendKalman[i - 1] : NaN);
+      const activeSlope = cfg.trendMethod === 'Kalman' ? trendKalmanSlope : polySlope;
+
+      // Slope momentum and exhaustion
+      const slopeMomentum = activeSlope - nz(v.prevSlope);
+      v.prevSlope = activeSlope;
+      const rawBullExhaustion = gt(activeSlope, 0) && lt(slopeMomentum, 0);
+      const rawBearExhaustion = lt(activeSlope, 0) && gt(slopeMomentum, 0);
+      v.bullExhaustionCount = rawBullExhaustion ? v.bullExhaustionCount + 1 : 0;
+      v.bearExhaustionCount = rawBearExhaustion ? v.bearExhaustionCount + 1 : 0;
+      const bullExhaustionBase = v.bullExhaustionCount >= cfg.exhaustionBars;
+      const bearExhaustionBase = v.bearExhaustionCount >= cfg.exhaustionBars;
+
+      if (v.bullExhInCooldown) {
+        v.bullExhCooldownBars -= 1;
+        if (v.bullExhCooldownBars <= 0) {
+          v.bullExhInCooldown = false;
+          v.bullExhRepeatCount = 0;
+        }
+      }
+      if (v.bearExhInCooldown) {
+        v.bearExhCooldownBars -= 1;
+        if (v.bearExhCooldownBars <= 0) {
+          v.bearExhInCooldown = false;
+          v.bearExhRepeatCount = 0;
+        }
+      }
+
+      let bullExhaustion = false;
+      let bearExhaustion = false;
+      if (cfg.showExhaustion && bullExhaustionBase && !v.bullExhInCooldown) {
+        if (v.bullExhRepeatCount < cfg.exhaustionMaxRepeat) {
+          bullExhaustion = true;
+          v.bullExhRepeatCount += 1;
+          if (v.bullExhRepeatCount >= cfg.exhaustionMaxRepeat) {
+            v.bullExhInCooldown = true;
+            v.bullExhCooldownBars = cfg.exhaustionCooldown;
+          }
+        }
+      }
+      if (cfg.showExhaustion && bearExhaustionBase && !v.bearExhInCooldown) {
+        if (v.bearExhRepeatCount < cfg.exhaustionMaxRepeat) {
+          bearExhaustion = true;
+          v.bearExhRepeatCount += 1;
+          if (v.bearExhRepeatCount >= cfg.exhaustionMaxRepeat) {
+            v.bearExhInCooldown = true;
+            v.bearExhCooldownBars = cfg.exhaustionCooldown;
+          }
+        }
+      }
+      if (!rawBullExhaustion && !v.bullExhInCooldown) v.bullExhRepeatCount = 0;
+      if (!rawBearExhaustion && !v.bearExhInCooldown) v.bearExhRepeatCount = 0;
+
+      // Cubic forecast extrapolated divExtrapolate bars ahead
+      const [f0, f1, f2, f3] = cubicFit(s.resolvedSource, i, cfg.divPolyLength);
+      const xe = cfg.divPolyLength - 1 + cfg.divExtrapolate;
+      const forecastValue = f0 + f1 * xe + f2 * xe * xe + f3 * xe * xe * xe;
+
+      const priceChange = b.close - (i >= cfg.divLookback ? bars[i - cfg.divLookback].close : NaN);
+      const priceFalling = lt(priceChange, 0);
+      const priceRising = gt(priceChange, 0);
+      const divAmount = Math.abs(forecastValue - b.close);
+      const priceMovement = Math.abs(priceChange);
+      const priceMovedEnough = ge(priceMovement, cfg.priceMovementATR * atr);
+      const divLargeEnough = ge(divAmount, cfg.divThresholdATR * atr);
+      const rawBullishDiv = priceFalling && gt(forecastValue, b.close);
+      const rawBearishDiv = priceRising && lt(forecastValue, b.close);
+
+      v.bullDivCount = rawBullishDiv && priceMovedEnough && divLargeEnough ? v.bullDivCount + 1 : 0;
+      v.bearDivCount = rawBearishDiv && priceMovedEnough && divLargeEnough ? v.bearDivCount + 1 : 0;
+
+      v.barsSinceBullDiv += 1;
+      v.barsSinceBearDiv += 1;
+      const bullishDivRaw = cfg.showDivergence && v.bullDivCount >= cfg.divConsecBars && v.barsSinceBullDiv >= cfg.divCooldown;
+      const bearishDivRaw = cfg.showDivergence && v.bearDivCount >= cfg.divConsecBars && v.barsSinceBearDiv >= cfg.divCooldown;
+      if (bullishDivRaw) v.barsSinceBullDiv = 0;
+      if (bearishDivRaw) v.barsSinceBearDiv = 0;
+      const bullishDiv = bullishDivRaw && v.barsSinceBullDiv === 0;
+      const bearishDiv = bearishDivRaw && v.barsSinceBearDiv === 0;
+      s.flags[0][i] = bullExhaustion;
+      s.flags[1][i] = bearExhaustion;
+      s.flags[2][i] = bullishDiv;
+      s.flags[3][i] = bearishDiv;
+      if (bullExhaustion) s.times[0].push(b.time as number);
+      if (bearExhaustion) s.times[1].push(b.time as number);
+      if (bullishDiv) s.times[2].push(b.time as number);
+      if (bearishDiv) s.times[3].push(b.time as number);
+
+      // plotshape(..., location.absolute): no shape when the price is na
+      const markers = s.markers;
+      const p0 = smoothHigh + atr * cfg.signalOffset;
+      if (bullExhaustion && Number.isFinite(p0)) {
+        markers.push({ time: b.time, price: p0, position: 'atPriceMiddle', shape: 'xcross', color: cfg.bullExhaustionColor, size: 'tiny', id: 'shape0' });
+      }
+      const pr1 = smoothLow - atr * cfg.signalOffset;
+      if (bearExhaustion && Number.isFinite(pr1)) {
+        markers.push({ time: b.time, price: pr1, position: 'atPriceMiddle', shape: 'xcross', color: cfg.bearExhaustionColor, size: 'tiny', id: 'shape1' });
+      }
+      const pr2 = smoothLow - atr * cfg.signalOffset * 2;
+      if (bullishDiv && Number.isFinite(pr2)) {
+        markers.push({
+          time: b.time, price: pr2, position: 'atPriceBottom', shape: 'labelUp', color: cfg.bullishDivColor, size: 'tiny', text: 'DIV',
+          textColor: '#FFFFFF', id: 'shape2',
+        });
+      }
+      const pr3 = smoothHigh + atr * cfg.signalOffset * 2;
+      if (bearishDiv && Number.isFinite(pr3)) {
+        markers.push({
+          time: b.time, price: pr3, position: 'atPriceTop', shape: 'labelDown', color: cfg.bearishDivColor, size: 'tiny', text: 'DIV',
+          textColor: '#FFFFFF', id: 'shape3',
+        });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PolynomialTrendExhaustionDivergenceInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<PolynomialTrendExhaustionDivergenceInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const nBars = bars.length;
-  const s = (f: (b: Bar) => number) => new Series(bars, f);
-  const lrOpen = ta.linreg(s((b) => b.open), cfg.lrLength, 0).toArray();
-  const lrHigh = ta.linreg(s((b) => b.high), cfg.lrLength, 0).toArray();
-  const lrLow = ta.linreg(s((b) => b.low), cfg.lrLength, 0).toArray();
-  const lrClose = ta.linreg(s((b) => b.close), cfg.lrLength, 0).toArray();
-  const blend = cfg.blendPct / 100.0;
-  const atrRef = ta.atr(bars, 14).toArray();
-
-  const kOpen = kalmanFilter(cfg.kalmanQ, cfg.kalmanR);
-  const kHigh = kalmanFilter(cfg.kalmanQ, cfg.kalmanR);
-  const kLow = kalmanFilter(cfg.kalmanQ, cfg.kalmanR);
-  const kClose = kalmanFilter(cfg.kalmanQ, cfg.kalmanR);
-  const kTrend = kalmanFilter(cfg.trendKalmanQ, cfg.trendKalmanR);
-
-  const smoothHigh = new Array<number>(nBars);
-  const smoothLow = new Array<number>(nBars);
-  const resolvedSource = new Array<number>(nBars);
-  const trendKalman = new Array<number>(nBars);
-  for (let i = 0; i < nBars; i++) {
-    const b = bars[i];
-    const kalmanOpen = kOpen(b.open);
-    const kalmanHigh = kHigh(b.high);
-    const kalmanLow = kLow(b.low);
-    const kalmanClose = kClose(b.close);
-    let sOpen: number, sHigh: number, sLow: number, sClose: number;
-    if (cfg.smoothingType === 'LinReg Blend') {
-      sOpen = b.open * (1 - blend) + lrOpen[i] * blend;
-      sHigh = b.high * (1 - blend) + lrHigh[i] * blend;
-      sLow = b.low * (1 - blend) + lrLow[i] * blend;
-      sClose = b.close * (1 - blend) + lrClose[i] * blend;
-    } else if (cfg.smoothingType === 'Kalman') {
-      sOpen = kalmanOpen;
-      sHigh = kalmanHigh;
-      sLow = kalmanLow;
-      sClose = kalmanClose;
-    } else {
-      sOpen = b.open;
-      sHigh = b.high;
-      sLow = b.low;
-      sClose = b.close;
-    }
-    // Ensure high / low integrity
-    sHigh = max(sHigh, max(sOpen, sClose));
-    sLow = min(sLow, min(sOpen, sClose));
-    smoothHigh[i] = sHigh;
-    smoothLow[i] = sLow;
-
-    // switch trendSource: the cases compare the source VALUE with open, high, low, close, hl2, hlc3, ohlc4, hlcc4 in
-    // this order (Pine ==), so e.g. with the close source a bar whose close equals its open takes the smoothed open
-    const hl2 = (b.high + b.low) / 2;
-    const hlc3 = (b.high + b.low + b.close) / 3;
-    const ohlc4 = (b.open + b.high + b.low + b.close) / 4;
-    const hlcc4 = (b.high + b.low + b.close + b.close) / 4;
-    const srcVals: Record<SourceType, number> = {
-      open: b.open, high: b.high, low: b.low, close: b.close, hl2, hlc3, ohlc4, hlcc4, volume: b.volume ?? NaN,
-    };
-    const src = srcVals[cfg.trendSource] ?? b.close;
-    let rs: number;
-    if (eq(src, b.open)) rs = sOpen;
-    else if (eq(src, b.high)) rs = sHigh;
-    else if (eq(src, b.low)) rs = sLow;
-    else if (eq(src, b.close)) rs = sClose;
-    else if (eq(src, hl2)) rs = (sHigh + sLow) / 2;
-    else if (eq(src, hlc3)) rs = (sHigh + sLow + sClose) / 3;
-    else if (eq(src, ohlc4)) rs = (sOpen + sHigh + sLow + sClose) / 4;
-    else if (eq(src, hlcc4)) rs = (sHigh + sLow + sClose + sClose) / 4;
-    else rs = sClose;
-    resolvedSource[i] = rs;
-    trendKalman[i] = kTrend(rs);
-  }
-
-  const markers: MarkerData[] = [];
-  const flags: boolean[][] = [[], [], [], []];
-  let prevSlope = NaN;
-  let bullExhaustionCount = 0;
-  let bearExhaustionCount = 0;
-  let bullExhRepeatCount = 0;
-  let bearExhRepeatCount = 0;
-  let bullExhCooldownBars = 0;
-  let bearExhCooldownBars = 0;
-  let bullExhInCooldown = false;
-  let bearExhInCooldown = false;
-  let bullDivCount = 0;
-  let bearDivCount = 0;
-  let barsSinceBullDiv = 999;
-  let barsSinceBearDiv = 999;
-
-  for (let i = 0; i < nBars; i++) {
-    const b = bars[i];
-    // Polynomial slope at the newest bar (x = len - 1)
-    const [, p1, p2, p3] = cubicFit(resolvedSource, i, cfg.polyLength);
-    const xc = cfg.polyLength - 1;
-    const polySlope = p1 + 2 * p2 * xc + 3 * p3 * xc * xc;
-    const trendKalmanSlope = trendKalman[i] - nz(i > 0 ? trendKalman[i - 1] : NaN);
-    const activeSlope = cfg.trendMethod === 'Kalman' ? trendKalmanSlope : polySlope;
-
-    // Slope momentum and exhaustion
-    const slopeMomentum = activeSlope - nz(prevSlope);
-    prevSlope = activeSlope;
-    const rawBullExhaustion = gt(activeSlope, 0) && lt(slopeMomentum, 0);
-    const rawBearExhaustion = lt(activeSlope, 0) && gt(slopeMomentum, 0);
-    bullExhaustionCount = rawBullExhaustion ? bullExhaustionCount + 1 : 0;
-    bearExhaustionCount = rawBearExhaustion ? bearExhaustionCount + 1 : 0;
-    const bullExhaustionBase = bullExhaustionCount >= cfg.exhaustionBars;
-    const bearExhaustionBase = bearExhaustionCount >= cfg.exhaustionBars;
-
-    if (bullExhInCooldown) {
-      bullExhCooldownBars -= 1;
-      if (bullExhCooldownBars <= 0) {
-        bullExhInCooldown = false;
-        bullExhRepeatCount = 0;
-      }
-    }
-    if (bearExhInCooldown) {
-      bearExhCooldownBars -= 1;
-      if (bearExhCooldownBars <= 0) {
-        bearExhInCooldown = false;
-        bearExhRepeatCount = 0;
-      }
-    }
-
-    let bullExhaustion = false;
-    let bearExhaustion = false;
-    if (cfg.showExhaustion && bullExhaustionBase && !bullExhInCooldown) {
-      if (bullExhRepeatCount < cfg.exhaustionMaxRepeat) {
-        bullExhaustion = true;
-        bullExhRepeatCount += 1;
-        if (bullExhRepeatCount >= cfg.exhaustionMaxRepeat) {
-          bullExhInCooldown = true;
-          bullExhCooldownBars = cfg.exhaustionCooldown;
-        }
-      }
-    }
-    if (cfg.showExhaustion && bearExhaustionBase && !bearExhInCooldown) {
-      if (bearExhRepeatCount < cfg.exhaustionMaxRepeat) {
-        bearExhaustion = true;
-        bearExhRepeatCount += 1;
-        if (bearExhRepeatCount >= cfg.exhaustionMaxRepeat) {
-          bearExhInCooldown = true;
-          bearExhCooldownBars = cfg.exhaustionCooldown;
-        }
-      }
-    }
-    if (!rawBullExhaustion && !bullExhInCooldown) bullExhRepeatCount = 0;
-    if (!rawBearExhaustion && !bearExhInCooldown) bearExhRepeatCount = 0;
-
-    // Cubic forecast extrapolated divExtrapolate bars ahead
-    const [f0, f1, f2, f3] = cubicFit(resolvedSource, i, cfg.divPolyLength);
-    const xe = cfg.divPolyLength - 1 + cfg.divExtrapolate;
-    const forecastValue = f0 + f1 * xe + f2 * xe * xe + f3 * xe * xe * xe;
-
-    const atr = atrRef[i];
-    const priceChange = b.close - (i >= cfg.divLookback ? bars[i - cfg.divLookback].close : NaN);
-    const priceFalling = lt(priceChange, 0);
-    const priceRising = gt(priceChange, 0);
-    const divAmount = Math.abs(forecastValue - b.close);
-    const priceMovement = Math.abs(priceChange);
-    const priceMovedEnough = ge(priceMovement, cfg.priceMovementATR * atr);
-    const divLargeEnough = ge(divAmount, cfg.divThresholdATR * atr);
-    const rawBullishDiv = priceFalling && gt(forecastValue, b.close);
-    const rawBearishDiv = priceRising && lt(forecastValue, b.close);
-
-    bullDivCount = rawBullishDiv && priceMovedEnough && divLargeEnough ? bullDivCount + 1 : 0;
-    bearDivCount = rawBearishDiv && priceMovedEnough && divLargeEnough ? bearDivCount + 1 : 0;
-
-    barsSinceBullDiv += 1;
-    barsSinceBearDiv += 1;
-    const bullishDivRaw = cfg.showDivergence && bullDivCount >= cfg.divConsecBars && barsSinceBullDiv >= cfg.divCooldown;
-    const bearishDivRaw = cfg.showDivergence && bearDivCount >= cfg.divConsecBars && barsSinceBearDiv >= cfg.divCooldown;
-    if (bullishDivRaw) barsSinceBullDiv = 0;
-    if (bearishDivRaw) barsSinceBearDiv = 0;
-    const bullishDiv = bullishDivRaw && barsSinceBullDiv === 0;
-    const bearishDiv = bearishDivRaw && barsSinceBearDiv === 0;
-    flags[0].push(bullExhaustion);
-    flags[1].push(bearExhaustion);
-    flags[2].push(bullishDiv);
-    flags[3].push(bearishDiv);
-
-    // plotshape(..., location.absolute): no shape when the price is na
-    const push = (on: boolean, price: number, m: Omit<MarkerData, 'time' | 'price'>) => {
-      if (on && Number.isFinite(price)) markers.push({ time: b.time, price, ...m });
-    };
-    push(bullExhaustion, smoothHigh[i] + atr * cfg.signalOffset,
-      { position: 'atPriceMiddle', shape: 'xcross', color: cfg.bullExhaustionColor, size: 'tiny', id: 'shape0' });
-    push(bearExhaustion, smoothLow[i] - atr * cfg.signalOffset,
-      { position: 'atPriceMiddle', shape: 'xcross', color: cfg.bearExhaustionColor, size: 'tiny', id: 'shape1' });
-    push(bullishDiv, smoothLow[i] - atr * cfg.signalOffset * 2,
-      { position: 'atPriceBottom', shape: 'labelUp', color: cfg.bullishDivColor, size: 'tiny', text: 'DIV',
-        textColor: '#FFFFFF', id: 'shape2' });
-    push(bearishDiv, smoothHigh[i] + atr * cfg.signalOffset * 2,
-      { position: 'atPriceTop', shape: 'labelDown', color: cfg.bearishDivColor, size: 'tiny', text: 'DIV',
-        textColor: '#FFFFFF', id: 'shape3' });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    alerts: alertStates(alertConditions, bars, flags),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -452,4 +537,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert3', title: 'Bearish Divergence', message: 'Exhaustion+Div → Bearish Divergence' },
 ];
 
-export const PolynomialTrendExhaustionDivergence = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const PolynomialTrendExhaustionDivergence = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

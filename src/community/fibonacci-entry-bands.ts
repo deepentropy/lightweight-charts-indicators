@@ -18,13 +18,14 @@
  */
 
 import {
-  ta, color, Series, getSourceSeries,
+  taStep, color,
   type Bar, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type FillData,
   type ShapeConfig, type BarColorConfig, type SourceType,
 } from 'oakscriptjs';
 import type { BarColorData, MarkerData } from '../types';
 import { backgroundColorOf, type ChartContext } from '../chart-context';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface FibonacciEntryBandsInputs {
   /** TP Aggressiveness */
@@ -134,142 +135,193 @@ const lt = (a: number, b: number) => b - a > EPS;
 
 type Point = { time: number; value: number; color?: string };
 
+type Result = IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; alerts: AlertConditionState[] };
+
+interface FebVars {
+  /** basis > basis[1] ? 1 : basis < basis[1] ? -1 : nz(trend[1]) */
+  trend: number;
+}
+
+interface FebRun extends BarRunState<FebVars> {
+  ema1: ReturnType<typeof taStep.ema>;
+  ema2: ReturnType<typeof taStep.ema>;
+  atr: ReturnType<typeof taStep.atr> | null;
+  dev: WindowStdev | null;
+  longX: ReturnType<typeof taStep.crossover>;
+  shortX: ReturnType<typeof taStep.crossunder>;
+  con1X: ReturnType<typeof taStep.crossunder>;
+  con2X: ReturnType<typeof taStep.crossover>;
+  bgFill: string;
+  basis: number[];
+  plots: Point[][];
+  up1: number[];
+  up4: number[];
+  lo1: number[];
+  lo4: number[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<FibonacciEntryBandsInputs>): BarStudy<FebRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  const mult1 = 0.618;
+  const mult2 = 1.0;
+  const mult3 = 1.618;
+  const mult4 = 2.618;
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+  const lineColors = [
+    cfg.gray, c(cfg.red, 60), c(cfg.red, 30), c(cfg.green, 60), c(cfg.green, 30),
+    c(cfg.red, 50), c(cfg.red, 40), c(cfg.green, 50), c(cfg.green, 40),
+  ];
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init(_bars, chart) {
+      if (!cfg.useATR) taStep.stdev().step(0, cfg.len); // the length check of ta.stdev
+      const s: FebRun = {
+        ema1: taStep.ema(cfg.len), ema2: taStep.ema(cfg.len),
+        atr: cfg.useATR ? taStep.atr(cfg.atrLen) : null, dev: cfg.useATR ? null : new WindowStdev(cfg.len),
+        longX: taStep.crossover(), shortX: taStep.crossunder(), con1X: taStep.crossunder(), con2X: taStep.crossover(),
+        bgFill: c(backgroundColorOf(chart), 90),
+        basis: [], plots: Array.from({ length: 9 }, () => []), up1: [], up4: [], lo1: [], lo4: [],
+        markers: [], barColors: [], flags: Array.from({ length: 6 }, () => []), times: Array.from({ length: 6 }, () => []),
+        steps: [], vars: { trend: 0 }, lists: [], series: [],
+      };
+      s.steps = [s.ema1, s.ema2, ...(s.atr ? [s.atr] : []), ...(s.dev ? [s.dev] : []), s.longX, s.shortX, s.con1X, s.con2X];
+      s.lists = [s.markers, s.barColors, ...s.times];
+      s.series = [s.basis, ...s.plots, s.up1, s.up4, s.lo1, s.lo4, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      const src = value(b);
+      const basis = s.ema2.step(s.ema1.step(src));
+      s.basis[i] = basis;
+      const vol = s.atr ? s.atr.step(b.high, b.low, b.close) : s.dev!.step(src);
+
+      const prev = i > 0 ? s.basis[i - 1] : NaN;
+      // basis > basis[1] ? 1 : basis < basis[1] ? -1 : nz(trend[1])
+      v.trend = gt(basis, prev) ? 1 : lt(basis, prev) ? -1 : v.trend;
+      const trend = v.trend;
+
+      const upper1 = basis + vol * mult1;
+      const upper2 = basis + vol * mult2;
+      const upper3 = basis + vol * mult3;
+      const upper4 = basis + vol * mult4;
+      const lower1 = basis + -1 * vol * mult1;
+      const lower2 = basis + -1 * vol * mult2;
+      const lower3 = basis + -1 * vol * mult3;
+      const lower4 = basis + -1 * vol * mult4;
+
+      const up1 = trend === -1 ? upper1 : NaN;
+      const up4 = trend === -1 ? upper4 : NaN;
+      const lo1 = trend === 1 ? lower1 : NaN;
+      const lo4 = trend === 1 ? lower4 : NaN;
+      s.up1[i] = up1;
+      s.up4[i] = up4;
+      s.lo1[i] = lo1;
+      s.lo4[i] = lo4;
+
+      const p = s.plots;
+      p[0][i] = { time: t, value: fin(basis), color: lineColors[0] };
+      p[1][i] = { time: t, value: fin(up1), color: lineColors[1] };
+      p[2][i] = { time: t, value: fin(up4), color: lineColors[2] };
+      p[3][i] = { time: t, value: fin(lo1), color: lineColors[3] };
+      p[4][i] = { time: t, value: fin(lo4), color: lineColors[4] };
+      p[5][i] = { time: t, value: fin(trend === -1 ? upper2 : NaN), color: lineColors[5] };
+      p[6][i] = { time: t, value: fin(trend === -1 ? upper3 : NaN), color: lineColors[6] };
+      p[7][i] = { time: t, value: fin(trend === 1 ? lower2 : NaN), color: lineColors[7] };
+      p[8][i] = { time: t, value: fin(trend === 1 ? lower3 : NaN), color: lineColors[8] };
+
+      // Signals: ta.crossover(basis, basis[1]) / ta.crossunder(basis, basis[1])
+      const longSignal = s.longX.step(basis, prev);
+      const shortSignal = s.shortX.step(basis, prev);
+
+      // switch tpAggressiveness (var floats assigned on every bar)
+      const tpLongBand = cfg.tpAggressiveness === 'medium' ? lower2 : cfg.tpAggressiveness === 'high' ? lower1 : lower4;
+      const tpShortBand = cfg.tpAggressiveness === 'medium' ? upper2 : cfg.tpAggressiveness === 'high' ? upper1 : upper4;
+      const con1 = s.con1X.step(b.close, tpLongBand);
+      const con2 = s.con2X.step(b.close, tpShortBand);
+
+      // normDist = |close - basis| / (vol * mult4) when the trend is set, capped at 1
+      let normDist = trend !== 0 ? Math.abs(b.close - basis) / (vol * mult4) : 0;
+      normDist = Math.min(normDist, 1);
+      const alpha = Math.min(Math.round(normDist * 100), 70);
+      const avgOc = (b.open + b.close) / 2;
+      let barCol: string | null = null;
+      if (trend === 1) barCol = lt(avgOc, basis) ? cfg.gray : c(cfg.green, alpha);
+      else if (trend === -1) barCol = gt(avgOc, basis) ? cfg.gray : c(cfg.red, alpha);
+      if (cfg.colorbar && barCol !== null) s.barColors.push({ id: 'barcolor0', time: t, color: barCol });
+
+      // plotshape(longSignal ? lower4 : na, location.absolute, shape.labelup ...)
+      if (longSignal && Number.isFinite(lower4)) {
+        s.markers.push({ id: 'shape0', time: t, position: 'atPriceBottom', price: lower4, shape: 'labelUp', color: cfg.green, text: '▲', textColor: '#FFFFFF' });
+      }
+      if (shortSignal && Number.isFinite(upper4)) {
+        s.markers.push({ id: 'shape1', time: t, position: 'atPriceTop', price: upper4, shape: 'labelDown', color: cfg.red, text: '▼', textColor: '#FFFFFF' });
+      }
+      const rejectionLong = cfg.showRej && con1 && trend === -1;
+      const rejectionShort = cfg.showRej && con2 && trend === 1;
+      if (rejectionLong) s.markers.push({ id: 'shape2', time: t, position: 'belowBar', shape: 'xcross', color: cfg.red, size: 'tiny' });
+      if (rejectionShort) s.markers.push({ id: 'shape3', time: t, position: 'aboveBar', shape: 'xcross', color: cfg.green, size: 'tiny' });
+      const longBounce = cfg.showBounce && trend === 1 && lt(b.low, basis) && gt(b.close, basis) && !longSignal;
+      const shortBounce = cfg.showBounce && trend === -1 && gt(b.high, basis) && lt(b.close, basis) && !shortSignal;
+      if (longBounce) s.markers.push({ id: 'shape4', time: t, position: 'belowBar', shape: 'triangleUp', color: cfg.green, size: 'tiny' });
+      if (shortBounce) s.markers.push({ id: 'shape5', time: t, position: 'aboveBar', shape: 'triangleDown', color: cfg.red, size: 'tiny' });
+      const f = s.flags;
+      f[0][i] = longSignal;
+      f[1][i] = shortSignal;
+      f[2][i] = rejectionLong;
+      f[3][i] = rejectionShort;
+      f[4][i] = longBounce;
+      f[5][i] = shortBounce;
+      for (let k = 0; k < 6; k++) if (f[k][i]) s.times[k].push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const gradient = (top: number[], bottom: number[], bottomColor: string) => ({
+        topValue: top.slice(),
+        bottomValue: bottom.slice(),
+        topColor: new Array<string | null>(n).fill(s.bgFill),
+        bottomColor: new Array<string | null>(n).fill(bottomColor),
+      });
+      const fills: FillData[] = [
+        { id: 'fill0', plot1: 'plot1', plot2: 'plot2', options: { title: 'Downtrend Band Fill' }, gradient: gradient(s.up1, s.up4, c(cfg.red, 70)) },
+        { id: 'fill1', plot1: 'plot3', plot2: 'plot4', options: { title: 'Uptrend Band Fill' }, gradient: gradient(s.lo1, s.lo4, c(cfg.green, 70)) },
+      ];
+      const [plot0, plot1, plot2, plot3, plot4, plot5, plot6, plot7, plot8] = s.plots.map((p) => p.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0, plot1, plot2, plot3, plot4, plot5, plot6, plot7, plot8 },
+        fills,
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FibonacciEntryBandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<FibonacciEntryBandsInputs> = {},
   chart?: ChartContext,
 ): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => (v === null || v === undefined ? NaN : (v as number)));
-  const B = (s: Series) => s.toArray().map((v) => Number(v) === 1);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const bgColor = backgroundColorOf(chart);
-
-  const srcS = getSourceSeries(bars, cfg.src);
-  const src = A(srcS);
-  const basis = A(ta.ema(ta.ema(srcS, cfg.len), cfg.len));
-  const vol = cfg.useATR ? A(ta.atr(bars, cfg.atrLen)) : A(ta.stdev(S(src), cfg.len));
-
-  const mult1 = 0.618;
-  const mult2 = 1.0;
-  const mult3 = 1.618;
-  const mult4 = 2.618;
-
-  const trend: number[] = new Array(n);
-  let prevTrend = 0;
-  for (let i = 0; i < n; i++) {
-    const prev = i > 0 ? basis[i - 1] : NaN;
-    // basis > basis[1] ? 1 : basis < basis[1] ? -1 : nz(trend[1])
-    prevTrend = gt(basis[i], prev) ? 1 : lt(basis[i], prev) ? -1 : prevTrend;
-    trend[i] = prevTrend;
-  }
-
-  const band = (m: number, sign: number) => basis.map((b, i) => b + sign * vol[i] * m);
-  const upper1 = band(mult1, 1);
-  const upper2 = band(mult2, 1);
-  const upper3 = band(mult3, 1);
-  const upper4 = band(mult4, 1);
-  const lower1 = band(mult1, -1);
-  const lower2 = band(mult2, -1);
-  const lower3 = band(mult3, -1);
-  const lower4 = band(mult4, -1);
-
-  const when = (dir: number, v: number[]) => v.map((x, i) => (trend[i] === dir ? x : NaN));
-  const line = (v: number[], col: string): Point[] =>
-    bars.map((b, i) => ({ time: b.time, value: Number.isFinite(v[i]) ? v[i] : NaN, color: col }));
-
-  const up1 = when(-1, upper1);
-  const up4 = when(-1, upper4);
-  const lo1 = when(1, lower1);
-  const lo4 = when(1, lower4);
-
-  // Signals: ta.crossover(basis, basis[1]) / ta.crossunder(basis, basis[1])
-  const basisS = S(basis);
-  const basisPrev = S(basis.map((_, i) => (i > 0 ? basis[i - 1] : NaN)));
-  const longSignal = B(ta.crossover(basisS, basisPrev));
-  const shortSignal = B(ta.crossunder(basisS, basisPrev));
-
-  // switch tpAggressiveness (var floats assigned on every bar)
-  const tpLongBand = cfg.tpAggressiveness === 'medium' ? lower2 : cfg.tpAggressiveness === 'high' ? lower1 : lower4;
-  const tpShortBand = cfg.tpAggressiveness === 'medium' ? upper2 : cfg.tpAggressiveness === 'high' ? upper1 : upper4;
-  const closeS = new Series(bars, (b) => b.close);
-  const con1 = B(ta.crossunder(closeS, S(tpLongBand)));
-  const con2 = B(ta.crossover(closeS, S(tpShortBand)));
-
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const flags: boolean[][] = [[], [], [], [], [], []];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time;
-    // normDist = |close - basis| / (vol * mult4) when the trend is set, capped at 1
-    let normDist = trend[i] !== 0 ? Math.abs(b.close - basis[i]) / (vol[i] * mult4) : 0;
-    normDist = Math.min(normDist, 1);
-    const alpha = Math.min(Math.round(normDist * 100), 70);
-    const avgOc = (b.open + b.close) / 2;
-    let barCol: string | null = null;
-    if (trend[i] === 1) barCol = lt(avgOc, basis[i]) ? cfg.gray : c(cfg.green, alpha);
-    else if (trend[i] === -1) barCol = gt(avgOc, basis[i]) ? cfg.gray : c(cfg.red, alpha);
-    if (cfg.colorbar && barCol !== null) barColors.push({ id: 'barcolor0', time: t, color: barCol });
-
-    // plotshape(longSignal ? lower4 : na, location.absolute, shape.labelup ...)
-    if (longSignal[i] && Number.isFinite(lower4[i])) {
-      markers.push({ id: 'shape0', time: t, position: 'atPriceBottom', price: lower4[i], shape: 'labelUp', color: cfg.green, text: '▲', textColor: '#FFFFFF' });
-    }
-    if (shortSignal[i] && Number.isFinite(upper4[i])) {
-      markers.push({ id: 'shape1', time: t, position: 'atPriceTop', price: upper4[i], shape: 'labelDown', color: cfg.red, text: '▼', textColor: '#FFFFFF' });
-    }
-    const rejectionLong = cfg.showRej && con1[i] && trend[i] === -1;
-    const rejectionShort = cfg.showRej && con2[i] && trend[i] === 1;
-    if (rejectionLong) markers.push({ id: 'shape2', time: t, position: 'belowBar', shape: 'xcross', color: cfg.red, size: 'tiny' });
-    if (rejectionShort) markers.push({ id: 'shape3', time: t, position: 'aboveBar', shape: 'xcross', color: cfg.green, size: 'tiny' });
-    const longBounce = cfg.showBounce && trend[i] === 1 && lt(b.low, basis[i]) && gt(b.close, basis[i]) && !longSignal[i];
-    const shortBounce = cfg.showBounce && trend[i] === -1 && gt(b.high, basis[i]) && lt(b.close, basis[i]) && !shortSignal[i];
-    if (longBounce) markers.push({ id: 'shape4', time: t, position: 'belowBar', shape: 'triangleUp', color: cfg.green, size: 'tiny' });
-    if (shortBounce) markers.push({ id: 'shape5', time: t, position: 'aboveBar', shape: 'triangleDown', color: cfg.red, size: 'tiny' });
-    flags[0].push(longSignal[i]);
-    flags[1].push(shortSignal[i]);
-    flags[2].push(rejectionLong);
-    flags[3].push(rejectionShort);
-    flags[4].push(longBounce);
-    flags[5].push(shortBounce);
-  }
-
-  const bgFill = c(bgColor, 90);
-  const gradient = (top: number[], bottom: number[], bottomColor: string) => ({
-    topValue: top,
-    bottomValue: bottom,
-    topColor: new Array<string | null>(n).fill(bgFill),
-    bottomColor: new Array<string | null>(n).fill(bottomColor),
-  });
-  const fills: FillData[] = [
-    { id: 'fill0', plot1: 'plot1', plot2: 'plot2', options: { title: 'Downtrend Band Fill' }, gradient: gradient(up1, up4, c(cfg.red, 70)) },
-    { id: 'fill1', plot1: 'plot3', plot2: 'plot4', options: { title: 'Uptrend Band Fill' }, gradient: gradient(lo1, lo4, c(cfg.green, 70)) },
-  ];
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(basis, cfg.gray),
-      plot1: line(up1, c(cfg.red, 60)),
-      plot2: line(up4, c(cfg.red, 30)),
-      plot3: line(lo1, c(cfg.green, 60)),
-      plot4: line(lo4, c(cfg.green, 30)),
-      plot5: line(when(-1, upper2), c(cfg.red, 50)),
-      plot6: line(when(-1, upper3), c(cfg.red, 40)),
-      plot7: line(when(1, lower2), c(cfg.green, 50)),
-      plot8: line(when(1, lower3), c(cfg.green, 40)),
-    },
-    fills,
-    markers,
-    barColors,
-    alerts: alertStates(alertConditions, bars, flags),
-  };
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 export const FibonacciEntryBands = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

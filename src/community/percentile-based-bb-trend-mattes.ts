@@ -14,9 +14,13 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import {
+  barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type Committable, type IndicatorRun,
+} from '../live-run';
 
 export interface PercentileBasedBbTrendMattesInputs {
   /** Lookback length of the percentiles and medians */
@@ -62,61 +66,164 @@ const lt = (a: number, b: number) => b - a > EPS;
 /** Division: Pine x / 0 is +-Infinity, but pb_percent only feeds ta.ema, which skips an infinite value as na */
 const div = (x: number, y: number) => (y === 0 ? NaN : x / y);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<PercentileBasedBbTrendMattesInputs> = {},
-): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const srcSeries = getSourceSeries(bars, cfg.source);
-  const src = A(srcSeries);
+/**
+ * The sorted window of `ta.percentile_linear_interpolation(source, length, percentage)` one bar at a time, with the
+ * rules of the oakscriptjs function (same doubles): the new value goes before the first value >= it (na last), then
+ * the value of the bar leaving the window is removed. A step reads the committed window without changing it;
+ * `at(j)` is value j of the window of the stepped bar.
+ */
+class SortedWindow implements Committable {
+  private readonly values: number[] = [];
+  private readonly bars: number[] = [];
+  private i = -1;
+  private v = NaN;
+  private k = 0;
+  private removedW = -1;
+  private stepped = false;
 
-  const p25 = A(ta.percentile_linear_interpolation(srcSeries, cfg.length, 25));
-  const p75 = A(ta.percentile_linear_interpolation(srcSeries, cfg.length, 75));
-  const med = A(ta.median(srcSeries, cfg.length));
-  // mad = ta.median(math.abs(source - ta.median(source, length)), length)
-  const mad = A(ta.median(S(src.map((v, i) => Math.abs(v - med[i]))), cfg.length));
-  const pb = bars.map((_b, i) => {
-    const basis = (p25[i] + p75[i]) / 2;
-    const dev = cfg.mult * mad[i];
-    const upper = basis + dev;
-    const lower = basis - dev;
-    return div(src[i] - lower, upper - lower);
-  });
-  const pbTrend = A(ta.ema(S(pb), cfg.smoothLength));
+  constructor(private readonly length: number) {}
 
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const candles: PlotCandleData[] = [];
-  let col = '#4caf50'; // var color col = #4caf50
-  for (let i = 0; i < n; i++) {
-    const v = pbTrend[i];
-    const prev = i > 0 ? pbTrend[i - 1] : NaN;
-    const positiveChange = gt(v, prev);
-    const negativeChange = lt(v, prev);
-    if (gt(v, 0) && positiveChange) col = BULL;
-    if (gt(v, 0) && negativeChange) col = '#1095fa';
-    if (lt(v, 0) && negativeChange) col = BEAR;
-    if (lt(v, 0) && positiveChange) col = '#5418eb';
-    plot0.push({ time: bars[i].time, value: v, color: col });
-    // plotcandle(open, high, low, close, 'BarColor', syscol, syscol, syscol, force_overlay = true)
-    const syscol = gt(v, 0) ? BULL : BEAR;
-    const b = bars[i];
-    candles.push({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
-      color: syscol, wickColor: syscol, borderColor: syscol, forceOverlay: true });
+  step(i: number, v: number): void {
+    const values = this.values;
+    let k = 0;
+    while (k < values.length && !(values[k]! >= v)) k++;
+    this.i = i;
+    this.v = v;
+    this.k = k;
+    const removed = i >= this.length ? this.bars.indexOf(i - this.length) : -1;
+    this.removedW = removed < 0 ? -1 : removed < k ? removed : removed + 1;
+    this.stepped = true;
   }
 
+  at(j: number): number {
+    const w = this.removedW >= 0 && j >= this.removedW ? j + 1 : j;
+    return w < this.k ? this.values[w]! : w === this.k ? this.v : this.values[w - 1]!;
+  }
+
+  /** percentile_linear_interpolation of the window of the stepped bar (na for the first `length - 1` bars) */
+  percentile(percentage: number): number {
+    const length = this.length;
+    if (this.i < length - 1) return NaN;
+    const pos = (percentage / 100) * length - 0.5;
+    if (pos <= 0) return this.at(0);
+    if (pos >= length - 1) return this.at(length - 1);
+    const lo = Math.floor(pos);
+    return this.at(lo) + (pos - lo) * (this.at(lo + 1) - this.at(lo));
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.values.splice(this.k, 0, this.v);
+    this.bars.splice(this.k, 0, this.i);
+    if (this.i >= this.length) {
+      const old = this.bars.indexOf(this.i - this.length);
+      this.values.splice(old, 1);
+      this.bars.splice(old, 1);
+    }
+  }
+}
+
+type Result = IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } & { alerts: AlertConditionState[] };
+
+interface PbbVars {
+  /** var color col = #4caf50 */
+  col: string;
+}
+
+interface PbbRun extends BarRunState<PbbVars> {
+  window: SortedWindow;
+  med: ReturnType<typeof taStep.median>;
+  mad: ReturnType<typeof taStep.median>;
+  ema: ReturnType<typeof taStep.ema>;
+  pbTrend: number[];
+  plot0: { time: number; value: number; color: string }[];
+  candles: PlotCandleData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<PercentileBasedBbTrendMattesInputs>): BarStudy<PbbRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.source);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    hlines: [
-      { value: 0, options: { title: 'Midline', color: String(color.new(color.white, 60)), linestyle: 'dotted' } },
-    ],
-    plotCandles: { BarColor: candles },
-    // alertcondition(ta.crossover(pb_trend, 0)) / alertcondition(ta.crossunder(pb_trend, 0))
-    alerts: alertStates(alertConditions, bars, [crossedOver(pbTrend, 0), crossedUnder(pbTrend, 0)]),
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const s: PbbRun = {
+        // p25 / p75: ta.percentile_linear_interpolation(source, length, 25 / 75), the same sorted window
+        window: new SortedWindow(cfg.length),
+        med: taStep.median(cfg.length),
+        mad: taStep.median(cfg.length),
+        ema: taStep.ema(cfg.smoothLength),
+        pbTrend: [], plot0: [], candles: [], flags: [[], []], times: [[], []],
+        steps: [], vars: { col: '#4caf50' }, lists: [], series: [],
+      };
+      s.steps = [s.window, s.med, s.mad, s.ema];
+      s.lists = s.times;
+      s.series = [s.pbTrend, s.plot0, s.candles, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const src = value(b);
+      s.window.step(i, src);
+      const p25 = s.window.percentile(25);
+      const p75 = s.window.percentile(75);
+      const med = s.med.step(src);
+      // mad = ta.median(math.abs(source - ta.median(source, length)), length)
+      const mad = s.mad.step(Math.abs(src - med));
+      const basis = (p25 + p75) / 2;
+      const dev = cfg.mult * mad;
+      const upper = basis + dev;
+      const lower = basis - dev;
+      const pb = div(src - lower, upper - lower);
+      const v = s.ema.step(pb);
+      s.pbTrend[i] = v;
+
+      const prev = i > 0 ? s.pbTrend[i - 1]! : NaN;
+      const positiveChange = gt(v, prev);
+      const negativeChange = lt(v, prev);
+      let col = s.vars.col;
+      if (gt(v, 0) && positiveChange) col = BULL;
+      if (gt(v, 0) && negativeChange) col = '#1095fa';
+      if (lt(v, 0) && negativeChange) col = BEAR;
+      if (lt(v, 0) && positiveChange) col = '#5418eb';
+      s.vars.col = col;
+      s.plot0[i] = { time: b.time, value: v, color: col };
+      // plotcandle(open, high, low, close, 'BarColor', syscol, syscol, syscol, force_overlay = true)
+      const syscol = gt(v, 0) ? BULL : BEAR;
+      s.candles[i] = { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
+        color: syscol, wickColor: syscol, borderColor: syscol, forceOverlay: true };
+      // alertcondition(ta.crossover(pb_trend, 0)) / alertcondition(ta.crossunder(pb_trend, 0))
+      const up = v > 0 && prev <= 0;
+      const down = v < 0 && prev >= 0;
+      s.flags[0]![i] = up;
+      s.flags[1]![i] = down;
+      if (up) s.times[0]!.push(b.time as number);
+      if (down) s.times[1]!.push(b.time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        hlines: [
+          { value: 0, options: { title: 'Midline', color: String(color.new(color.white, 60)), linestyle: 'dotted' } },
+        ],
+        plotCandles: { BarColor: s.candles.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PercentileBasedBbTrendMattesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PercentileBasedBbTrendMattesInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -128,6 +235,7 @@ export const alertConditions: AlertConditionDecl[] = [
 export const PercentileBasedBbTrendMattes = {
   alertConditions,
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

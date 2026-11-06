@@ -15,9 +15,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type FractalExhaustionPreset = 'Default' | 'Fast Response' | 'Smooth Trend';
 export type FractalExhaustionColorPreset = 'Classic' | 'Aqua' | 'Cosmic' | 'Cyber' | 'Neon' | 'Custom';
@@ -103,10 +105,32 @@ const gt = (a: number, b: number) => a - b > 1e-10;
 const max = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.max(a, b));
 const min = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.min(a, b));
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<FractalExhaustionBandInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface BandVars {
+  tl: number;
+  dir: number;
+}
+
+interface BandRun extends BarRunState<BandVars> {
+  highest: WindowExtreme;
+  lowest: WindowExtreme;
+  atr: ReturnType<typeof taStep.atr>;
+  src: number[];
+  trendDir: number[];
+  ex: number[];
+  plots: Point[][];
+  edgeFill: string[];
+  trailFill: string[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<FractalExhaustionBandInputs>): BarStudy<BandRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   let { power, sensitivity } = cfg;
   if (cfg.presetInput === 'Fast Response') {
@@ -118,115 +142,130 @@ export function calculate(
   }
   const [bullColor, bearColor] = cfg.colorPresetInput === 'Custom'
     ? [cfg.bullColorInput, cfg.bearColorInput] : COLOR_PRESETS[cfg.colorPresetInput];
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = A(getSourceSeries(bars, cfg.src));
-  const high = bars.map((b) => b.high);
-  const low = bars.map((b) => b.low);
-  const highest = A(ta.highest(new Series(bars, (b) => b.high), power));
-  const lowest = A(ta.lowest(new Series(bars, (b) => b.low), power));
-  const atr = A(ta.atr(bars, 10));
-
-  const trendLine: number[] = new Array(n);
-  const trendDir: number[] = new Array(n);
-  const ex: number[] = new Array(n);
-  let tl = NaN;
-  let dir = 1;
-  for (let i = 0; i < n; i++) {
-    // len = sum of |src[k] - src[k + 1]| for k = 0 to power - 2 (na before the first bars)
-    let len = 0;
-    for (let k = 0; k <= power - 2; k++) {
-      const a = i - k >= 0 ? src[i - k] : NaN;
-      const b = i - k - 1 >= 0 ? src[i - k - 1] : NaN;
-      len += Math.abs(a - b);
-    }
-    const range = highest[i] - lowest[i];
-    // fdi = high_ - low_ > 0 ? (log(len) - log(high_ - low_)) / log(power) : 0 (na range: 0)
-    const fdi = gt(range, 0) ? (Math.log(len) - Math.log(range)) / Math.log(power) : 0;
-    const buffer = atr[i] * (sensitivity * (1 + fdi));
-    const close = bars[i].close;
-
-    if (isNaN(tl)) tl = src[i];
-    if (dir >= 0) {
-      if (gt(tl - buffer, close)) {
-        dir = -1;
-        tl = close + buffer * 0.5;
-      } else if (gt(1.5, fdi)) {
-        tl = max(tl, close - buffer);
-      }
-    } else if (gt(close, tl + buffer)) {
-      dir = 1;
-      tl = close - buffer * 0.5;
-    } else if (gt(1.5, fdi)) {
-      tl = min(tl, close + buffer);
-    }
-    trendLine[i] = tl;
-    trendDir[i] = dir;
-
-    // ex := trend_dir != trend_dir[1] ? (up ? high : low) : up ? max(nz(ex[1], high), high) : min(nz(ex[1], low), low)
-    // (trend_dir[1] is na on the first bar: the comparison is false)
-    const prevDir = i > 0 ? trendDir[i - 1] : NaN;
-    const prevEx = i > 0 && !isNaN(ex[i - 1]) ? ex[i - 1] : NaN;
-    if (i > 0 && dir !== prevDir) ex[i] = dir === 1 ? high[i] : low[i];
-    else ex[i] = dir === 1 ? Math.max(isNaN(prevEx) ? high[i] : prevEx, high[i]) : Math.min(isNaN(prevEx) ? low[i] : prevEx, low[i]);
-  }
-
-  const edgePlot: { time: number; value: number; color: string }[] = [];
-  const midPlot: { time: number; value: number; color: string }[] = [];
-  const trailPlot: { time: number; value: number; color: string }[] = [];
-  const edgeFill: string[] = [];
-  const trailFill: string[] = [];
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  const bullFlags: boolean[] = [];
-  const bearFlags: boolean[] = [];
+  const source = barSource(cfg.src);
   const c = (col: string, transp: number) => String(color.new(col, transp));
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const dir = trendDir[i];
-    const prevDir = i > 0 ? trendDir[i - 1] : NaN;
-    const currentColor = dir === 1 ? bullColor : bearColor;
-    // noColor = trend_dir != trend_dir[1] (false on the first bar)
-    const noColor = i > 0 && dir !== prevDir;
-    // mid = math.avg(ex, trend_line)
-    const mid = (ex[i] + trendLine[i]) / 2;
-    edgePlot.push({ time: t, value: ex[i], color: noColor ? 'transparent' : c(currentColor, 40) });
-    midPlot.push({ time: t, value: mid, color: noColor ? 'transparent' : c(currentColor, 55) });
-    trailPlot.push({ time: t, value: trendLine[i], color: noColor ? 'transparent' : currentColor });
-    edgeFill.push(noColor || !cfg.showFillInput ? 'transparent' : c(currentColor, 85));
-    trailFill.push(noColor || !cfg.showFillInput ? 'transparent' : c(currentColor, 70));
-
-    // plotshape(bullFlip ? trend_line : na, circle, absolute, bullColor, tiny) and the glow (transparency 50, small)
-    const bullFlip = dir === 1 && prevDir === -1;
-    const bearFlip = dir === -1 && prevDir === 1;
-    if (bullFlip && !isNaN(trendLine[i])) {
-      markers.push({ time: t, position: 'atPriceMiddle', price: trendLine[i], shape: 'circle', color: bullColor, size: 'tiny', id: 'shape0' });
-      markers.push({ time: t, position: 'atPriceMiddle', price: trendLine[i], shape: 'circle', color: c(bullColor, 50), size: 'small', id: 'shape1' });
-    }
-    if (bearFlip && !isNaN(trendLine[i])) {
-      markers.push({ time: t, position: 'atPriceMiddle', price: trendLine[i], shape: 'circle', color: bearColor, size: 'tiny', id: 'shape2' });
-      markers.push({ time: t, position: 'atPriceMiddle', price: trendLine[i], shape: 'circle', color: c(bearColor, 50), size: 'small', id: 'shape3' });
-    }
-    bullFlags.push(bullFlip);
-    bearFlags.push(bearFlip);
-    if (cfg.paintBarsInput) barColors.push({ time: t, color: c(currentColor, cfg.barTranspInput) });
-    if (cfg.paintBgInput) bgColors.push({ time: t, color: c(currentColor, cfg.bgTranspInput) });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: edgePlot, plot1: midPlot, plot2: trailPlot },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', colors: edgeFill },
-      { plot1: 'plot1', plot2: 'plot2', colors: trailFill },
-    ],
-    markers,
-    barColors,
-    bgColors,
-    // alertcondition(bullFlip) / alertcondition(bearFlip) / alertcondition(bullFlip or bearFlip)
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags, bullFlags.map((b, i) => b || bearFlags[i])]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: BandRun = {
+        highest: new WindowExtreme(false, power), lowest: new WindowExtreme(true, power), atr: taStep.atr(10),
+        src: [], trendDir: [], ex: [], plots: [[], [], []], edgeFill: [], trailFill: [], markers: [], barColors: [],
+        bgColors: [], flags: [[], [], []], times: [[], [], []],
+        steps: [], vars: { tl: NaN, dir: 1 }, lists: [], series: [],
+      };
+      s.steps = [s.highest, s.lowest, s.atr];
+      s.lists = [s.markers, s.barColors, s.bgColors, ...s.times];
+      s.series = [s.src, s.trendDir, s.ex, ...s.plots, s.edgeFill, s.trailFill, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const bar = bars[i];
+      const src = s.src;
+      src[i] = source(bar);
+      // len = sum of |src[k] - src[k + 1]| for k = 0 to power - 2 (na before the first bars)
+      let len = 0;
+      for (let k = 0; k <= power - 2; k++) {
+        const a = i - k >= 0 ? src[i - k] : NaN;
+        const b = i - k - 1 >= 0 ? src[i - k - 1] : NaN;
+        len += Math.abs(a - b);
+      }
+      const range = s.highest.step(bar.high) - s.lowest.step(bar.low);
+      // fdi = high_ - low_ > 0 ? (log(len) - log(high_ - low_)) / log(power) : 0 (na range: 0)
+      const fdi = gt(range, 0) ? (Math.log(len) - Math.log(range)) / Math.log(power) : 0;
+      const buffer = s.atr.step(bar.high, bar.low, bar.close) * (sensitivity * (1 + fdi));
+      const close = bar.close;
+
+      if (isNaN(v.tl)) v.tl = src[i];
+      if (v.dir >= 0) {
+        if (gt(v.tl - buffer, close)) {
+          v.dir = -1;
+          v.tl = close + buffer * 0.5;
+        } else if (gt(1.5, fdi)) {
+          v.tl = max(v.tl, close - buffer);
+        }
+      } else if (gt(close, v.tl + buffer)) {
+        v.dir = 1;
+        v.tl = close - buffer * 0.5;
+      } else if (gt(1.5, fdi)) {
+        v.tl = min(v.tl, close + buffer);
+      }
+      const trendLine = v.tl;
+      const dir = v.dir;
+      s.trendDir[i] = dir;
+
+      // ex := trend_dir != trend_dir[1] ? (up ? high : low) : up ? max(nz(ex[1], high), high) : min(nz(ex[1], low), low)
+      // (trend_dir[1] is na on the first bar: the comparison is false)
+      const prevDir = i > 0 ? s.trendDir[i - 1] : NaN;
+      const prevEx = i > 0 && !isNaN(s.ex[i - 1]) ? s.ex[i - 1] : NaN;
+      let ex: number;
+      if (i > 0 && dir !== prevDir) ex = dir === 1 ? bar.high : bar.low;
+      else ex = dir === 1 ? Math.max(isNaN(prevEx) ? bar.high : prevEx, bar.high) : Math.min(isNaN(prevEx) ? bar.low : prevEx, bar.low);
+      s.ex[i] = ex;
+
+      const t = bar.time;
+      const currentColor = dir === 1 ? bullColor : bearColor;
+      // noColor = trend_dir != trend_dir[1] (false on the first bar)
+      const noColor = i > 0 && dir !== prevDir;
+      // mid = math.avg(ex, trend_line)
+      const mid = (ex + trendLine) / 2;
+      s.plots[0][i] = { time: t, value: ex, color: noColor ? 'transparent' : c(currentColor, 40) };
+      s.plots[1][i] = { time: t, value: mid, color: noColor ? 'transparent' : c(currentColor, 55) };
+      s.plots[2][i] = { time: t, value: trendLine, color: noColor ? 'transparent' : currentColor };
+      s.edgeFill[i] = noColor || !cfg.showFillInput ? 'transparent' : c(currentColor, 85);
+      s.trailFill[i] = noColor || !cfg.showFillInput ? 'transparent' : c(currentColor, 70);
+
+      // plotshape(bullFlip ? trend_line : na, circle, absolute, bullColor, tiny) and the glow (transparency 50, small)
+      const bullFlip = dir === 1 && prevDir === -1;
+      const bearFlip = dir === -1 && prevDir === 1;
+      if (bullFlip && !isNaN(trendLine)) {
+        s.markers.push({ time: t, position: 'atPriceMiddle', price: trendLine, shape: 'circle', color: bullColor, size: 'tiny', id: 'shape0' });
+        s.markers.push({ time: t, position: 'atPriceMiddle', price: trendLine, shape: 'circle', color: c(bullColor, 50), size: 'small', id: 'shape1' });
+      }
+      if (bearFlip && !isNaN(trendLine)) {
+        s.markers.push({ time: t, position: 'atPriceMiddle', price: trendLine, shape: 'circle', color: bearColor, size: 'tiny', id: 'shape2' });
+        s.markers.push({ time: t, position: 'atPriceMiddle', price: trendLine, shape: 'circle', color: c(bearColor, 50), size: 'small', id: 'shape3' });
+      }
+      if (cfg.paintBarsInput) s.barColors.push({ time: t, color: c(currentColor, cfg.barTranspInput) });
+      if (cfg.paintBgInput) s.bgColors.push({ time: t, color: c(currentColor, cfg.bgTranspInput) });
+      // alertcondition(bullFlip) / alertcondition(bearFlip) / alertcondition(bullFlip or bearFlip)
+      const any = bullFlip || bearFlip;
+      s.flags[0][i] = bullFlip;
+      s.flags[1][i] = bearFlip;
+      s.flags[2][i] = any;
+      if (bullFlip) s.times[0].push(t as number);
+      if (bearFlip) s.times[1].push(t as number);
+      if (any) s.times[2].push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice() },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', colors: s.edgeFill.slice() },
+          { plot1: 'plot1', plot2: 'plot2', colors: s.trailFill.slice() },
+        ],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FractalExhaustionBandInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<FractalExhaustionBandInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -236,4 +275,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert2', title: 'Any Signal Change', message: 'Fractal Exhaustion Band [QuantAlgo]: Trend direction flipped on {{exchange}}:{{ticker}} - {{interval}}' },
 ];
 
-export const FractalExhaustionBand = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const FractalExhaustionBand = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

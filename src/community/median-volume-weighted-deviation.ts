@@ -12,8 +12,10 @@
  * Original notice: © Burggg
  */
 
-import { ta, math, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData, BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MedianVolumeWeightedDeviationInputs {
   /** Lookback of the VWAP and of the deviation */
@@ -60,34 +62,33 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MedianVolumeWeightedDeviationInputs> = {},
-): IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[] };
+
+interface MvwdVars {
+  score: number; // var score = 0
+  bandColor: string | null; // var color bandColor = na
+  barColor: string | null; // var color barColor = na
+  bgColor: string | null; // var color bgColor = na
+}
+
+interface MvwdRun extends BarRunState<MvwdVars> {
+  sumClosevol: WindowSum;
+  sumVol: WindowSum;
+  sumSqDev: WindowSum;
+  median: ReturnType<typeof taStep.median>;
+  buy: ReturnType<typeof taStep.crossover>;
+  sell: ReturnType<typeof taStep.crossunder>;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  fillColors: string[];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<MedianVolumeWeightedDeviationInputs>): BarStudy<MvwdRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-  const volume = bars.map((b) => b.volume ?? NaN);
-
-  // vwapN = math.sum(close * volume, n) / math.sum(volume, n)
-  const sumClosevol = A(math.sum(S(close.map((c, i) => c * volume[i])), cfg.n) as Series);
-  const sumVol = A(math.sum(S(volume), cfg.n) as Series);
-  const vwapN = sumClosevol.map((v, i) => v / sumVol[i]);
-  // variance = math.sum(volume * math.pow(close - vwapN, 2), n) / sumVol
-  const sqDev = close.map((c, i) => volume[i] * Math.pow(c - vwapN[i], 2));
-  const variance = A(math.sum(S(sqDev), cfg.n) as Series).map((v, i) => v / sumVol[i]);
-  const stdN = variance.map((v) => Math.sqrt(v));
-  const medianStd = A(ta.median(S(stdN), cfg.m));
-  const upper = vwapN.map((v, i) => v + cfg.k * medianStd[i]);
-  const lower = vwapN.map((v, i) => v - cfg.k * medianStd[i]);
-
-  // buy = ta.crossover(close, upper); sell = ta.crossunder(close, lower) (exact comparisons)
-  const closeSeries = S(close);
-  const buy = A(ta.crossover(closeSeries, S(upper)));
-  const sell = A(ta.crossunder(closeSeries, S(lower)));
-
   const longColor = '#ddff00';
   const shortColor = '#b300ff';
   const neutral = String(color.new('#999999', 50));
@@ -95,52 +96,90 @@ export function calculate(
   const shortBand = String(color.new(shortColor, 90));
   const longBar = String(color.new(longColor, 0));
   const shortBar = String(color.new(shortColor, 0));
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const plot2: { time: number; value: number; color: string }[] = [];
-  const fillColors: string[] = new Array(n);
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  let score = 0; // var score = 0
-  let bandColor: string | null = null; // var color bandColor = na
-  let barColor: string | null = null; // var color barColor = na
-  let bgColor: string | null = null; // var color bgColor = na
-  for (let i = 0; i < n; i++) {
-    const isBuy = buy[i] === 1;
-    const isSell = sell[i] === 1;
-    if (isBuy && !isSell) score = 1;
-    if (isSell) score = -1;
-    const col = score === 1 ? longColor : score === -1 ? shortColor : neutral;
-    if (isBuy && cfg.bandOn) bandColor = longBand;
-    if (isSell && cfg.bandOn) bandColor = shortBand;
-    if (isBuy && cfg.barOn) barColor = longBar;
-    if (isSell && cfg.barOn) barColor = shortBar;
-    if (isBuy && cfg.bgOn) bgColor = longBand;
-    if (isSell && cfg.bgOn) bgColor = shortBand;
-
-    const t = bars[i].time as number;
-    const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-    plot0.push({ time: t, value: fin(vwapN[i]), color: col });
-    plot1.push({ time: t, value: cfg.bandOn ? fin(upper[i]) : NaN, color: bandColor ?? 'transparent' });
-    plot2.push({ time: t, value: cfg.bandOn ? fin(lower[i]) : NaN, color: bandColor ?? 'transparent' });
-    // fill(upperPlot, lowerPlot, color = color.new(col, 90))
-    fillColors[i] = String(color.new(col, 90));
-    if (barColor !== null) barColors.push({ time: t, color: barColor });
-    if (bgColor !== null) bgColors.push({ time: t, color: bgColor });
-  }
-
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    fills: [{ plot1: 'plot1', plot2: 'plot2', options: { title: 'Deviation Zone' }, colors: fillColors }],
-    barColors,
-    bgColors,
+    init() {
+      const s: MvwdRun = {
+        sumClosevol: new WindowSum(cfg.n),
+        sumVol: new WindowSum(cfg.n),
+        sumSqDev: new WindowSum(cfg.n),
+        median: taStep.median(cfg.m),
+        buy: taStep.crossover(),
+        sell: taStep.crossunder(),
+        plot0: [], plot1: [], plot2: [], fillColors: [], barColors: [], bgColors: [],
+        steps: [],
+        vars: { score: 0, bandColor: null, barColor: null, bgColor: null },
+        lists: [], series: [],
+      };
+      s.steps = [s.sumClosevol, s.sumVol, s.sumSqDev, s.median, s.buy, s.sell];
+      s.lists = [s.barColors, s.bgColors];
+      s.series = [s.plot0, s.plot1, s.plot2, s.fillColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = b.close;
+      const volume = b.volume ?? NaN;
+      // vwapN = math.sum(close * volume, n) / math.sum(volume, n)
+      const sumVol = s.sumVol.step(volume);
+      const vwapN = s.sumClosevol.step(close * volume) / sumVol;
+      // variance = math.sum(volume * math.pow(close - vwapN, 2), n) / sumVol
+      const variance = s.sumSqDev.step(volume * Math.pow(close - vwapN, 2)) / sumVol;
+      const stdN = Math.sqrt(variance);
+      const medianStd = s.median.step(stdN);
+      const upper = vwapN + cfg.k * medianStd;
+      const lower = vwapN - cfg.k * medianStd;
+
+      // buy = ta.crossover(close, upper); sell = ta.crossunder(close, lower) (exact comparisons)
+      const isBuy = s.buy.step(close, upper);
+      const isSell = s.sell.step(close, lower);
+      const v = s.vars;
+      if (isBuy && !isSell) v.score = 1;
+      if (isSell) v.score = -1;
+      const col = v.score === 1 ? longColor : v.score === -1 ? shortColor : neutral;
+      if (isBuy && cfg.bandOn) v.bandColor = longBand;
+      if (isSell && cfg.bandOn) v.bandColor = shortBand;
+      if (isBuy && cfg.barOn) v.barColor = longBar;
+      if (isSell && cfg.barOn) v.barColor = shortBar;
+      if (isBuy && cfg.bgOn) v.bgColor = longBand;
+      if (isSell && cfg.bgOn) v.bgColor = shortBand;
+
+      const t = b.time as number;
+      s.plot0[i] = { time: t, value: fin(vwapN), color: col };
+      s.plot1[i] = { time: t, value: cfg.bandOn ? fin(upper) : NaN, color: v.bandColor ?? 'transparent' };
+      s.plot2[i] = { time: t, value: cfg.bandOn ? fin(lower) : NaN, color: v.bandColor ?? 'transparent' };
+      // fill(upperPlot, lowerPlot, color = color.new(col, 90))
+      s.fillColors[i] = String(color.new(col, 90));
+      if (v.barColor !== null) s.barColors.push({ time: t, color: v.barColor });
+      if (v.bgColor !== null) s.bgColors.push({ time: t, color: v.bgColor });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        fills: [{ plot1: 'plot1', plot2: 'plot2', options: { title: 'Deviation Zone' }, colors: s.fillColors.slice() }],
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MedianVolumeWeightedDeviationInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<MedianVolumeWeightedDeviationInputs> = {},
+): IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MedianVolumeWeightedDeviation = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

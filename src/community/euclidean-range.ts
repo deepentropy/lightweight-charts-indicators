@@ -12,7 +12,9 @@
  * Original notice: © InvestorUnknown
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { BgColorData } from '../types';
 
 export interface EuclideanRangeInputs {
@@ -70,80 +72,128 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<EuclideanRangeInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
+type Point = { time: number; value: number };
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+
+interface EuclideanRun extends BarRunState<Record<string, never>> {
+  ref: { step(v: number): number; commit(): void };
+  avgR: WindowSma;
+  sdR: WindowStdev;
+  avgV: WindowSma;
+  sdV: WindowStdev;
+  src: number[];
+  reference: number[];
+  upper: number[];
+  lower: number[];
+  zR: number[];
+  zV: number[];
+  bgCol: Array<string | null>;
+  plots: Point[][];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<EuclideanRangeInputs>): BarStudy<EuclideanRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { length, zLength } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const srcSeries = getSourceSeries(bars, cfg.source);
-  const src = A(srcSeries);
-  const reference = A(cfg.avgType === 'SMA' ? ta.sma(srcSeries, length)
-    : cfg.avgType === 'EMA' ? ta.ema(srcSeries, length) : ta.hma(srcSeries, length));
-
-  // euclidean_distance(source, reference, length): sqrt(sum of (src[i] - ref[i])^2, i = 0 .. length - 1); a missing
-  // bar (na) gives na
-  const dist: number[] = new Array(n);
-  for (let t = 0; t < n; t++) {
-    let sum = 0;
-    for (let i = 0; i <= length - 1; i++) {
-      const diff = t - i >= 0 ? src[t - i] - reference[t - i] : NaN;
-      sum += diff * diff;
-    }
-    dist[t] = Math.sqrt(sum);
-  }
-  const upper = reference.map((r, i) => r + dist[i]);
-  const lower = reference.map((r, i) => r - dist[i]);
-  // Plain divisions: x / 0 is +-infinity (0 / 0 na), as Pine
-  const distR = dist.map((d, i) => d / src[i]);
-  const distV = dist.map((d, i) => src[i] / d);
-
-  // z_score(x, lookback) = (x - sma(x, lookback)) / stdev(x, lookback)
-  const zScore = (x: number[]) => {
-    const avg = A(ta.sma(S(x), zLength));
-    const sd = A(ta.stdev(S(x), zLength));
-    return x.map((v, i) => (v - avg[i]) / sd[i]);
-  };
-  const zR = zScore(distR);
-  const zV = zScore(distV);
-
-  // bg_col = (z_v > z_r and z_v > 0.5) ? color.from_gradient(z_v, 0, 10, color.new(color.red, 90), color.new(color.red, 50)) : na
+  const value = barSource(cfg.source);
   const red90 = String(color.new(color.red, 90));
   const red50 = String(color.new(color.red, 50));
-  const bgCol: Array<string | null> = zV.map((v, i) => (gt(v, zR[i]) && gt(v, 0.5)
-    ? String(color.from_gradient(v, 0, 10, red90, red50)) : null));
-
   // i = intrabar ? 0 : 1: the plots show x[i]
   const lag = cfg.intrabar ? 0 : 1;
-  const at = <T>(arr: T[], i: number, na: T): T => (i - lag >= 0 ? arr[i - lag] : na);
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const P = (vals: number[]) => bars.map((b, i) => ({ time: b.time, value: fin(at(vals, i, NaN)) }));
-
-  const bgColors: BgColorData[] = [];
-  if (cfg.colorBg) {
-    for (let i = 0; i < n; i++) {
-      const c = at(bgCol, i, null);
-      if (c !== null) bgColors.push({ time: bars[i].time, color: c, forceOverlay: true });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: cfg.plotMa ? P(reference) : bars.map((b) => ({ time: b.time, value: NaN })),
-      plot1: P(upper),
-      plot2: P(lower),
-      plot3: P(zR),
-      plot4: P(zV),
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      let ref: EuclideanRun['ref'];
+      if (cfg.avgType === 'SMA') ref = new WindowSma(length);
+      else if (cfg.avgType === 'EMA') ref = taStep.ema(length);
+      else ref = taStep.hma(length);
+      const avgR = new WindowSma(zLength);
+      const sdR = new WindowStdev(zLength);
+      const avgV = new WindowSma(zLength);
+      const sdV = new WindowStdev(zLength);
+      const s: EuclideanRun = {
+        ref, avgR, sdR, avgV, sdV, src: [], reference: [], upper: [], lower: [], zR: [], zV: [], bgCol: [],
+        plots: [[], [], [], [], []], bgColors: [],
+        steps: [ref, avgR, sdR, avgV, sdV], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.bgColors];
+      s.series = [s.src, s.reference, s.upper, s.lower, s.zR, s.zV, s.bgCol, ...s.plots];
+      return s;
     },
-    hlines: [{ value: 0, options: { title: 'Mid line', color: color.gray, linestyle: 'dashed', linewidth: 2 } }],
-    bgColors,
+    bar(s, t, bars) {
+      const b = bars[t];
+      const src = s.src;
+      const reference = s.reference;
+      const x = value(b);
+      src[t] = x;
+      const r = s.ref.step(x);
+      reference[t] = r;
+      // euclidean_distance(source, reference, length): sqrt(sum of (src[i] - ref[i])^2, i = 0 .. length - 1); a missing
+      // bar (na) gives na
+      let sum = 0;
+      for (let i = 0; i <= length - 1; i++) {
+        const diff = t - i >= 0 ? src[t - i] - reference[t - i] : NaN;
+        sum += diff * diff;
+      }
+      const dist = Math.sqrt(sum);
+      s.upper[t] = r + dist;
+      s.lower[t] = r - dist;
+      // Plain divisions: x / 0 is +-infinity (0 / 0 na), as Pine
+      const distR = dist / x;
+      const distV = x / dist;
+
+      // z_score(x, lookback) = (x - sma(x, lookback)) / stdev(x, lookback)
+      const zR = (distR - s.avgR.step(distR)) / s.sdR.step(distR);
+      const zV = (distV - s.avgV.step(distV)) / s.sdV.step(distV);
+      s.zR[t] = zR;
+      s.zV[t] = zV;
+
+      // bg_col = (z_v > z_r and z_v > 0.5) ? color.from_gradient(z_v, 0, 10, color.new(color.red, 90), color.new(color.red, 50)) : na
+      s.bgCol[t] = gt(zV, zR) && gt(zV, 0.5) ? String(color.from_gradient(zV, 0, 10, red90, red50)) : null;
+
+      const j = t - lag;
+      const at = (arr: number[]) => (j >= 0 ? fin(arr[j]) : NaN);
+      const time = b.time;
+      s.plots[0][t] = { time, value: cfg.plotMa ? at(reference) : NaN };
+      s.plots[1][t] = { time, value: at(s.upper) };
+      s.plots[2][t] = { time, value: at(s.lower) };
+      s.plots[3][t] = { time, value: at(s.zR) };
+      s.plots[4][t] = { time, value: at(s.zV) };
+      if (cfg.colorBg) {
+        const c = j >= 0 ? s.bgCol[j] : null;
+        if (c !== null) s.bgColors.push({ time, color: c, forceOverlay: true });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(),
+          plot1: s.plots[1].slice(),
+          plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(),
+          plot4: s.plots[4].slice(),
+        },
+        hlines: [{ value: 0, options: { title: 'Mid line', color: color.gray, linestyle: 'dashed', linewidth: 2 } }],
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EuclideanRangeInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EuclideanRangeInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const EuclideanRange = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

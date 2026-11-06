@@ -32,12 +32,13 @@
  */
 
 import {
-  str, color, timeframe, getSourceSeries,
+  str, color, timeframe,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { LabelData, LineDrawingData } from '../types';
 import { chartTimeframe, higherTimeframeBars } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MeanReversionChannelInputs {
   /** Section title of the original settings (no effect) */
@@ -175,24 +176,27 @@ function timeframeBars(bars: Bar[], tf: string, context?: ChartContext): { htf: 
   return higherTimeframeBars(bars, tf, context);
 }
 
-/** supersmoother(): 2-pole filter; the first values are seeded with the source */
-function supersmoother(src: number[], length: number): number[] {
+/** supersmoother() coefficients: 2-pole filter */
+function ssCoefs(length: number): { c1: number; c2: number; c3: number } {
   const a1 = Math.exp((-Math.sqrt(2) * PI) / length);
   const b1 = 2 * a1 * Math.cos((Math.sqrt(2) * PI) / length);
   const c3 = -Math.pow(a1, 2);
   const c2 = b1;
   const c1 = 1 - c2 - c3;
-  const ss: number[] = [];
-  for (let i = 0; i < src.length; i++) {
-    const s1 = i >= 1 ? src[i - 1] : NaN;
-    const s2 = i >= 2 ? src[i - 2] : NaN;
-    ss.push(c1 * src[i] + c2 * nz(ss[i - 1], s1) + c3 * nz(ss[i - 2], s2));
-  }
-  return ss;
+  return { c1, c2, c3 };
 }
 
-/** SAK_smoothing(): Ehlers "Swiss Army Knife" filter */
-function sakSmoothing(type: string, src: number[], length: number): number[] {
+/** supersmoother() on bar i (src and ss by bar, ss up to bar i - 1): the first values are seeded with the source */
+function ssAt(src: number[], ss: number[], i: number, c: { c1: number; c2: number; c3: number }): number {
+  const s1 = i >= 1 ? src[i - 1] : NaN;
+  const s2 = i >= 2 ? src[i - 2] : NaN;
+  return c.c1 * src[i]! + c.c2 * nz(ss[i - 1], s1) + c.c3 * nz(ss[i - 2], s2);
+}
+
+interface SakCoefs { c0: number; c1: number; b0: number; b1: number; b2: number; a1: number; a2: number; length: number }
+
+/** SAK_smoothing() coefficients: Ehlers "Swiss Army Knife" filter */
+function sakCoefs(type: string, length: number): SakCoefs {
   let c0 = 1.0;
   let c1 = 0.0;
   let b0 = 1.0;
@@ -249,41 +253,55 @@ function sakSmoothing(type: string, src: number[], length: number): number[] {
     b0 = alpha;
     a1 = 1 - alpha;
   }
-  const out: number[] = [];
-  for (let i = 0; i < src.length; i++) {
-    const at = (k: number) => (i - k >= 0 ? nz(src[i - k]) : 0);
-    out.push(c0 * (b0 * src[i] + b1 * at(1) + b2 * at(2)) + a1 * nz(out[i - 1]) + a2 * nz(out[i - 2]) - c1 * at(length));
-  }
-  return out;
+  return { c0, c1, b0, b1, b2, a1, a2, length };
+}
+
+/** SAK_smoothing() on bar i (src and out by bar, out up to bar i - 1) */
+function sakAt(src: number[], out: number[], i: number, c: SakCoefs): number {
+  const at = (k: number) => (i - k >= 0 ? nz(src[i - k]) : 0);
+  return c.c0 * (c.b0 * src[i]! + c.b1 * at(1) + c.b2 * at(2)) + c.a1 * nz(out[i - 1]) + c.a2 * nz(out[i - 2]) - c.c1 * at(c.length);
 }
 
 interface Mrc {
+  source: number[]; tr: number[];
   meanline: number[]; meanrange: number[]; upband1: number[]; loband1: number[]; upband2: number[]; loband2: number[];
   condition: number[];
 }
 
-/** get_mrc() on the bars of one timeframe */
-function getMrc(bars: Bar[], cfg: MeanReversionChannelInputs): Mrc {
-  const n = bars.length;
-  const source = getSourceSeries(bars, cfg.source).toArray().map((v) => v ?? NaN);
-  // tr: na on the first bar
-  const tr = bars.map((b, i) => (i === 0 ? NaN
-    : Math.max(b.high - b.low, Math.abs(b.high - bars[i - 1].close), Math.abs(b.low - bars[i - 1].close))));
-  const meanrange = supersmoother(tr, cfg.length);
-  const meanline = cfg.type === 'SuperSmoother' ? supersmoother(source, cfg.length) : sakSmoothing(cfg.type, source, cfg.length);
-  const mult = PI * cfg.innermult;
-  const mult2 = PI * cfg.outermult;
-  const out: Mrc = { meanline, meanrange, upband1: [], loband1: [], upband2: [], loband2: [], condition: [] };
-  for (let i = 0; i < n; i++) {
-    const { high, low, close } = bars[i];
-    const mean = meanline[i];
-    const range = meanrange[i];
-    const upband2 = mean + range * mult2;
-    const loband2 = mean - range * mult2;
-    out.upband1.push(mean + range * mult);
-    out.loband1.push(mean - range * mult);
-    out.upband2.push(upband2);
-    out.loband2.push(loband2);
+/** get_mrc() of one timeframe, bar by bar */
+class MrcCalc {
+  private readonly ss: { c1: number; c2: number; c3: number };
+  private readonly sak: SakCoefs | null;
+  private readonly value: (b: Bar) => number;
+  private readonly mult: number;
+  private readonly mult2: number;
+
+  constructor(cfg: MeanReversionChannelInputs) {
+    this.ss = ssCoefs(cfg.length);
+    this.sak = cfg.type === 'SuperSmoother' ? null : sakCoefs(cfg.type, cfg.length);
+    this.value = barSource(cfg.source);
+    this.mult = PI * cfg.innermult;
+    this.mult2 = PI * cfg.outermult;
+  }
+
+  /** Bar i of `bars` into the arrays of `out` */
+  bar(out: Mrc, i: number, bars: Bar[]): void {
+    const b = bars[i]!;
+    const { high, low, close } = b;
+    out.source[i] = this.value(b);
+    // tr: na on the first bar
+    out.tr[i] = i === 0 ? NaN
+      : Math.max(b.high - b.low, Math.abs(b.high - bars[i - 1]!.close), Math.abs(b.low - bars[i - 1]!.close));
+    const range = ssAt(out.tr, out.meanrange, i, this.ss);
+    out.meanrange[i] = range;
+    const mean = this.sak ? sakAt(out.source, out.meanline, i, this.sak) : ssAt(out.source, out.meanline, i, this.ss);
+    out.meanline[i] = mean;
+    const upband2 = mean + range * this.mult2;
+    const loband2 = mean - range * this.mult2;
+    out.upband1[i] = mean + range * this.mult;
+    out.loband1[i] = mean - range * this.mult;
+    out.upband2[i] = upband2;
+    out.loband2[i] = loband2;
     let condition = 0;
     if (gt(close, mean)) {
       const upband21 = upband2 + range * GRADSIZE * 4;
@@ -303,8 +321,19 @@ function getMrc(bars: Bar[], cfg: MeanReversionChannelInputs): Mrc {
       else if (ge(close, mean + range)) condition = -4;
       else condition = -5;
     }
-    out.condition.push(condition);
+    out.condition[i] = condition;
   }
+}
+
+const emptyMrc = (): Mrc => ({
+  source: [], tr: [], meanline: [], meanrange: [], upband1: [], loband1: [], upband2: [], loband2: [], condition: [],
+});
+
+/** get_mrc() on the bars of one timeframe */
+function getMrc(bars: Bar[], cfg: MeanReversionChannelInputs): Mrc {
+  const calc = new MrcCalc(cfg);
+  const out = emptyMrc();
+  for (let i = 0; i < bars.length; i++) calc.bar(out, i, bars);
   return out;
 }
 
@@ -325,122 +354,160 @@ function getStat(cond: number): string {
   }
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MeanReversionChannelInputs> = {},
-  chart?: ChartContext,
-): IndicatorResult & { lines: LineDrawingData[]; labels: LabelData[] } {
+type Point = { time: number; value: number };
+type Result = IndicatorResult & { lines: LineDrawingData[]; labels: LabelData[] };
+
+interface MrcRun extends BarRunState<Record<string, never>> {
+  calc: MrcCalc;
+  mrc: Mrc;
+  /** plot0..plot22 */
+  plots: Point[][];
+}
+
+function study(inputs: Partial<MeanReversionChannelInputs>): BarStudy<MrcRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const last = n - 1;
-  const mrc = getMrc(bars, cfg);
-
-  const t = (i: number) => bars[i].time;
-  const shown = (a: number[]) => a.map((v, i) => ({ time: t(i), value: cfg.drawchannel ? v : NaN }));
-  const plots: Record<string, Array<{ time: number; value: number }>> = {
-    plot0: shown(mrc.meanline),
-    plot1: shown(mrc.upband1),
-    plot2: shown(mrc.loband1),
-    plot3: shown(mrc.upband2),
-    plot4: shown(mrc.loband2),
-  };
-  // Zone edges: upband2 + meanrange * gradsize * (5 - k), loband2 - meanrange * gradsize * (5 - k), k = 1 to 9
   const zone = cfg.drawchannel && cfg.displayzone;
-  for (let k = 1; k <= 9; k++) {
-    plots[`plot${3 + 2 * k}`] = mrc.upband2.map((v, i) => ({ time: t(i), value: zone ? v + mrc.meanrange[i] * GRADSIZE * (5 - k) : NaN }));
-    plots[`plot${4 + 2 * k}`] = mrc.loband2.map((v, i) => ({ time: t(i), value: zone ? v - mrc.meanrange[i] * GRADSIZE * (5 - k) : NaN }));
-  }
-  const fills: NonNullable<IndicatorResult['fills']> = [];
-  for (let k = 1; k <= 8; k++) {
-    const css = String(color.new(ZONE[k - 1], cfg.zonetransp));
-    fills.push({ plot1: `plot${3 + 2 * k}`, plot2: `plot${5 + 2 * k}`, options: { color: css } });
-    fills.push({ plot1: `plot${4 + 2 * k}`, plot2: `plot${6 + 2 * k}`, options: { color: css } });
-  }
-
-  const lines: LineDrawingData[] = [];
-  const labels: LabelData[] = [];
-  if (n > 0) {
-    // if displayline and enable_mtf and mtf_disp_typ == "Always Display": displayline := false
-    const displayline = cfg.displayline && !(cfg.enableMtf && cfg.mtfDispTyp === 'Always Display');
-    // Level extensions of the last bar: from the last bar to the bar before, extended to the left
-    if (displayline && n >= 2) {
-      const level = (y: number, css: string) => {
-        if (!isNaN(y)) lines.push({ time1: t(last), price1: y, time2: t(last - 1), price2: y, extend: 'left', color: css });
-      };
-      level(mrc.meanline[last], MEAN);
-      level(mrc.upband1[last], GREEN);
-      level(mrc.loband1[last], GREEN);
-      level(mrc.upband2[last], RED);
-      level(mrc.loband2[last], RED);
-    }
-
-    if (cfg.enableMtf && n >= 2 && !isNaN(mrc.meanline[last])) {
-      // timeframe.period: "D", "W", "M" without a multiplier of 1
-      const tfInfo = timeframe.info(chartTimeframe(bars, chart));
-      const period = /^1[DWM]$/.test(tfInfo.period) ? tfInfo.period.slice(1) : tfInfo.period;
-      // f_resInMinutes()
-      const minutes = tfInfo.multiplier * (tfInfo.isseconds ? 1 / 60 : tfInfo.isminutes ? 1 : tfInfo.isdaily ? 60 * 24
-        : tfInfo.isweekly ? 60 * 24 * 7 : tfInfo.ismonthly ? 60 * 24 * 30.4375 : NaN);
-      // get_tf()
-      const getTf = (lvl: 1 | 2): string => {
-        if (cfg.mtfTyp !== 'Auto') return lvl === 1 ? cfg.mtfLvl1 : cfg.mtfLvl2;
-        const pick = (a: string, b: string) => (lvl === 1 ? a : b);
-        if (lt(minutes, 1)) return pick('1', '5');
-        if (le(minutes, 3)) return pick('5', '15');
-        if (le(minutes, 10)) return pick('15', '60');
-        if (le(minutes, 30)) return pick('60', '240');
-        if (le(minutes, 120)) return pick('240', 'D');
-        if (le(minutes, 240)) return pick('D', 'W');
-        if (le(minutes, 1440)) return pick('W', 'M');
-        if (le(minutes, 10080)) return pick('M', period);
-        return period;
-      };
-      const tf1 = getTf(1);
-      const tf2 = getTf(2);
-      const close = bars[last].close;
-      // security(syminfo.tickerid, tf, get_mrc()) on the last bar: the latest completed bar of the timeframe
-      const mtf = (tf: string): { mean: number; condition: number } => {
-        const { htf, latest } = timeframeBars(bars, tf, chart);
-        const k = latest[last];
-        if (k < 0) return { mean: NaN, condition: NaN };
-        const m = getMrc(htf, cfg);
-        return { mean: m.meanline[k], condition: m.condition[k] };
-      };
-      const dist = (mean: number) => `Distance from Mean: ${str.tostring(((close - mean) / close) * 100, '#.##')} %`;
-      const brl = '\n--------------------------------------';
-      let text = `Mean Reversion Channel\nMultiple TimeFrame Analysis${brl}`;
-      text += `\n\nTimeframe: ${period} (Current)\n\nStatus: ${getStat(mrc.condition[last])}${dist(mrc.meanline[last])}${brl}`;
-      if (!tfInfo.ismonthly) {
-        const m1 = mtf(tf1);
-        text += `\n\nTimeframe: ${tf1}\n\nStatus: ${getStat(m1.condition)}${dist(m1.mean)}${brl}`;
-      }
-      if (!tfInfo.isweekly && !tfInfo.ismonthly) {
-        const m2 = mtf(tf2);
-        text += `\n\nTimeframe: ${tf2}\n\nStatus: ${getStat(m2.condition)}${dist(m2.mean)}${brl}`;
-      }
-      const always = cfg.mtfDispTyp === 'Always Display';
-      labels.push({
-        // x = time + round(change(time) * 20)
-        time: t(last) + Math.round((t(last) - t(last - 1)) * 20),
-        price: mrc.meanline[last],
-        text: always ? text : 'Check MTF',
-        ...(always ? {} : { tooltip: text }),
-        color: BLACK,
-        textColor: WHITE,
-        size: 'normal',
-        style: !always && displayline ? 'label_lower_left' : 'label_left',
-        textAlign: 'left',
-      });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    lines,
-    labels,
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const mrc = emptyMrc();
+      const s: MrcRun = {
+        calc: new MrcCalc(cfg), mrc, plots: Array.from({ length: 23 }, () => []),
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.series = [...Object.values(mrc), ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const m = s.mrc;
+      s.calc.bar(m, i, bars);
+      const time = bars[i]!.time;
+      const p = s.plots;
+      const ch = cfg.drawchannel;
+      p[0]![i] = { time, value: ch ? m.meanline[i]! : NaN };
+      p[1]![i] = { time, value: ch ? m.upband1[i]! : NaN };
+      p[2]![i] = { time, value: ch ? m.loband1[i]! : NaN };
+      p[3]![i] = { time, value: ch ? m.upband2[i]! : NaN };
+      p[4]![i] = { time, value: ch ? m.loband2[i]! : NaN };
+      // Zone edges: upband2 + meanrange * gradsize * (5 - k), loband2 - meanrange * gradsize * (5 - k), k = 1 to 9
+      const up = m.upband2[i]!;
+      const lo = m.loband2[i]!;
+      const range = m.meanrange[i]!;
+      for (let k = 1; k <= 9; k++) {
+        p[3 + 2 * k]![i] = { time, value: zone ? up + range * GRADSIZE * (5 - k) : NaN };
+        p[4 + 2 * k]![i] = { time, value: zone ? lo - range * GRADSIZE * (5 - k) : NaN };
+      }
+    },
+    result(s, bars, chart) {
+      const n = bars.length;
+      const last = n - 1;
+      const mrc = s.mrc;
+      const t = (i: number) => bars[i]!.time;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      const fills: NonNullable<IndicatorResult['fills']> = [];
+      for (let k = 1; k <= 8; k++) {
+        const css = String(color.new(ZONE[k - 1]!, cfg.zonetransp));
+        fills.push({ plot1: `plot${3 + 2 * k}`, plot2: `plot${5 + 2 * k}`, options: { color: css } });
+        fills.push({ plot1: `plot${4 + 2 * k}`, plot2: `plot${6 + 2 * k}`, options: { color: css } });
+      }
+
+      const lines: LineDrawingData[] = [];
+      const labels: LabelData[] = [];
+      if (n > 0) {
+        // if displayline and enable_mtf and mtf_disp_typ == "Always Display": displayline := false
+        const displayline = cfg.displayline && !(cfg.enableMtf && cfg.mtfDispTyp === 'Always Display');
+        // Level extensions of the last bar: from the last bar to the bar before, extended to the left
+        if (displayline && n >= 2) {
+          const level = (y: number, css: string) => {
+            if (!isNaN(y)) lines.push({ time1: t(last), price1: y, time2: t(last - 1), price2: y, extend: 'left', color: css });
+          };
+          level(mrc.meanline[last]!, MEAN);
+          level(mrc.upband1[last]!, GREEN);
+          level(mrc.loband1[last]!, GREEN);
+          level(mrc.upband2[last]!, RED);
+          level(mrc.loband2[last]!, RED);
+        }
+
+        // The label of the last bar: built from the whole bar set on each update (the higher timeframe bars)
+        if (cfg.enableMtf && n >= 2 && !isNaN(mrc.meanline[last]!)) {
+          // timeframe.period: "D", "W", "M" without a multiplier of 1
+          const tfInfo = timeframe.info(chartTimeframe(bars, chart));
+          const period = /^1[DWM]$/.test(tfInfo.period) ? tfInfo.period.slice(1) : tfInfo.period;
+          // f_resInMinutes()
+          const minutes = tfInfo.multiplier * (tfInfo.isseconds ? 1 / 60 : tfInfo.isminutes ? 1 : tfInfo.isdaily ? 60 * 24
+            : tfInfo.isweekly ? 60 * 24 * 7 : tfInfo.ismonthly ? 60 * 24 * 30.4375 : NaN);
+          // get_tf()
+          const getTf = (lvl: 1 | 2): string => {
+            if (cfg.mtfTyp !== 'Auto') return lvl === 1 ? cfg.mtfLvl1 : cfg.mtfLvl2;
+            const pick = (a: string, b: string) => (lvl === 1 ? a : b);
+            if (lt(minutes, 1)) return pick('1', '5');
+            if (le(minutes, 3)) return pick('5', '15');
+            if (le(minutes, 10)) return pick('15', '60');
+            if (le(minutes, 30)) return pick('60', '240');
+            if (le(minutes, 120)) return pick('240', 'D');
+            if (le(minutes, 240)) return pick('D', 'W');
+            if (le(minutes, 1440)) return pick('W', 'M');
+            if (le(minutes, 10080)) return pick('M', period);
+            return period;
+          };
+          const tf1 = getTf(1);
+          const tf2 = getTf(2);
+          const close = bars[last]!.close;
+          // security(syminfo.tickerid, tf, get_mrc()) on the last bar: the latest completed bar of the timeframe
+          const mtf = (tf: string): { mean: number; condition: number } => {
+            const { htf, latest } = timeframeBars(bars, tf, chart);
+            const k = latest[last]!;
+            if (k < 0) return { mean: NaN, condition: NaN };
+            const m = getMrc(htf, cfg);
+            return { mean: m.meanline[k]!, condition: m.condition[k]! };
+          };
+          const dist = (mean: number) => `Distance from Mean: ${str.tostring(((close - mean) / close) * 100, '#.##')} %`;
+          const brl = '\n--------------------------------------';
+          let text = `Mean Reversion Channel\nMultiple TimeFrame Analysis${brl}`;
+          text += `\n\nTimeframe: ${period} (Current)\n\nStatus: ${getStat(mrc.condition[last]!)}${dist(mrc.meanline[last]!)}${brl}`;
+          if (!tfInfo.ismonthly) {
+            const m1 = mtf(tf1);
+            text += `\n\nTimeframe: ${tf1}\n\nStatus: ${getStat(m1.condition)}${dist(m1.mean)}${brl}`;
+          }
+          if (!tfInfo.isweekly && !tfInfo.ismonthly) {
+            const m2 = mtf(tf2);
+            text += `\n\nTimeframe: ${tf2}\n\nStatus: ${getStat(m2.condition)}${dist(m2.mean)}${brl}`;
+          }
+          const always = cfg.mtfDispTyp === 'Always Display';
+          labels.push({
+            // x = time + round(change(time) * 20)
+            time: t(last) + Math.round((t(last) - t(last - 1)) * 20),
+            price: mrc.meanline[last]!,
+            text: always ? text : 'Check MTF',
+            ...(always ? {} : { tooltip: text }),
+            color: BLACK,
+            textColor: WHITE,
+            size: 'normal',
+            style: !always && displayline ? 'label_lower_left' : 'label_left',
+            textAlign: 'left',
+          });
+        }
+      }
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+        lines,
+        labels,
+      };
+    },
   };
 }
 
-export const MeanReversionChannel = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MeanReversionChannelInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MeanReversionChannelInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const MeanReversionChannel = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

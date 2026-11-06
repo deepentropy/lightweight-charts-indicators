@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrueRangeExpansionInputs {
   upColor: string;
@@ -104,70 +106,102 @@ export const metadata = {
 /** Pine a >= b: not (b - a > 1e-10), false with na */
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > 1e-10);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TrueRangeExpansionInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> };
 
-  // getMA(src, len): switch maType
-  const getMA = (src: number[], len: number): number[] => {
-    const s = S(src);
-    switch (cfg.maType) {
-      case 'EMA': return A(ta.ema(s, len));
-      case 'WMA': return A(ta.wma(s, len));
-      case 'RMA': return A(ta.rma(s, len));
-      case 'HMA': {
-        // w = ta.wma(src, len / 2); ta.wma(2 * w - ta.wma(src, len), math.round(math.sqrt(len)))
-        const w = A(ta.wma(s, len / 2));
-        const full = A(ta.wma(s, len));
-        return A(ta.wma(S(w.map((v, i) => 2 * v - full[i])), Math.round(Math.sqrt(len))));
-      }
-      default: return A(ta.sma(s, len));
+/** One moving average of getMA stepped bar by bar */
+type Ma = { step(v: number): number; commit(): void };
+
+/** getMA(src, len): switch maType */
+function maStep(type: TrueRangeExpansionInputs['maType'], len: number): Ma {
+  switch (type) {
+    case 'EMA': return taStep.ema(len);
+    case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+    case 'RMA': return taStep.rma(len);
+    case 'HMA': {
+      // w = ta.wma(src, len / 2); ta.wma(2 * w - ta.wma(src, len), math.round(math.sqrt(len)))
+      const half = taStep.wma();
+      const full = taStep.wma();
+      const out = taStep.wma();
+      const outLen = Math.round(Math.sqrt(len));
+      return {
+        step: (v) => out.step(2 * half.step(v, len / 2) - full.step(v, len), outLen),
+        commit: () => { half.commit(); full.commit(); out.commit(); },
+      };
     }
-  };
+    default: { const m = taStep.sma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+  }
+}
 
-  const baseHighMA = getMA(bars.map((b) => b.high), cfg.maLen);
-  const baseLowMA = getMA(bars.map((b) => b.low), cfg.maLen);
-  const rawATR = ta.atr(bars, cfg.atrLen);
-  const smoothATR = A(ta.rma(rawATR, cfg.atrSmoothing));
+interface TrxRun extends BarRunState<Record<string, never>> {
+  hiMa: Ma;
+  loMa: Ma;
+  atr: ReturnType<typeof taStep.atr>;
+  smooth: ReturnType<typeof taStep.rma>;
+  plots: Point[][];
+  candles: PlotCandleData[];
+}
 
+function study(inputs: Partial<TrueRangeExpansionInputs>): BarStudy<TrxRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const highCol = String(color.new(cfg.maHighColor, cfg.maHighTransp));
   const lowCol = String(color.new(cfg.maLowColor, cfg.maLowTransp));
   const basisCol = String(color.new(cfg.basisColor, cfg.basisTransp));
   const upCol = String(color.new(cfg.upColor, cfg.transp));
   const downCol = String(color.new(cfg.downColor, cfg.transp));
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const plot2: { time: number; value: number; color: string }[] = [];
-  const candles: PlotCandleData[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const b = bars[i];
-    const adjATR = smoothATR[i] * cfg.atrGlobalMult;
-    const maHighAdj = baseHighMA[i] + adjATR * Math.abs(cfg.maHighATRMult);
-    const maLowAdj = baseLowMA[i] - adjATR * Math.abs(cfg.maLowATRMult);
-    const basis = (maHighAdj + maLowAdj) / 2;
-    plot0.push({ time: b.time, value: cfg.showMA ? maHighAdj : NaN, color: highCol });
-    plot1.push({ time: b.time, value: cfg.showMA ? maLowAdj : NaN, color: lowCol });
-    plot2.push({ time: b.time, value: cfg.showMA && cfg.showBasis ? basis : NaN, color: basisCol });
-    // plotcandle(low, high, low, high, color = col, bordercolor = col, wickcolor = col)
-    const col = ge(b.close, b.open) ? upCol : downCol;
-    candles.push({ time: b.time, open: b.low, high: b.high, low: b.low, close: b.high, color: col, borderColor: col, wickColor: col });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    markers: [],
-    plotCandles: { trueRangeCandles: candles },
+    init() {
+      const s: TrxRun = {
+        hiMa: maStep(cfg.maType, cfg.maLen), loMa: maStep(cfg.maType, cfg.maLen),
+        atr: taStep.atr(cfg.atrLen), smooth: taStep.rma(cfg.atrSmoothing),
+        plots: [[], [], []], candles: [], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.hiMa, s.loMa, s.atr, s.smooth];
+      s.series = [...s.plots, s.candles];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const baseHighMA = s.hiMa.step(b.high);
+      const baseLowMA = s.loMa.step(b.low);
+      const smoothATR = s.smooth.step(s.atr.step(b.high, b.low, b.close));
+      const adjATR = smoothATR * cfg.atrGlobalMult;
+      const maHighAdj = baseHighMA + adjATR * Math.abs(cfg.maHighATRMult);
+      const maLowAdj = baseLowMA - adjATR * Math.abs(cfg.maLowATRMult);
+      const basis = (maHighAdj + maLowAdj) / 2;
+      s.plots[0][i] = { time: b.time, value: cfg.showMA ? maHighAdj : NaN, color: highCol };
+      s.plots[1][i] = { time: b.time, value: cfg.showMA ? maLowAdj : NaN, color: lowCol };
+      s.plots[2][i] = { time: b.time, value: cfg.showMA && cfg.showBasis ? basis : NaN, color: basisCol };
+      // plotcandle(low, high, low, high, color = col, bordercolor = col, wickcolor = col)
+      const col = ge(b.close, b.open) ? upCol : downCol;
+      s.candles[i] = { time: b.time, open: b.low, high: b.high, low: b.low, close: b.high, color: col, borderColor: col, wickColor: col };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+        markers: [],
+        plotCandles: { trueRangeCandles: s.candles.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrueRangeExpansionInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<TrueRangeExpansionInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const TrueRangeExpansion = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

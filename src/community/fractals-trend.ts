@@ -14,9 +14,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type FractalsTrendBandsType = 'avg' | 'min/max' | 'median';
 
@@ -87,96 +89,139 @@ function arrMedian(a: number[]): number {
 const arrMax = (a: number[]): number => (a.length === 0 ? NaN : Math.max(...a));
 const arrMin = (a: number[]): number => (a.length === 0 ? NaN : Math.min(...a));
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<FractalsTrendInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface FractalsVars {
+  /** var FracrtalsUpper / FracrtalsLower (changed in place: copyVars copies them) */
+  upperArr: number[];
+  lowerArr: number[];
+  /** var trend = bool(na): a Pine v6 bool is never na, bool(na) is false */
+  trend: boolean;
+}
+
+interface FractalsRun extends BarRunState<FractalsVars> {
+  highest: WindowExtreme;
+  lowest: WindowExtreme;
+  lineUpper: number[];
+  lineLower: number[];
+  trend: boolean[];
+  fractalLine: number[];
+  hl2: number[];
+  topColor: string[];
+  plot0: { time: number; value: number; color: string }[];
+  plot1: { time: number; value: number }[];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<FractalsTrendInputs>): BarStudy<FractalsRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { fractalLength: len, storage, bandsType } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const highs = bars.map((b) => b.high);
-  const lows = bars.map((b) => b.low);
-  const highest = A(ta.highest(Series.fromArray(bars, highs), len * 2 + 1));
-  const lowest = A(ta.lowest(Series.fromArray(bars, lows), len * 2 + 1));
-
-  // var FracrtalsUpper = array.new<float>(fCount, 0); var FracrtalsLower = array.new<float>(fCount, 0)
-  const upperArr: number[] = new Array(storage).fill(0);
-  const lowerArr: number[] = new Array(storage).fill(0);
-  const upperF: boolean[] = new Array(n);
-  const lowerF: boolean[] = new Array(n);
-  const lineUpper: number[] = new Array(n);
-  const lineLower: number[] = new Array(n);
-  const trend: boolean[] = new Array(n);
-  // var trend = bool(na): a Pine v6 bool is never na, bool(na) is false
-  let tr = false;
-  for (let i = 0; i < n; i++) {
-    // upperF = high[fractalLen] >= ta.highest(high, fractalLen * 2 + 1); lowerF = low[fractalLen] <= ta.lowest(...)
-    const hBack = i >= len ? highs[i - len] : NaN;
-    const lBack = i >= len ? lows[i - len] : NaN;
-    upperF[i] = ge(hBack, highest[i]);
-    lowerF[i] = ge(lowest[i], lBack);
-    // switch: the first true case only
-    if (upperF[i]) upperArr.push(hBack);
-    else if (lowerF[i]) lowerArr.push(lBack);
-    else if (upperArr.length > storage) upperArr.shift();
-    else if (lowerArr.length > storage) lowerArr.shift();
-
-    lineUpper[i] = bandsType === 'avg' ? arrAvg(upperArr) : bandsType === 'min/max' ? arrMax(upperArr) : arrMedian(upperArr);
-    lineLower[i] = bandsType === 'avg' ? arrAvg(lowerArr) : bandsType === 'min/max' ? arrMin(lowerArr) : arrMedian(lowerArr);
-
-    const close = bars[i].close;
-    const prevClose = i > 0 ? bars[i - 1].close : NaN;
-    // ta.crossover(close, fractalLineUpper): close > upper and close[1] <= upper[1], exact comparisons (no tolerance)
-    if (i > 0 && close > lineUpper[i] && prevClose <= lineUpper[i - 1]) tr = true;
-    // ta.crossunder(close, fractalLineLower): close < lower and close[1] >= lower[1], exact comparisons
-    if (i > 0 && close < lineLower[i] && prevClose >= lineLower[i - 1]) tr = false;
-    trend[i] = tr;
-  }
-
-  const hl2 = bars.map((b) => (b.high + b.low) / 2);
-  const fractalLine = trend.map((t, i) => (t ? lineLower[i] : lineUpper[i]));
-  const trendColor = (i: number) => (trend[i] ? cfg.colorSup : cfg.colorRes);
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number }[] = [];
-  const topColor: Array<string | null> = [];
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // plot(trend != trend[1] ? na : fractalLine, style = plot.style_linebr, color = trendColor); trend[1] of bar 0
-    // is false (Pine v6 bool history)
-    const prevTrend = i > 0 ? trend[i - 1] : false;
-    plot0.push({ time: t, value: trend[i] !== prevTrend ? NaN : fractalLine[i], color: trendColor(i) });
-    plot1.push({ time: t, value: hl2[i] });
-    // fill(pt, ph, fractalLine, hl2, color.new(trendColor, shadow), na)
-    topColor.push(String(color.new(trendColor(i), cfg.shadow)));
-    // plotshape(upperF / lowerF, location.abovebar / belowbar, size.tiny, color.new(colorRes / colorSup, 50),
-    //   shape.labeldown / labelup, offset = -5): the shape of bar i is drawn on bar i - 5
-    if (cfg.showFractals && i >= 5) {
-      const tShift = bars[i - 5].time;
-      if (upperF[i]) {
-        markers.push({ time: tShift, position: 'aboveBar', shape: 'labelDown', color: String(color.new(cfg.colorRes, 50)), size: 'tiny' });
-      }
-      if (lowerF[i]) {
-        markers.push({ time: tShift, position: 'belowBar', shape: 'labelUp', color: String(color.new(cfg.colorSup, 50)), size: 'tiny' });
-      }
-    }
-  }
-
+  const resLabel = String(color.new(cfg.colorRes, 50));
+  const supLabel = String(color.new(cfg.colorSup, 50));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    fills: [{
-      plot1: 'plot0', plot2: 'plot1',
-      gradient: { topValue: fractalLine, bottomValue: hl2, topColor, bottomColor: new Array<string | null>(n).fill(null) },
-    }],
-    markers,
-    // alertcondition(trend != trend[1] and trend, "Trend Up") / (trend != trend[1] and not trend, "Trend Down")
-    alerts: alertStates(alertConditions, bars, [
-      trend.map((t, i) => t !== (i > 0 ? trend[i - 1] : false) && t),
-      trend.map((t, i) => t !== (i > 0 ? trend[i - 1] : false) && !t),
-    ]),
+    init() {
+      const highest = new WindowExtreme(false, len * 2 + 1);
+      const lowest = new WindowExtreme(true, len * 2 + 1);
+      const s: FractalsRun = {
+        highest, lowest, lineUpper: [], lineLower: [], trend: [], fractalLine: [], hl2: [], topColor: [], plot0: [],
+        plot1: [], flags: [[], []], times: [[], []], markers: [],
+        steps: [highest, lowest],
+        // var FracrtalsUpper = array.new<float>(fCount, 0); var FracrtalsLower = array.new<float>(fCount, 0)
+        vars: { upperArr: new Array(storage).fill(0), lowerArr: new Array(storage).fill(0), trend: false },
+        lists: [], series: [],
+      };
+      s.lists = [...s.times, s.markers];
+      s.series = [s.lineUpper, s.lineLower, s.trend, s.fractalLine, s.hl2, s.topColor, s.plot0, s.plot1, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const { upperArr, lowerArr } = v;
+      const b = bars[i];
+      // upperF = high[fractalLen] >= ta.highest(high, fractalLen * 2 + 1); lowerF = low[fractalLen] <= ta.lowest(...)
+      const highest = s.highest.step(b.high);
+      const lowest = s.lowest.step(b.low);
+      const hBack = i >= len ? bars[i - len].high : NaN;
+      const lBack = i >= len ? bars[i - len].low : NaN;
+      const upperF = ge(hBack, highest);
+      const lowerF = ge(lowest, lBack);
+      // switch: the first true case only
+      if (upperF) upperArr.push(hBack);
+      else if (lowerF) lowerArr.push(lBack);
+      else if (upperArr.length > storage) upperArr.shift();
+      else if (lowerArr.length > storage) lowerArr.shift();
+
+      const lineUpper = bandsType === 'avg' ? arrAvg(upperArr) : bandsType === 'min/max' ? arrMax(upperArr) : arrMedian(upperArr);
+      const lineLower = bandsType === 'avg' ? arrAvg(lowerArr) : bandsType === 'min/max' ? arrMin(lowerArr) : arrMedian(lowerArr);
+      s.lineUpper[i] = lineUpper;
+      s.lineLower[i] = lineLower;
+
+      const close = b.close;
+      const prevClose = i > 0 ? bars[i - 1].close : NaN;
+      // ta.crossover(close, fractalLineUpper): close > upper and close[1] <= upper[1], exact comparisons (no tolerance)
+      if (i > 0 && close > lineUpper && prevClose <= s.lineUpper[i - 1]) v.trend = true;
+      // ta.crossunder(close, fractalLineLower): close < lower and close[1] >= lower[1], exact comparisons
+      if (i > 0 && close < lineLower && prevClose >= s.lineLower[i - 1]) v.trend = false;
+      const trend = v.trend;
+      s.trend[i] = trend;
+
+      const t = b.time;
+      const hl2 = (b.high + b.low) / 2;
+      const fractalLine = trend ? lineLower : lineUpper;
+      s.fractalLine[i] = fractalLine;
+      s.hl2[i] = hl2;
+      const trendColor = trend ? cfg.colorSup : cfg.colorRes;
+      // plot(trend != trend[1] ? na : fractalLine, style = plot.style_linebr, color = trendColor); trend[1] of bar 0
+      // is false (Pine v6 bool history)
+      const prevTrend = i > 0 ? s.trend[i - 1] : false;
+      s.plot0[i] = { time: t, value: trend !== prevTrend ? NaN : fractalLine, color: trendColor };
+      s.plot1[i] = { time: t, value: hl2 };
+      // fill(pt, ph, fractalLine, hl2, color.new(trendColor, shadow), na)
+      s.topColor[i] = String(color.new(trendColor, cfg.shadow));
+      // plotshape(upperF / lowerF, location.abovebar / belowbar, size.tiny, color.new(colorRes / colorSup, 50),
+      //   shape.labeldown / labelup, offset = -5): the shape of bar i is drawn on bar i - 5
+      if (cfg.showFractals && i >= 5) {
+        const tShift = bars[i - 5].time;
+        if (upperF) s.markers.push({ time: tShift, position: 'aboveBar', shape: 'labelDown', color: resLabel, size: 'tiny' });
+        if (lowerF) s.markers.push({ time: tShift, position: 'belowBar', shape: 'labelUp', color: supLabel, size: 'tiny' });
+      }
+      // alertcondition(trend != trend[1] and trend, "Trend Up") / (trend != trend[1] and not trend, "Trend Down")
+      const up = trend !== prevTrend && trend;
+      const down = trend !== prevTrend && !trend;
+      s.flags[0][i] = up;
+      s.flags[1][i] = down;
+      if (up) s.times[0].push(t as number);
+      if (down) s.times[1].push(t as number);
+    },
+    copyVars: (v) => ({ upperArr: v.upperArr.slice(), lowerArr: v.lowerArr.slice(), trend: v.trend }),
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        fills: [{
+          plot1: 'plot0', plot2: 'plot1',
+          gradient: {
+            topValue: s.fractalLine.slice(), bottomValue: s.hl2.slice(), topColor: s.topColor.slice(),
+            bottomColor: new Array<string | null>(n).fill(null),
+          },
+        }],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FractalsTrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<FractalsTrendInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions (no message: the default one) */
@@ -187,6 +232,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const FractalsTrend = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

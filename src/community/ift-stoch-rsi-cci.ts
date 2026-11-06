@@ -13,7 +13,9 @@
  * Original notice: author @KivancOzbilgic, creator John EHLERS
  */
 
-import { ta, math, Series, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface IFTStochRSICCIInputs {
   /** Show the IFT of the Stochastic */
@@ -83,61 +85,91 @@ const EPS = 1e-10;
 const ift = (x: number): number => (Math.exp(2 * x) - 1) / (Math.exp(2 * x) + 1);
 const num = (v: number | null | undefined): number => (v == null ? NaN : v);
 
-export function calculate(bars: Bar[], inputs: Partial<IFTStochRSICCIInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface IftRun extends BarRunState<Record<string, never>> {
+  cci: ReturnType<typeof taStep.cci>;
+  rsi: ReturnType<typeof taStep.rsi>;
+  stoch: ReturnType<typeof taStep.stoch>;
+  up: WindowSum;
+  lo: WindowSum;
+  wmas: ReturnType<typeof taStep.wma>[];
+  src: number[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<IFTStochRSICCIInputs>): BarStudy<IftRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const close = new Series(bars, (b) => b.close);
-  const high = new Series(bars, (b) => b.high);
-  const low = new Series(bars, (b) => b.low);
-  const wmaOf = (values: number[]): number[] =>
-    ta.wma(new Series(bars, (_b, i) => values[i]), cfg.wmaLength).toArray().map(num);
-
-  // CCI of the close
-  const cci = ta.cci(close, cfg.cciLength).toArray().map(num);
-  const inv1 = wmaOf(cci.map((v) => 0.1 * (v / 4))).map(ift);
-  // RSI
-  const rsi = ta.rsi(close, cfg.rsiLength).toArray().map(num);
-  const inv2 = wmaOf(rsi.map((v) => 0.1 * (v - 50))).map(ift);
-  // Stochastic
-  const stoch = ta.stoch(close, high, low, cfg.stochLength).toArray().map(num);
-  const invLine = wmaOf(stoch.map((v) => 0.1 * (v - 50))).map(ift);
-  // MFI: change(hlc3) <= 0 ? 0 : hlc3, Pine comparisons (equal within 1e-10; an na change on the first bar
-  // counts on both sides)
-  const src = bars.map((b) => (b.high + b.low + b.close) / 3);
-  const upFlow: number[] = new Array(n);
-  const loFlow: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const ch = i > 0 ? src[i] - src[i - 1] : NaN;
-    const vol = num(bars[i].volume);
-    upFlow[i] = vol * (ch <= EPS ? 0 : src[i]);
-    loFlow[i] = vol * (ch >= -EPS ? 0 : src[i]);
-  }
-  const up = math.sum(new Series(bars, (_b, i) => upFlow[i]), cfg.mfiLength).toArray().map(num);
-  const lo = math.sum(new Series(bars, (_b, i) => loFlow[i]), cfg.mfiLength).toArray().map(num);
-  const mfi = up.map((u, i) => 100.0 - 100.0 / (1.0 + u / lo[i]));
-  const inv3 = wmaOf(mfi.map((v) => 0.1 * (v - 50))).map(ift);
-
   // plot(show and x ? x : na): a float in a condition is false when na or 0
-  const line = (show: boolean, values: number[]) => bars.map((b, i) => {
-    const v = values[i];
-    return { time: b.time, value: show && Number.isFinite(v) && v !== 0 ? v : NaN };
-  });
-  const avg = inv1.map((v, i) => (v + inv2[i] + invLine[i] + inv3[i]) / 4);
-
+  const line = (show: boolean, time: number, v: number): Point => ({ time, value: show && Number.isFinite(v) && v !== 0 ? v : NaN });
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(cfg.showAverage, avg),
-      plot1: line(cfg.showSto, invLine),
-      plot2: line(cfg.showCci, inv1),
-      plot3: line(cfg.showRsi, inv2),
-      plot4: line(cfg.showMfi, inv3),
+    init() {
+      const s: IftRun = {
+        cci: taStep.cci(cfg.cciLength), rsi: taStep.rsi(cfg.rsiLength), stoch: taStep.stoch(cfg.stochLength),
+        up: new WindowSum(cfg.mfiLength), lo: new WindowSum(cfg.mfiLength),
+        wmas: [taStep.wma(), taStep.wma(), taStep.wma(), taStep.wma()], src: [], plots: [[], [], [], [], []],
+        vars: {}, steps: [], lists: [], series: [],
+      };
+      s.steps = [s.cci, s.rsi, s.stoch, s.up, s.lo, ...s.wmas];
+      s.series = [s.src, ...s.plots];
+      return s;
     },
-    hlines: [
-      { value: 0.5, options: { color: '#FF5252', linestyle: 'dashed' as const, title: 'Level' } },
-      { value: -0.5, options: { color: '#4CAF50', linestyle: 'dashed' as const, title: 'Level' } },
-    ],
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const wmaOf = (k: number, v: number) => ift(num(s.wmas[k].step(v, cfg.wmaLength)));
+      // CCI of the close
+      const cci = num(s.cci.step(b.close));
+      const inv1 = wmaOf(0, 0.1 * (cci / 4));
+      // RSI
+      const rsi = num(s.rsi.step(b.close));
+      const inv2 = wmaOf(1, 0.1 * (rsi - 50));
+      // Stochastic
+      const stoch = num(s.stoch.step(b.close, b.high, b.low));
+      const invLine = wmaOf(2, 0.1 * (stoch - 50));
+      // MFI: change(hlc3) <= 0 ? 0 : hlc3, Pine comparisons (equal within 1e-10; an na change on the first bar
+      // counts on both sides)
+      const src = (b.high + b.low + b.close) / 3;
+      s.src[i] = src;
+      const ch = i > 0 ? src - s.src[i - 1] : NaN;
+      const vol = num(b.volume);
+      const up = num(s.up.step(vol * (ch <= EPS ? 0 : src)));
+      const lo = num(s.lo.step(vol * (ch >= -EPS ? 0 : src)));
+      const mfi = 100.0 - 100.0 / (1.0 + up / lo);
+      const inv3 = wmaOf(3, 0.1 * (mfi - 50));
+      const avg = (inv1 + inv2 + invLine + inv3) / 4;
+      s.plots[0][i] = line(cfg.showAverage, time, avg);
+      s.plots[1][i] = line(cfg.showSto, time, invLine);
+      s.plots[2][i] = line(cfg.showCci, time, inv1);
+      s.plots[3][i] = line(cfg.showRsi, time, inv2);
+      s.plots[4][i] = line(cfg.showMfi, time, inv3);
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(),
+          plot1: s.plots[1].slice(),
+          plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(),
+          plot4: s.plots[4].slice(),
+        },
+        hlines: [
+          { value: 0.5, options: { color: '#FF5252', linestyle: 'dashed' as const, title: 'Level' } },
+          { value: -0.5, options: { color: '#4CAF50', linestyle: 'dashed' as const, title: 'Level' } },
+        ],
+      };
+    },
   };
 }
 
-export const IFTStochRSICCI = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IFTStochRSICCIInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<IFTStochRSICCIInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const IFTStochRSICCI = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig };

@@ -14,9 +14,11 @@
  * Original notice: © QuantAlgo
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData, MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DualBayesianForLoopInputs {
   /** Price source */
@@ -81,86 +83,136 @@ function bayesian(v: number): number {
   return (prior * evidence) / (prior * evidence + (1 - prior) * (1 - evidence));
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DualBayesianForLoopInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = A(getSourceSeries(bars, cfg.source));
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
 
+interface DbflRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  ema: ReturnType<typeof taStep.ema>;
+  src: number[];
+  binary: number[];
+  plots: Point[][];
+  topValue: number[];
+  bottomValue: number[];
+  topColor: (string | null)[];
+  bottomColor: (string | null)[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<DualBayesianForLoopInputs>): BarStudy<DbflRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.source);
   // forloop_analysis: for i = loopstart to lookback (a Pine for loop counts down when loopstart > lookback);
   // source[i] is na before the first bar, so the comparison is false (-1)
   const step = cfg.lookback >= cfg.loopstart ? 1 : -1;
   const count = cfg.lookback - cfg.loopstart + 1;
-  const loopScore = src.map((s, t) => {
-    let sum = 0;
-    for (let i = cfg.loopstart; step > 0 ? i <= cfg.lookback : i >= cfg.lookback; i += step) {
-      sum += t - i >= 0 && gt(s, src[t - i]) ? 1 : -1;
-    }
-    // loop start = lookback + 1: sum / 0 is +-infinity (the > 0 test uses it) or na for 0 / 0
-    return sum / count;
-  });
-
-  // ta.sma treats +-infinity as na
-  const loopSma = A(ta.sma(S(loopScore.map((v) => (Number.isFinite(v) ? v : NaN))), cfg.length));
-  const final = loopScore.map((v, i) => (bayesian(v) * 100 + bayesian(loopSma[i]) * 100) / 2);
-  const signal = A(ta.ema(S(final), 2));
-  const binary = signal.map((v) => (gt(v, 50) ? 1 : -1));
-
   const bullFill = String(color.new(cfg.bullCol, 10));
   const bearFill = String(color.new(cfg.bearCol, 10));
-  const sigColor = (i: number) => (binary[i] > 0 ? cfg.bullCol : cfg.bearCol);
-
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const bullFlags: boolean[] = [], bearFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // ta.crossover(binary_signal, 0) / ta.crossunder(binary_signal, 0)
-    bullFlags.push(i > 0 && binary[i] > 0 && binary[i - 1] <= 0);
-    bearFlags.push(i > 0 && binary[i] < 0 && binary[i - 1] >= 0);
-    if (bullFlags[i]) {
-      markers.push({ time: t, position: 'belowBar', shape: 'circle', color: cfg.bullCol, text: '𝑳',
-        textColor: cfg.bullCol, size: 'tiny', forceOverlay: true });
-    }
-    if (bearFlags[i]) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: cfg.bearCol, text: '𝑺',
-        textColor: cfg.bearCol, size: 'tiny', forceOverlay: true });
-    }
-    // barcolor(show_bars ? binary_signal > 0 ? bull_col : bear_col : na)
-    if (cfg.showBars) barColors.push({ time: t, color: sigColor(i) });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b) => ({ time: b.time, value: 1, color: cfg.bullCol })),
-      plot1: bars.map((b) => ({ time: b.time, value: -1, color: cfg.bearCol })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: binary[i], color: sigColor(i) })),
-      plot3: bars.map((b) => ({ time: b.time, value: 0, color: MID_COL })),
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      taStep.sma().step(0, cfg.length); // the length check of ta.sma
+      const s: DbflRun = {
+        sma: new WindowSma(cfg.length), ema: taStep.ema(2), src: [], binary: [], plots: [[], [], [], []],
+        topValue: [], bottomValue: [], topColor: [], bottomColor: [], markers: [], barColors: [],
+        flags: [[], []], times: [[], []], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.sma, s.ema];
+      s.lists = [s.markers, s.barColors, ...s.times];
+      s.series = [s.src, s.binary, ...s.plots, s.topValue, s.bottomValue, s.topColor, s.bottomColor, ...s.flags];
+      return s;
     },
-    hlines: [{ value: 0, options: { title: 'Zero Line', color: MID_COL, linestyle: 'dashed', linewidth: 1 } }],
-    // fill(z, mid, binary > 0 ? binary : 0, binary > 0 ? 0 : binary,
-    //      binary > 0 ? color.new(bull_col, 10) : na, binary > 0 ? na : color.new(bear_col, 10))
-    fills: [{
-      plot1: 'plot2',
-      plot2: 'plot3',
-      options: { title: 'Plots Background' },
-      gradient: {
-        topValue: binary.map((v) => (v > 0 ? v : 0)),
-        bottomValue: binary.map((v) => (v > 0 ? 0 : v)),
-        topColor: binary.map((v) => (v > 0 ? bullFill : null)),
-        bottomColor: binary.map((v) => (v > 0 ? null : bearFill)),
-      },
-    }],
-    markers,
-    barColors,
-    // alertcondition(ta.crossover(binary_signal, 0)) / alertcondition(ta.crossunder(binary_signal, 0))
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags]),
+    bar(s, t, bars) {
+      const b = bars[t];
+      const time = b.time;
+      const src = s.src;
+      const v = value(b);
+      src[t] = v;
+      let sum = 0;
+      for (let i = cfg.loopstart; step > 0 ? i <= cfg.lookback : i >= cfg.lookback; i += step) {
+        sum += t - i >= 0 && gt(v, src[t - i]) ? 1 : -1;
+      }
+      // loop start = lookback + 1: sum / 0 is +-infinity (the > 0 test uses it) or na for 0 / 0
+      const loopScore = sum / count;
+
+      // ta.sma treats +-infinity as na
+      const loopSma = s.sma.step(Number.isFinite(loopScore) ? loopScore : NaN);
+      const final = (bayesian(loopScore) * 100 + bayesian(loopSma) * 100) / 2;
+      const signal = s.ema.step(final);
+      const binary = gt(signal, 50) ? 1 : -1;
+      s.binary[t] = binary;
+      const sigColor = binary > 0 ? cfg.bullCol : cfg.bearCol;
+
+      // ta.crossover(binary_signal, 0) / ta.crossunder(binary_signal, 0)
+      const prev = t > 0 ? s.binary[t - 1] : NaN;
+      const bull = t > 0 && binary > 0 && prev <= 0;
+      const bear = t > 0 && binary < 0 && prev >= 0;
+      s.flags[0][t] = bull;
+      s.flags[1][t] = bear;
+      if (bull) s.times[0].push(time as number);
+      if (bear) s.times[1].push(time as number);
+      if (bull) {
+        s.markers.push({ time, position: 'belowBar', shape: 'circle', color: cfg.bullCol, text: '𝑳',
+          textColor: cfg.bullCol, size: 'tiny', forceOverlay: true });
+      }
+      if (bear) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'circle', color: cfg.bearCol, text: '𝑺',
+          textColor: cfg.bearCol, size: 'tiny', forceOverlay: true });
+      }
+      // barcolor(show_bars ? binary_signal > 0 ? bull_col : bear_col : na)
+      if (cfg.showBars) s.barColors.push({ time, color: sigColor });
+
+      s.plots[0][t] = { time, value: 1, color: cfg.bullCol };
+      s.plots[1][t] = { time, value: -1, color: cfg.bearCol };
+      s.plots[2][t] = { time, value: binary, color: sigColor };
+      s.plots[3][t] = { time, value: 0, color: MID_COL };
+      // fill(z, mid, binary > 0 ? binary : 0, binary > 0 ? 0 : binary,
+      //      binary > 0 ? color.new(bull_col, 10) : na, binary > 0 ? na : color.new(bear_col, 10))
+      s.topValue[t] = binary > 0 ? binary : 0;
+      s.bottomValue[t] = binary > 0 ? 0 : binary;
+      s.topColor[t] = binary > 0 ? bullFill : null;
+      s.bottomColor[t] = binary > 0 ? null : bearFill;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const [plot0, plot1, plot2, plot3] = s.plots.map((p) => p.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0, plot1, plot2, plot3 },
+        hlines: [{ value: 0, options: { title: 'Zero Line', color: MID_COL, linestyle: 'dashed', linewidth: 1 } }],
+        fills: [{
+          plot1: 'plot2',
+          plot2: 'plot3',
+          options: { title: 'Plots Background' },
+          gradient: {
+            topValue: s.topValue.slice(),
+            bottomValue: s.bottomValue.slice(),
+            topColor: s.topColor.slice(),
+            bottomColor: s.bottomColor.slice(),
+          },
+        }],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        // alertcondition(ta.crossover(binary_signal, 0)) / alertcondition(ta.crossunder(binary_signal, 0))
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DualBayesianForLoopInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<DualBayesianForLoopInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -171,6 +223,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const DualBayesianForLoop = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

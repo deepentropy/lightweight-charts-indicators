@@ -18,11 +18,12 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
 import type { ChartContext } from '../chart-context';
-import { periodChanges } from '../anchor-period';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { chartTimeframe, hasCalendar, periodChanges } from '../anchor-period';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ZeroLagHMATrendSuiteInputs {
   /** HMA length */
@@ -86,104 +87,182 @@ export const metadata = {
 const gt = (a: number, b: number) => a - b > 1e-10;
 const lt = (a: number, b: number) => b - a > 1e-10;
 
-/**
- * Start of a new day (Pine ta.vwap anchor: timeframe.change("1D")); true on the first bar, where the sums start as in
- * Pine. With the time zone and the session of the chart context: the trading days of the exchange. Else: UTC days.
- */
-function newDay(bars: Bar[], chart?: ChartContext): boolean[] {
-  return periodChanges(bars, '1D', chart).map((change, i) => i === 0 || change);
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+const DAY_MS = 86400000;
+
+interface ZlVars {
+  /** ta.vwap sums */
+  sumPV: number;
+  sumV: number;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ZeroLagHMATrendSuiteInputs> = {},
-  chart?: ChartContext,
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+interface ZlRun extends BarRunState<ZlVars> {
+  wma1: ReturnType<typeof taStep.wma>;
+  wma2: ReturnType<typeof taStep.wma>;
+  wma3: ReturnType<typeof taStep.wma>;
+  atr: ReturnType<typeof taStep.atr>;
+  source: number[];
+  hma: number[];
+  lower: number[];
+  upper: number[];
+  isBullish: boolean[];
+  isBearish: boolean[];
+  plots: Point[][];
+  barColors: BarColorData[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<ZeroLagHMATrendSuiteInputs>): BarStudy<ZlRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { length, atrLength, signalMultiplier, showBuySellSignals, showReversalSignals, showVWAP, slopeIndex } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const source = A(getSourceSeries(bars, cfg.source));
+  const value = barSource(cfg.source);
   // halfLength = math.ceil(length / 2); sqrtLength = math.round(math.sqrt(length))
   const halfLength = Math.ceil(length / 2);
   const sqrtLength = Math.round(Math.sqrt(length));
-  const wma1 = A(ta.wma(S(source), halfLength));
-  const wma2 = A(ta.wma(S(source), length));
-  const hma = A(ta.wma(S(wma1.map((v, i) => 2 * v - wma2[i])), sqrtLength));
+  /** Chart context of the day changes (with the chart timeframe) and the time unit, set by init */
+  let calChart: ChartContext = {};
+  let ms = false;
 
-  // slopeUp = zeroLagHMA > zeroLagHMA[slopeIndex]
-  const slopeColor = hma.map((v, i) => (gt(v, i >= slopeIndex ? hma[i - slopeIndex] : NaN) ? '#5CF0D7' : '#B32AC3'));
-
-  const plots: Record<string, { time: number; value: number; color: string }[]> = {};
-  HMA_LINES.forEach(([, transp], k) => {
-    plots[`plot${k}`] = bars.map((b, i) => ({ time: b.time, value: hma[i], color: String(color.new(slopeColor[i], transp)) }));
-  });
-
-  // barcolor(slopeColor)
-  const barColors: BarColorData[] = bars.map((b, i) => ({ time: b.time, color: slopeColor[i] }));
-
-  // Signals: crossunder / crossover of the source with zeroLagHMA -/+ signalMultiplier * atr
-  const atr = A(ta.atr(bars, atrLength));
-  const lower = hma.map((v, i) => v - signalMultiplier * atr[i]);
-  const upper = hma.map((v, i) => v + signalMultiplier * atr[i]);
-  // ta.crossover / ta.crossunder compare exactly (no 1e-10 tolerance); na operands give false
-  const crossover = (a: number[], b: number[], i: number) => i > 0 && a[i] > b[i] && a[i - 1] <= b[i - 1];
-  const crossunder = (a: number[], b: number[], i: number) => i > 0 && a[i] < b[i] && a[i - 1] >= b[i - 1];
-  const markers: MarkerData[] = [];
-  const buyFlags: boolean[] = new Array(n).fill(false);
-  const sellFlags: boolean[] = new Array(n).fill(false);
-  const revUpFlags: boolean[] = new Array(n).fill(false);
-  const revDownFlags: boolean[] = new Array(n).fill(false);
-  const bullStartFlags: boolean[] = new Array(n).fill(false);
-  const bearStartFlags: boolean[] = new Array(n).fill(false);
-  // isBullish = zeroLagHMA > zeroLagHMA[slopeIndex]; isBearish = zeroLagHMA < zeroLagHMA[slopeIndex]
-  const hmaBack = (i: number) => (i >= slopeIndex ? hma[i - slopeIndex] : NaN);
-  const isBullish = hma.map((v, i) => gt(v, hmaBack(i)));
-  const isBearish = hma.map((v, i) => lt(v, hmaBack(i)));
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    buyFlags[i] = crossunder(source, lower, i);
-    sellFlags[i] = crossover(source, upper, i);
-    revUpFlags[i] = crossover(source, lower, i);
-    revDownFlags[i] = crossunder(source, upper, i);
-    // isBullish and not isBullish[1] (false before the first bar)
-    bullStartFlags[i] = isBullish[i] && !(i > 0 && isBullish[i - 1]);
-    bearStartFlags[i] = isBearish[i] && !(i > 0 && isBearish[i - 1]);
-    if (showBuySellSignals && buyFlags[i]) {
-      markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: '#40a998', text: '𝓤𝓹', textColor: '#FFFFFF' });
-    }
-    if (showBuySellSignals && sellFlags[i]) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: String(color.new('#B32AC3', 0)), text: '𝓓𝓸𝔀𝓷', textColor: '#FFFFFF' });
-    }
-    if (showReversalSignals && revUpFlags[i]) {
-      markers.push({ time: t, position: 'belowBar', shape: 'circle', color: String(color.new('#58EDD4C3', 0)), text: 'B', textColor: '#FFFFFF', size: 'small' });
-    }
-    if (showReversalSignals && revDownFlags[i]) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: String(color.new('#B129C0C3', 0)), text: 'B', textColor: '#FFFFFF', size: 'small' });
-    }
-  }
-
-  // vwap = ta.vwap (hlc3, anchored on each new day); bullishVWAP = vwap < zeroLagHMA; bearishVWAP = vwap > zeroLagHMA
-  const hlc3 = bars.map((b) => (b.high + b.low + b.close) / 3);
-  const vwap = A(ta.vwap(S(hlc3), S(bars.map((b) => b.volume ?? NaN)), S(newDay(bars, chart).map(Number))));
-  const bullish = vwap.map((v, i) => showVWAP && gt(hma[i], v));
-  const bearish = vwap.map((v, i) => showVWAP && gt(v, hma[i]));
-  const ribbon = (on: boolean[], col: string, transp: number) =>
-    bars.map((b, i) => ({ time: b.time, value: showVWAP && on[i] ? vwap[i] : NaN, color: String(color.new(col, transp)) }));
-  plots.plot9 = ribbon(bullish, '#5CF3DAEB', 70);
-  plots.plot10 = ribbon(bullish, '#5CF3DAEB', 80);
-  plots.plot11 = ribbon(bearish, '#B029C0EB', 70);
-  plots.plot12 = ribbon(bearish, '#B029C0EB', 80);
+  /**
+   * Start of a new day (Pine ta.vwap anchor: timeframe.change("1D")) of bar i (newDay(bars, chart)[i]); true on the
+   * first bar. With the exchange calendar, the change of bars i - 1 and i (the calendar reads the chart timeframe of
+   * the whole set); else a new UTC day (the rule of periodStarts).
+   */
+  const newDay = (bars: Bar[], i: number): boolean => {
+    if (i === 0) return true;
+    if (hasCalendar(calChart)) return periodChanges([bars[i - 1]!, bars[i]!], '1D', calChart)[1]!;
+    const day = (t: number) => Math.floor((ms ? t : t * 1000) / DAY_MS);
+    return day(bars[i]!.time) !== day(bars[i - 1]!.time);
+  };
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    markers,
-    barColors,
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags, revUpFlags, revDownFlags, bullStartFlags, bearStartFlags]),
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    // the day changes read the chart timeframe of the bar gaps (or the context) and the time unit of the first bar
+    key: (bars, chart) => (showVWAP ? `${chartTimeframe(bars, chart)}|${bars.length > 0 && bars[0].time >= 1e12}` : ''),
+    init(bars, chart) {
+      ms = bars.length > 0 && bars[0].time >= 1e12;
+      const tfName = chartTimeframe(bars, chart);
+      calChart = tfName === '' || chart.timeframe ? chart : { ...chart, timeframe: tfName };
+      const s: ZlRun = {
+        wma1: taStep.wma(), wma2: taStep.wma(), wma3: taStep.wma(), atr: taStep.atr(atrLength),
+        source: [], hma: [], lower: [], upper: [], isBullish: [], isBearish: [],
+        plots: Array.from({ length: 13 }, () => []), barColors: [], markers: [],
+        flags: Array.from({ length: 6 }, () => []), times: Array.from({ length: 6 }, () => []),
+        steps: [], vars: { sumPV: NaN, sumV: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.wma1, s.wma2, s.wma3, s.atr];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.source, s.hma, s.lower, s.upper, s.isBullish, s.isBearish, ...s.plots, s.barColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i]!;
+      const t = b.time;
+      const src = value(b);
+      s.source[i] = src;
+      const wma1 = s.wma1.step(src, halfLength);
+      const wma2 = s.wma2.step(src, length);
+      const hma = s.wma3.step(2 * wma1 - wma2, sqrtLength);
+      s.hma[i] = hma;
+
+      // slopeUp = zeroLagHMA > zeroLagHMA[slopeIndex]
+      const hmaBack = i >= slopeIndex ? s.hma[i - slopeIndex]! : NaN;
+      const slopeColor = gt(hma, hmaBack) ? '#5CF0D7' : '#B32AC3';
+      HMA_LINES.forEach(([, transp], k) => {
+        s.plots[k]![i] = { time: t, value: hma, color: String(color.new(slopeColor, transp)) };
+      });
+      // barcolor(slopeColor)
+      s.barColors[i] = { time: t, color: slopeColor };
+
+      // Signals: crossunder / crossover of the source with zeroLagHMA -/+ signalMultiplier * atr
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const lower = hma - signalMultiplier * atr;
+      const upper = hma + signalMultiplier * atr;
+      s.lower[i] = lower;
+      s.upper[i] = upper;
+      // ta.crossover / ta.crossunder compare exactly (no 1e-10 tolerance); na operands give false
+      const ps = i > 0 ? s.source[i - 1]! : NaN;
+      const pl = i > 0 ? s.lower[i - 1]! : NaN;
+      const pu = i > 0 ? s.upper[i - 1]! : NaN;
+      const buy = i > 0 && src < lower && ps >= pl;
+      const sell = i > 0 && src > upper && ps <= pu;
+      const revUp = i > 0 && src > lower && ps <= pl;
+      const revDown = i > 0 && src < upper && ps >= pu;
+      // isBullish = zeroLagHMA > zeroLagHMA[slopeIndex]; isBearish = zeroLagHMA < zeroLagHMA[slopeIndex]
+      const isBullish = gt(hma, hmaBack);
+      const isBearish = lt(hma, hmaBack);
+      s.isBullish[i] = isBullish;
+      s.isBearish[i] = isBearish;
+      // isBullish and not isBullish[1] (false before the first bar)
+      const bullStart = isBullish && !(i > 0 && s.isBullish[i - 1]);
+      const bearStart = isBearish && !(i > 0 && s.isBearish[i - 1]);
+      if (showBuySellSignals && buy) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: '#40a998', text: '𝓤𝓹', textColor: '#FFFFFF' });
+      }
+      if (showBuySellSignals && sell) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: String(color.new('#B32AC3', 0)), text: '𝓓𝓸𝔀𝓷', textColor: '#FFFFFF' });
+      }
+      if (showReversalSignals && revUp) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'circle', color: String(color.new('#58EDD4C3', 0)), text: 'B', textColor: '#FFFFFF', size: 'small' });
+      }
+      if (showReversalSignals && revDown) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: String(color.new('#B129C0C3', 0)), text: 'B', textColor: '#FFFFFF', size: 'small' });
+      }
+      const flags = [buy, sell, revUp, revDown, bullStart, bearStart];
+      for (let k = 0; k < 6; k++) {
+        s.flags[k]![i] = flags[k]!;
+        if (flags[k]) s.times[k]!.push(t as number);
+      }
+
+      // vwap = ta.vwap (hlc3, anchored on each new day); bullishVWAP = vwap < zeroLagHMA; bearishVWAP = vwap > zeroLagHMA
+      let vwap = NaN;
+      if (showVWAP) {
+        const v = s.vars;
+        const hlc3 = (b.high + b.low + b.close) / 3;
+        const vol = b.volume ?? NaN;
+        if (newDay(bars, i)) {
+          v.sumPV = hlc3 * vol;
+          v.sumV = vol;
+        } else {
+          // An na source or volume makes the sums na until the next anchor
+          v.sumPV += hlc3 * vol;
+          v.sumV += vol;
+        }
+        vwap = v.sumV === 0 ? NaN : v.sumPV / v.sumV;
+      }
+      const bullish = showVWAP && gt(hma, vwap);
+      const bearish = showVWAP && gt(vwap, hma);
+      s.plots[9]![i] = { time: t, value: showVWAP && bullish ? vwap : NaN, color: String(color.new('#5CF3DAEB', 70)) };
+      s.plots[10]![i] = { time: t, value: showVWAP && bullish ? vwap : NaN, color: String(color.new('#5CF3DAEB', 80)) };
+      s.plots[11]![i] = { time: t, value: showVWAP && bearish ? vwap : NaN, color: String(color.new('#B029C0EB', 70)) };
+      s.plots[12]![i] = { time: t, value: showVWAP && bearish ? vwap : NaN, color: String(color.new('#B029C0EB', 80)) };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1]!)),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ZeroLagHMATrendSuiteInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ZeroLagHMATrendSuiteInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 /** alertcondition() calls of the original */
@@ -198,6 +277,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const ZeroLagHMATrendSuite = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -12,8 +12,10 @@
  * Original notice: © NordicAlphaLab
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData, PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface NormalizedSpmaNalInputs {
   /** Colour set: 'Standard', 'Nordic' or 'Simple' */
@@ -70,70 +72,100 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const ne = (a: number, b: number) => Math.abs(a - b) > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<NormalizedSpmaNalInputs> = {},
-): IndicatorResult & { barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]> } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]> };
 
+interface SpmaVars {
+  /** var int NAL = 0 */
+  nal: number;
+}
+
+interface SpmaRun extends BarRunState<SpmaVars> {
+  per: ReturnType<typeof taStep.percentrank>;
+  ema: ReturnType<typeof taStep.ema>;
+  sd: WindowStdev;
+  spma: number[];
+  plot0: Point[];
+  plot1: Point[];
+  candles: PlotCandleData[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<NormalizedSpmaNalInputs>): BarStudy<SpmaRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const [colUp, colDn, colNu] = cfg.colMode === 'Nordic'
     ? [String(color.rgb(0, 96, 175)), String(color.rgb(150, 154, 169)), color.gray]
     : cfg.colMode === 'Simple'
       ? [color.lime, color.red, color.gray]
       : [STANDARD_UP, String(color.rgb(32, 94, 144)), color.gray];
-
-  // f_SPMA: Ret = close - close[1]; Per = ta.percentrank(Ret, lookback); Gate = Per > gate; ta.ema(close, length)
-  const ret = bars.map((b, i) => (i > 0 ? b.close - bars[i - 1].close : NaN));
-  const per = A(ta.percentrank(S(ret), cfg.lookback));
-  const ema = A(ta.ema(S(bars.map((b) => b.close)), cfg.normLength));
-  const spma: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    // MA := na(MA[1]) ? emaValue : Gate ? emaValue : MA[1]
-    const prev = i > 0 ? spma[i - 1] : NaN;
-    spma[i] = isNaN(prev) ? ema[i] : gt(per[i], cfg.gate) ? ema[i] : prev;
-  }
-
-  // normalizedSPMA = close != 0.0 ? -SPMA / close : na
-  const norm = bars.map((b, i) => (ne(b.close, 0) ? -spma[i] / b.close : NaN));
-  const sd = A(ta.stdev(S(norm), cfg.normSDLen));
-  const lower = norm.map((v, i) => v - sd[i]);
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const candles: PlotCandleData[] = [];
-  const barColors: BarColorData[] = [];
-  let nal = 0; // var int NAL = 0
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const long = gt(lower[i], -1.0);
-    const short = lt(norm[i], -1.0);
-    // NAL := Long ? 1 : Short ? -1 : nz(NAL[1], 0)
-    nal = long ? 1 : short ? -1 : nal;
-    const col = nal === 1 ? colUp : nal === -1 ? colDn : colNu;
-    plot0.push({ time: b.time, value: Number.isFinite(norm[i]) ? norm[i] : NaN, color: short ? colDn : colNu });
-    plot1.push({ time: b.time, value: Number.isFinite(lower[i]) ? lower[i] : NaN, color: long ? colUp : colNu });
-    // plotcandle(open, high, low, close, "Candles", color = col, wickcolor = col, bordercolor = col,
-    //            display = display.pane, force_overlay = true)
-    candles.push({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
-      color: col, wickColor: col, borderColor: col, forceOverlay: true });
-    // barcolor(col)
-    barColors.push({ time: b.time, color: col });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    hlines: [{ value: -1.0, options: { title: 'Normalized Midline', color: MIDLINE_COL, linestyle: 'dashed' } }],
-    plotCandles: { candles },
-    barColors,
+    init() {
+      const s: SpmaRun = {
+        per: taStep.percentrank(cfg.lookback), ema: taStep.ema(cfg.normLength), sd: new WindowStdev(cfg.normSDLen),
+        spma: [], plot0: [], plot1: [], candles: [], barColors: [],
+        steps: [], vars: { nal: 0 }, lists: [], series: [],
+      };
+      s.steps = [s.per, s.ema, s.sd];
+      s.series = [s.spma, s.plot0, s.plot1, s.candles, s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // f_SPMA: Ret = close - close[1]; Per = ta.percentrank(Ret, lookback); Gate = Per > gate; ta.ema(close, length)
+      const ret = i > 0 ? b.close - bars[i - 1].close : NaN;
+      const per = s.per.step(ret);
+      const ema = s.ema.step(b.close);
+      // MA := na(MA[1]) ? emaValue : Gate ? emaValue : MA[1]
+      const prev = i > 0 ? s.spma[i - 1] : NaN;
+      const spma = isNaN(prev) ? ema : gt(per, cfg.gate) ? ema : prev;
+      s.spma[i] = spma;
+
+      // normalizedSPMA = close != 0.0 ? -SPMA / close : na
+      const norm = ne(b.close, 0) ? -spma / b.close : NaN;
+      const lower = norm - s.sd.step(norm);
+
+      const long = gt(lower, -1.0);
+      const short = lt(norm, -1.0);
+      // NAL := Long ? 1 : Short ? -1 : nz(NAL[1], 0)
+      const nal = long ? 1 : short ? -1 : s.vars.nal;
+      s.vars.nal = nal;
+      const col = nal === 1 ? colUp : nal === -1 ? colDn : colNu;
+      s.plot0[i] = { time: b.time, value: Number.isFinite(norm) ? norm : NaN, color: short ? colDn : colNu };
+      s.plot1[i] = { time: b.time, value: Number.isFinite(lower) ? lower : NaN, color: long ? colUp : colNu };
+      // plotcandle(open, high, low, close, "Candles", color = col, wickcolor = col, bordercolor = col,
+      //            display = display.pane, force_overlay = true)
+      s.candles[i] = { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
+        color: col, wickColor: col, borderColor: col, forceOverlay: true };
+      // barcolor(col)
+      s.barColors[i] = { time: b.time, color: col };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [{ value: -1.0, options: { title: 'Normalized Midline', color: MIDLINE_COL, linestyle: 'dashed' } }],
+        plotCandles: { candles: s.candles.slice() },
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<NormalizedSpmaNalInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<NormalizedSpmaNalInputs> = {},
+): IndicatorResult & { barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]> } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const NormalizedSpmaNal = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

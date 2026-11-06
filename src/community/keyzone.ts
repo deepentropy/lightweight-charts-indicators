@@ -9,7 +9,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface KeyzoneInputs {}
 
@@ -34,29 +36,62 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], _inputs: Partial<KeyzoneInputs> = {}): IndicatorResult {
-  const low = Series.fromArray(bars, bars.map((b) => b.low));
-  const high = Series.fromArray(bars, bars.map((b) => b.high));
-  // ta.lowest(len)[1] / ta.highest(len)[1]: the extreme of the low / high on the previous bar
-  const prev = (s: Series) => {
-    const a = s.toArray().map((v) => v ?? NaN);
-    return bars.map((_b, i) => (i > 0 ? a[i - 1] : NaN));
-  };
-  const zones = [3, 8, 21, 89].flatMap((len) => [prev(ta.lowest(low, len)), prev(ta.highest(high, len))]);
+type Point = { time: number; value: number };
 
-  const plots: IndicatorResult['plots'] = {};
-  zones.forEach((z, k) => {
-    plots[`plot${k}`] = bars.map((b, i) => ({ time: b.time, value: z[i] }));
-  });
+interface KeyzoneRun extends BarRunState<Record<string, never>> {
+  /** ta.lowest(low, len) / ta.highest(high, len) for 3, 8, 21 and 89 bars */
+  ext: WindowExtreme[];
+  /** Their values by bar */
+  vals: number[][];
+  plots: Point[][];
+}
 
+function study(): BarStudy<KeyzoneRun, IndicatorResult> {
+  const lengths = [3, 8, 21, 89];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    init() {
+      const s: KeyzoneRun = {
+        ext: lengths.flatMap((len) => [new WindowExtreme(true, len), new WindowExtreme(false, len)]),
+        vals: Array.from({ length: 8 }, () => []), plots: Array.from({ length: 8 }, () => []),
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = s.ext;
+      s.series = [...s.vals, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // ta.lowest(len)[1] / ta.highest(len)[1]: the extreme of the low / high on the previous bar
+      for (let k = 0; k < 8; k++) {
+        s.vals[k][i] = s.ext[k].step(k % 2 === 0 ? b.low : b.high);
+        s.plots[k][i] = { time: b.time, value: i > 0 ? s.vals[k][i - 1] : NaN };
+      }
+    },
+    result(s) {
+      const plots: IndicatorResult['plots'] = {};
+      s.plots.forEach((p, k) => {
+        plots[`plot${k}`] = p.slice();
+      });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<KeyzoneInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(bars: Bar[], _inputs: Partial<KeyzoneInputs> = {}): IndicatorResult {
+  return fullResult(createRun(_inputs).update(bars));
 }
 
 export const Keyzone = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

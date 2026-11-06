@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface GbrMicroKernelTrendInputs {
   /** Smoothing bandwidth (h) */
@@ -50,67 +52,103 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface GbrVars {
+  dir: number;
+}
+
+interface GbrRun extends BarRunState<GbrVars> {
+  src: number[];
+  kernel: number[];
+  dirs: number[];
+  plot0: Point[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<GbrMicroKernelTrendInputs>): BarStudy<GbrRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { h, window } = cfg;
+  const source = barSource(cfg.src);
+  // for i = 0 to window: counts down when window < 0
+  const step = window >= 0 ? 1 : -1;
+  const buyShape = String(color.new(COL_BUY, 85));
+  const sellShape = String(color.new(COL_SELL, 85));
+  return {
+    // a negative window reads the source of the next bars
+    fullRunReason: () => (!isBarSource(cfg.src) ? 'source of another study' : window < 0 ? 'negative window (next bars)' : null),
+    init() {
+      const s: GbrRun = {
+        src: [], kernel: [], dirs: [], plot0: [], markers: [],
+        steps: [], vars: { dir: 1 }, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.src, s.kernel, s.dirs, s.plot0];
+      return s;
+    },
+    bar(s, bar, bars) {
+      const n = bars.length;
+      const src = s.src;
+      const b = bars[bar];
+      src[bar] = source(b);
+      let sum = 0.0;
+      let sumw = 0.0;
+      for (let i = 0; step > 0 ? i <= window : i >= window; i += step) {
+        const weight = Math.exp(-Math.abs(i) / h);
+        const j = bar - i;
+        const x = j >= 0 && j < n ? (j <= bar ? src[j] : source(bars[j])) : NaN;
+        // nz(src[i]): na (and +-infinity) is 0
+        sum += (Number.isFinite(x) ? x : 0) * weight;
+        sumw += weight;
+      }
+      const kernel = sum / sumw;
+      s.kernel[bar] = kernel;
+
+      const prev = bar > 0 ? s.kernel[bar - 1] : NaN;
+      if (gt(kernel, prev)) s.vars.dir = 1;
+      else if (gt(prev, kernel)) s.vars.dir = -1;
+      const dir = s.vars.dir;
+      s.dirs[bar] = dir;
+
+      s.plot0[bar] = { time: b.time, value: Number.isFinite(kernel) ? kernel : NaN, color: dir === 1 ? COL_BUY : COL_SELL };
+
+      if (bar >= 1) {
+        if (dir === 1 && s.dirs[bar - 1] === -1) {
+          s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: buyShape, text: '▲',
+            textColor: COL_BUY, size: 'tiny' });
+        }
+        if (dir === -1 && s.dirs[bar - 1] === 1) {
+          s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: sellShape, text: '▼',
+            textColor: COL_SELL, size: 'tiny' });
+        }
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        markers: s.markers.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GbrMicroKernelTrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<GbrMicroKernelTrendInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const { h, window } = cfg;
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
-
-  // for i = 0 to window: counts down when window < 0
-  const step = window >= 0 ? 1 : -1;
-  const kernel: number[] = new Array(n);
-  for (let bar = 0; bar < n; bar++) {
-    let sum = 0.0;
-    let sumw = 0.0;
-    for (let i = 0; step > 0 ? i <= window : i >= window; i += step) {
-      const weight = Math.exp(-Math.abs(i) / h);
-      const x = bar - i >= 0 && bar - i < n ? src[bar - i] : NaN;
-      // nz(src[i]): na (and +-infinity) is 0
-      sum += (Number.isFinite(x) ? x : 0) * weight;
-      sumw += weight;
-    }
-    kernel[bar] = sum / sumw;
-  }
-
-  const dirs: number[] = new Array(n);
-  let dir = 1;
-  for (let i = 0; i < n; i++) {
-    const prev = i > 0 ? kernel[i - 1] : NaN;
-    if (gt(kernel[i], prev)) dir = 1;
-    else if (gt(prev, kernel[i])) dir = -1;
-    dirs[i] = dir;
-  }
-
-  const plot0 = bars.map((b, i) => ({
-    time: b.time, value: Number.isFinite(kernel[i]) ? kernel[i] : NaN, color: dirs[i] === 1 ? COL_BUY : COL_SELL,
-  }));
-
-  const markers: MarkerData[] = [];
-  const buyShape = String(color.new(COL_BUY, 85));
-  const sellShape = String(color.new(COL_SELL, 85));
-  for (let i = 1; i < n; i++) {
-    if (dirs[i] === 1 && dirs[i - 1] === -1) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: buyShape, text: '▲',
-        textColor: COL_BUY, size: 'tiny' });
-    }
-    if (dirs[i] === -1 && dirs[i - 1] === 1) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: sellShape, text: '▼',
-        textColor: COL_SELL, size: 'tiny' });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    markers,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const GbrMicroKernelTrend = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

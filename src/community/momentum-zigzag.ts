@@ -11,8 +11,10 @@
  * Reference: "Momentum-based ZigZag (incl. QQE) NON-REPAINTING" by Peter_O
  */
 
-import { ta, Series, str, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, str, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall, MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -79,373 +81,385 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MomentumZigZagInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alertCalls: AlertCall[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alertCalls: AlertCall[] };
+type Ma = { step(v: number): number; commit(): void };
+
+interface ZigZagVars {
+  /** QQE: the bars of the last two qqeLong / qqeShort crosses (-1: none) */
+  long1: number;
+  long2: number;
+  short1: number;
+  short2: number;
+  /** The last bar (before the current one) of momentumUP / momentumDOWN / rsi5 > ob / rsi5 < os (-1: none) */
+  lastUp: number;
+  lastDown: number;
+  lastAbove: number;
+  lastBelow: number;
+  /** The colour that sticks from one momentum signal until the next */
+  lastColor: string;
+  /** var stoploss_long = low / var stoploss_short = high (first bar) */
+  stoplossLong: number;
+  stoplossShort: number;
+}
+
+interface ZigZagRun extends BarRunState<ZigZagVars> {
+  machines: Ma[];
+  rsi5: ReturnType<typeof taStep.rsi>;
+  /** MACD: macd line and signal; MovingAverage: the average */
+  a: number[];
+  b: number[];
+  /** QQE state by bar */
+  rsiMa: number[];
+  longband: number[];
+  shortband: number[];
+  trend: number[];
+  qqeLong: number[];
+  qqeShort: number[];
+  lastQqeHigh: number[];
+  lastQqeLow: number[];
+  momDir: number[];
+  zzPeak: number[];
+  zzBottom: number[];
+  zzLine: number[];
+  plot0: { time: number; value: number; color: string }[];
+  markers: MarkerData[];
+  alertCalls: AlertCall[];
+}
+
+function study(inputs: Partial<MomentumZigZagInputs>): BarStudy<ZigZagRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const closeSeries = new Series(bars, (b) => b.close);
-  const highArr = new Series(bars, (b) => b.high).toArray();
-  const lowArr = new Series(bars, (b) => b.low).toArray();
-
-  // --- Momentum UP/DOWN signals ---
-  const momentumUp: boolean[] = new Array(n).fill(false);
-  const momentumDown: boolean[] = new Array(n).fill(false);
-
-  if (cfg.momentumSelect === 'MACD') {
-    // MACD
-    const fastMa = cfg.macdOscType === 'SMA'
-      ? ta.sma(closeSeries, cfg.fastLength).toArray()
-      : ta.ema(closeSeries, cfg.fastLength).toArray();
-    const slowMa = cfg.macdOscType === 'SMA'
-      ? ta.sma(closeSeries, cfg.slowLength).toArray()
-      : ta.ema(closeSeries, cfg.slowLength).toArray();
-
-    const macdLine: number[] = new Array(n);
-    for (let i = 0; i < n; i++) {
-      macdLine[i] = (fastMa[i] ?? 0) - (slowMa[i] ?? 0);
-    }
-
-    const macdSeries = Series.fromArray(bars, macdLine);
-    const signalArr = cfg.macdSigType === 'SMA'
-      ? ta.sma(macdSeries, cfg.signalLength).toArray()
-      : ta.ema(macdSeries, cfg.signalLength).toArray();
-
-    // Crossover/crossunder
-    for (let i = 1; i < n; i++) {
-      const m = macdLine[i];
-      const mPrev = macdLine[i - 1];
-      const s = signalArr[i] ?? 0;
-      const sPrev = signalArr[i - 1] ?? 0;
-      if (mPrev <= sPrev && m > s) momentumUp[i] = true;
-      if (mPrev >= sPrev && m < s) momentumDown[i] = true;
-    }
-  } else if (cfg.momentumSelect === 'MovingAverage') {
-    // Moving Average direction change
-    let maArr: number[];
-    switch (cfg.maType) {
-      case 'EMA': maArr = ta.ema(closeSeries, cfg.maLength).toArray(); break;
-      case 'WMA': maArr = ta.wma(closeSeries, cfg.maLength).toArray(); break;
-      case 'HMA': maArr = ta.hma(closeSeries, cfg.maLength).toArray(); break;
-      case 'RMA': maArr = ta.rma(closeSeries, cfg.maLength).toArray(); break;
-      default: maArr = ta.sma(closeSeries, cfg.maLength).toArray(); break;
-    }
-    // Pine: maUP = ma > ma[1] and ma[2] > ma[1] (trough detection)
-    // maDOWN = ma < ma[1] and ma[2] < ma[1] (peak detection)
-    for (let i = 2; i < n; i++) {
-      const cur = maArr[i] ?? 0;
-      const prev = maArr[i - 1] ?? 0;
-      const prev2 = maArr[i - 2] ?? 0;
-      if (cur > prev && prev2 > prev) momentumUp[i] = true;
-      if (cur < prev && prev2 < prev) momentumDown[i] = true;
-    }
-  } else {
-    // QQE
-    const rsiArr = ta.rsi(closeSeries, cfg.rsiPeriod).toArray();
-    const rsiSeries = Series.fromArray(bars, rsiArr.map(v => v ?? 50));
-    const rsiMaArr = ta.ema(rsiSeries, cfg.rsiSmoothing).toArray();
-
-    const wildPeriod = cfg.rsiPeriod * 2 - 1;
-
-    // AtrRsi = abs(RsiMa[1] - RsiMa)
-    const atrRsi: number[] = new Array(n).fill(0);
-    for (let i = 1; i < n; i++) {
-      atrRsi[i] = Math.abs((rsiMaArr[i - 1] ?? 50) - (rsiMaArr[i] ?? 50));
-    }
-    const atrRsiSeries = Series.fromArray(bars, atrRsi);
-    const maAtrRsiArr = ta.ema(atrRsiSeries, wildPeriod).toArray();
-    const maAtrRsiSeries = Series.fromArray(bars, maAtrRsiArr.map(v => v ?? 0));
-    const darArr = ta.ema(maAtrRsiSeries, wildPeriod).toArray();
-
-    const longband: number[] = new Array(n).fill(0);
-    const shortband: number[] = new Array(n).fill(0);
-    const trend: number[] = new Array(n).fill(1);
-    const qqeLong: number[] = new Array(n).fill(0);
-    const qqeShort: number[] = new Array(n).fill(0);
-
-    // Track last QQE high/low for breakout detection
-    const lastQqeHigh: number[] = new Array(n).fill(0);
-    const lastQqeLow: number[] = new Array(n).fill(0);
-
-    for (let i = 1; i < n; i++) {
-      const dar = (darArr[i] ?? 0) * cfg.qqeFactor;
-      const rsiIndex = rsiMaArr[i] ?? 50;
-      const rsiIndexPrev = rsiMaArr[i - 1] ?? 50;
-
-      const newLongband = rsiIndex - dar;
-      const newShortband = rsiIndex + dar;
-
-      longband[i] = rsiIndexPrev > longband[i - 1] && rsiIndex > longband[i - 1]
-        ? Math.max(longband[i - 1], newLongband)
-        : newLongband;
-
-      shortband[i] = rsiIndexPrev < shortband[i - 1] && rsiIndex < shortband[i - 1]
-        ? Math.min(shortband[i - 1], newShortband)
-        : newShortband;
-
-      // Determine barssince for qqeLong/qqeShort
-      let barsSinceUp = n;
-      let barsSinceDown = n;
-      for (let j = i - 1; j >= 0; j--) {
-        if (qqeLong[j] === 1) { barsSinceUp = i - j; break; }
-      }
-      for (let j = i - 1; j >= 0; j--) {
-        if (qqeShort[j] === 1) { barsSinceDown = i - j; break; }
-      }
-
-      const goingUp = barsSinceUp < barsSinceDown;
-      const goingDown = barsSinceUp > barsSinceDown;
-
-      let prevGoingUp = false;
-      let prevGoingDown = false;
-      if (i >= 2) {
-        let bsU2 = n, bsD2 = n;
-        for (let j = i - 2; j >= 0; j--) {
-          if (qqeLong[j] === 1) { bsU2 = i - 1 - j; break; }
-        }
-        for (let j = i - 2; j >= 0; j--) {
-          if (qqeShort[j] === 1) { bsD2 = i - 1 - j; break; }
-        }
-        prevGoingUp = bsU2 < bsD2;
-        prevGoingDown = bsU2 > bsD2;
-      }
-
-      // Track last QQE high/low
-      lastQqeHigh[i] = (highArr[i] > lastQqeHigh[i - 1] && goingUp) || (prevGoingDown && goingUp)
-        ? highArr[i]
-        : lastQqeHigh[i - 1] || highArr[i];
-
-      lastQqeLow[i] = (lowArr[i] < lastQqeLow[i - 1] && goingDown) || (prevGoingUp && goingDown)
-        ? lowArr[i]
-        : lastQqeLow[i - 1] || lowArr[i];
-
-      // Trend
-      const crossOverShort = rsiIndex > shortband[i - 1] && rsiIndexPrev <= shortband[i - 1];
-      const crossUnderLong = rsiIndex < longband[i - 1] && rsiIndexPrev >= longband[i - 1];
-      const breakHigh = highArr[i] > lastQqeHigh[i - 1] && (i < 2 || highArr[i - 1] <= lastQqeHigh[i - 2]);
-      const breakLow = lowArr[i] < lastQqeLow[i - 1] && (i < 2 || lowArr[i - 1] >= lastQqeLow[i - 2]);
-
-      if (crossOverShort || breakHigh) {
-        trend[i] = 1;
-      } else if (crossUnderLong || breakLow) {
-        trend[i] = -1;
-      } else {
-        trend[i] = trend[i - 1];
-      }
-
-      // QQE crosses
-      qqeLong[i] = trend[i] === 1 && trend[i - 1] === -1 ? 1 : 0;
-      qqeShort[i] = trend[i] === -1 && trend[i - 1] === 1 ? 1 : 0;
-    }
-
-    for (let i = 0; i < n; i++) {
-      if (qqeLong[i] === 1) momentumUp[i] = true;
-      if (qqeShort[i] === 1) momentumDown[i] = true;
-    }
-  }
-
-  // --- Momentum direction ---
-  const momDir: number[] = new Array(n).fill(0);
-  for (let i = 0; i < n; i++) {
-    if (momentumUp[i]) momDir[i] = 1;
-    else if (momentumDown[i]) momDir[i] = -1;
-    else momDir[i] = i > 0 ? momDir[i - 1] : 0;
-  }
-
-  // --- Force detection (RSI 5) ---
-  const rsi5Arr = ta.rsi(closeSeries, 5).toArray();
   const ob = 80;
   const os = 20;
-
-  // barssince helpers
-  function barsSince(arr: boolean[], from: number): number {
-    for (let j = from; j >= 0; j--) {
-      if (arr[j]) return from - j;
+  const wildPeriod = cfg.rsiPeriod * 2 - 1;
+  const smaOrEma = (type: string, length: number): Ma => (type === 'SMA' ? new WindowSma(length) : taStep.ema(length));
+  const maOf = (): Ma => {
+    switch (cfg.maType) {
+      case 'EMA': return taStep.ema(cfg.maLength);
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, cfg.maLength), commit: () => m.commit() }; }
+      case 'HMA': return taStep.hma(cfg.maLength);
+      case 'RMA': return taStep.rma(cfg.maLength);
+      default: return new WindowSma(cfg.maLength);
     }
-    return from + 1; // never found
-  }
-
-  function barsSinceRsiAbove(rsiArr: (number | undefined)[], threshold: number, from: number): number {
-    for (let j = from; j >= 0; j--) {
-      if ((rsiArr[j] ?? 0) > threshold) return from - j;
-    }
-    return from + 1;
-  }
-
-  function barsSinceRsiBelow(rsiArr: (number | undefined)[], threshold: number, from: number): number {
-    for (let j = from; j >= 0; j--) {
-      if ((rsiArr[j] ?? 0) < threshold) return from - j;
-    }
-    return from + 1;
-  }
-
-  const forceUpColor: string[] = new Array(n).fill('#808080'); // gray default
-
-  for (let i = 1; i < n; i++) {
-    if (momentumDown[i]) {
-      // Was force up: barssince(momentumUP) >= barssince(rsi5 > ob) at [i-1]
-      const bsUp = barsSince(momentumUp, i - 1);
-      const bsOb = barsSinceRsiAbove(rsi5Arr, ob, i - 1);
-      if (bsUp >= bsOb) {
-        forceUpColor[i] = '#00FF00'; // lime = force up
-      }
-    }
-    if (momentumUp[i]) {
-      // Was force down: barssince(momentumDOWN) >= barssince(rsi5 < os) at [i-1]
-      const bsDown = barsSince(momentumDown, i - 1);
-      const bsOs = barsSinceRsiBelow(rsi5Arr, os, i - 1);
-      if (bsDown >= bsOs) {
-        forceUpColor[i] = '#FF0000'; // red = force down
-      }
-    }
-  }
-
-  // --- ZigZag computation ---
-  const zzPeak: number[] = new Array(n).fill(NaN);
-  const zzBottom: number[] = new Array(n).fill(NaN);
-  const zigzag: number[] = new Array(n).fill(NaN);
-
-  for (let i = 0; i < n; i++) {
-    const goingUp = momDir[i] === 1;
-    const goingDown = momDir[i] === -1;
-    const prevGoingUp = i > 0 ? momDir[i - 1] === 1 : false;
-    const prevGoingDown = i > 0 ? momDir[i - 1] === -1 : false;
-
-    // Peak
-    if (i === 0) {
-      zzPeak[i] = highArr[i];
-    } else if ((highArr[i] > zzPeak[i - 1] && goingUp) || (prevGoingDown && goingUp)) {
-      zzPeak[i] = highArr[i];
-    } else {
-      zzPeak[i] = zzPeak[i - 1] || highArr[i];
-    }
-
-    // Bottom
-    if (i === 0) {
-      zzBottom[i] = lowArr[i];
-    } else if ((lowArr[i] < zzBottom[i - 1] && goingDown) || (prevGoingUp && goingDown)) {
-      zzBottom[i] = lowArr[i];
-    } else {
-      zzBottom[i] = zzBottom[i - 1] || lowArr[i];
-    }
-
-    // ZigZag value
-    if (i > 0) {
-      if (goingUp && prevGoingDown) {
-        zigzag[i] = zzBottom[i - 1];
-      } else if (prevGoingUp && goingDown) {
-        zigzag[i] = zzPeak[i - 1];
-      }
-    }
-  }
-
-  // Build connected zigzag plot line
-  // Pine plots zigzag as line style - only non-NaN at direction changes, connected
-  // We'll output a continuous line by interpolating between zigzag pivot points
-  const pivotPoints: { idx: number; value: number }[] = [];
-  for (let i = 0; i < n; i++) {
-    if (!isNaN(zigzag[i])) {
-      pivotPoints.push({ idx: i, value: zigzag[i] });
-    }
-  }
-
-  // Build the running zigzag: at each bar, the value is either a pivot or the running extreme
-  const zzLine: number[] = new Array(n).fill(NaN);
-  for (let i = 0; i < n; i++) {
-    if (!isNaN(zigzag[i])) {
-      zzLine[i] = zigzag[i];
-    } else if (momDir[i] === 1) {
-      // Going up: track peak
-      zzLine[i] = zzPeak[i];
-    } else if (momDir[i] === -1) {
-      // Going down: track bottom
-      zzLine[i] = zzBottom[i];
-    } else if (i > 0) {
-      zzLine[i] = zzLine[i - 1];
-    }
-  }
-
-  // Determine per-bar color based on the last momentum signal's force classification
-  // The color sticks from one momentum signal until the next
-  const perBarColor: string[] = new Array(n).fill('#808080');
-  let lastColor = '#808080';
-  for (let i = 0; i < n; i++) {
-    if (forceUpColor[i] !== '#808080') {
-      lastColor = forceUpColor[i];
-    }
-    if (momentumUp[i] || momentumDown[i]) {
-      if (forceUpColor[i] !== '#808080') {
-        lastColor = forceUpColor[i];
-      } else {
-        lastColor = '#808080';
-      }
-    }
-    perBarColor[i] = cfg.colorLines ? lastColor : '#000000';
-  }
-
-  const plot0 = zzLine.map((v, i) => ({
-    time: bars[i].time,
-    value: v,
-    color: perBarColor[i],
-  }));
-
-  // --- Markers for LONG/SHORT ---
-  const markers: MarkerData[] = [];
-  const alertCalls: AlertCall[] = [];
-  // var stoploss_long = low / var stoploss_short = high (first bar)
-  let stoplossLong = n ? lowArr[0] : NaN;
-  let stoplossShort = n ? highArr[0] : NaN;
-
-  // Determine force flags at each momentum signal bar
-  for (let i = 1; i < n; i++) {
-    let goLong = false, goShort = false;
-    if (momentumDown[i]) {
-      const bsUp = barsSince(momentumUp, i - 1);
-      const bsOb = barsSinceRsiAbove(rsi5Arr, ob, i - 1);
-      const wasForceUp = bsUp >= bsOb;
-      goShort = !wasForceUp;
-      // GoShort = momentumDOWN and not force_up
-      if (!wasForceUp && !isNaN(zigzag[i])) {
-        markers.push({
-          time: bars[i].time,
-          position: 'aboveBar',
-          shape: 'labelDown',
-          color: '#FF0000',
-          text: 'SHORT\npivot high:\n' + zigzag[i].toFixed(2),
-        });
-      }
-    }
-    if (momentumUp[i]) {
-      const bsDown = barsSince(momentumDown, i - 1);
-      const bsOs = barsSinceRsiBelow(rsi5Arr, os, i - 1);
-      const wasForceDown = bsDown >= bsOs;
-      goLong = !wasForceDown;
-      // GoLong = momentumUP and not force_down
-      if (!wasForceDown && !isNaN(zigzag[i])) {
-        markers.push({
-          time: bars[i].time,
-          position: 'belowBar',
-          shape: 'labelUp',
-          color: '#00FF00',
-          text: 'LONG\npivot low:\n' + zigzag[i].toFixed(2),
-        });
-      }
-    }
-    // pl / ph = ta.valuewhen(momentumUP / momentumDOWN, ZigZag, 0): this bar's ZigZag on a signal bar
-    // if GoLong: stoploss_long := low < pl ? low : pl / if GoShort: stoploss_short := high > ph ? high : ph
-    if (goLong) stoplossLong = lowArr[i] < zigzag[i] ? lowArr[i] : zigzag[i];
-    if (goShort) stoplossShort = highArr[i] > zigzag[i] ? highArr[i] : zigzag[i];
-    // alert('long slprice=' + str.tostring(stoploss_long) + ' tp=' + str.tostring(TakeProfitLevel), freq_once_per_bar_close)
-    const tp = str.tostring(cfg.takeProfitLevel);
-    if (goLong) alertCalls.push({ time: bars[i].time as number, message: 'long slprice=' + str.tostring(stoplossLong) + ' tp=' + tp, freq: 'once_per_bar_close' });
-    if (goShort) alertCalls.push({ time: bars[i].time as number, message: 'short slprice=' + str.tostring(stoplossShort) + ' tp=' + tp, freq: 'once_per_bar_close' });
-  }
-
+  };
+  const tp = str.tostring(cfg.takeProfitLevel);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
-    markers,
-    alertCalls,
+    init() {
+      let machines: Ma[];
+      if (cfg.momentumSelect === 'MACD') {
+        machines = [
+          smaOrEma(cfg.macdOscType, cfg.fastLength), smaOrEma(cfg.macdOscType, cfg.slowLength),
+          smaOrEma(cfg.macdSigType, cfg.signalLength),
+        ];
+      } else if (cfg.momentumSelect === 'MovingAverage') {
+        machines = [maOf()];
+      } else {
+        // rsi, RsiMa, MaAtrRsi, dar
+        machines = [taStep.rsi(cfg.rsiPeriod), taStep.ema(cfg.rsiSmoothing), taStep.ema(wildPeriod), taStep.ema(wildPeriod)];
+      }
+      // --- Force detection (RSI 5) ---
+      const rsi5 = taStep.rsi(5);
+      const s: ZigZagRun = {
+        machines, rsi5, a: [], b: [], rsiMa: [], longband: [], shortband: [], trend: [], qqeLong: [], qqeShort: [],
+        lastQqeHigh: [], lastQqeLow: [], momDir: [], zzPeak: [], zzBottom: [], zzLine: [], plot0: [], markers: [],
+        alertCalls: [],
+        steps: [...machines, rsi5],
+        vars: {
+          long1: -1, long2: -1, short1: -1, short2: -1, lastUp: -1, lastDown: -1, lastAbove: -1, lastBelow: -1,
+          lastColor: '#808080', stoplossLong: NaN, stoplossShort: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, s.alertCalls];
+      s.series = [
+        s.a, s.b, s.rsiMa, s.longband, s.shortband, s.trend, s.qqeLong, s.qqeShort, s.lastQqeHigh, s.lastQqeLow, s.momDir,
+        s.zzPeak, s.zzBottom, s.zzLine, s.plot0,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const bar = bars[i];
+      const close = bar.close;
+      const high = bar.high;
+      const low = bar.low;
+      if (i === 0) {
+        v.stoplossLong = low;
+        v.stoplossShort = high;
+      }
+
+      // --- Momentum UP/DOWN signals ---
+      let momentumUp = false;
+      let momentumDown = false;
+      if (cfg.momentumSelect === 'MACD') {
+        // MACD
+        const fastMa = s.machines[0].step(close);
+        const slowMa = s.machines[1].step(close);
+        const m = (fastMa ?? 0) - (slowMa ?? 0);
+        const sig = s.machines[2].step(m);
+        s.a[i] = m;
+        s.b[i] = sig;
+        // Crossover/crossunder
+        if (i >= 1) {
+          const mPrev = s.a[i - 1];
+          const sg = sig ?? 0;
+          const sPrev = s.b[i - 1] ?? 0;
+          if (mPrev <= sPrev && m > sg) momentumUp = true;
+          if (mPrev >= sPrev && m < sg) momentumDown = true;
+        }
+      } else if (cfg.momentumSelect === 'MovingAverage') {
+        // Moving Average direction change
+        s.a[i] = s.machines[0].step(close);
+        // Pine: maUP = ma > ma[1] and ma[2] > ma[1] (trough detection)
+        // maDOWN = ma < ma[1] and ma[2] < ma[1] (peak detection)
+        if (i >= 2) {
+          const cur = s.a[i] ?? 0;
+          const prev = s.a[i - 1] ?? 0;
+          const prev2 = s.a[i - 2] ?? 0;
+          if (cur > prev && prev2 > prev) momentumUp = true;
+          if (cur < prev && prev2 < prev) momentumDown = true;
+        }
+      } else {
+        // QQE
+        const rsi = s.machines[0].step(close);
+        const rsiMaArr = s.rsiMa;
+        rsiMaArr[i] = s.machines[1].step(rsi ?? 50);
+        // AtrRsi = abs(RsiMa[1] - RsiMa)
+        const atrRsi = i >= 1 ? Math.abs((rsiMaArr[i - 1] ?? 50) - (rsiMaArr[i] ?? 50)) : 0;
+        const maAtrRsi = s.machines[2].step(atrRsi);
+        const darRaw = s.machines[3].step(maAtrRsi ?? 0);
+
+        const { longband, shortband, trend, qqeLong, qqeShort, lastQqeHigh, lastQqeLow } = s;
+        if (i === 0) {
+          longband[0] = 0;
+          shortband[0] = 0;
+          trend[0] = 1;
+          qqeLong[0] = 0;
+          qqeShort[0] = 0;
+          lastQqeHigh[0] = 0;
+          lastQqeLow[0] = 0;
+        } else {
+          const dar = (darRaw ?? 0) * cfg.qqeFactor;
+          const rsiIndex = rsiMaArr[i] ?? 50;
+          const rsiIndexPrev = rsiMaArr[i - 1] ?? 50;
+
+          const newLongband = rsiIndex - dar;
+          const newShortband = rsiIndex + dar;
+
+          longband[i] = rsiIndexPrev > longband[i - 1] && rsiIndex > longband[i - 1]
+            ? Math.max(longband[i - 1], newLongband)
+            : newLongband;
+
+          shortband[i] = rsiIndexPrev < shortband[i - 1] && rsiIndex < shortband[i - 1]
+            ? Math.min(shortband[i - 1], newShortband)
+            : newShortband;
+
+          // Determine barssince for qqeLong/qqeShort (none: more than any count found)
+          const barsSinceUp = v.long1 >= 0 ? i - v.long1 : Infinity;
+          const barsSinceDown = v.short1 >= 0 ? i - v.short1 : Infinity;
+
+          const goingUp = barsSinceUp < barsSinceDown;
+          const goingDown = barsSinceUp > barsSinceDown;
+
+          let prevGoingUp = false;
+          let prevGoingDown = false;
+          if (i >= 2) {
+            // the last crosses up to bar i - 2
+            const u = v.long1 === i - 1 ? v.long2 : v.long1;
+            const d = v.short1 === i - 1 ? v.short2 : v.short1;
+            const bsU2 = u >= 0 ? i - 1 - u : Infinity;
+            const bsD2 = d >= 0 ? i - 1 - d : Infinity;
+            prevGoingUp = bsU2 < bsD2;
+            prevGoingDown = bsU2 > bsD2;
+          }
+
+          // Track last QQE high/low
+          lastQqeHigh[i] = (high > lastQqeHigh[i - 1] && goingUp) || (prevGoingDown && goingUp)
+            ? high
+            : lastQqeHigh[i - 1] || high;
+
+          lastQqeLow[i] = (low < lastQqeLow[i - 1] && goingDown) || (prevGoingUp && goingDown)
+            ? low
+            : lastQqeLow[i - 1] || low;
+
+          // Trend
+          const crossOverShort = rsiIndex > shortband[i - 1] && rsiIndexPrev <= shortband[i - 1];
+          const crossUnderLong = rsiIndex < longband[i - 1] && rsiIndexPrev >= longband[i - 1];
+          const breakHigh = high > lastQqeHigh[i - 1] && (i < 2 || bars[i - 1].high <= lastQqeHigh[i - 2]);
+          const breakLow = low < lastQqeLow[i - 1] && (i < 2 || bars[i - 1].low >= lastQqeLow[i - 2]);
+
+          if (crossOverShort || breakHigh) {
+            trend[i] = 1;
+          } else if (crossUnderLong || breakLow) {
+            trend[i] = -1;
+          } else {
+            trend[i] = trend[i - 1];
+          }
+
+          // QQE crosses
+          qqeLong[i] = trend[i] === 1 && trend[i - 1] === -1 ? 1 : 0;
+          qqeShort[i] = trend[i] === -1 && trend[i - 1] === 1 ? 1 : 0;
+          if (qqeLong[i] === 1) {
+            v.long2 = v.long1;
+            v.long1 = i;
+          }
+          if (qqeShort[i] === 1) {
+            v.short2 = v.short1;
+            v.short1 = i;
+          }
+        }
+        if (qqeLong[i] === 1) momentumUp = true;
+        if (qqeShort[i] === 1) momentumDown = true;
+      }
+
+      // --- Momentum direction ---
+      const momDir = s.momDir;
+      momDir[i] = momentumUp ? 1 : momentumDown ? -1 : i > 0 ? momDir[i - 1] : 0;
+
+      // barssince(x) at [i - 1]: the bars since the last bar before i where x is true, i when none
+      const rsi5 = s.rsi5.step(close);
+      let forceUpColor = '#808080'; // gray default
+      let wasForceUp = false;
+      let wasForceDown = false;
+      if (i >= 1) {
+        if (momentumDown) {
+          // Was force up: barssince(momentumUP) >= barssince(rsi5 > ob) at [i-1]
+          wasForceUp = i - 1 - v.lastUp >= i - 1 - v.lastAbove;
+          if (wasForceUp) forceUpColor = '#00FF00'; // lime = force up
+        }
+        if (momentumUp) {
+          // Was force down: barssince(momentumDOWN) >= barssince(rsi5 < os) at [i-1]
+          wasForceDown = i - 1 - v.lastDown >= i - 1 - v.lastBelow;
+          if (wasForceDown) forceUpColor = '#FF0000'; // red = force down
+        }
+      }
+
+      // --- ZigZag computation ---
+      const { zzPeak, zzBottom } = s;
+      const goingUp = momDir[i] === 1;
+      const goingDown = momDir[i] === -1;
+      const prevGoingUp = i > 0 ? momDir[i - 1] === 1 : false;
+      const prevGoingDown = i > 0 ? momDir[i - 1] === -1 : false;
+
+      // Peak
+      if (i === 0) {
+        zzPeak[i] = high;
+      } else if ((high > zzPeak[i - 1] && goingUp) || (prevGoingDown && goingUp)) {
+        zzPeak[i] = high;
+      } else {
+        zzPeak[i] = zzPeak[i - 1] || high;
+      }
+
+      // Bottom
+      if (i === 0) {
+        zzBottom[i] = low;
+      } else if ((low < zzBottom[i - 1] && goingDown) || (prevGoingUp && goingDown)) {
+        zzBottom[i] = low;
+      } else {
+        zzBottom[i] = zzBottom[i - 1] || low;
+      }
+
+      // ZigZag value
+      let zigzag = NaN;
+      if (i > 0) {
+        if (goingUp && prevGoingDown) {
+          zigzag = zzBottom[i - 1];
+        } else if (prevGoingUp && goingDown) {
+          zigzag = zzPeak[i - 1];
+        }
+      }
+
+      // Build the running zigzag: at each bar, the value is either a pivot or the running extreme
+      const zzLine = s.zzLine;
+      if (!isNaN(zigzag)) {
+        zzLine[i] = zigzag;
+      } else if (momDir[i] === 1) {
+        // Going up: track peak
+        zzLine[i] = zzPeak[i];
+      } else if (momDir[i] === -1) {
+        // Going down: track bottom
+        zzLine[i] = zzBottom[i];
+      } else if (i > 0) {
+        zzLine[i] = zzLine[i - 1];
+      } else {
+        zzLine[i] = NaN;
+      }
+
+      // Determine per-bar color based on the last momentum signal's force classification
+      // The color sticks from one momentum signal until the next
+      if (forceUpColor !== '#808080') {
+        v.lastColor = forceUpColor;
+      }
+      if (momentumUp || momentumDown) {
+        if (forceUpColor !== '#808080') {
+          v.lastColor = forceUpColor;
+        } else {
+          v.lastColor = '#808080';
+        }
+      }
+      s.plot0[i] = { time: bar.time, value: zzLine[i], color: cfg.colorLines ? v.lastColor : '#000000' };
+
+      // --- Markers for LONG/SHORT ---
+      if (i >= 1) {
+        let goLong = false, goShort = false;
+        if (momentumDown) {
+          goShort = !wasForceUp;
+          // GoShort = momentumDOWN and not force_up
+          if (!wasForceUp && !isNaN(zigzag)) {
+            s.markers.push({
+              time: bar.time,
+              position: 'aboveBar',
+              shape: 'labelDown',
+              color: '#FF0000',
+              text: 'SHORT\npivot high:\n' + zigzag.toFixed(2),
+            });
+          }
+        }
+        if (momentumUp) {
+          goLong = !wasForceDown;
+          // GoLong = momentumUP and not force_down
+          if (!wasForceDown && !isNaN(zigzag)) {
+            s.markers.push({
+              time: bar.time,
+              position: 'belowBar',
+              shape: 'labelUp',
+              color: '#00FF00',
+              text: 'LONG\npivot low:\n' + zigzag.toFixed(2),
+            });
+          }
+        }
+        // pl / ph = ta.valuewhen(momentumUP / momentumDOWN, ZigZag, 0): this bar's ZigZag on a signal bar
+        // if GoLong: stoploss_long := low < pl ? low : pl / if GoShort: stoploss_short := high > ph ? high : ph
+        if (goLong) v.stoplossLong = low < zigzag ? low : zigzag;
+        if (goShort) v.stoplossShort = high > zigzag ? high : zigzag;
+        // alert('long slprice=' + str.tostring(stoploss_long) + ' tp=' + str.tostring(TakeProfitLevel), freq_once_per_bar_close)
+        if (goLong) s.alertCalls.push({ time: bar.time as number, message: 'long slprice=' + str.tostring(v.stoplossLong) + ' tp=' + tp, freq: 'once_per_bar_close' });
+        if (goShort) s.alertCalls.push({ time: bar.time as number, message: 'short slprice=' + str.tostring(v.stoplossShort) + ' tp=' + tp, freq: 'once_per_bar_close' });
+      }
+
+      // this bar in the barssince of the next bars
+      if (momentumUp) v.lastUp = i;
+      if (momentumDown) v.lastDown = i;
+      if ((rsi5 ?? 0) > ob) v.lastAbove = i;
+      if ((rsi5 ?? 0) < os) v.lastBelow = i;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice() },
+        markers: s.markers.slice(),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
 }
 
-export const MomentumZigZag = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hasAlertFunction };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MomentumZigZagInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MomentumZigZagInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MomentumZigZag = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hasAlertFunction };
