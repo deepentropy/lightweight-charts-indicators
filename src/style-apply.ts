@@ -139,21 +139,30 @@ export function withStyleOutputs<T extends StyleTarget>(entry: T): T {
   }
   if (decl.drawings) e.drawingKinds = decl.drawings;
   if (decl.resultHlines) e.resultHlineConfig = decl.resultHlines;
-  if (decl.barColors || decl.fills || decl.markerMatch || decl.resultHlines) {
-    const calculate = entry.calculate;
-    e.calculate = (...args: any[]) => stampIds(calculate(...args), decl);
-    const createRun = entry.createRun;
-    if (createRun) {
-      e.createRun = (...args: any[]) => {
-        const run = createRun(...args);
-        return {
-          update: (...u: Parameters<IndicatorRun['update']>) => stampIds(run.update(...u), decl),
-          get fullRunReason() {
-            return run.fullRunReason;
-          },
-        };
+  return withStampedIds(e);
+}
+
+/**
+ * `calculate` / `createRun` of the study `id` stamping the ids of its Style declarations on their results (the
+ * registry's entries do; the loader gives the same functions without the registry).
+ */
+export function withStampedIds<T extends { id: string; calculate: (...args: any[]) => any; createRun?: (...args: any[]) => IndicatorRun }>(entry: T): T {
+  const decl = STYLE_OUTPUTS[entry.id];
+  if (!decl || !(decl.barColors || decl.fills || decl.markerMatch || decl.resultHlines)) return entry;
+  const e: T = { ...entry };
+  const calculate = entry.calculate;
+  e.calculate = (...args: any[]) => stampIds(calculate(...args), decl);
+  const createRun = entry.createRun;
+  if (createRun) {
+    e.createRun = (...args: any[]) => {
+      const run = createRun(...args);
+      return {
+        update: (...u: Parameters<IndicatorRun['update']>) => stampIds(run.update(...u), decl),
+        get fullRunReason() {
+          return run.fullRunReason;
+        },
       };
-    }
+    };
   }
   return e;
 }

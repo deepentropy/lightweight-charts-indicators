@@ -23,6 +23,10 @@
     "./sources": {
       "types": "./dist/sources.d.ts",
       "import": "./dist/sources.mjs"
+    },
+    "./loader": {
+      "types": "./dist/loader.d.ts",
+      "import": "./dist/loader/loader.js"
     }
   },
   "files": [
@@ -34,12 +38,13 @@
   ],
   "scripts": {
     "prepublishOnly": "npm run build",
-    "build": "npm run clean && npm run build:esm && npm run build:cjs && npm run build:render && npm run build:helpers && npm run build:types && npm run build:sources",
+    "build": "npm run clean && node scripts/build-loader.mjs && npm run build:esm && npm run build:cjs && npm run build:render && npm run build:helpers && npm run build:types && npm run build:sources && npm run build:loader",
     "build:esm": "esbuild src/index.ts --bundle --format=esm --outfile=dist/index.mjs --platform=neutral --external:oakscriptjs --external:oakscriptjs/* --external:@types/*",
     "build:cjs": "esbuild src/index.ts --bundle --format=cjs --outfile=dist/index.cjs --platform=neutral --external:oakscriptjs --external:oakscriptjs/* --external:@types/*",
     "build:render": "esbuild src/render/index.ts --bundle --format=esm --outfile=dist/render.mjs --platform=neutral --external:oakscriptjs --external:oakscriptjs/* --external:lightweight-charts --external:fancy-canvas --external:@types/*",
     "build:helpers": "esbuild src/helpers.ts --bundle --format=esm --outfile=dist/helpers.mjs --platform=neutral --external:oakscriptjs --external:oakscriptjs/* --external:@types/*",
     "build:sources": "node scripts/build-sources.mjs",
+    "build:loader": "esbuild src/loader.ts --bundle --splitting --format=esm --outdir=dist/loader --chunk-names=chunks/[name]-[hash] --platform=neutral --external:oakscriptjs --external:oakscriptjs/* --external:@types/*",
     "build:types": "tsc --emitDeclarationOnly --outDir dist",
     "build:example": "vite build",
     "dev:example": "vite",
