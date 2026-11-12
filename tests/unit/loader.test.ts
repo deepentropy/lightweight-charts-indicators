@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import type { Bar } from 'oakscriptjs';
 import { indicatorRegistry } from '../../src/index';
 import { loadIndicator } from '../../src/loader';
@@ -22,7 +22,12 @@ const json = (f: () => unknown): string => {
 };
 
 describe('loader', () => {
+  afterEach(() => vi.useRealTimers());
+
   it('gives every registry study, calculating as the registry does (src/indicator-modules.ts up to date)', async () => {
+    // the clock stopped: a study that reads the current time (timenow) gives the same result on each call
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-01-02T15:00:00Z'));
     const bars = generateBars(250);
     const differs: string[] = [];
     let compared = 0;
@@ -35,7 +40,7 @@ describe('loader', () => {
       if (!!l.createRun !== !!e.createRun) differs.push(`${e.id}: createRun`);
       const inputs = e.defaultInputs ?? {};
       const want = json(() => e.calculate(bars, inputs, {}));
-      // a study whose result changes from one call to the next (clock-stamped) is not compared
+      // a study whose result changes from one call to the next is not compared
       if (json(() => e.calculate(bars, inputs, {})) !== want) continue;
       compared++;
       if (json(() => l.calculate(bars, inputs, {})) !== want) differs.push(`${e.id}: calculate`);
