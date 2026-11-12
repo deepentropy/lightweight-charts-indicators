@@ -13,6 +13,7 @@ import type { StudyDrawingKind } from './style-outputs';
 import type { ChartContext, SymbolRequest } from './chart-context';
 import type { IndicatorRun } from './live-run';
 export type { IndicatorRun } from './live-run';
+export { setPackedSeries, isPackedSeries, packedColumns, packedFromColumns, packedSeries, type PackedColumns } from './packed-series';
 export type { InputConfig, PlotConfig, HLineConfig, FillConfig, ShapeConfig, BarColorConfig, CandleConfig } from 'oakscriptjs';
 
 // SMA - Simple Moving Average

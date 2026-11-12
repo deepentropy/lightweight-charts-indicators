@@ -11,6 +11,7 @@ import {
   type DrawingLimits,
 } from 'oakscriptjs';
 import type { ChartContext } from './chart-context';
+import { packRunState, packedSeriesMode } from './packed-series';
 
 /** One state machine stepped once or more per bar and committed when the bar is final (oakscriptjs `taStep`) */
 export interface Committable {
@@ -155,6 +156,8 @@ export function createBarRun<S extends BarRunState<any>, R>(study: BarStudy<S, R
   /** The state at the end of bar `confirmed - 1` */
   let saved: { vars: S['vars']; lists: number[]; drawings: DrawingCheckpoint | null } | null = null;
   const copyVars = study.copyVars ?? ((v: S['vars']) => ({ ...v }));
+  // Packed mode (#29) as it is when the run is made: its per-bar outputs held as numbers.
+  const packed = packedSeriesMode();
   const limits = study.drawings;
   let lastKey: string | undefined;
   let lastData: unknown[] | undefined;
@@ -190,6 +193,7 @@ export function createBarRun<S extends BarRunState<any>, R>(study: BarStudy<S, R
         } else {
           if (limits) resetDrawings(limits);
           state = study.init(bars, next);
+          if (packed) packRunState(state);
           confirmed = 0;
         }
         const s = state!;
