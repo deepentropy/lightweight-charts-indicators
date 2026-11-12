@@ -63,6 +63,19 @@ describe('packed series', () => {
     expect(JSON.stringify(colours[0])).toBe(JSON.stringify({ id: 'b', time: 3, color: '#f00' }));
   });
 
+  it('packs outputs kept in a list of lists and the points a study keeps in its lists (#30)', () => {
+    const bars = generateBars(300);
+    for (const id of ['ichimoku', 'donchian-custom']) {
+      const e = indicatorRegistry.find((x) => x.id === id) as unknown as { createRun: (i: unknown, c?: unknown) => { update(b: Bar[], c?: unknown): { plots: Record<string, unknown> } }; defaultInputs?: unknown };
+      setPackedSeries(true);
+      const run = e.createRun(e.defaultInputs ?? {}, {});
+      setPackedSeries(false);
+      const plots = Object.values(run.update(bars, {}).plots);
+      expect(plots.length).toBeGreaterThan(0);
+      expect(plots.every((p) => isPackedSeries(p))).toBe(true);
+    }
+  });
+
   it('every live run gives the same results in packed mode', () => {
     const differs: string[] = [];
     let runs = 0;

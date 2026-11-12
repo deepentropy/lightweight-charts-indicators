@@ -2,7 +2,8 @@
  * Packed series (#29): the per-bar outputs of a live run held as numbers. A run keeps one `{ time, value }` object per
  * bar and per plot in `s.series`; a host that keeps runs alive between updates holds them all. In packed mode (off by
  * default, set by the host with {@link setPackedSeries} before it makes a run) the lists of `s.series` the study writes
- * through a field of its state are packed lists.
+ * through its state, and the lists of points it keeps in `s.lists`, are packed lists: packed at the end of a full run
+ * (its bars written to plain lists, at full speed), so the next updates write their few bars in them.
  *
  * A packed list reads and writes as the array it stands for (`Array.isArray`, length, index, `push`, the Array
  * methods, iteration). It holds plot points (`{ time, value, ... }`: time and value in two Float64Arrays, the other
@@ -272,26 +273,64 @@ export function packedFromColumns<T = Point>(c: PackedColumns): T[] {
   return view(cols) as T[];
 }
 
+/** Fields of a run state the run reads itself: a list there alone is not one the study writes to. */
+const RUN_FIELDS = new Set(['series', 'lists']);
+
 /**
- * The run state `s` with its per-bar outputs packed: the lists of `s.series` that are also a field of the state (the
- * study writes through it) replaced by packed lists, in both places. A list reached otherwise (inside another field)
- * is left as it is: the study's writes would not reach a replacement.
+ * Replace the lists `pick` chooses among `lists` by packed lists, in every place the state holds them: a field, or an
+ * item of a field that is a list of lists (as `plots` in `{ plots, series: plots }`). A list the study does not reach
+ * through a field of its own (deeper, or kept by its own code) is left as it is: its writes would not reach a
+ * replacement.
  */
-export function packRunState<S extends { series: unknown[][] }>(s: S): S {
-  const own = s as unknown as Record<string, unknown>;
-  const fields = new Map<unknown, string[]>();
+function packLists(s: object, lists: unknown[], pick: (list: unknown[]) => boolean): void {
+  const own = s as Record<string, unknown>;
+  /** Where each list is: its holder (the state, a list of lists) and its key there. */
+  const places = new Map<unknown, [Record<string | number, unknown>, string | number][]>();
+  const reached = new Set<unknown>();
+  const at = (list: unknown, holder: Record<string | number, unknown>, key: string | number) => {
+    const p = places.get(list);
+    if (p) p.push([holder, key]);
+    else places.set(list, [[holder, key]]);
+  };
+  const holders = new Set<unknown>();
   for (const k of Object.keys(own)) {
-    if (k === 'series' || !Array.isArray(own[k])) continue;
-    const names = fields.get(own[k]);
-    if (names) names.push(k);
-    else fields.set(own[k], [k]);
+    const v = own[k];
+    if (!Array.isArray(v)) continue;
+    const study = !RUN_FIELDS.has(k);
+    at(v, own, k);
+    if (study) reached.add(v);
+    // a list of lists: its items, once whatever names it
+    if (isPackedSeries(v)) continue;
+    if (study) for (const item of v) if (Array.isArray(item)) reached.add(item);
+    if (holders.has(v)) continue;
+    holders.add(v);
+    for (let j = 0; j < v.length; j++) if (Array.isArray(v[j])) at(v[j], v as unknown as Record<number, unknown>, j);
   }
-  s.series = s.series.map((list) => {
-    const names = fields.get(list);
-    if (!names || isPackedSeries(list)) return list;
+  for (let j = 0; j < lists.length; j++) {
+    const list = lists[j];
+    if (!Array.isArray(list) || !reached.has(list) || isPackedSeries(list) || !pick(list)) continue;
     const p = packedSeries(list);
-    for (const k of names) own[k] = p;
-    return p;
+    for (const [holder, key] of places.get(list) ?? []) holder[key] = p;
+    // the given list itself when no field names it
+    if (lists[j] !== p) lists[j] = p;
+  }
+}
+
+/** The run state `s` with its per-bar outputs (the lists of `s.series`) packed, when it is made. */
+export function packRunState<S extends { series: unknown[][] }>(s: S): S {
+  packLists(s, s.series, () => true);
+  return s;
+}
+
+/**
+ * The lists of `s.lists` that hold plot points packed (once calculated: they are empty when the state is made). A
+ * study keeps there the points it draws away from their bar (a plot with an offset); its lists of numbers, read back
+ * on each bar, are left as they are.
+ */
+export function packPointLists<S extends { lists: unknown[][] }>(s: S): S {
+  packLists(s, s.lists, (list) => {
+    for (const x of list) if (x !== undefined) return isPoint(x);
+    return false;
   });
   return s;
 }

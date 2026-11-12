@@ -11,7 +11,7 @@ import {
   type DrawingLimits,
 } from 'oakscriptjs';
 import type { ChartContext } from './chart-context';
-import { packRunState, packedSeriesMode } from './packed-series';
+import { packPointLists, packRunState, packedSeriesMode } from './packed-series';
 
 /** One state machine stepped once or more per bar and committed when the bar is final (oakscriptjs `taStep`) */
 export interface Committable {
@@ -193,7 +193,6 @@ export function createBarRun<S extends BarRunState<any>, R>(study: BarStudy<S, R
         } else {
           if (limits) resetDrawings(limits);
           state = study.init(bars, next);
-          if (packed) packRunState(state);
           confirmed = 0;
         }
         const s = state!;
@@ -217,6 +216,12 @@ export function createBarRun<S extends BarRunState<any>, R>(study: BarStudy<S, R
           confirmed = 0;
         }
         for (const out of s.series) out.length = n;
+        // Packed mode (#29): a full run's outputs packed once calculated (written plain, the bars of a full run are
+        // calculated at full speed); the lists of points a study keeps (drawn away from their bar) known by then.
+        if (packed && from === 0) {
+          packRunState(s);
+          packPointLists(s);
+        }
         copy = copyBars(bars, confirmed, copy, Math.min(from, confirmed));
         return Object.assign(study.result(s, bars, next) as object, { from }) as R & { from: number };
       } catch (e) {
