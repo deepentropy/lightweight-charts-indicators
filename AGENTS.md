@@ -15,6 +15,7 @@ read the skill first: [skills/lightweight-charts-indicators/SKILL.md](skills/lig
 | `src/chart-context.ts`, `src/other-symbol.ts`, `src/alert-states.ts`, ... | Shared helpers (`lightweight-charts-indicators/helpers`) |
 | `src/style-outputs*.ts`, `src/reference-names.ts`, `src/value-formats.ts` | Generated tables: do not edit by hand |
 | `docs/INDICATOR_INVENTORY*.md` | Catalogue |
+| `src/about.json`, `scripts/about/` | Help text of every entry (the `./about` entry) and the scripts that write and check them |
 | `tests/unit/` | Unit suite (seeded bars, no network) |
 | `tests/reference-regression/`, `tests/regression/` | Reference suites (local or private data) |
 | `skills/lightweight-charts-indicators/` | Agent guide and its tested examples (shipped in the package) |
@@ -37,5 +38,6 @@ npm run test:pinesuite    # reference CSV comparison (needs PINESUITE_TOKEN)
   object; it is registered in `src/index.ts` with a unique kebab-case id and `overlay` equal to `metadata.overlay`.
 - `calculate(bars, inputs?, chart?)` is pure and returns one point per bar for every declared plot (`NaN` = no value).
 - Ports follow their original script; a deliberate difference is commented in the code.
-- Every new indicator gets a unit test; typecheck, tests and build pass before a commit.
+- Every new indicator gets a unit test and a help text (`node scripts/about/write.mjs`, then `node scripts/about/check.mjs`);
+  typecheck, tests and build pass before a commit.
 - Do not bump `version` (in `package.json` and `src/index.ts`) or tag outside a release: a `v*` tag publishes.

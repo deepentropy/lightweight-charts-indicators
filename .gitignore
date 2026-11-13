@@ -11,3 +11,7 @@ __pycache__/
 
 # Regression data (local only: reference outputs and price bars, built from .tmp research runs)
 tests/reference-regression/data/
+
+# Indicator help texts: run log and failures of scripts/about/write.mjs
+scripts/about/*.log
+scripts/about/flagged.json

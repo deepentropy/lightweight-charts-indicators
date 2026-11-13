@@ -36,7 +36,7 @@ Ids are unique, kebab-case and stable (a host stores them in saved layouts). A s
 | Field | Meaning |
 |---|---|
 | `id`, `group`, `category` | See above |
-| `name`, `shortName`, `description?` | Full title (lists), short title (legend), one sentence |
+| `name`, `shortName`, `description?` | Full title (lists), short title (legend), one sentence (standard group only; the help text of every entry is in `lightweight-charts-indicators/about`) |
 | `overlay` | `true`: price pane; `false`: own pane |
 | `metadata` | `{ title, shortTitle, overlay }` of the module |
 | `inputConfig` | One row per input, see [Inputs](#inputs) |
@@ -159,3 +159,10 @@ How a charting app uses the library in production:
 
 `lightweight-charts-indicators/sources` gives `builtinSource(id)`: the plain JavaScript source of a standard
 indicator, importing only `oakscriptjs` and `lightweight-charts-indicators/helpers`. Load it on demand (about 500 kB).
+
+## Help texts
+
+`lightweight-charts-indicators/about` gives `aboutIndicator(id)` (and the `indicatorAbout` table): for every registry
+entry, 2 or 3 plain English sentences on what it computes, how to read it and its main inputs (at most 500
+characters). Load it on demand (about 600 kB). The texts are written from each entry's code by
+`scripts/about/write.mjs` and checked by `scripts/about/check.mjs` (names and numbers they give are the entry's).
