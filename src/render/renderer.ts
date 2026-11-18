@@ -135,6 +135,29 @@ export interface IndicatorRendererOptions {
   futureSlots?: FutureSlots;
   /** Keep the indicator pane when clear() empties it (pane height kept; default false) */
   preserveEmptyPane?: boolean;
+  /**
+   * Told when an output's points were not in ascending time order: they are drawn in order (see
+   * {@link UnorderedData}). The chart library's release build does not check the order and throws at its next paint,
+   * outside render(), so the points are put in order before the chart gets them.
+   */
+  onUnorderedData?: (info: UnorderedData) => void;
+}
+
+/** Points of one output that were not in ascending time order: a point at the time of the one before it replaced it,
+ *  a point earlier than the one before it was left out. */
+export interface UnorderedData {
+  /** Output: the plot id or plotCandles id, '' for the other outputs (hlines, fills, drawings' anchors) */
+  output: string;
+  /** Chart series type the points were for */
+  seriesType: string;
+  /** Points given */
+  points: number;
+  /** Points left out or replaced */
+  dropped: number;
+  /** Index of the first point out of order, its time and the time of the point before it */
+  index: number;
+  time: number;
+  previous: number;
 }
 
 export interface RenderOptions {
@@ -212,6 +235,8 @@ export class IndicatorRenderer {
   /** Points prepared by the last render, by output (see {@link points}); kept for the next reuseSeries render */
   private prepared = new Map<string, Prepared>();
   private preparedNow = new Map<string, Prepared>();
+  /** Output being drawn, for {@link UnorderedData} */
+  private output = '';
 
   constructor(private readonly chart: IChartApi, options: IndicatorRendererOptions = {}) {
     this.opts = { ...options };
@@ -271,6 +296,7 @@ export class IndicatorRenderer {
   private draw(entry: RenderableIndicator, r: IndicatorResult & Record<string, any>, bars: Bar[], pane: number): void {
 
     this.drawPlots(entry, r, pane);
+    this.output = '';
     this.drawHLines(entry, r, pane, bars);
     if (r.fills?.length) {
       const overlayPlots = new Set(entry.plotConfig.filter((p) => p.forceOverlay).map((p) => p.id));
@@ -281,8 +307,10 @@ export class IndicatorRenderer {
     if (r.barColors?.length) this.drawBarColors(r.barColors);
     if (r.bgColors?.length) this.drawBgColors(r.bgColors, pane);
     for (const [id, data] of Object.entries(r.plotCandles ?? {})) {
+      this.output = id;
       if (Array.isArray(data) && data.length) this.drawCandles(id, data, pane);
     }
+    this.output = '';
     for (const data of Object.values(r.plotBars ?? {})) {
       if (Array.isArray(data) && data.length) this.drawBars(data, pane);
     }
@@ -403,8 +431,11 @@ export class IndicatorRenderer {
   }
 
   /** Series data; a reused series whose newest points alone changed (or that has new bars) gets them as updates */
-  private setData(series: ISeriesApi<any, Time, any>, data: readonly unknown[]): void {
+  private setData(series: ISeriesApi<any, Time, any>, given: readonly unknown[]): void {
     const s = series as ISeriesApi<SeriesType, Time>;
+    const data = inTimeOrder(given, (index, time, previous, dropped) =>
+      this.opts.onUnorderedData?.({ output: this.output, seriesType: s.seriesType(), points: given.length, dropped, index, time, previous })
+    );
     const old = this.reused.has(s) ? this.lastData.get(s) : undefined;
     this.lastData.set(s, data);
     const from = old ? changedTail(old, data) : -1;
@@ -503,6 +534,7 @@ export class IndicatorRenderer {
       const override = this.renderOpts.plots?.[def.id] ?? {};
       const raw = r.plots?.[def.id] as PlotPoint[] | undefined;
       if (!raw?.length || !this.plotVisible(def, override, r)) continue;
+      this.output = def.id;
       const palette = override.palette;
       const data = palette
         ? this.points(`palette:${def.id}`, JSON.stringify(palette), [raw], raw.length, (i) => {
@@ -1226,6 +1258,38 @@ class PrimitiveSlot implements ISeriesPrimitive<Time> {
   hitTest(x: number, y: number) {
     return this.inner.hitTest?.(x, y) ?? null;
   }
+}
+
+/**
+ * `data` with its points in strictly ascending time order (numeric times): a point at the time of the point before it
+ * replaces it, a point earlier than it is left out. The same array when it already is (`told` is not called); else a
+ * copy, and `told` gets the first point out of order and how many points were replaced or left out.
+ */
+export function inTimeOrder<T>(
+  data: readonly T[],
+  told?: (index: number, time: number, previous: number, dropped: number) => void
+): readonly T[] {
+  const timeAt = (i: number) => (data[i] as { time?: unknown } | null)?.time;
+  let i = 1;
+  for (; i < data.length; i++) {
+    const t = timeAt(i);
+    const p = timeAt(i - 1);
+    if (typeof t === 'number' && typeof p === 'number' && !(t > p)) break;
+  }
+  if (i >= data.length) return data;
+  const first = { index: i, time: timeAt(i) as number, previous: timeAt(i - 1) as number };
+  const out = data.slice(0, i);
+  let last = first.previous;
+  for (; i < data.length; i++) {
+    const t = timeAt(i);
+    if (typeof t !== 'number') out.push(data[i]);
+    else if (t > last) {
+      out.push(data[i]);
+      last = t;
+    } else if (t === last) out[out.length - 1] = data[i];
+  }
+  told?.(first.index, first.time, first.previous, data.length - out.length);
+  return out;
 }
 
 /** Newest points a live update can change: the last bar and the one before it */

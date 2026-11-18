@@ -13,6 +13,7 @@ export {
   type IndicatorRendererOptions,
   type RenderOptions,
   type PlotOverride,
+  type UnorderedData,
 } from './renderer';
 export { ThinHistogramPaneView, type HistogramItem, type ThinHistogramOptions } from './histogram-series';
 export { parseColor, withOpacity, isTransparent, type Rgba } from './color';
