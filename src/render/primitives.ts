@@ -1046,7 +1046,8 @@ export interface DrawEnv {
   ctx: CanvasRenderingContext2D;
   width: number;
   height: number;
-  series: ISeriesApi<SeriesType, Time>;
+  /** Price to y coordinate on the price scale of the drawings (see priceConverter) */
+  series: Pick<ISeriesApi<SeriesType, Time>, 'priceToCoordinate'>;
   grid: BarGrid;
   timeScale: ReturnType<IChartApi['timeScale']>;
 }
@@ -1096,8 +1097,10 @@ export class DrawingPrimitive<T> extends BasePrimitive {
     const series = this._series;
     if (!chart || !series) return;
     const timeScale = chart.timeScale();
+    const prices = priceConverter(series);
+    if (!prices) return;
     target.useMediaCoordinateSpace(({ context: ctx, mediaSize }) => {
-      const env: DrawEnv = { ctx, width: mediaSize.width, height: mediaSize.height, series, grid: this._grid, timeScale };
+      const env: DrawEnv = { ctx, width: mediaSize.width, height: mediaSize.height, series: prices, grid: this._grid, timeScale };
       for (const item of this._items) {
         ctx.save();
         this._draw(env, item);
@@ -1105,6 +1108,22 @@ export class DrawingPrimitive<T> extends BasePrimitive {
       }
     });
   }
+}
+
+/**
+ * The series that converts the prices of the drawings held by `anchor`. The chart converts a price through the first
+ * value of a series at or after the left edge of the view, so an anchor (one point per drawing end) gives no coordinate
+ * once all of its points are left of the view: a level of the current period whose start bar has scrolled out, a line
+ * extended to the right. Another series of the same pane and price scale with a value in view converts it then, to the
+ * same coordinate (the scale is shared). null: no series of that scale has a value in view.
+ */
+export function priceConverter(anchor: ISeriesApi<SeriesType, Time>): Pick<ISeriesApi<SeriesType, Time>, 'priceToCoordinate'> | null {
+  if (anchor.priceToCoordinate(1) != null) return anchor;
+  const scaleId = anchor.options().priceScaleId;
+  for (const other of anchor.getPane().getSeries()) {
+    if (other !== anchor && other.options().priceScaleId === scaleId && other.priceToCoordinate(1) != null) return other;
+  }
+  return null;
 }
 
 /** A colour that draws something: set and not fully transparent */
