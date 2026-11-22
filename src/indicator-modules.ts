@@ -76,6 +76,7 @@ export const INDICATOR_MODULES: Record<string, () => Promise<unknown>> = {
   'relative-volume-at-time': () => import('./standard/relative-volume-at-time'),
   'rci-ribbon': () => import('./standard/rci-ribbon'),
   'volume-delta': () => import('./standard/volume-delta'),
+  'open-interest': () => import('./standard/open-interest'),
   'cvd': () => import('./standard/cumulative-volume-delta'),
   'net-volume': () => import('./standard/net-volume'),
   'kst': () => import('./standard/kst'),

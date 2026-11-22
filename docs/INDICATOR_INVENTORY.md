@@ -8,14 +8,14 @@ ranked by complexity. It tracks implementation status in OakScriptJS.
 | Category               | Count |
 |------------------------|-------|
 | **Total Indicators**   | 147   |
-| **Implemented**        | 100   |
-| **Pending**            | 47    |
+| **Implemented**        | 101   |
+| **Pending**            | 46    |
 | **Very Complex (25+)** | 3     |
 | **Complex (15-24)**    | 29    |
 | **Medium (5-14)**      | 43    |
 | **Simple (0-4)**       | 59    |
 
-> 131 scored rows below (84 implemented / 47 pending) + 16 built-in studies listed separately
+> 131 scored rows below (85 implemented / 46 pending) + 16 built-in studies listed separately
 > (all 16 implemented). The complexity buckets cover the scored table only (the 16 built-in
 > rows await Pine-source scoring). Note `src/` registers 1869 indicators in total — the bulk are
 > community/candlestick ports tracked in `INDICATOR_INVENTORY_COMMUNITY.md` /
@@ -89,7 +89,7 @@ Complexity is calculated based on:
 | Visible Average Price | 5 | 0 | ReqSec | Pending |
 | RSI Divergence Indicator | 5 | 5 | Drawing | Pending |
 | Rob Booker - Ziv Ghost Pivots | 5 | 0 | Drawing | Pending |
-| Open Interest | 5 | 0 | ReqSec | Pending |
+| Open Interest | 5 | 0 | ReqSec | **Implemented** |
 | Moving Average Ribbon | 5 | 5 | - | **Implemented** |
 | Keltner Channels | 5 | 5 | - | **Implemented** |
 | Average True Range | 5 | 5 | - | **Implemented** |

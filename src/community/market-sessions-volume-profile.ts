@@ -14,8 +14,10 @@
  * Notes on the port:
  * - The original reads the bars through a lower timeframe request with an empty timeframe, which is the chart
  *   timeframe: each bar gives one bar. The port uses the chart bars.
- * - "Profile Data Type" = "Open Interest" needs the open interest of another ticker (<symbol>_OI), which the bars do
- *   not carry: the port throws an Error for it.
+ * - "Profile Data Type" = "Open Interest" reads the change of the open interest from the open interest series of the
+ *   symbol (<symbol>_OI, `requiredSymbols`), on the daily timeframe for a future on an intraday chart, as the original.
+ *   A rise goes to the up side, a fall to the down side, over the body of the bar only. A symbol without that series
+ *   has no values (ignore_invalid_symbol): the profile stays empty.
  * - New days, weeks, months, quarters and years are read in the exchange time zone, as in the original. The port
  *   reads the time zone from the chart context (third argument of calculate). Without it the port uses UTC: equal
  *   on UTC symbols and on symbols whose trading day is inside one UTC day (e.g. US stocks).
@@ -37,13 +39,16 @@
  */
 
 import {
-  ta, Series, array, callsite, time as pineTime, box, line, label, periodTime,
+  ta, Series, array, callsite, time as pineTime, timeframe, box, line, label, periodTime,
   resetDrawings, setDrawingBar, type SessionContext, type IndicatorResult, type InputConfig, type PlotConfig, type Bar,
 } from 'oakscriptjs';
 import type { LineDrawingData, BoxData, LabelData } from '../types';
 import { barInterval } from '../bar-time';
 import { chartTimeframe } from '../anchor-period';
-import { foregroundColorOf, timezoneOf, type ChartContext } from '../chart-context';
+import {
+  foregroundColorOf, symbolBarsOf, symbolTypeOf, tickeridOf, timezoneOf, type ChartContext, type SymbolRequest,
+} from '../chart-context';
+import { otherSymbolChart, securityOtherValues } from '../other-symbol';
 
 export interface MarketSessionsVolumeProfileInputs {
   sessionType: 'Tokyo' | 'London' | 'New York' | 'Daily' | 'Weekly' | 'Monthly' | 'Quarterly' | 'Yearly';
@@ -206,6 +211,37 @@ function drawingData<T>(all: () => object[], max: number) {
   };
 }
 
+/** openInterestTicker: "<prefix>:<ticker>_OI" of the chart symbol; '' without a symbol */
+function openInterestTicker(chart?: ChartContext): string {
+  const id = tickeridOf(chart);
+  return id ? `${id}_OI` : '';
+}
+
+/** timeframe: "1D" for a future on an intraday chart, else the chart timeframe */
+function openInterestTimeframe(chart?: ChartContext, bars: ReadonlyArray<Bar> = []): string {
+  const tf = chartTimeframe(bars, chart);
+  const info = tf ? timeframe.info(tf) : null;
+  return symbolTypeOf(chart) === 'futures' && info !== null && (info.isminutes || info.isseconds) ? '1D' : tf;
+}
+
+/** Bars of other symbols the indicator reads: the open interest series with "Profile Data Type" = "Open Interest" */
+export function requiredSymbols(inputs: Partial<MarketSessionsVolumeProfileInputs> = {}, chart?: ChartContext): SymbolRequest[] {
+  const symbol = openInterestTicker(chart);
+  if ({ ...defaultInputs, ...inputs }.volType !== 'Open Interest' || !symbol) return [];
+  return [{ symbol, timeframe: openInterestTimeframe(chart) }];
+}
+
+/** deltaOi on each chart bar: close - close[1] of the open interest series (na without it) */
+function openInterestDeltas(bars: Bar[], chart?: ChartContext): number[] {
+  const symbol = openInterestTicker(chart);
+  if (!symbol || bars.length === 0) return bars.map(() => NaN);
+  const tf = openInterestTimeframe(chart, bars);
+  const [other] = symbolBarsOf([{ symbol, timeframe: tf }], chart);
+  const deltas = other.map((b, j) => (j > 0 ? b.close - other[j - 1].close : NaN));
+  const own = tf === chartTimeframe(bars, chart) ? '' : tf;
+  return securityOtherValues(bars, other, own, deltas, otherSymbolChart(bars, chart), { other: chart?.symbolInfo?.(symbol) });
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<MarketSessionsVolumeProfileInputs> = {},
@@ -216,11 +252,8 @@ export function calculate(
   const CHART_FG_COLOR = foregroundColorOf(chart);
   /** syminfo.timezone, the time zone of dayofweek, weekofyear, dayofmonth, month and year (UTC without a chart context) */
   const tz = timezoneOf(chart);
-  if (cfg.volType === 'Open Interest') {
-    throw new Error('Market sessions and Volume profile: "Open Interest" needs the open interest ticker of the symbol '
-      + '(<symbol>_OI), which the bars do not carry.');
-  }
   const n = bars.length;
+  const oi = cfg.volType === 'Open Interest';
   const resolution = Math.trunc(cfg.resolution);
   const inMs = n > 0 && bars[0].time >= 1e12;
   const interval = barInterval(bars);
@@ -235,10 +268,14 @@ export function calculate(
   const timeOf = (index: number) => (index >= 0 ? bars[Math.min(index, n - 1)].time : bars[0].time + index * interval);
 
   // vol(): smoothVol ? ta.ema(volume, 5) : volume
+  // with volType == 'Open Interest': deltaOi = request.security(openInterestTicker, timeframe, close - close[1],
+  // ignore_invalid_symbol = true)
   const rawVolume = bars.map((b) => b.volume ?? NaN);
-  const vol = cfg.smoothVol
-    ? ta.ema(Series.fromArray(bars, rawVolume), 5).toArray().map((v) => v ?? NaN)
-    : rawVolume;
+  const vol = oi
+    ? openInterestDeltas(bars, chart)
+    : cfg.smoothVol
+      ? ta.ema(Series.fromArray(bars, rawVolume), 5).toArray().map((v) => v ?? NaN)
+      : rawVolume;
 
   // Drawings: library objects (bar index x) in the drawing registry, for the counts (a creation above max + 5
   // deletes the oldest until max remain, with the rules of the last bar) and the runtime error of a bar index more
@@ -281,6 +318,12 @@ export function calculate(
       const bodyvol = (body * v) / denom;
       const topwickvol = (2 * topwick * v) / denom;
       const bottomwickvol = (2 * bottomwick * v) / denom;
+      if (oi) {
+        // Open Interest: the change over the body, a rise up, a fall down (na adds nothing)
+        if (v > 0) vpGreen[k] = vpGreen[k] + getVol(zoneBot, zoneTop, bodyBot, bodyTop, body, v);
+        if (v < 0) vpRed[k] = vpRed[k] + getVol(zoneBot, zoneTop, bodyBot, bodyTop, body, -v);
+        continue;
+      }
       const bodyPart = getVol(zoneBot, zoneTop, bodyBot, bodyTop, body, bodyvol);
       const topPart = getVol(zoneBot, zoneTop, bodyTop, h, topwick, topwickvol) / 2;
       const bottomPart = getVol(zoneBot, zoneTop, bodyBot, l, bottomwick, bottomwickvol) / 2;
@@ -510,6 +553,7 @@ export function calculate(
 }
 
 export const MarketSessionsVolumeProfile = {
+  requiredSymbols,
   calculate,
   metadata,
   defaultInputs,

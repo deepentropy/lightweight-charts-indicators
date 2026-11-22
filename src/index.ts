@@ -368,6 +368,11 @@ export { RCIRibbon, calculate as calculateRCIRibbon } from './standard/rci-ribbo
 export type { RCIRibbonInputs } from './standard/rci-ribbon';
 
 // Volume Delta
+// Open Interest
+import * as openInterestIndicator from './standard/open-interest';
+export { OpenInterest, calculate as calculateOpenInterest, openInterestSymbol } from './standard/open-interest';
+export type { OpenInterestInputs } from './standard/open-interest';
+
 import * as volumeDeltaIndicator from './standard/volume-delta';
 export { VolumeDelta, calculate as calculateVolumeDelta } from './standard/volume-delta';
 export type { VolumeDeltaInputs } from './standard/volume-delta';
@@ -8854,6 +8859,22 @@ const registryPart1: IndicatorRegistryEntry[] = [
     defaultInputs: { ...volumeDeltaIndicator.defaultInputs },
     calculate: volumeDeltaIndicator.calculate,
     createRun: volumeDeltaIndicator.createRun,
+  },
+  {
+    id: 'open-interest',
+    group: 'standard',
+    name: 'Open Interest',
+    shortName: 'OI',
+    description: 'Open interest of the chart symbol, from its <SYMBOL>_OI series.',
+    category: 'Volume',
+    overlay: false,
+    metadata: openInterestIndicator.metadata,
+    inputConfig: openInterestIndicator.inputConfig as InputConfig[],
+    plotConfig: openInterestIndicator.plotConfig as PlotConfig[],
+    plotCandleConfig: openInterestIndicator.plotCandleConfig,
+    requiredSymbols: openInterestIndicator.requiredSymbols,
+    defaultInputs: { ...openInterestIndicator.defaultInputs },
+    calculate: openInterestIndicator.calculate,
   },
   {
     id: 'cvd',
@@ -25716,6 +25737,7 @@ const registryPart6: IndicatorRegistryEntry[] = [
     inputConfig: marketSessionsVolumeProfileIndicator.inputConfig as InputConfig[],
     plotConfig: marketSessionsVolumeProfileIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...marketSessionsVolumeProfileIndicator.defaultInputs },
+    requiredSymbols: marketSessionsVolumeProfileIndicator.requiredSymbols,
     calculate: marketSessionsVolumeProfileIndicator.calculate,
   },
   {
