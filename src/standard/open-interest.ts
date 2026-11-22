@@ -7,7 +7,8 @@
  *
  * Based on the standard Open Interest indicator: no inputs, values in the volume format (5.37 K, 47.46 M).
  * - A series with open, high, low and close values (open interest sampled through each bar) is drawn as candles.
- * - A series with one value per bar (open, high, low and close equal, or no open) is drawn as a thick step line.
+ * - A series with one value per bar (open, high, low and close equal, or no open) is drawn as a thick step line. The
+ *   bar in progress is left out of that test: its live quotes may move it during the bar.
  * - A series without intraday bars (sources that publish one open interest a day, as futures exchanges do) is read
  *   on the daily timeframe on an intraday chart: each intraday bar shows the day's value.
  * - No bars at all (a symbol without open interest, a stock): an error.
@@ -81,7 +82,7 @@ export function calculate(bars: Bar[], _inputs: Partial<OpenInterestInputs> = {}
   // [open, high, low, close, close > close[1]] of the series, on each chart bar
   const index = securityOther(bars, oi, tf === chartTf ? '' : tf, otherSymbolChart(bars, chart), { other: chart?.symbolInfo?.(symbol) });
   const rising = (j: number) => j > 0 && oi[j].close > oi[j - 1].close;
-  const line = singleValued(oi);
+  const line = singleValued(oi.length > 1 ? oi.slice(0, -1) : oi);
   const plot0 = bars.map((b, i) => {
     const j = index[i];
     return { time: b.time, value: line && j >= 0 ? oi[j].close : NaN, color: rising(j) ? RISING : FALLING };

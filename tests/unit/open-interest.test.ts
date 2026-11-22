@@ -42,6 +42,13 @@ describe('Open Interest', () => {
     expect(r.plotCandles.oi).toEqual([]);
   });
 
+  it('keeps the step line when only the bar in progress moved', () => {
+    const oi = days(10, (i) => { const v = 1000 + i; return i === 9 ? [v, v + 5, v - 5, v + 2] : [v, v, v, v]; });
+    const r = OpenInterest.calculate(price, {}, context({ 'NFO:NIFTYFUT_OI|1D': oi }));
+    expect(r.plots.plot0[9].value).toBe(1011);
+    expect(r.plotCandles.oi).toEqual([]);
+  });
+
   it('draws a series with open, high, low and close as candles', () => {
     const oi = days(10, (i) => [1000 + i, 1010 + i, 995 + i, 1005 + i]);
     const r = OpenInterest.calculate(price, {}, context({ 'NFO:NIFTYFUT_OI|1D': oi }));
