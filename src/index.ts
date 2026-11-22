@@ -8873,6 +8873,8 @@ const registryPart1: IndicatorRegistryEntry[] = [
     plotConfig: openInterestIndicator.plotConfig as PlotConfig[],
     plotCandleConfig: openInterestIndicator.plotCandleConfig,
     requiredSymbols: openInterestIndicator.requiredSymbols,
+    // Values in the volume format (5.37 K, 47.46 M), as the standard indicator
+    format: { type: 'volume' },
     defaultInputs: { ...openInterestIndicator.defaultInputs },
     calculate: openInterestIndicator.calculate,
   },

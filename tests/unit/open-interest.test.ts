@@ -89,3 +89,10 @@ describe('Market sessions and Volume profile: Open Interest', () => {
     expect(empty.boxes.length).toBeLessThan(r.boxes.length);
   });
 });
+
+describe('Open Interest registry entry', () => {
+  it('shows its values in the volume format', async () => {
+    const { indicatorRegistry } = await import('../../src/index');
+    expect(indicatorRegistry.find((e) => e.id === 'open-interest')?.format).toEqual({ type: 'volume' });
+  });
+});
