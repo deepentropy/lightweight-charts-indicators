@@ -5,7 +5,7 @@
 import { afterEach, describe, it, expect } from 'vitest';
 import type { Bar } from 'oakscriptjs';
 import { indicatorRegistry } from '../../src/index';
-import { isPackedSeries, packedColumns, packedFromColumns, packedSeries, setPackedSeries } from '../../src/packed-series';
+import { isPackedSeries, packedColumns, packedFromColumns, packedSameTimes, packedSeries, packedSharedPrefix, setPackedSeries } from '../../src/packed-series';
 
 function generateBars(count: number): Bar[] {
   const bars: Bar[] = [];
@@ -46,6 +46,28 @@ describe('packed series', () => {
     const whole = packedSeries(src);
     const back = packedFromColumns(structuredClone(packedColumns(whole)!));
     expect(JSON.stringify([...back])).toBe(JSON.stringify(src));
+  });
+
+  it('compares two packed lists from their columns as their points compare', () => {
+    const src = Array.from({ length: 40 }, (_, i) => ({ time: i, value: i % 7 ? i : NaN, ...(i % 3 === 0 && { color: '#fff', gradient: { top: 1 } }) }));
+    const a = packedSeries(src);
+    expect(packedSharedPrefix(a, a.slice())).toBe(40);
+    const b = packedSeries(src);
+    b[25] = { ...src[25], value: -1 };
+    expect(packedSharedPrefix(a, b)).toBe(25);
+    const c = packedSeries(src);
+    c[12] = { time: 12, value: 12 }; // the colour dropped
+    expect(packedSharedPrefix(a, c)).toBe(12);
+    const d = packedSeries(src);
+    d[30] = { ...src[30], gradient: { top: 2 } };
+    expect(packedSharedPrefix(a, d)).toBe(30);
+    expect(packedSharedPrefix(a, packedSeries(src.slice(0, 10)))).toBe(10);
+    expect(packedSharedPrefix(packedSeries([1, NaN, 3]), packedSeries([1, NaN, 4]))).toBe(2);
+    expect(packedSharedPrefix(a, src)).toBeNull();
+    expect(packedSharedPrefix(a, packedSeries([1, 2]))).toBeNull();
+    expect(packedSameTimes(a, b)).toBe(true);
+    expect(packedSameTimes(a, packedSeries(src.slice(1)))).toBe(false);
+    expect(packedSameTimes(a, src)).toBeNull();
   });
 
   it('holds numbers, and turns plain when a value of another kind comes', () => {

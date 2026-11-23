@@ -18,6 +18,7 @@ vi.mock('lightweight-charts', async (original) => ({
 
 const { IndicatorRenderer } = await import('../../src/render');
 const { indicatorRegistry } = await import('../../src/index');
+const { packedSeries } = await import('../../src/packed-series');
 
 function fakeChart() {
   const counts = { full: 0, light: 0 };
@@ -127,6 +128,32 @@ describe('a live render', () => {
       }
     });
   }
+
+  it('draws packed plots as plain ones and updates only their newest points (bb)', () => {
+    const e = entry('bb');
+    const packPlots = (r: { plots: Record<string, unknown[]> }) => ({ ...r, plots: Object.fromEntries(Object.entries(r.plots).map(([k, v]) => [k, packedSeries(v)])) });
+    const plainChart = fakeChart();
+    const packedChart = fakeChart();
+    const plain = new IndicatorRenderer(plainChart.chart);
+    const packed = new IndicatorRenderer(packedChart.chart);
+    plain.render(e, e.calculate(bars, {}), bars);
+    packed.render(e, packPlots(e.calculate(bars, {}) as never) as never, bars);
+    let b = bars;
+    for (let k = 0; k < 3; k++) {
+      b = tick(b);
+      plain.render(e, e.calculate(b, {}), b, { reuseSeries: true });
+      const sets: number[] = [];
+      for (const s of packed.series()) {
+        const api = s as unknown as { setData: (d: unknown[]) => void };
+        const set = api.setData;
+        api.setData = (d) => { sets.push(d.length); set(d); };
+      }
+      packed.render(e, packPlots(e.calculate(b, {}) as never) as never, b, { reuseSeries: true });
+      expect(sets).toEqual([]);
+      const data = (r: InstanceType<typeof IndicatorRenderer>) => r.series().map((s) => JSON.stringify((s as unknown as { data: () => unknown[] }).data()));
+      expect(data(packed)).toEqual(data(plain));
+    }
+  });
 
   it('keeps its native markers plugin and sets its markers only when they changed', () => {
     const f = fakeChart();

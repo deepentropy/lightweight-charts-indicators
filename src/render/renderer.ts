@@ -95,6 +95,7 @@ import {
   type FillGradientData,
 } from './primitives';
 import { ThinHistogramPaneView, type HistogramItem } from './histogram-series';
+import { isPackedSeries, packedSameTimes, packedSharedPrefix } from '../packed-series';
 
 /** The indicator description the renderer needs: a registry entry or an indicator module satisfies it */
 export interface RenderableIndicator {
@@ -475,7 +476,8 @@ export class IndicatorRenderer {
       if (p !== null) out.push(p);
     }
     at.push(out.length);
-    this.preparedNow.set(key, { sig, sources: sources.map((s) => (s ? Array.prototype.slice.call(s) : undefined)), out, at });
+    // A packed source is kept as a packed copy (its columns copied): copied as an array, each of its points is made.
+    this.preparedNow.set(key, { sig, sources: sources.map((s) => (s ? (isPackedSeries(s) ? (s as unknown[]).slice() : Array.prototype.slice.call(s)) : undefined)), out, at });
     return out;
   }
 
@@ -1324,6 +1326,9 @@ interface Prepared {
 
 /** Both lists have the same increasing times, index by index */
 function sameTimes(a: ArrayLike<{ time: number }>, b: ArrayLike<{ time: number }>): boolean {
+  // packed lists: read from their columns, without making a point per index
+  const packed = packedSameTimes(a, b);
+  if (packed !== null) return packed;
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
     const t = a[i].time;
@@ -1335,6 +1340,8 @@ function sameTimes(a: ArrayLike<{ time: number }>, b: ArrayLike<{ time: number }
 /** Count of the first points that are the same in both (no limit when both are missing) */
 function sharedPrefix(prev: ArrayLike<unknown> | undefined, next: ArrayLike<unknown> | undefined): number {
   if (prev === undefined || next === undefined) return prev === next ? Infinity : 0;
+  const packed = packedSharedPrefix(prev, next);
+  if (packed !== null) return packed;
   const m = Math.min(prev.length, next.length);
   let k = 0;
   while (k < m && sameItem(prev[k], next[k])) k++;

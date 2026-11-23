@@ -273,6 +273,79 @@ export function packedFromColumns<T = Point>(c: PackedColumns): T[] {
   return view(cols) as T[];
 }
 
+/** The columns of a packed list of any kind, null for any other value. */
+function columnsOf(v: unknown): Columns | null {
+  if (v === null || typeof v !== 'object' || !Array.isArray(v)) return null;
+  return (v as unknown as Record<symbol, Columns | undefined>)[PACKED] ?? null;
+}
+
+const sameNumber = (u: number, v: number): boolean => u === v || (Number.isNaN(u) && Number.isNaN(v));
+
+/** The same field value of two points: the same value (NaN equal to NaN), or plain objects with the same fields. */
+function sameField(u: unknown, v: unknown): boolean {
+  if (u === v) return true;
+  if (u === null || v === null || typeof u !== 'object' || typeof v !== 'object') return Number.isNaN(u) && Number.isNaN(v);
+  const x = u as Record<string, unknown>;
+  const y = v as Record<string, unknown>;
+  let n = 0;
+  for (const k in y) {
+    if (x[k] !== y[k] && !(Number.isNaN(x[k]) && Number.isNaN(y[k]))) return false;
+    n++;
+  }
+  for (const _ in x) n--;
+  return n === 0;
+}
+
+/**
+ * How many first entries two packed lists have the same, as the points they read as (the same fields, values equal or
+ * both NaN, a nested value compared by its fields), read from their columns: no point is made, where reading the lists
+ * makes an object per entry. Null when either is not a packed list of points or numbers, or they hold different kinds.
+ */
+export function packedSharedPrefix(a: unknown, b: unknown): number | null {
+  const x = columnsOf(a);
+  const y = columnsOf(b);
+  if (!x || !y || x.kind !== y.kind || (x.kind !== 'points' && x.kind !== 'numbers')) return null;
+  const m = Math.min(x.n, y.n);
+  const points = x.kind === 'points';
+  const fields = points ? [...new Set([...Object.keys(x.extra), ...Object.keys(y.extra)])] : [];
+  let k = 0;
+  for (; k < m; k++) {
+    const has = x.has[k];
+    if (has !== y.has[k]) break;
+    if (!has) continue;
+    if (!sameNumber(x.value[k]!, y.value[k]!)) break;
+    if (!points) continue;
+    if (!sameNumber(x.time[k]!, y.time[k]!)) break;
+    let same = true;
+    for (const f of fields) {
+      if (!sameField(x.extra[f]?.[k], y.extra[f]?.[k])) {
+        same = false;
+        break;
+      }
+    }
+    if (!same) break;
+  }
+  return k;
+}
+
+/**
+ * Two packed lists of points have the same increasing times, index by index, read from their columns; null when either
+ * is not a packed list of points without holes.
+ */
+export function packedSameTimes(a: unknown, b: unknown): boolean | null {
+  const x = columnsOf(a);
+  const y = columnsOf(b);
+  if (!x || !y || x.kind !== 'points' || y.kind !== 'points') return null;
+  for (let i = 0; i < x.n; i++) if (!x.has[i]) return null;
+  for (let i = 0; i < y.n; i++) if (!y.has[i]) return null;
+  if (x.n !== y.n) return false;
+  for (let i = 0; i < x.n; i++) {
+    const t = x.time[i]!;
+    if (t !== y.time[i] || (i > 0 && !(t > x.time[i - 1]!))) return false;
+  }
+  return true;
+}
+
 /** Fields of a run state the run reads itself: a list there alone is not one the study writes to. */
 const RUN_FIELDS = new Set(['series', 'lists']);
 
