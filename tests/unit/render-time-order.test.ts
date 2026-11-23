@@ -106,3 +106,30 @@ describe('a render with points out of time order', () => {
     expect(f.series[0].data.every((p) => typeof p.value === 'number' && !Number.isNaN(p.value))).toBe(true);
   });
 });
+
+describe('horizontal lines on a one-bar chart (#35)', () => {
+  it('give each hline and hline fill one point, in time order', () => {
+    const f = fakeChart();
+    const told: UnorderedData[] = [];
+    const r = new IndicatorRenderer(f.chart, { paneIndex: 1, onUnorderedData: (u) => told.push(u) });
+    const entry = {
+      overlay: false,
+      plotConfig: [{ id: 'rsi', title: 'RSI', style: 'line' }],
+      hlineConfig: [{ id: 'up', price: 70 }, { id: 'down', price: 30 }],
+      fillConfig: [{ id: 'band', plot1: 'up', plot2: 'down' }],
+    } as never;
+    r.render(entry, { plots: { rsi: plot([0]) } } as never, bars.slice(0, 1));
+    expect(told).toEqual([]);
+    const levels = f.series.filter((s) => s.type !== 'Line' || s.data.every((p) => p.value === 70 || p.value === 30));
+    expect(levels.length).toBeGreaterThanOrEqual(3);
+    for (const s of levels) expect(times(s.data)).toEqual([0]);
+  });
+
+  it('still span the bars from the first to the last', () => {
+    const f = fakeChart();
+    const r = new IndicatorRenderer(f.chart, { paneIndex: 1 });
+    const entry = { overlay: false, plotConfig: [], hlineConfig: [{ id: 'zero', price: 0 }] } as never;
+    r.render(entry, { plots: {} } as never, bars);
+    expect(times(f.series[0].data)).toEqual([0, 5]);
+  });
+});

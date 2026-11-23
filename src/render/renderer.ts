@@ -710,7 +710,7 @@ export class IndicatorRenderer {
         priceLineVisible: false,
         ...this.scaleOptions(pane),
       }, pane));
-      this.setData(series, [{ time: first, value: h.price }, { time: last, value: h.price }]);
+      this.setData(series, spanPoints(first, last, { value: h.price }));
     }
 
     // fills between hlines: the ones of the result (they follow the inputs), else the entry's fillConfig
@@ -774,10 +774,7 @@ export class IndicatorRenderer {
         crosshairMarkerVisible: false,
         ...this.scaleOptions(pane),
       }, pane));
-      this.setData(series, [
-        { time: first, value: Math.max(p1, p2) },
-        { time: last, value: Math.max(p1, p2) },
-      ] as BaselineData<Time>[]);
+      this.setData(series, spanPoints(first, last, { value: Math.max(p1, p2) }) as BaselineData<Time>[]);
     }
   }
 
@@ -1290,6 +1287,14 @@ export function inTimeOrder<T>(
   }
   told?.(first.index, first.time, first.previous, data.length - out.length);
   return out;
+}
+
+/**
+ * Points of a level across the bars, from the first bar's time to the last's: one point when they are the same bar (a
+ * one-bar chart), as two points at one time are out of time order for the chart (#35).
+ */
+function spanPoints<T extends object>(first: Time, last: Time, point: T): Array<T & { time: Time }> {
+  return first === last ? [{ time: first, ...point }] : [{ time: first, ...point }, { time: last, ...point }];
 }
 
 /** Newest points a live update can change: the last bar and the one before it */
