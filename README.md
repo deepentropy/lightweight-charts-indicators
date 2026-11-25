@@ -132,6 +132,8 @@ before, and the indicator pane keeps its height across a redraw.
 - **Panes**: an overlay indicator draws in pane 0, the others in `paneIndex`; `force_overlay` output goes to pane 0.
 - **Bar colours** (`barcolor`) repaint the bars of `mainSeries` (candlestick or bar series, Heikin Ashi included)
   without changing its data. Without `mainSeries`, bar colours are not drawn.
+- **Drawings placed on the pane** (`xloc.pane` of oakscriptjs): the times of the drawing are percents of the pane's width;
+  it stays in place while the chart scrolls and zooms, and the price pane's autoscale leaves it out.
 - **Bars after the last bar**: drawings on future bars are placed without adding time-scale slots; pass
   `extendTimeScale: true` to add them.
 - **`preserveEmptyPane: true`** keeps the pane when `clear()` empties it.

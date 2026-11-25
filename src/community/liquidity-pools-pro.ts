@@ -1057,7 +1057,7 @@ export function calculate(
   // ── Output ──
   // Live objects of the registry: a bar_time x (Pine ms) back to the unit of the bars, a bar index to its bar time
   const interval = barInterval(bars);
-  const X = (x: number, xloc: 'bar_index' | 'bar_time') => (xloc === 'bar_time' ? (inMs ? x : x / 1000) : barTime(bars, x, interval));
+  const X = (x: number, xloc: string) => (xloc === 'bar_time' ? (inMs ? x : x / 1000) : barTime(bars, x, interval));
   return {
     ...base,
     boxes: box.all().map((o) => ({

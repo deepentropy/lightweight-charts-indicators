@@ -1084,7 +1084,7 @@ export function calculate(
   setDrawingBar(null);
 
   // Objects alive after the last bar; an object with an na coordinate is not drawn
-  const T = (x: number, xloc: 'bar_index' | 'bar_time') => (xloc === 'bar_time' ? x : bars[x]?.time ?? NaN);
+  const T = (x: number, xloc: string) => (xloc === 'bar_time' ? x : bars[x]?.time ?? NaN);
   const lineData = (l: Line): LineDrawingData => {
     const out: LineDrawingData = { time1: T(l.x1, l.xloc), price1: l.y1, time2: T(l.x2, l.xloc), price2: l.y2 };
     // the tester line: no style and no width set by the script

@@ -545,7 +545,7 @@ export function calculate(
     }
     return bars[lo].time;
   };
-  const X = (xloc: 'bar_time' | 'bar_index', x: number) => (xloc === 'bar_time' ? atTime(x) : atIndex(x));
+  const X = (xloc: string, x: number) => (xloc === 'bar_time' ? atTime(x) : atIndex(x));
   const lines = line.all();
   const boxes = box.all();
   const labels = label.all();

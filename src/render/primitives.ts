@@ -49,6 +49,16 @@ export function scriptTimes(item: object): boolean {
   return (item as { xloc?: string }).xloc === 'bar_time';
 }
 
+/** The x coordinates of a drawing are percents of the pane's width (xloc.pane): the times hold them */
+export function onPane(item: object): boolean {
+  return (item as { xloc?: string }).xloc === 'pane';
+}
+
+/** x coordinate of a time of a drawing (a percent of the pane's width with xloc.pane) */
+function drawingX(env: DrawEnv, item: object, time: number): number | null {
+  return onPane(item) ? (env.width * time) / 100 : env.grid.x(env.timeScale, time, scriptTimes(item));
+}
+
 /**
  * Bars of the chart and the slots after the last bar.
  * Indicators give points on future bars (Pine bar_index + k, plot offsets) the time lastTime + k * interval
@@ -1063,7 +1073,9 @@ export class DrawingPrimitive<T> extends BasePrimitive {
     private _items: T[],
     private _draw: (env: DrawEnv, item: T) => void,
     zOrder: 'bottom' | 'normal' | 'top',
-    private _future: FuturePrice[] = []
+    private _future: FuturePrice[] = [],
+    /** Prices on the scale whatever bars are in view (drawings placed on an indicator's own pane) */
+    private _always: number[] = []
   ) {
     super();
     const renderer: IPrimitivePaneRenderer = { draw: (target) => this.drawAll(target) };
@@ -1072,18 +1084,23 @@ export class DrawingPrimitive<T> extends BasePrimitive {
 
   updateAllViews(): void {}
 
-  /** Prices the drawings reach on the visible bar slots after the last bar (they are not points of the anchor) */
+  /** Prices the drawings reach on the visible bar slots after the last bar, and the prices always on the scale (they
+   *  are not points of the anchor) */
   autoscaleInfo(startTimePoint: Logical, endTimePoint: Logical): AutoscaleInfo | null {
-    if (!this._future.length || !this._chart) return null;
-    const last = this._chart.timeScale().timeToIndex(this._grid.lastTime as unknown as Time, false);
-    if (last == null) return null;
+    if ((!this._future.length && !this._always.length) || !this._chart) return null;
     let min = Infinity;
     let max = -Infinity;
-    for (const f of this._future) {
-      const i = last + f.slot;
-      if (i < startTimePoint || i > endTimePoint) continue;
-      if (f.value < min) min = f.value;
-      if (f.value > max) max = f.value;
+    const see = (value: number): void => {
+      if (value < min) min = value;
+      if (value > max) max = value;
+    };
+    for (const value of this._always) see(value);
+    const last = this._future.length ? this._chart.timeScale().timeToIndex(this._grid.lastTime as unknown as Time, false) : null;
+    if (last != null) {
+      for (const f of this._future) {
+        const i = last + f.slot;
+        if (i >= startTimePoint && i <= endTimePoint) see(f.value);
+      }
     }
     return min <= max ? { priceRange: { minValue: min, maxValue: max } } : null;
   }
@@ -1169,10 +1186,9 @@ export function arrowHead(ctx: CanvasRenderingContext2D, tipX: number, tipY: num
  * the line extension (extend.left continues the line beyond its left point). null when a point is not on the chart.
  */
 export function linePoints(env: DrawEnv, line: LineDrawingData): [number, number, number, number] | null {
-  const script = scriptTimes(line);
-  const x1 = env.grid.x(env.timeScale, line.time1, script);
+  const x1 = drawingX(env, line, line.time1);
   const y1 = env.series.priceToCoordinate(line.price1);
-  const x2 = env.grid.x(env.timeScale, line.time2, script);
+  const x2 = drawingX(env, line, line.time2);
   const y2 = env.series.priceToCoordinate(line.price2);
   if (x1 == null || y1 == null || x2 == null || y2 == null) return null;
   const extend = line.extend ?? 'none';
@@ -1253,9 +1269,8 @@ export function polylinePath(pts: Array<[number, number]>, curved: boolean, clos
 /** polyline.new: line through the points (curved, closed), fill of the area inside */
 export function drawPolyline(env: DrawEnv, poly: PolylineData): void {
   const pts: Array<[number, number]> = [];
-  const script = scriptTimes(poly);
   for (const p of poly.points) {
-    const x = env.grid.x(env.timeScale, p.time, script);
+    const x = drawingX(env, poly, p.time);
     const y = env.series.priceToCoordinate(p.price);
     if (x != null && y != null) pts.push([x, y as number]);
   }
@@ -1429,10 +1444,9 @@ export function drawBoxText(ctx: CanvasRenderingContext2D, box: BoxData, left: n
 }
 
 export function drawBox(env: DrawEnv, box: BoxData): void {
-  const script = scriptTimes(box);
-  const x1 = env.grid.x(env.timeScale, box.time1, script);
+  const x1 = drawingX(env, box, box.time1);
   const y1 = env.series.priceToCoordinate(box.price1);
-  const x2 = env.grid.x(env.timeScale, box.time2, script);
+  const x2 = drawingX(env, box, box.time2);
   const y2 = env.series.priceToCoordinate(box.price2);
   if (x1 == null || y1 == null || x2 == null || y2 == null) return;
   const { ctx } = env;
@@ -1489,7 +1503,7 @@ export const LABEL_CORNERS: Record<string, [number, number]> = {
  * point is the bar high / low, and a centred box, a shape or a text is moved above / below it.
  */
 export function drawLabel(env: DrawEnv, label: LabelData): void {
-  const x = env.grid.x(env.timeScale, label.time, scriptTimes(label));
+  const x = drawingX(env, label, label.time);
   if (x == null) return;
   const yloc = label.yloc ?? 'price';
   let y: number | null;

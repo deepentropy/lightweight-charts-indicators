@@ -481,7 +481,7 @@ export function calculate(
   setDrawingBar(null);
 
   /** A bar index or a time in ms as a time of the bars */
-  const timeOf = (x: number, xloc: 'bar_index' | 'bar_time') => (xloc === 'bar_time' ? (isMs ? x : x / 1000) : barTime(bars, x));
+  const timeOf = (x: number, xloc: string) => (xloc === 'bar_time' ? (isMs ? x : x / 1000) : barTime(bars, x));
   return result(
     line.all().map((ln) => ({
       time1: timeOf(ln.x1, ln.xloc), price1: ln.y1, time2: timeOf(ln.x2, ln.xloc), price2: ln.y2, color: String(ln.color),

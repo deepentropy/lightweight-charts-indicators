@@ -587,7 +587,7 @@ export function calculate(
   }
 
   const interval = barInterval(bars);
-  const T = (x: number, xloc: 'bar_index' | 'bar_time') => (xloc === 'bar_time' ? x : barTime(bars, x, interval));
+  const T = (x: number, xloc: string) => (xloc === 'bar_time' ? x : barTime(bars, x, interval));
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: {},
