@@ -100,7 +100,7 @@ export function currencyOf(chart?: ChartContext): string {
  * currency (`chart.currency`), else ''
  */
 export function basecurrencyOf(chart?: ChartContext): string {
-  if (chart?.basecurrency !== undefined) return chart.basecurrency;
+  if (chart?.basecurrency !== undefined) return chart.basecurrency ?? '';
   const type = symbolTypeOf(chart);
   if (type !== 'crypto' && type !== 'forex') return '';
   const pair = tickerOf(chart).replace(/\.P$/, '');
@@ -113,7 +113,7 @@ export function basecurrencyOf(chart?: ChartContext): string {
  * ticker, without its contract suffix for futures ("ES1!" -> "ES", "ESH2025" -> "ES")
  */
 export function rootOf(chart?: ChartContext): string {
-  if (chart?.root !== undefined) return chart.root;
+  if (chart?.root !== undefined) return chart.root ?? '';
   const ticker = tickerOf(chart);
   if (symbolTypeOf(chart) !== 'futures') return ticker;
   return ticker.replace(/\d+!$/, '').replace(/[FGHJKMNQUVXZ]\d{4}$/, '');
